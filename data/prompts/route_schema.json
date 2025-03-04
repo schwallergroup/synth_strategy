@@ -1,0 +1,38 @@
+{
+    "title": "SynthesisRoute",
+    "description": "Recursive definition for a chemical synthesis route. Each node represents either a molecule ('mol') or a reaction ('reaction').",
+    "type": "object",
+    "properties": {
+      "smiles": {
+        "description": "The SMILES string representing the molecule. Empty for reaction nodes",
+        "type": "string"
+      },
+      "type": {
+        "description": "The type of this node. It is either 'mol' for molecules or 'reaction' for reaction steps.",
+        "type": "string",
+        "enum": ["mol", "reaction"]
+      },
+      "in_stock": {
+        "description": "A boolean flag indicating if the molecule is a chemical starting material ( graph leaf ). Applies to molecule nodes",
+        "type": "boolean"
+      },
+      "metadata": {
+        "description": "Optional metadata for reaction nodes. Contains extra reaction details such as SMILES, reaction strings, IDs, hashes, etc.",
+        "type": "object",
+        "properties": {
+          "smiles": { "type": "string" },
+          "rsmi": { "type": "string" },
+          "reaction_hash": { "type": "string" },
+          "ID": { "type": "string" },
+          "RingBreaker": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      },
+      "children": {
+        "description": "An array of child nodes that continue the synthesis route. Each child node is recursively defined using this same schema.",
+        "type": "array",
+        "items": { "$ref": "#" }
+      }
+    },
+    "required": ["smiles", "type"]
+  }
