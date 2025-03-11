@@ -1,151 +1,104 @@
-prefix="""You are an expert computational chemist tasked with analyzing synthetic routes for chemical compounds. Your goal is to identify distinct synthetic strategies that can be implemented using rule-based cheminformatics algorithms. Your analysis will be used to classify thousands of routes into 50-100 distinct strategy groups.
+code_rewriting_prompt="""You are an expert system designed to analyze and optimize chemical process code. Your task is to carefully examine the provided code, ensure it accurately performs its described function, and align it with the given synthetic strategy. Pay close attention to chemical intuition and subtle differences between basic meanings and their chemical implementations.
 
-First, carefully review the following synthetic tree:
-<synthetic_tree>
-"""
-suffix="""
-</synthetic_tree>
+First, review the following information:
 
-Your task is to analyze this synthetic route with a focus on features that can be programmatically detected. Use the following JSON schema to understand the structure of the synthetic route:
+<code_and_description>
+{CODE_AND_DESCRIPTION}
+</code_and_description>
 
-<json_schema>
-{
-  "title": "SynthesisRoute",
-  "description": "Recursive definition for a chemical synthesis route. Each node represents either a molecule ('mol') or a reaction ('reaction').",
-  "type": "object",
-  "properties": {
-    "smiles": {
-      "description": "The SMILES string representing the molecule. Empty for reaction nodes",
-      "type": "string"
-    },
-    "type": {
-      "description": "The type of this node. It is either 'mol' for molecules or 'reaction' for reaction steps.",
-      "type": "string",
-      "enum": ["mol", "reaction"]
-    },
-    "in_stock": {
-      "description": "A boolean flag indicating if the molecule is a chemical starting material (graph leaf). Applies to molecule nodes",
-      "type": "boolean"
-    },
-    "metadata": {
-      "description": "Optional metadata for reaction nodes. Contains extra reaction details such as SMILES, reaction strings, IDs, hashes, etc.",
-      "type": "object",
-      "properties": {
-        "smiles": { "type": "string" },
-        "rsmi": { "type": "string" },
-        "reaction_hash": { "type": "string" },
-        "ID": { "type": "string" },
-        "RingBreaker": { "type": "boolean" }
-      },
-      "additionalProperties": true
-    },
-    "children": {
-      "description": "An array of child nodes that continue the synthesis route. Each child node is recursively defined using this same schema.",
-      "type": "array",
-      "items": { "$ref": "#" }
-    }
-  },
-  "required": ["smiles", "type"]
-}
-</json_schema>
+<test_case>
+{TEST_CASE}
+</test_case>
 
-To extract reactants and product from a reaction node, use this method:
+<stdout>
+{stdout}
+</stdout>
 
-<reaction_smiles_extraction>
-rsmi = node["metadata"]["rsmi"]
-reactants = rsmi.split(">")[0].split(".")
-product = rsmi.split(">")[-1]
-</reaction_smiles_extraction>
+<errors>
+{ERRORS}
+</errors>
 
-For traversing the synthetic tree, use this dfs_traverse function:
+Important note: A list of functional group names and reaction type names is appended to the front of the input string. Make sure to account for this in your analysis and modifications.
+There is also a list of common RDKIT functions you can use to analyze the code.
+This is not a complete set of all RDKIT functions and classes, you may use additional functions and classes as needed.
 
-<schema_dfs_traversal>
-def dfs_traverse(node):
-    # Process the current node
-    # If the node contains children, traverse each recursively
-    for child in node.get("children", []):
-        dfs_traverse(child)
-</schema_dfs_traversal>
+You have access to the following classes and functions:
+- checker.check_fg(fg_name, query_mol_smiles)
+- checker.check_reaction(rxn_type_name, query_rxn_smiles)
+- checker.get_fg_smart(fg_name)
+- checker.get_reaction_smart(rxn_type_name)
+- checker.get_fg_atom_indicies(fg_name, query_mol_smiles)
+Please perform a rigorous analysis of the code, following these steps:
 
-In your analysis, focus on these key aspects:
+1. Analyze the function and chemical process:
+   Wrap your analysis inside <code_and_chemical_analysis> tags:
+   - Summarize the intended purpose of the function based on its description.
+   - Examine the code line by line, explaining what each part does.
+   - List out each variable and function parameter, explaining their purpose.
+   - Identify any discrepancies between the code's actual behavior and its intended purpose.
+   - Break down the chemical process step-by-step, considering reactants, products, and intermediate steps.
+   - Analyze the chemical intuition behind the process, explaining why certain steps or checks are necessary.
+   - Identify potential edge cases or unusual chemical scenarios that the code should handle.
 
-1. Topology changes: Ring formations/openings, chain extensions, scaffold construction approaches
-2. Bond disconnection patterns: Key C-C, C-heteroatom bond formation events
-3. Fragment combination strategy: Convergent vs. linear, number of fragments merged
-4. Functional group handling: Protection/deprotection sequences, functional group interconversions
-5. Stereochemistry approach: When and how stereocenters are established
-6. Transformation sequence patterns: Order of operations (e.g., reduction before oxidation)
+2. Propose modifications (if necessary):
+   Wrap your proposal inside <modification_proposal> tags:
+   - If the code doesn't match the description or align with the synthetic strategy, suggest specific changes to address these issues.
+   - For each proposed change, write out the current code snippet and the proposed modification side by side.
+   - Explain the reasoning behind each proposed modification, considering both the technical and chemical aspects.
+   - Use checker.check_fg(name, mol_smiles) and checker.check_reaction(name, rxn_smiles) functions instead of making up SMARTs patterns.
+   - For reaction types, always use check_reaction directly, unless it's a functional group interconversion.
+   - For functional group interconversions, ensure that your code reliably checks that the FG is actually changed in the reaction.
+   - Do not modify the function signature; it must always return a single boolean value.
+   - Assume all reaction and molecular smiles present in the synthetic route are valid.
 
-Guidelines for your analysis:
-- Identify features that could be detected through substructure matching or reaction classification
-- Specify count-based metrics where possible (e.g., "involves 2+ ring formations")
-- Note structural motifs that could be searched with SMARTS patterns. For non-aromatic functional groups, provide a name. For aromatic functional groups, provide a SMARTS pattern.
-- Focus only on features that cheminformatics tools can reliably detect without requiring chemical intuition
+3. Error check:
+   Wrap your error analysis inside <error_check> tags:
+   - If any errors were provided with the code, determine if the function is the cause.
+   - If the function is causing errors, identify the problematic sections and propose fixes.
 
-Begin your analysis by breaking down the synthetic route according to these guidelines. Wrap your synthetic route breakdown in <synthetic_route_breakdown> tags. In this breakdown:
+4. Final review:
+   Wrap your final review inside <final_review> tags:
+   - Summarize all changes made to the code.
+   - Confirm that the modified code accurately performs the described task and is grounded in the synthetic strategy.
+   - Double-check that all chemical concepts are correctly implemented.
+   - Avoid try-except blocks unless necessary for error handling.
+   - Ensure the code makes chemical sense and is neither overly simplistic nor overly complicated.
+   - Do not try to capture every case; do not test for more than a couple of reaction types unless the strategy requires it.
 
-1. Identify and list all molecules and reactions in the synthetic tree.
-2. For each reaction:
-   a. Analyze topology changes (ring formations/openings, chain extensions, etc.)
-   b. Identify key bond disconnections (C-C, C-heteroatom)
-   c. Note any functional group transformations or protections/deprotections
-3. Examine the overall route for:
-   a. Fragment combination strategy (convergent vs. linear, number of fragments)
-   b. Transformation sequence patterns
-4. Note any stereochemistry-related operations
-5. Count key features like ring formations, bond disconnections, and fragments
-6. Identify specific structural motifs and functional groups that can be detected computationally
+After completing your analysis, provide the final version of the code in the following format:
 
-Remember to focus only on features that cheminformatics tools can reliably detect without requiring chemical intuition.
+<code>
+[Insert the final, potentially modified code here. Include print statements for debugging. Include all necessary imports.]
+</code>
 
-After your analysis, provide your output in the following format:
+Remember:
+- Think deeply about chemical intuition throughout your analysis and modification process.
+- Ensure that your final code rigorously performs the task it is stated to do, taking into account both the basic meaning of the function description and its specific chemical implementation.
+- Do not over-engineer the code to pass the tests at the expense of chemical validity.
+- Regarding chemical validity, if you are checking for sequences of FGI's/functional groups, make sure to traverse the synthetic route and check for the presence of these groups in the correct order.
+- The function must return a single boolean value.
 
-1. Computational Analysis:
-<computational_analysis>
-- Quantifiable feature 1: [description with specific substructure or transformation]
-- Quantifiable feature 2: [description with specific substructure or transformation]
-...
-</computational_analysis>
+Example output structure:
 
-2. Extractable Strategy:
-<extractable_strategy>
-[Concise, rule-implementable description that combines the key features. The strategies should be testable via a binary function that takes a synthetic route as input and returns a boolean value.]
-</extractable_strategy>
+<code_and_chemical_analysis>
+[Your analysis of the function and chemical process goes here]
+</code_and_chemical_analysis>
 
-3. RDKit Considerations:
-<rdkit_considerations>
-[Notes on how these features could be implemented with RDKIT, SMARTS patterns, or reaction classification]
-</rdkit_considerations>
+<modification_proposal>
+[Your proposed modifications, if any, go here]
+</modification_proposal>
 
-4. Generated Code:
-<generated_code>
-[Python functions corresponding to the RDKIT rules extracted from the synthetic routes. These functions should be able to process synthetic routes in the format of the provided JSON schema.
-There should be one function for each extracted strategy, which takes the synthetic route, traverses it using the dfs_traverse function, and returns True or False.
+<error_check>
+[Your error analysis goes here]
+</error_check>
 
-Each function should:
-1. Include the dfs_traverse call within itself
-2. Be self-contained and output a boolean
-3. Have a short comment describing which aspect of synthetic strategy it's detecting
+<final_review>
+[Your final review goes here]
+</final_review>
 
-Example structure:
-
-def strategy_name(route):
-  
-    # This function detects [brief description of the strategy].
-
-    def dfs_traverse(node):
-        # Strategy-specific logic here
-        ...
-    
-    # Call dfs_traverse on the root node
-    dfs_traverse(route)
-    
-    # Return True or False based on the strategy detection
-    return result
-
-]
-</generated_code>
-
-Remember that each individual synthetic strategy should be self-contained with a unique function to check it. 
-Your goal is to extract patterns that can be implemented in rule-based code to classify thousands of routes into 50-100 distinct strategy groups. Focus only on features that cheminformatics tools can reliably detect without requiring chemical intuition. The functions must simply return True or False if the synthetic strategy is present in the route.
+<code>
+def example_function(parameter1, parameter2):
+    # Your modified code here
+    return True  # or False
+</code>
 """

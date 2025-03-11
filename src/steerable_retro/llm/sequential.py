@@ -12,9 +12,11 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from typing import Any, Dict, List, Optional
 import networkx as nx  # type: ignore
 import numpy as np
 import pandas as pd  # type: ignore
+
 import weave  # type: ignore
 from aizynthfinder.chem import FixedRetroReaction, RetroReaction  # type: ignore
 from aizynthfinder.reactiontree import ReactionTree  # type: ignore
@@ -25,15 +27,17 @@ from pydantic import BaseModel, model_validator  # type: ignore
 from weave.trace.context.call_context import get_current_call  # type: ignore
 from steerable_retro.logger import setup_logger
 from steer.utils.rxnimg import get_rxn_img
+from steerable_retro.utils import fuzzy_dict, check
 
 from .llm_router import router
 from .prompts import *
 from .llm_utils import (
     test_generated_code_and_capture,
     parse_generated_code,
-    parse_computational_analysis,
+    parse_extractable_strategy,
+    extract_imports,
+    extract_functions
 )
-from .self_iteration import self_iterate
 
 logger = setup_logger(__name__)
 weave.init('liac/starting_material_prompt')
@@ -47,6 +51,10 @@ class LM(BaseModel):
     suffix: str = ""
     prompt: Optional[str] = None  # Path to the prompt module
     project_name: str = ""
+    fg_dict: Dict[str, List[str]] = {}
+    threshold: float = 0.6
+    reaction_dict: Dict[str, List[str]] = {}
+    checker: Any = None
 
     async def run(self, tree: ReactionTree, query: str):
         """Get smiles and run LLM."""
@@ -67,6 +75,7 @@ class LM(BaseModel):
             response = await router.acompletion(
                 model=self.model,
                 temperature=0.1,
+                max_completion_tokens=12288,
                 messages=[
                     {
                         "role": "user",
@@ -130,14 +139,15 @@ class LM(BaseModel):
         test_case_pass: str,
         stdout: str,
         errors: str,
+        synthesis_route: dict,
         synthetic_strategy: str,
         rewriting_prompt: str,
-        rewriting_limit: int = 3
+        rewriting_limit: int = 2
     ) -> dict:
         """
         Attempts to improve the generated code until it passes
         the "test_route(route_data_dict)->True" or rewriting_limit is reached.
-
+        
         Returns a dict with:
         "passed": bool
         "attempts": int
@@ -148,23 +158,61 @@ class LM(BaseModel):
         final_code = ""
 
         current_code = code_and_description  # Start with the code snippet as "current_code"
+        
+        # Prepare dictionary keys information
+        fg_keys = "\n".join([f"- {key}" for key in self.fg_dict.keys()])
+        reaction_keys = "\n".join([f"- {key}" for key in self.reaction_dict.keys()])
+        dictionary_info = f"""
+        AVAILABLE Functional Groups:
+        {fg_keys}
+
+        AVAILABLE Reaction Classes:
+        {reaction_keys}
+
+        INSTRUCTIONS:
+        When generating code, use a call to the functions checker.check_fg(name, mol_smiles) and checker.check_reaction(name, rxn_smiles) to check if a molecule or reaction is of a certain type.
+        When the code is executed, it will have access to those functions and the dictionaries fg_dict and reaction_dict.
+
+        Here is the synthetic route JSON schema:
+        {importlib.import_module("steerable_retro.llm.prompts.json_schema").schema}
+        """
+
+        rdkit_docs = f"""
+        Here are some useful RDKit functions:
+        {importlib.import_module("steerable_retro.llm.prompts.rdkit_docs").docs}
+        Make use of them as required
+        """
 
         while rewriting_count < rewriting_limit and not passed:
             rewriting_count += 1
 
-            # Build the rewriting prompt
-            prepared_prompt = rewriting_prompt.format(
+            # Add dictionary keys information to the prompt
+            enhanced_prompt = rewriting_prompt
+            
+            prepared_prompt = enhanced_prompt.format(
                 CODE_AND_DESCRIPTION=current_code,
                 TEST_CASE=test_case_pass,
                 stdout=stdout,
                 ERRORS=errors,
                 SYNTHETIC_STRATEGY=synthetic_strategy
             )
-
-            # Call the rewriting LLM
+            
             response = await router.acompletion(
-                model=self.model,
+                model="claude-3-7-sonnet",
                 temperature=0.1,
+                max_completion_tokens=8192,
+                system=[
+                    {
+                        "type": "text",
+                        "text": rdkit_docs,
+                        "cache_control": {"type": "ephemeral"}
+                    },
+                    {
+                        "type": "text",
+                        "text": dictionary_info,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ],
                 messages=[
                     {
                         "role": "user",
@@ -174,21 +222,25 @@ class LM(BaseModel):
                     },
                 ],
             )
-            # Extract any <final_code> block
-            final_code_candidate = extract_final_code(llm_response)
+            response_text = response.choices[0].message.content
 
-            if not final_code_candidate.strip():
+            try:
+                code_candidate = parse_generated_code(response_text)[0].replace("python", "").replace("`", "")
+            except Exception as e:
+                print(f"Error parsing generated code: {e}")
+                continue
+
+            if not code_candidate.strip():
                 # No code found; break out
                 break
-
             # Test if new code passes
-            code_passed = run_code_and_test_return_bool(final_code_candidate)
-            if code_passed:
-                passed = True
-                final_code = final_code_candidate
+            passed, stdout, errors = test_generated_code_and_capture(synthesis_route, code_candidate, self.checker)
+
+            print(f"Passed: {passed}, STDOUT: {stdout}, Errors: {errors}")
+            if passed:
+                final_code = code_candidate
             else:
-                # If it fails, we feed the new code into the next iteration
-                current_code = final_code_candidate
+                current_code = code_candidate
 
         return {
             "passed": passed,
@@ -196,7 +248,7 @@ class LM(BaseModel):
             "final_code": final_code
         }
 
-    async def run_single_route(self, task, d):
+    async def run_single_route(self, d, task):
         """
         Runs the LLM on a single route and stores the raw LLM response and score.
         It then parses any code blocks and, for each, tests the candidate code.
@@ -205,53 +257,63 @@ class LM(BaseModel):
         lmdata["generated_codes"] along with whether it passed and some extra info.
         """
         # 1) Call the LLM as usual
-        result = await self.run(ReactionTree.from_dict(d), task.prompt)
-        
+        result = await self.run(ReactionTree.from_dict(d), f"")
+        output = {}
         # 2) Store the raw LLM response and score
-        d["lmdata"] = {
-            "query": task.prompt,
-            "response": result["response"],
-            "weave_url": result["url"],
-            "routescore": self._parse_score(result["response"])
-        }
-        
-        # 3) Parse code blocks from the LLM response
+        module = importlib.import_module("steerable_retro.llm.prompts.code_rewriting")
+        code_rewriting_prompt = module.code_rewriting_prompt
+
+        # with open("/home/dparm/reaction_utils/rxnutils/data/pa_routes/ref_routes_n1claude-3-7-sonnet_self_contained.json", "r") as f:
+        #     mock_result = json.load(f)[0]
+        # result = mock_result
+
         code_blocks = parse_generated_code(result["response"])
-        strategy = parse_computational_analysis(result["response"])
+        strategy = parse_extractable_strategy(result["response"])
         # Prepare a list to store all candidates (each code block’s final version).
-        d["lmdata"]["generated_codes"] = []
+        output = {
+                0: {
+                    "strategy": "",
+                    "code_blocks": [],
+                    "passed": [],
+                    "stdout": [],
+                    "errors": []
+                }
+            }
+        try:
+            imports_str = extract_imports(code_blocks[0])
+            functions = extract_functions(code_blocks[0])
+        except Exception as e:
+            return output
 
-        # Process each code block
-        for original_code in code_blocks:
-            current_code = original_code
+        for func_code in functions:
+            current_code = imports_str + "\n" + func_code[1]
+
             iterations = 0
+            passed, captured_stdout, captured_errors = test_generated_code_and_capture(d, current_code, self.checker)
 
-            # Test the initial candidate
-            passed, captured_stdout, captured_errors = test_generated_code_and_capture(d, current_code)
-            
-            # If the original code candidate does not pass, try to rewrite up to 3 times.
             if not passed:
                 # Attempt rewriting/improvement
                 rewriting_result = await self.iterate(
                     code_and_description=current_code,
-                    test_case_pass="The function test_route(route_data) must return True to be considered a pass.",
+                    test_case_pass="The function failed to return True",
                     stdout=captured_stdout,
                     errors=captured_errors,
+                    synthesis_route=d,
                     synthetic_strategy=strategy,
+                    rewriting_prompt=code_rewriting_prompt,
                     rewriting_limit=3
                 )
+                if rewriting_result["passed"]:
+                    passed = True
                 current_code = rewriting_result.get("final_code", current_code)
 
             # Save this candidate – whether it passed or not – along with details.
-            d["lmdata"]["generated_codes"].append({
-                "code": current_code,
-                "passed": passed,
-                "iterations": iterations,
-                # "stdout": captured_stdout,
-                # "errors": captured_errors
-            })
+            output[iterations]["code_blocks"].append(current_code)
+            output[iterations]["passed"].append(passed)
+            output[iterations]["stdout"].append(captured_stdout)
+            output[iterations]["errors"].append(captured_errors)
 
-        return d
+        return output
 
     async def run_single_task(self, task, data, nroutes=10):
         result = await asyncio.gather(
@@ -282,7 +344,7 @@ class LM(BaseModel):
         smiles = []
         for m in tree.graph.nodes():
             if isinstance(m, FixedRetroReaction):
-                rsmi = m.metadata["mapped_reaction_smiles"].split(">")
+                rsmi = m.metadata["rsmi"].split(">")
                 rvsmi = f"{rsmi[-1]}>>{rsmi[0]}"
                 smiles.append(rvsmi)
         return smiles
@@ -292,7 +354,7 @@ class LM(BaseModel):
         smiles = []
         for m in tree.graph.nodes():
             if isinstance(m, FixedRetroReaction):
-                rsmi = m.metadata["mapped_reaction_smiles"].split(">")
+                rsmi = m.metadata["rsmi"].split(">")
                 rvsmi = f"{rsmi[-1]}>>{rsmi[0]}"
                 # Get distance of node m from root
                 depth = nx.shortest_path_length(
@@ -306,65 +368,89 @@ class LM(BaseModel):
 
 async def process_file(file_path, lm):
     results = []
-    hash_str = file_path.split("_")[-1].replace(".json", "")
     query = ""
     async with aiofiles.open(file_path, "r") as f:
         contents = await f.read()
         data = json.loads(contents)
-        for d in data:
-            result = await lm.run(ReactionTree.from_dict(d), f"{query}")
-            results.append(result)
+    for d in data[:5]:
+        result = await lm.run_single_route(d, f"{query}")
+        formated_result = json.dumps(result, indent=4)
+        results.append(formated_result)
     return results
 
 
 async def main():
     model_aliases = [
-        "deepseek-v3",
+        "claude-3-7-sonnet",
         # "gpt-4o-2024-11-20",
         # "gpt-4o-2024-05-13",
-        # "gpt-4-0314",
+        # "gpt-4-0314", 
         # "gpt-4-1106-preview",
         # "gpt-4-0613-preview",
         # "gpt-4-turbo-2024-04-09",
     ]
+    fg_args = {
+        "file_path" : "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
+        "value_field" : "pattern",
+        "key_field" : "name",
+    }
+    
+    reaction_class_args = {
+        "file_path" : "/home/dparm/steerable_retro/data/patterns/smirks.json",
+        "value_field" : "smirks",
+        "key_field" : "name",
+    }
+
+
+    functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+    reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+    checker = check.Check(fg_dict=functional_groups, reaction_dict=reaction_classes)
+
     for model_name in model_aliases:
         lm = LM(
-            prompt="steer.llm.prompts.route_desc_sm_fgs",
+            prompt="steerable_retro.llm.prompts.strategy_extraction",
             model=model_name,
-            project_name="route_desc_sm_fgs",
+            project_name="strategy_extraction",
+            fg_dict=functional_groups,
+            reaction_dict=reaction_classes,
+            checker=checker
         )
-        synth_bench_dir = "../data/starting_material/fg_test"
-        output_dir = "../data/starting_material/route_fg"
-        print(f"Processing output in {output_dir}")
-
+        # synth_bench_dir = "../data/starting_material/fg_test"
+        # output_dir = "/home/dparm/reaction_utils/rxnutils/data/pa_routes"
+        # print(f"Processing output in {output_dir}")
         # Get list of JSON files in the synth_bench directory
-        json_files = [
-            os.path.join(synth_bench_dir, f)
-            for f in os.listdir(synth_bench_dir)
-            if f.endswith('ca06156bee8f14dcf0bd7e14f68eddcc.json')
-        ]
-
+        # json_files = [f
+        #     os.path.join(synth_bench_dir, f)
+        #     for f in os.listdir(synth_bench_dir)
+        #     if f.endswith('ca06156bee8f14dcf0bd7e14f68eddcc.json')
+        # ]
+        json_files = ["/home/dparm/reaction_utils/rxnutils/data/pa_routes/synthesis_viewer/ref_routes_n1.json"]
+        output_dir = "/home/dparm/reaction_utils/rxnutils/data/pa_routes"
         # Limit the number of concurrent tasks to prevent resource exhaustion
         semaphore = asyncio.Semaphore(20)  # Adjust the limit as needed
 
         async def sem_process(file_path):
             async with semaphore:
-                try:
-                    results = await process_file(file_path, lm)
-                    output_file = os.path.join(
-                        output_dir,
-                        os.path.basename(file_path).replace(
-                            ".json", f"{model_name}.json"
-                        ),
-                    )
-                    # Use asynchronous file I/O
-                    async with aiofiles.open(output_file, "w") as f:
-                        await f.write(json.dumps(results))
-                except Exception as e:
-                    print(f"Error processing file {file_path}: {e}")
+                # try:
+                results = await process_file(file_path, lm)
+                output_file = os.path.join(
+                    output_dir,
+                    os.path.basename(file_path).replace(
+                        ".json", f"{model_name}_code.json"
+                    ),
+                )
+                # Use asynchronous file I/O
+                async with aiofiles.open(output_file, "w") as f:
+                    await f.write(json.dumps(results))
+                # except Exception as e:
+                #     print(f"Error processing file {file_path}: {e}")
 
+        # Create a list of tasks
         tasks = [asyncio.create_task(sem_process(fp)) for fp in json_files]
+        
+        # Await all tasks
         await asyncio.gather(*tasks)
+
 
 
 if __name__ == "__main__":

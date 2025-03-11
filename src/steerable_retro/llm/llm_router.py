@@ -75,6 +75,14 @@ router = Router(
             },
         },
         {
+            "model_name": "claude-3-5-haiku",  # model alias
+            "litellm_params": {
+                "model": "claude-3-5-haiku-20241022",  # actual model name
+                "api_key": os.getenv("ANTHROPIC_API_KEY"),
+                # "rpm": 40,
+            },
+        },
+        {
             "model_name": "claude-3-7-sonnet",  # model alias
             "litellm_params": {
                 "model": "claude-3-7-sonnet-20250219",  # actual model name
@@ -90,6 +98,14 @@ router = Router(
                 # "rpm": 40,
             },
         },
+        # {
+        #     "model_name": "claude-3-5-haiku",  # model alias
+        #     "litellm_params": {
+        #         "model": "claude-3-5-sonnet-20241022",  # actual model name
+        #         "api_key": os.getenv("ANTHROPIC_API_KEY"),
+        #         # "rpm": 40,
+        #     },
+        # },
         {
             "model_name": "Llama-3.1-11B-vision",  # model alias
             "litellm_params": {
