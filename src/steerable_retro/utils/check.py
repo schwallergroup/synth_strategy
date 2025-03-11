@@ -1,9 +1,20 @@
 import rdkit.Chem as Chem
 from rdkit.Chem import AllChem
 class Check:
-    def __init__(self, fg_dict, reaction_dict):
+    def __init__(self, fg_dict, reaction_dict, ring_dict):
         self.fg_dict = fg_dict
         self.reaction_class_dict = reaction_dict
+        self.ring_dict = ring_dict
+
+    def check_ring(self, name, smi):
+        ring_smiles = self.ring_dict[name]
+        if ring_smiles == []:
+            print(f"No smiles found for {name}")
+            return False
+        for ring_smi in ring_smiles:
+            if Chem.MolFromSmiles(smi).HasSubstructMatch(Chem.MolFromSmiles(ring_smi)):
+                return True
+        return False
 
     def check_fg(self, fg, smi):
         fg_smarts_list = self.fg_dict[fg]

@@ -71,8 +71,8 @@ In your analysis, focus on these key aspects:
 
 1. Topology changes: Ring formations/openings, chain extensions, scaffold construction approaches
 2. Bond disconnection patterns: Key C-C, C-heteroatom bond formation events
-3. Fragment combination strategy: Convergent vs. linear, number of fragments merged
-4. Functional group handling: Protection/deprotection sequences, functional group interconversions
+3. Fragment combination strategy: Convergent vs. linear, number of fragments merged. Late stage ( second half of syntheis ) vs early stage
+4. Functional group handling: Protection/deprotection sequences
 5. Stereochemistry approach: When and how stereocenters are established
 6. Transformation sequence patterns: Order of operations (e.g., reduction before oxidation)
 
@@ -120,7 +120,7 @@ After your analysis, provide your output in the following format:
 
 4. Generated Code:
 <code>
-[Python functions corresponding to the RDKIT rules extracted from the synthetic routes. These functions should be able to process synthetic routes in the format of the provided JSON schema.
+[Python functions corresponding to the RDKIT rules extracted from the synthetic routes. These functions should be able to process synthetic routes in the format of the provided JSON schema.]
 There should be one function for each extracted strategy, which takes the synthetic route, traverses it using the dfs_traverse function, and returns True or False.
 
 Each function should:

@@ -45,7 +45,7 @@ Please perform a rigorous analysis of the code, following these steps:
    - If the code doesn't match the description or align with the synthetic strategy, suggest specific changes to address these issues.
    - For each proposed change, write out the current code snippet and the proposed modification side by side.
    - Explain the reasoning behind each proposed modification, considering both the technical and chemical aspects.
-   - Use checker.check_fg(name, mol_smiles) and checker.check_reaction(name, rxn_smiles) functions instead of making up SMARTs patterns.
+   - Use checker.check_fg(name, mol_smiles), checker.check_reaction(name, rxn_smiles) and checker.check_ring(name, mol_smiles) functions instead of making up SMARTs patterns.
    - For reaction types, always use check_reaction directly, unless it's a functional group interconversion.
    - For functional group interconversions, ensure that your code reliably checks that the FG is actually changed in the reaction.
    - Do not modify the function signature; it must always return a single boolean value.
@@ -63,7 +63,7 @@ Please perform a rigorous analysis of the code, following these steps:
    - Double-check that all chemical concepts are correctly implemented.
    - Avoid try-except blocks unless necessary for error handling.
    - Ensure the code makes chemical sense and is neither overly simplistic nor overly complicated.
-   - Do not try to capture every case; do not test for more than a couple of reaction types unless the strategy requires it.
+   - Do not try to capture every case; do not test for more than a couple of reaction types unless the strategy requires it (IE late stage functionalisation).
 
 After completing your analysis, provide the final version of the code in the following format:
 

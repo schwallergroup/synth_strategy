@@ -54,6 +54,7 @@ class LM(BaseModel):
     fg_dict: Dict[str, List[str]] = {}
     threshold: float = 0.6
     reaction_dict: Dict[str, List[str]] = {}
+    ring_dict: Dict[str, List[str]] = {}
     checker: Any = None
 
     async def run(self, tree: ReactionTree, query: str):
@@ -162,6 +163,7 @@ class LM(BaseModel):
         # Prepare dictionary keys information
         fg_keys = "\n".join([f"- {key}" for key in self.fg_dict.keys()])
         reaction_keys = "\n".join([f"- {key}" for key in self.reaction_dict.keys()])
+        ring_keys = "\n".join([f"- {key}" for key in self.ring_dict.keys()])
         dictionary_info = f"""
         AVAILABLE Functional Groups:
         {fg_keys}
@@ -169,8 +171,11 @@ class LM(BaseModel):
         AVAILABLE Reaction Classes:
         {reaction_keys}
 
+        AVAILABLE Chemical Rings:
+        {ring_keys}
+
         INSTRUCTIONS:
-        When generating code, use a call to the functions checker.check_fg(name, mol_smiles) and checker.check_reaction(name, rxn_smiles) to check if a molecule or reaction is of a certain type.
+        When generating code, use a call to the functions checker.check_fg(name, mol_smiles), checker.check_reaction(name, rxn_smiles) and checker.check_ring(name, mol_smiles)to check if a molecule or reaction is of a certain type or contains a certain ring structure.
         When the code is executed, it will have access to those functions and the dictionaries fg_dict and reaction_dict.
 
         Here is the synthetic route JSON schema:
@@ -180,7 +185,7 @@ class LM(BaseModel):
         rdkit_docs = f"""
         Here are some useful RDKit functions:
         {importlib.import_module("steerable_retro.llm.prompts.rdkit_docs").docs}
-        Make use of them as required
+        Make use of them as required.
         """
 
         while rewriting_count < rewriting_limit and not passed:
@@ -372,7 +377,7 @@ async def process_file(file_path, lm):
     async with aiofiles.open(file_path, "r") as f:
         contents = await f.read()
         data = json.loads(contents)
-    for d in data[:5]:
+    for d in data[5:25]:
         result = await lm.run_single_route(d, f"{query}")
         formated_result = json.dumps(result, indent=4)
         results.append(formated_result)
@@ -382,13 +387,8 @@ async def process_file(file_path, lm):
 async def main():
     model_aliases = [
         "claude-3-7-sonnet",
-        # "gpt-4o-2024-11-20",
-        # "gpt-4o-2024-05-13",
-        # "gpt-4-0314", 
-        # "gpt-4-1106-preview",
-        # "gpt-4-0613-preview",
-        # "gpt-4-turbo-2024-04-09",
     ]
+
     fg_args = {
         "file_path" : "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
         "value_field" : "pattern",
@@ -401,10 +401,20 @@ async def main():
         "key_field" : "name",
     }
 
+    ring_smiles_args = {
+        "file_path" : "/home/dparm/steerable_retro/data/patterns/chemical_rings_smiles.json",
+        "value_field" : "smiles",
+        "key_field" : "name",
+    }
 
     functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
     reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-    checker = check.Check(fg_dict=functional_groups, reaction_dict=reaction_classes)
+    ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+    checker = check.Check(
+        fg_dict=functional_groups, 
+        reaction_dict=reaction_classes, 
+        ring_dict=ring_smiles
+    )
 
     for model_name in model_aliases:
         lm = LM(
@@ -413,6 +423,7 @@ async def main():
             project_name="strategy_extraction",
             fg_dict=functional_groups,
             reaction_dict=reaction_classes,
+            ring_smiles=ring_smiles,
             checker=checker
         )
         # synth_bench_dir = "../data/starting_material/fg_test"
@@ -436,7 +447,7 @@ async def main():
                 output_file = os.path.join(
                     output_dir,
                     os.path.basename(file_path).replace(
-                        ".json", f"{model_name}_code.json"
+                        ".json", f"{model_name}_code_5:25.json"
                     ),
                 )
                 # Use asynchronous file I/O
