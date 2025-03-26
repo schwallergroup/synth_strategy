@@ -122,12 +122,14 @@ After your analysis, provide your output in the following format:
 <code>
 [Python functions corresponding to the RDKIT rules extracted from the synthetic routes. These functions should be able to process synthetic routes in the format of the provided JSON schema.]
 There should be one function for each extracted strategy, which takes the synthetic route, traverses it using the dfs_traverse function, and returns True or False.
+Note that low depth counts in DFS traversal correspond to late in the synthesis, high depth counts correspond to early in the synthesis. Remember that when traversing the tree, you are going in the retrosynthetic direction.
 
 Each function should:
 1. Include the dfs_traverse call within itself
 2. Be self-contained and output a boolean
 3. Have a short comment describing which aspect of synthetic strategy it's detecting
-4. Include print statements for debugging if needed
+4. Include print statements for future debugging
+5. Include all necessary imports
 
 Example structure:
 

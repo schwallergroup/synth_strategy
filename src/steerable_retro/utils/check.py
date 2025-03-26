@@ -15,6 +15,51 @@ class Check:
             if Chem.MolFromSmiles(smi).HasSubstructMatch(Chem.MolFromSmiles(ring_smi)):
                 return True
         return False
+    
+    def get_ring_smiles(self, name):
+        ring_smiles = self.ring_dict[name]
+        if ring_smiles == []:
+            print(f"No smiles found for {name}")
+            return []
+        return ring_smiles[0]
+    
+    def get_ring_atom_indices(self, ring_name, query_mol_smiles):
+        """
+        Find the atom indices in the query molecule where a specific ring pattern matches.
+        
+        Parameters:
+        ring_name (str): The name of the ring to search for
+        query_mol_smiles (str): SMILES string of the molecule to search in
+        
+        Returns:
+        list: List of lists containing atom indices for each ring match, or empty list if no matches
+        """
+        ring_smiles_list = self.ring_dict[ring_name]
+        if not ring_smiles_list:
+            print(f"No SMILES patterns found for {ring_name}")
+            return []
+        
+        # Create molecule from SMILES
+        query_mol = Chem.MolFromSmiles(query_mol_smiles)
+        if query_mol is None:
+            print(f"Could not create molecule from SMILES: {query_mol_smiles}")
+            return []
+        
+        all_matches = []
+        for ring_smi in ring_smiles_list:
+            # Create query molecule from ring SMILES
+            ring_query = Chem.MolFromSmiles(ring_smi)
+            if ring_query is None:
+                print(f"Could not create query from SMILES: {ring_smi}")
+                continue
+            
+            # Find all matches
+            matches = query_mol.GetSubstructMatches(ring_query)
+            if matches:
+                all_matches.extend(list(matches))
+        
+        return all_matches
+
 
     def check_fg(self, fg, smi):
         fg_smarts_list = self.fg_dict[fg]

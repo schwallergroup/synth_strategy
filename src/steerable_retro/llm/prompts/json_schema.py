@@ -17,7 +17,7 @@ schema = {
         "type": "boolean"
       },
       "metadata": {
-        "description": "Optional metadata for reaction nodes. Contains extra reaction details such as SMILES, reaction strings, IDs, hashes, etc.",
+        "description": "Optional metadata for reaction nodes. Contains extra reaction details such as SMILES, reaction strings, IDs, hashes, etc. Note that rsmi contains atom-mapped reacition SMILES.",
         "type": "object",
         "properties": {
           "smiles": { "type": "string" },
