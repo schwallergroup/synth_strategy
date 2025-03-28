@@ -484,7 +484,7 @@ class LM(BaseModel):
                 smiles.append((depth, rvsmi))
         return smiles
 
-async def process_file(file_path, lm, n_samples=100, max_concurrent=5):
+async def process_file(file_path, lm, n_samples=200, max_concurrent=5):
     """
     Process a file by randomly sampling n_samples routes and processing them concurrently.
     Reduced max_concurrent to avoid overloading rate limits.
@@ -510,7 +510,7 @@ async def process_file(file_path, lm, n_samples=100, max_concurrent=5):
     sample_size = min(n_samples, total_routes)
     if sample_size < total_routes:
         # Instead of random sampling, process in smaller batches with pauses between them
-        sampled_indices = [i for i in range(100, 100 + sample_size)]
+        sampled_indices = [i for i in range(400, 400 + sample_size)]
         sampled_data = [data[i] for i in sampled_indices]
     else:
         sampled_data = data
@@ -570,7 +570,7 @@ async def main():
     model_aliases = [
         "claude-3-7-sonnet",
     ]
-    n_samples = 100  # Reduced from 20 to stay within limits
+    n_samples = 200  # Reduced from 20 to stay within limits
     max_concurrent = 10  # Reduced from 20 to avoid rate limits
     
     fg_args = {
