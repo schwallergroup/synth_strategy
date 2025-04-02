@@ -484,7 +484,7 @@ class LM(BaseModel):
                 smiles.append((depth, rvsmi))
         return smiles
 
-async def process_file(file_path, lm, n_samples=200, max_concurrent=5):
+async def process_file(file_path, lm, n_samples=125, max_concurrent=5, start_idx=0):
     """
     Process a file by randomly sampling n_samples routes and processing them concurrently.
     Reduced max_concurrent to avoid overloading rate limits.
@@ -510,7 +510,7 @@ async def process_file(file_path, lm, n_samples=200, max_concurrent=5):
     sample_size = min(n_samples, total_routes)
     if sample_size < total_routes:
         # Instead of random sampling, process in smaller batches with pauses between them
-        sampled_indices = [i for i in range(400, 400 + sample_size)]
+        sampled_indices = [i for i in range(start_idx, start_idx + sample_size)]
         sampled_data = [data[i] for i in sampled_indices]
     else:
         sampled_data = data
@@ -570,7 +570,8 @@ async def main():
     model_aliases = [
         "claude-3-7-sonnet",
     ]
-    n_samples = 200  # Reduced from 20 to stay within limits
+    n_samples = 125  # Reduced from 20 to stay within limits
+    start_idx = 75
     max_concurrent = 10  # Reduced from 20 to avoid rate limits
     
     fg_args = {
@@ -614,13 +615,13 @@ async def main():
         
         try:
             # Process file with rate limiting
-            results = await process_file(file_path, lm, n_samples, max_concurrent)
+            results = await process_file(file_path, lm, n_samples, max_concurrent, start_idx)
             
             # Create output filename
             output_file = os.path.join(
                 output_dir,
                 os.path.basename(file_path).replace(
-                    ".json", f"_{model_name}3-7-extract-3-7-cod-100-200.json"
+                    ".json", f"_{model_name}3-7-extract-3-7-cod-{start_idx}-{start_idx + n_samples}.json"
                 ),
             )
             
