@@ -1,18 +1,28 @@
-from steerable_retro.lm_code import code_1, code_2  # Adjust these imports as needed
+"""API for Steerable Retro - create descriptors by running all funcitons."""
+
+from steerable_retro.lm_code import (  # Adjust these imports as needed
+    code_1,
+    code_2,
+)
 from steerable_retro.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+
 def run_sequentially(*functions):
+    """Run all descriptor functions sequentially."""
     results = {}
     for func in functions:
         if callable(func):
-            result = func()  # Call the function, assuming no arguments; adjust if necessary
+            result = (
+                func()
+            )  # Call the function, assuming no arguments; adjust if necessary
             results[func.name] = result
             logger.info(func.description)
         else:
             print(f"{func} is not a callable function.")
     return results
+
 
 if __name__ == "__main__":
     results = run_sequentially(code_1, code_2)
