@@ -46,7 +46,7 @@ if __name__ == "__main__":
     total_functions = len(funcs)
     successful_functions = sum(1 for result in results.values() if result is not None)
     error_functions = total_functions - successful_functions
-    positive_balance = sum(results.values())
+    positive_balance = sum(i for i in results.values() if i is not None)
 
     logger.info("Overall statistics:")
     logger.info(f"Total functions: {total_functions}")
