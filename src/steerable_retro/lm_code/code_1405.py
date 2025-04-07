@@ -67,9 +67,9 @@ def main(route):
                                                 product_mol = Chem.MolFromSmiles(product)
                                                 for atom in product_mol.GetAtoms():
                                                     if atom.GetAtomMapNum() > 0:
-                                                        atom_maps[
-                                                            atom.GetIdx()
-                                                        ] = atom.GetAtomMapNum()
+                                                        atom_maps[atom.GetIdx()] = (
+                                                            atom.GetAtomMapNum()
+                                                        )
                                     except Exception as e:
                                         print(f"Error processing reaction SMILES: {e}")
 

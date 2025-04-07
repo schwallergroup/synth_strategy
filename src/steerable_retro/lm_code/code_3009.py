@@ -23,18 +23,20 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from steerable_retro.utils import check, fuzzy_dict
 from steerable_retro.utils.check import Check
 
+root_data = "/home/andres/Documents/steerable_retro/data"
+
 fg_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
+    "file_path": f"{root_data}/patterns/functional_groups.json",
     "value_field": "pattern",
     "key_field": "name",
 }
 reaction_class_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/smirks.json",
+    "file_path": f"{root_data}/patterns/smirks.json",
     "value_field": "smirks",
     "key_field": "name",
 }
 ring_smiles_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/chemical_rings_smiles.json",
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
     "value_field": "smiles",
     "key_field": "name",
 }
@@ -157,8 +159,8 @@ def main(route):
                 # 3. Either a known coupling reaction OR product complexity significantly higher than individual reactants
                 if (
                     len(substantial_fragments) >= 2
-                    and depth <= 3
-                    and (  # Late-stage = depth 0, 1, 2, or 3
+                    and depth <= 3  # Late-stage = depth 0, 1, 2, or 3
+                    and (
                         is_coupling_or_joining_reaction(rsmi)
                         or (product_complexity > 0.8 * sum(reactant_complexities))
                     )

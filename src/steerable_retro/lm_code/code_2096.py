@@ -23,18 +23,20 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from steerable_retro.utils import check, fuzzy_dict
 from steerable_retro.utils.check import Check
 
+root_data = "/home/andres/Documents/steerable_retro/data"
+
 fg_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
+    "file_path": f"{root_data}/patterns/functional_groups.json",
     "value_field": "pattern",
     "key_field": "name",
 }
 reaction_class_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/smirks.json",
+    "file_path": f"{root_data}/patterns/smirks.json",
     "value_field": "smirks",
     "key_field": "name",
 }
 ring_smiles_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/chemical_rings_smiles.json",
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
     "value_field": "smiles",
     "key_field": "name",
 }
@@ -69,10 +71,9 @@ def main(route):
             try:
                 # Check if this is a leaf reaction node (no further children) or has FINAL in ID
                 is_final_step = (
-                    depth == 0
-                    or "FINAL"  # First reaction in traversal
-                    in node.get("metadata", {}).get("ID", "")
-                    or all(  # ID contains FINAL
+                    depth == 0  # First reaction in traversal
+                    or "FINAL" in node.get("metadata", {}).get("ID", "")  # ID contains FINAL
+                    or all(
                         child.get("in_stock", False)
                         for child in node.get("children", [])
                         if child["type"] == "mol"

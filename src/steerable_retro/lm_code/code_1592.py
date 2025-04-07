@@ -23,18 +23,20 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from steerable_retro.utils import check, fuzzy_dict
 from steerable_retro.utils.check import Check
 
+root_data = "/home/andres/Documents/steerable_retro/data"
+
 fg_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
+    "file_path": f"{root_data}/patterns/functional_groups.json",
     "value_field": "pattern",
     "key_field": "name",
 }
 reaction_class_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/smirks.json",
+    "file_path": f"{root_data}/patterns/smirks.json",
     "value_field": "smirks",
     "key_field": "name",
 }
 ring_smiles_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/chemical_rings_smiles.json",
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
     "value_field": "smiles",
     "key_field": "name",
 }
@@ -217,17 +219,15 @@ def main(route):
         found_ring_formation
         and found_nitrile_to_acid
         and found_acid_to_ester
-        and (found_borylation or found_suzuki_coupling)
-        and found_n_alkylation  # Allow either borylation or Suzuki
+        and (found_borylation or found_suzuki_coupling)  # Allow either borylation or Suzuki
+        and found_n_alkylation
     )
 
     # Check relative ordering with some flexibility
     correct_ordering = (
-        (ring_formation_depth > n_alkylation_depth)
-        and (nitrile_to_acid_depth > n_alkylation_depth)  # Ring formation before N-alkylation
-        and (  # Nitrile to acid before N-alkylation
-            acid_to_ester_depth > n_alkylation_depth
-        )  # Acid to ester before N-alkylation
+        (ring_formation_depth > n_alkylation_depth)  # Ring formation before N-alkylation
+        and (nitrile_to_acid_depth > n_alkylation_depth)  # Nitrile to acid before N-alkylation
+        and (acid_to_ester_depth > n_alkylation_depth)  # Acid to ester before N-alkylation
     )
 
     print(f"Strategy detected: {correct_strategy and correct_ordering}")

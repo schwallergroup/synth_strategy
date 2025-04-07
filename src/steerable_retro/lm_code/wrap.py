@@ -8,5 +8,5 @@ class LMFunction(BaseModel):
     description: str = ""
     func: Callable | None = None
 
-    def __call__(self, *args, **kwargs):
-        return self.func(*args, **kwargs)
+    def __call__(self, route, *args, **kwargs):
+        return self.func(route, *args, **kwargs)

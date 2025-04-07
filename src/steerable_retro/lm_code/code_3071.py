@@ -23,18 +23,20 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from steerable_retro.utils import check, fuzzy_dict
 from steerable_retro.utils.check import Check
 
+root_data = "/home/andres/Documents/steerable_retro/data"
+
 fg_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
+    "file_path": f"{root_data}/patterns/functional_groups.json",
     "value_field": "pattern",
     "key_field": "name",
 }
 reaction_class_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/smirks.json",
+    "file_path": f"{root_data}/patterns/smirks.json",
     "value_field": "smirks",
     "key_field": "name",
 }
 ring_smiles_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/chemical_rings_smiles.json",
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
     "value_field": "smiles",
     "key_field": "name",
 }
@@ -94,9 +96,9 @@ def main(route):
                     # Check for common formylating agents in reactants
                     has_formylating_agent = any(
                         checker.check_fg("Formaldehyde", r)
-                        or "CN(C)C=O" in r
-                        or "OC=O" in r  # DMF
-                        or "C(=O)Cl" in r  # Formic acid  # Formyl chloride
+                        or "CN(C)C=O" in r  # DMF
+                        or "OC=O" in r  # Formic acid
+                        or "C(=O)Cl" in r  # Formyl chloride
                         for r in reactants
                     )
 

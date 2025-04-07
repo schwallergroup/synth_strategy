@@ -23,18 +23,20 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from steerable_retro.utils import check, fuzzy_dict
 from steerable_retro.utils.check import Check
 
+root_data = "/home/andres/Documents/steerable_retro/data"
+
 fg_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
+    "file_path": f"{root_data}/patterns/functional_groups.json",
     "value_field": "pattern",
     "key_field": "name",
 }
 reaction_class_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/smirks.json",
+    "file_path": f"{root_data}/patterns/smirks.json",
     "value_field": "smirks",
     "key_field": "name",
 }
 ring_smiles_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/chemical_rings_smiles.json",
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
     "value_field": "smiles",
     "key_field": "name",
 }
@@ -188,10 +190,12 @@ def main(route):
     # The combined strategy requires most of these elements
     # We've made the requirements more flexible
     result = (
-        ring_formation_found
-        and (nitrile_reduction_found or formylation_found)  # Ring formation is essential
-        and (wittig_found or late_stage_wittig)  # Either nitrile reduction or formylation
-        and halogen_retention  # Wittig reaction (preferably late-stage)
+        ring_formation_found  # Ring formation is essential
+        and (
+            nitrile_reduction_found or formylation_found
+        )  # Either nitrile reduction or formylation
+        and (wittig_found or late_stage_wittig)  # Wittig reaction (preferably late-stage)
+        and halogen_retention
     )  # Halogen retention throughout
 
     print(

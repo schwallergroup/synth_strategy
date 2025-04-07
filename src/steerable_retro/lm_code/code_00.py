@@ -20,4 +20,6 @@ from rdkit.Chem import (
 )
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
+# type: ignore
+
 # Functions from ref_routes_n1_claude-3-7-sonnet3-7-extract-3-7-cod-200-600.json, key: 599

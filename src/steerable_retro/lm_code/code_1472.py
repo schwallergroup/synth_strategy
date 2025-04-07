@@ -40,9 +40,11 @@ def main(route):
 
                 # Check for tosylate in reactants and ether in product
                 tosylate_in_reactants = any(
-                    Chem.MolFromSmiles(r).HasSubstructMatch(tosylate_pattern)
-                    if Chem.MolFromSmiles(r)
-                    else False
+                    (
+                        Chem.MolFromSmiles(r).HasSubstructMatch(tosylate_pattern)
+                        if Chem.MolFromSmiles(r)
+                        else False
+                    )
                     for r in reactants
                 )
                 phenol_in_reactants = any("[OH]c" in r for r in reactants)

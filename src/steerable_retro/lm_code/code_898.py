@@ -60,9 +60,9 @@ def main(route):
     # 3. At least 3 reaction steps
 
     is_linear = (
-        len(reaction_depths) >= 3
-        and max_children_per_node <= 2  # At least 3 reaction steps
-        and len(set(reaction_depths)) >= 3  # Limited branching  # Reactions at multiple depths
+        len(reaction_depths) >= 3  # At least 3 reaction steps
+        and max_children_per_node <= 2  # Limited branching
+        and len(set(reaction_depths)) >= 3  # Reactions at multiple depths
     )
 
     print(f"Strategy detection results:")

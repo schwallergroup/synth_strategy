@@ -58,9 +58,7 @@ def main(route):
                         reaction_type = (
                             "benzyl_protection"
                             if has_benzyl
-                            else "mesylation"
-                            if has_mesylate
-                            else "alkylation"
+                            else "mesylation" if has_mesylate else "alkylation"
                         )
                         phenol_reactions.append((depth, reaction_type))
                         print(f"Found phenol {reaction_type} at depth {depth}")

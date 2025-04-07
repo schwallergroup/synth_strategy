@@ -23,18 +23,20 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from steerable_retro.utils import check, fuzzy_dict
 from steerable_retro.utils.check import Check
 
+root_data = "/home/andres/Documents/steerable_retro/data"
+
 fg_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
+    "file_path": f"{root_data}/patterns/functional_groups.json",
     "value_field": "pattern",
     "key_field": "name",
 }
 reaction_class_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/smirks.json",
+    "file_path": f"{root_data}/patterns/smirks.json",
     "value_field": "smirks",
     "key_field": "name",
 }
 ring_smiles_args = {
-    "file_path": "/home/dparm/steerable_retro/data/patterns/chemical_rings_smiles.json",
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
     "value_field": "smiles",
     "key_field": "name",
 }
@@ -138,8 +140,8 @@ def main(route):
                             or checker.check_fg("Tosylate", reactant)
                             or checker.check_fg("Mesylate", reactant)
                             or checker.check_fg("Triflate", reactant)
-                            or checker.check_fg("Aldehyde", reactant)
-                            or checker.check_fg("Ketone", reactant)  # For reductive amination
+                            or checker.check_fg("Aldehyde", reactant)  # For reductive amination
+                            or checker.check_fg("Ketone", reactant)
                         ):  # For reductive amination
                             reactants_have_alkylating_agent = True
                             break
