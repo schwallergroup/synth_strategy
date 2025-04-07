@@ -587,11 +587,9 @@ async def process_file(
     else:
         sampled_data = data
         sampled_indices = list(range(len(data)))
-
-    print(
-        f"Processing {len(sampled_data)} routes from {total_routes} total routes"
-    )
-
+    
+    print(f"Processing {len(sampled_data)} routes from {total_routes} total routes, starting at index {start_idx}")
+    
     # Create a semaphore to limit concurrent processing
     semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -612,7 +610,7 @@ async def process_file(
                     query,
                     idx,
                     max_retries=10,
-                    initial_delay=2,
+                    initial_delay=60
                 )
             except Exception as e:
                 print(
@@ -621,7 +619,7 @@ async def process_file(
                 return None
 
     # Process in smaller batches to avoid rate limits
-    batch_size = 5  # Smaller batch size
+    batch_size = 8  # Smaller batch size
     all_results = []
 
     for batch_start in range(0, len(sampled_data), batch_size):
@@ -644,7 +642,7 @@ async def process_file(
 
         # Add a pause between batches to avoid hitting rate limits
         if batch_end < len(sampled_data):
-            pause_time = 15  # 15 seconds between batches
+            pause_time = 30  # 15 seconds between batches
             print(f"Pausing for {pause_time}s before next batch")
             await asyncio.sleep(pause_time)
 
@@ -655,10 +653,10 @@ async def main():
     model_aliases = [
         "claude-3-7-sonnet",
     ]
-    n_samples = 125  # Reduced from 20 to stay within limits
-    start_idx = 75
-    max_concurrent = 10  # Reduced from 20 to avoid rate limits
-
+    n_samples = 750  # Reduced from 20 to stay within limits
+    start_idx = 1500
+    max_concurrent = 8  # Reduced from 20 to avoid rate limits
+    
     fg_args = {
         "file_path": "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
         "value_field": "pattern",
@@ -695,7 +693,7 @@ async def main():
         )
 
         # Single file processing
-        file_path = "/home/dparm/reaction_utils/rxnutils/data/pa_routes/synthesis_viewer/ref_routes_n1.json"
+        file_path = "/home/dparm/steerable_retro/data/routes/syntrees/train_set.json"
         output_dir = "/home/dparm/reaction_utils/rxnutils/data/pa_routes"
 
         try:
