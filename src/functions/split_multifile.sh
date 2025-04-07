@@ -47,12 +47,12 @@ sed -i '/^from\|^import/d' temp_functions.py
 
 rm -rf raw_functions
 mkdir -p raw_functions/
-csplit -f "raw_functions/f_" temp_functions.py "/^def /" "{*}" &> _logs.txt
+csplit -f "raw_functions/code_" temp_functions.py "/^def /" "{*}" &> _logs.txt
 
 # For each file in functions, create a new file with header and raw_functions/f_i
 
 mkdir -p py_functions/
-for file in raw_functions/f_*; do
+for file in raw_functions/code_*; do
     filename=$(basename "$file")
     new_file="py_functions/$filename.py"
     # Change name of function to `main`
@@ -70,4 +70,6 @@ done
 isort --profile black py_functions/.
 black py_functions/.
 
-rm -rf raw_functions/ _header* temp_functions.py _logs.txt
+cp py_functions/* ../steerable_retro/lm_code/.
+
+rm -rf py_functions/ raw_functions/ _header* temp_functions.py _logs.txt

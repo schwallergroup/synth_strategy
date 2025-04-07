@@ -1,0 +1,109 @@
+#!/bin/python
+
+"""LM-defined function for strategy description."""
+
+import copy
+import re
+from collections import deque
+
+import rdkit
+import rdkit.Chem as Chem
+from rdkit import Chem
+from rdkit.Chem import (
+    AllChem,
+    Descriptors,
+    Lipinski,
+    rdChemReactions,
+    rdFMCS,
+    rdMolDescriptors,
+    rdmolops,
+)
+from rdkit.Chem.Scaffolds import MurckoScaffold
+
+from steerable_retro.utils import check, fuzzy_dict
+from steerable_retro.utils.check import Check
+
+fg_args = {
+    "file_path": "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": "/home/dparm/steerable_retro/data/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": "/home/dparm/steerable_retro/data/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
+
+
+def main(route):
+    """
+    This function detects if Suzuki coupling (aryl-aryl bond formation) is used in the synthesis.
+    """
+    suzuki_coupling_detected = False
+
+    def dfs_traverse(node):
+        nonlocal suzuki_coupling_detected
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+
+            # Check for any Suzuki coupling reaction type
+            suzuki_reaction_types = [
+                "Suzuki coupling with boronic acids",
+                "Suzuki coupling with boronic acids OTf",
+                "Suzuki coupling with sulfonic esters",
+                "Suzuki coupling with boronic esters OTf",
+                "Suzuki coupling with boronic esters",
+                "Suzuki",
+            ]
+
+            # First check if any of the known Suzuki reaction types match
+            for reaction_type in suzuki_reaction_types:
+                if checker.check_reaction(reaction_type, rsmi):
+                    print(f"{reaction_type} detected in reaction: {rsmi}")
+                    suzuki_coupling_detected = True
+                    break
+
+            # If no match found by name, check for characteristic Suzuki coupling pattern
+            if not suzuki_coupling_detected:
+                try:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
+
+                    # Check for boronic acid/ester in reactants
+                    has_boronic = any(
+                        checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
+                        for r in reactants
+                    )
+
+                    # Check for aromatic halide in reactants
+                    has_aryl_halide = any(checker.check_fg("Aromatic halide", r) for r in reactants)
+
+                    # Check for triflate in reactants (alternative leaving group)
+                    has_triflate = any(checker.check_fg("Triflate", r) for r in reactants)
+
+                    # If we have the characteristic reactants for Suzuki coupling
+                    if has_boronic and (has_aryl_halide or has_triflate):
+                        print(f"Suzuki coupling pattern detected in reaction: {rsmi}")
+                        suzuki_coupling_detected = True
+                except Exception as e:
+                    print(f"Error analyzing reaction: {e}")
+
+        # Continue traversing the synthesis route
+        for child in node.get("children", []):
+            dfs_traverse(child)
+
+    dfs_traverse(route)
+    print(f"Suzuki coupling strategy detected: {suzuki_coupling_detected}")
+    return suzuki_coupling_detected

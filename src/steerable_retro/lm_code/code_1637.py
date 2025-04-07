@@ -1,0 +1,105 @@
+#!/bin/python
+
+"""LM-defined function for strategy description."""
+
+import copy
+import re
+from collections import deque
+
+import rdkit
+import rdkit.Chem as Chem
+from rdkit import Chem
+from rdkit.Chem import (
+    AllChem,
+    Descriptors,
+    Lipinski,
+    rdChemReactions,
+    rdFMCS,
+    rdMolDescriptors,
+    rdmolops,
+)
+from rdkit.Chem.Scaffolds import MurckoScaffold
+
+from steerable_retro.utils import check, fuzzy_dict
+from steerable_retro.utils.check import Check
+
+fg_args = {
+    "file_path": "/home/dparm/steerable_retro/data/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": "/home/dparm/steerable_retro/data/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": "/home/dparm/steerable_retro/data/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
+
+
+def main(route):
+    """
+    Detects if the final step involves reduction of a nitro group to an amine.
+    """
+    final_step_has_nitro_reduction = False
+
+    def dfs_traverse(node, depth=0):
+        nonlocal final_step_has_nitro_reduction
+
+        # If we already found a nitro reduction in the final step, no need to continue
+        if final_step_has_nitro_reduction:
+            return
+
+        # Check if this is a reaction node
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
+
+            # Check if this is the final step (depth 0 in retrosynthetic analysis)
+            if depth == 0:
+                print(f"Examining final step reaction: {rsmi}")
+
+                # Check if this is a nitro reduction reaction
+                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                    print(f"Detected nitro reduction reaction in final step: {rsmi}")
+                    final_step_has_nitro_reduction = True
+                    return
+
+                # Fallback: Check functional groups manually
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
+
+                # Check if any reactant has a nitro group
+                has_nitro_reactant = any(
+                    checker.check_fg("Nitro group", reactant) for reactant in reactants
+                )
+
+                # Check if product has a primary amine
+                has_primary_amine_product = checker.check_fg("Primary amine", product)
+
+                if has_nitro_reactant and has_primary_amine_product:
+                    print(f"Detected nitro group in reactant and primary amine in product: {rsmi}")
+                    final_step_has_nitro_reduction = True
+                    return
+
+        # Continue DFS traversal
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
+
+    # Start traversal from the target molecule
+    if route["type"] == "mol":
+        for child in route.get("children", []):
+            dfs_traverse(child, 0)
+    else:
+        dfs_traverse(route, 0)
+
+    return final_step_has_nitro_reduction

@@ -1,0 +1,68 @@
+#!/bin/python
+
+"""LM-defined function for strategy description."""
+
+import copy
+import re
+from collections import deque
+
+import rdkit
+import rdkit.Chem as Chem
+from rdkit import Chem
+from rdkit.Chem import (
+    AllChem,
+    Descriptors,
+    Lipinski,
+    rdChemReactions,
+    rdFMCS,
+    rdMolDescriptors,
+    rdmolops,
+)
+from rdkit.Chem.Scaffolds import MurckoScaffold
+
+
+def main(route):
+    """
+    Detects if the synthesis involves formation of a sulfonamide (S-N bond).
+    """
+    found_sulfonamide = False
+
+    def dfs_traverse(node):
+        nonlocal found_sulfonamide
+
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                product = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+
+                # Check if product contains sulfonamide
+                sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[O])(=[O])[#7]")
+                product_mol = Chem.MolFromSmiles(product)
+
+                if product_mol and product_mol.HasSubstructMatch(sulfonamide_pattern):
+                    # Check if reactants include sulfonyl chloride
+                    sulfonyl_chloride_pattern = Chem.MolFromSmarts("[#16](=[O])(=[O])[Cl]")
+                    amine_pattern = Chem.MolFromSmarts("[NH,NH2]")
+
+                    has_sulfonyl_chloride = False
+                    has_amine = False
+
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if reactant_mol.HasSubstructMatch(sulfonyl_chloride_pattern):
+                                has_sulfonyl_chloride = True
+                            if reactant_mol.HasSubstructMatch(amine_pattern):
+                                has_amine = True
+
+                    if has_sulfonyl_chloride and has_amine:
+                        print("Found sulfonamide formation")
+                        found_sulfonamide = True
+
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child)
+
+    dfs_traverse(route)
+    return found_sulfonamide
