@@ -13,9 +13,7 @@ def run_sequentially(route, *functions):
     for func in functions:
         if callable(func):
             try:
-                result = (
-                    func(route)
-                )  # Call the function, assuming no arguments; adjust if necessary
+                result = func(route)*1
                 results[func.name] = result
                 logger.debug(func.description)
             except:
@@ -43,3 +41,16 @@ if __name__ == "__main__":
     logger.info(results.items())
     for func_name, result in results.items():
         logger.info(f"{func_name}: {result}")
+
+    # Calculate overall statistics
+    total_functions = len(funcs)
+    successful_functions = sum(1 for result in results.values() if result is not None)
+    error_functions = total_functions - successful_functions
+    positive_balance = sum(results.values())
+
+    logger.info("Overall statistics:")
+    logger.info(f"Total functions: {total_functions}")
+    logger.info(f"Successful functions: {successful_functions}")
+    logger.info(f"Error functions: {error_functions}")
+    logger.info(f"Positive balance: {positive_balance}")
+
