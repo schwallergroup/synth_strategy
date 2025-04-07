@@ -59,7 +59,7 @@ router = Router(
             },
         },
         {
-           "model_name": "deepseek-v3",  # model alias
+            "model_name": "deepseek-v3",  # model alias
             "litellm_params": {
                 "model": "openrouter/deepseek/deepseek-chat",  # actual model name
                 "api_key": os.getenv("DEEPSEEK_API_KEY"),

@@ -1,9 +1,11 @@
-prefix="""You are an expert computational chemist tasked with analyzing synthetic routes for chemical compounds. Your goal is to identify distinct synthetic strategies that can be implemented using rule-based cheminformatics algorithms. Your analysis will be used to classify thousands of routes into 50-100 distinct strategy groups.
+"""Prompt for strategy extraction from synthetic routes."""
+
+prefix = """You are an expert computational chemist tasked with analyzing synthetic routes for chemical compounds. Your goal is to identify distinct synthetic strategies that can be implemented using rule-based cheminformatics algorithms. Your analysis will be used to classify thousands of routes into 50-100 distinct strategy groups.
 
 First, carefully review the following synthetic tree:
 <synthetic_tree>
 """
-suffix="""
+suffix = """
 </synthetic_tree>
 
 Your task is to analyze this synthetic route with a focus on features that can be programmatically detected. Use the following JSON schema to understand the structure of the synthetic route:

@@ -1,3 +1,5 @@
+"""RDKit documentation for rdFMCS and related classes."""
+
 docs = """class rdkit.Chem.rdFMCS.AtomCompare
 CompareAny = rdkit.Chem.rdFMCS.AtomCompare.CompareAny
 CompareAnyHeavyAtom = rdkit.Chem.rdFMCS.AtomCompare.CompareAnyHeavyAtom
