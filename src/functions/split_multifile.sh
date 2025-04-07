@@ -1,7 +1,9 @@
 #!/bin/bash
 
+# Run `bash split_multifile.sh` from this directory
+
 FUNCTIONS="passing_functions_n1.py"
-ROOT_DATA="/home/dparm/steerable_retro/data"
+ROOT_DATA="/home/andres/Documents/steerable_retro/data"
 
 echo '#!/bin/python
 
@@ -14,18 +16,20 @@ cp _header.txt _header_checker.txt
 echo "from steerable_retro.utils.check import Check
 from steerable_retro.utils import fuzzy_dict, check
 
+root_data=\"$ROOT_DATA\"
+
 fg_args = {
-    \"file_path\": \"$ROOT_DATA/patterns/functional_groups.json\",
+    \"file_path\": f\"{root_data}/patterns/functional_groups.json\",
     \"value_field\": \"pattern\",
     \"key_field\": \"name\",
 }
 reaction_class_args = {
-    \"file_path\": \"$ROOT_DATA/patterns/smirks.json\",
+    \"file_path\": f\"{root_data}/patterns/smirks.json\",
     \"value_field\": \"smirks\",
     \"key_field\": \"name\",
 }
 ring_smiles_args = {
-    \"file_path\": \"$ROOT_DATA/patterns/chemical_rings_smiles.json\",
+    \"file_path\": f\"{root_data}/patterns/chemical_rings_smiles.json\",
     \"value_field\": \"smiles\",
     \"key_field\": \"name\",
 }
@@ -64,6 +68,10 @@ for file in raw_functions/code_*; do
         cat _header.txt "$file" > "$new_file"
     fi
     rm raw_functions/"$filename"
+
+    if ! grep -q "def main" "$new_file"; then
+        rm $new_file # remove if no function defined here
+    fi
 done
 
 # Prettify
