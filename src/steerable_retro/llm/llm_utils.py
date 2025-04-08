@@ -1,10 +1,13 @@
-import contextlib
-import re
-import io
-from typing import List
-from steerable_retro.utils import check
+"""Utilities for working with LLMs."""
 
 import ast
+import contextlib
+import io
+import re
+from typing import List, Tuple
+
+from steerable_retro.utils import check
+
 
 def extract_imports(code_str: str) -> str:
     """
@@ -32,7 +35,7 @@ def extract_functions(code_str: str) -> list:
     Parses the code string and returns a list of tuples (func_name, func_code)
     for each top–level function defined in the code.
     """
-    funcs = []
+    funcs: list = []
     try:
         module = ast.parse(code_str)
     except Exception:
@@ -49,7 +52,9 @@ def extract_functions(code_str: str) -> list:
     return funcs
 
 
-def test_generated_code_and_capture(route_data: dict, code_str: str, checker) -> (bool, str, str):
+def test_generated_code_and_capture(
+    route_data: dict, code_str: str, checker
+) -> Tuple[bool, str, str]:
     """
     Executes the code snippet in a restricted local namespace,
     expects a callable that takes a single argument (route_data).
@@ -57,12 +62,12 @@ def test_generated_code_and_capture(route_data: dict, code_str: str, checker) ->
     Returns: (passed, stdout, error_message)
     """
     # Create a namespace for exec, and insert the checker under 'checker'
-    env = {'checker': checker}
+    env = {"checker": checker}
     captured_stdout = ""
     error_message = ""
     passed = False
     # try:
-        # Redirect stdout so that prints in the executed code will be captured
+    # Redirect stdout so that prints in the executed code will be captured
     with contextlib.redirect_stdout(io.StringIO()) as f:
         try:
             exec(code_str, env)
@@ -79,7 +84,9 @@ def test_generated_code_and_capture(route_data: dict, code_str: str, checker) ->
                 result = candidate_func(route_data)
                 passed = bool(result)
             else:
-                error_message = "No valid test function found in executed code."
+                error_message = (
+                    "No valid test function found in executed code."
+                )
         except Exception as e:
             error_message = str(e)
             passed = False
@@ -89,6 +96,7 @@ def test_generated_code_and_capture(route_data: dict, code_str: str, checker) ->
     #     error_message = str(e)
     return passed, captured_stdout, error_message
 
+
 def parse_generated_code(response_str: str) -> List[str]:
     """
     Find all Python code segments between <generated_code> and </generated_code>.
@@ -97,12 +105,17 @@ def parse_generated_code(response_str: str) -> List[str]:
     matches = re.findall(r"<code>(.*?)</code>", response_str, flags=re.DOTALL)
     return matches
 
+
 def parse_extractable_strategy(response_str: str) -> str:
     """
     Find the synthetic strategy within <synthetic_strategy>...</synthetic_strategy> tags.
     If not found, return an empty string.
     """
-    match = re.search(r"<extractable_strategy>(.*?)</extractable_strategy>", response_str, flags=re.DOTALL)
+    match = re.search(
+        r"<extractable_strategy>(.*?)</extractable_strategy>",
+        response_str,
+        flags=re.DOTALL,
+    )
     if match:
         return match.group(1)
     return ""

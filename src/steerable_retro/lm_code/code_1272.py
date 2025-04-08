@@ -1,0 +1,68 @@
+#!/bin/python
+
+"""LM-defined function for strategy description."""
+
+import copy
+import re
+from collections import deque
+
+import rdkit
+import rdkit.Chem as Chem
+from rdkit import Chem
+from rdkit.Chem import (
+    AllChem,
+    Descriptors,
+    Lipinski,
+    rdChemReactions,
+    rdFMCS,
+    rdMolDescriptors,
+    rdmolops,
+)
+from rdkit.Chem.Scaffolds import MurckoScaffold
+
+
+def main(route):
+    """
+    This function detects a synthetic strategy involving SNAr reaction for C-N bond formation.
+    """
+    snar_detected = False
+
+    def dfs_traverse(node, depth=0):
+        nonlocal snar_detected
+
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
+
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
+
+            # Check for SNAr pattern - fluoronitrobenzene + amine
+            fluoro_nitro_pattern = Chem.MolFromSmarts("Fc1c([N+](=O)[O-])cccc1")
+            amine_pattern = Chem.MolFromSmarts("[NH2]c1ccccc1")
+            cn_bond_pattern = Chem.MolFromSmarts("c1ccccc1Nc1ccccc1")
+
+            reactants_with_fluoro_nitro = any(
+                r and r.HasSubstructMatch(fluoro_nitro_pattern) for r in reactants
+            )
+            reactants_with_amine = any(r and r.HasSubstructMatch(amine_pattern) for r in reactants)
+
+            if (
+                reactants_with_fluoro_nitro
+                and reactants_with_amine
+                and product
+                and product.HasSubstructMatch(cn_bond_pattern)
+            ):
+                print(f"Detected SNAr reaction at depth {depth}")
+                snar_detected = True
+
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
+
+    # Start traversal from the root
+    dfs_traverse(route)
+
+    print(f"SNAr for C-N bond formation detected: {snar_detected}")
+    return snar_detected

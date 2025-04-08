@@ -2,6 +2,7 @@
 Evaluate a full route against a query, and demonstrate batch processing of
 JSON files in ../data/synth_bench_processed, attaching LLM descriptions.
 """
+
 import asyncio
 import base64
 import importlib
@@ -18,13 +19,14 @@ from aizynthfinder.chem import FixedRetroReaction  # type: ignore
 from aizynthfinder.reactiontree import ReactionTree  # type: ignore
 from dotenv import load_dotenv  # type: ignore
 from PIL.Image import Image
+from prompts import *
 from pydantic import BaseModel, model_validator  # type: ignore
 from weave.trace.context.call_context import get_current_call  # type: ignore
 
 from steerable_retro.logger import setup_logger
 from steerable_retro.utils.rxnimg import get_rxn_img
+
 from .llm_router import router
-from prompts import *
 
 logger = setup_logger(__name__)
 
@@ -51,7 +53,9 @@ class LM(BaseModel):
             )
         else:
             rxn_msgs = self.make_msg_sequence(tree)
-            response = await self._run_llm(rxn_msgs, query, taskid=task.id if task else "")
+            response = await self._run_llm(
+                rxn_msgs, query, taskid=task.id if task else ""
+            )
         return response
 
     @weave.op()
@@ -98,7 +102,9 @@ class LM(BaseModel):
                 inp = self._get_img_msg(smi)
             else:
                 inp = self._get_txt_msg(smi)
-            msgs.append({"type": "text", "text": f"Reaction #{i+1}. Depth: {depth}"})
+            msgs.append(
+                {"type": "text", "text": f"Reaction #{i+1}. Depth: {depth}"}
+            )
             msgs.append(inp)
         return msgs
 
@@ -120,7 +126,9 @@ class LM(BaseModel):
         }
         return msg
 
-    async def run_single_route(self, task, route_dict: Dict, query: str = "") -> Dict:
+    async def run_single_route(
+        self, task, route_dict: Dict, query: str = ""
+    ) -> Dict:
         """
         Turn a route dictionary into a ReactionTree, run the LLM, and attach results.
         """
@@ -128,7 +136,9 @@ class LM(BaseModel):
         rt = ReactionTree.from_dict(route_dict)
         result = await self.run(rt, query, task)
         # By default, store the entire LLM response. You could parse it further if needed.
-        route_dict["description"] = result["response"]  # The user specifically asked for "description"
+        route_dict["description"] = result[
+            "response"
+        ]  # The user specifically asked for "description"
         # Also store the raw structured data if you like:
         route_dict["lmdata"] = dict(
             query=query,
@@ -146,7 +156,9 @@ class LM(BaseModel):
         data = data[:nroutes]
         results = []
         for d in data:
-            updated = await self.run_single_route(task, d, task.prompt if task else "")
+            updated = await self.run_single_route(
+                task, d, task.prompt if task else ""
+            )
             results.append(updated)
         return results
 
@@ -194,30 +206,42 @@ class LM(BaseModel):
                 rsmi = m.metadata["mapped_reaction_smiles"].split(">>")
                 rvsmi = f"{rsmi[1]}>>{rsmi[0]}"
                 # distance of node m from root
-                depth = nx.shortest_path_length(tree.graph, source=tree.root, target=m)
+                depth = nx.shortest_path_length(
+                    tree.graph, source=tree.root, target=m
+                )
                 # correct for molecule layers
                 depth = int((depth - 1) / 2)
                 smiles.append((depth, rvsmi))
         return smiles
 
-    async def process_file(self, file_path: str, output_dir: str, query: str = "", top_k: int = 3) -> None:
+    async def process_file(
+        self, file_path: str, output_dir: str, query: str = "", top_k: int = 3
+    ) -> None:
         """
         Read routes from a JSON file, run LLM on up to top_k routes per target,
         attach 'description', then write the updated file to output_dir.
         """
         logger.info(f"Processing file: {file_path}")
         with open(file_path, "r") as f:
-            data = json.load(f)  # e.g. { "targetA": {"0": {...}, "1": {...}}, "targetB": {...}, ... }
+            data = json.load(
+                f
+            )  # e.g. { "targetA": {"0": {...}, "1": {...}}, "targetB": {...}, ... }
 
         tasks = []
         # For each target, we randomly sample up to top_k routes
         for target, routes in data.items():
             idxes = list(routes.keys())
-            selected_idxs = np.random.choice(idxes, min(top_k, len(idxes)), replace=False)
+            selected_idxs = np.random.choice(
+                idxes, min(top_k, len(idxes)), replace=False
+            )
             for idx in selected_idxs:
                 route_dict = routes[idx]
                 # Create an async task that runs run_single_route on route_dict
-                tasks.append(asyncio.create_task(self.run_single_route(None, route_dict, query=query)))
+                tasks.append(
+                    asyncio.create_task(
+                        self.run_single_route(None, route_dict, query=query)
+                    )
+                )
 
         await asyncio.gather(*tasks)
 
@@ -228,7 +252,9 @@ class LM(BaseModel):
             json.dump(data, outf, indent=2)
         logger.info(f"Wrote updated file: {out_file_path}")
 
-    async def process_synth_routes(self, input_dir: str, output_dir: str, query: str = "", top_k: int = 3):
+    async def process_synth_routes(
+        self, input_dir: str, output_dir: str, query: str = "", top_k: int = 3
+    ):
         """
         Parallelize file-by-file reading and writing of routes in a directory,
         each generating an LLM-based 'description' field.
@@ -236,11 +262,17 @@ class LM(BaseModel):
         logger.info(f"Reading directory: {input_dir}")
 
         # Gather all JSON files
-        files = [f for f in os.listdir(input_dir) if f.lower().endswith(".json")]
+        files = [
+            f for f in os.listdir(input_dir) if f.lower().endswith(".json")
+        ]
         tasks = []
         for fname in files:
             in_path = os.path.join(input_dir, fname)
-            tasks.append(asyncio.create_task(self.process_file(in_path, output_dir, query, top_k)))
+            tasks.append(
+                asyncio.create_task(
+                    self.process_file(in_path, output_dir, query, top_k)
+                )
+            )
 
         # Run all tasks concurrently
         await asyncio.gather(*tasks)
@@ -262,7 +294,9 @@ async def main():
     query_text = "Generate a short description for each route."
 
     # Process the routes in parallel, file by file
-    await lm.process_synth_routes(input_path, output_path, query=query_text, top_k=3)
+    await lm.process_synth_routes(
+        input_path, output_path, query=query_text, top_k=3
+    )
 
     logger.info("Done with route descriptions.")
 

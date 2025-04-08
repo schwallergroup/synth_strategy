@@ -1,0 +1,94 @@
+#!/bin/python
+
+"""LM-defined function for strategy description."""
+
+import copy
+import re
+from collections import deque
+
+import rdkit
+import rdkit.Chem as Chem
+from rdkit import Chem
+from rdkit.Chem import (
+    AllChem,
+    Descriptors,
+    Lipinski,
+    rdChemReactions,
+    rdFMCS,
+    rdMolDescriptors,
+    rdmolops,
+)
+from rdkit.Chem.Scaffolds import MurckoScaffold
+
+from steerable_retro.utils import check, fuzzy_dict
+from steerable_retro.utils.check import Check
+
+root_data = "/home/andres/Documents/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
+
+
+def main(route):
+    """
+    This function detects if a nitrile group is present in intermediates throughout the synthesis.
+    """
+    nitrile_intermediates_count = 0
+    total_intermediates = 0
+
+    def dfs_traverse(node):
+        nonlocal nitrile_intermediates_count, total_intermediates
+
+        # Check if node is a molecule and not a starting material
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            total_intermediates += 1
+
+            # Get molecule SMILES
+            mol_smiles = node["smiles"]
+
+            # Check if molecule contains nitrile using the checker function
+            try:
+                if checker.check_fg("Nitrile", mol_smiles):
+                    nitrile_intermediates_count += 1
+                    print(f"Nitrile group detected in intermediate: {mol_smiles}")
+            except Exception as e:
+                print(f"Error checking nitrile in molecule {mol_smiles}: {e}")
+
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child)
+
+    # Call dfs_traverse on the root node
+    dfs_traverse(route)
+
+    # Check if nitrile is present in any intermediate
+    nitrile_present = nitrile_intermediates_count > 0
+
+    if nitrile_present:
+        print(
+            f"Nitrile group present in {nitrile_intermediates_count}/{total_intermediates} intermediates"
+        )
+    else:
+        print("No nitrile groups detected in any intermediates")
+
+    return nitrile_present

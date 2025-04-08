@@ -1,0 +1,60 @@
+#!/bin/python
+
+"""LM-defined function for strategy description."""
+
+import copy
+import re
+from collections import deque
+
+import rdkit
+import rdkit.Chem as Chem
+from rdkit import Chem
+from rdkit.Chem import (
+    AllChem,
+    Descriptors,
+    Lipinski,
+    rdChemReactions,
+    rdFMCS,
+    rdMolDescriptors,
+    rdmolops,
+)
+from rdkit.Chem.Scaffolds import MurckoScaffold
+
+
+def main(route):
+    """
+    Detects if the synthesis involves a thioamide to amide conversion.
+    """
+    has_thioamide_conversion = False
+
+    def dfs_traverse(node):
+        nonlocal has_thioamide_conversion
+
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Check for thioamide in reactant and amide in product
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                product_mol = Chem.MolFromSmiles(product)
+
+                if reactant_mol and product_mol:
+                    thioamide_pattern = Chem.MolFromSmarts("[#6][C](=[S])[N]")
+                    amide_pattern = Chem.MolFromSmarts("[#6][C](=[O])[N]")
+
+                    has_thioamide = reactant_mol.HasSubstructMatch(thioamide_pattern)
+                    has_amide = product_mol.HasSubstructMatch(amide_pattern)
+
+                    if has_thioamide and has_amide:
+                        print(
+                            f"Found thioamide to amide conversion at depth {node.get('metadata', {}).get('depth', 'unknown')}"
+                        )
+                        has_thioamide_conversion = True
+
+        for child in node.get("children", []):
+            dfs_traverse(child)
+
+    dfs_traverse(route)
+    return has_thioamide_conversion

@@ -1,4 +1,6 @@
-code_rewriting_prompt="""You are an expert system designed to analyze and optimize chemical process code. Your task is to carefully examine the provided code, ensure it accurately performs its described function, and align it with the given description of the function. Pay close attention to chemical intuition and subtle differences between basic meanings and their chemical implementations. The code blocks and error messages are provided at the end of this text.
+"""Prompt for code rewriting"""
+
+code_rewriting_prompt = """You are an expert system designed to analyze and optimize chemical process code. Your task is to carefully examine the provided code, ensure it accurately performs its described function, and align it with the given description of the function. Pay close attention to chemical intuition and subtle differences between basic meanings and their chemical implementations. The code blocks and error messages are provided at the end of this text.
 
 Use the following JSON schema to understand the structure of the synthetic route:
 

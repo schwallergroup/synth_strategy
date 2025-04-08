@@ -10,7 +10,6 @@ import pandas as pd
 import weave
 from dotenv import load_dotenv
 from pydantic import BaseModel, model_validator
-
 from steer.utils.rxnimg import get_rxn_img
 
 from .llm_router import router
@@ -62,6 +61,7 @@ class Heuristic(BaseModel):
 
     @model_validator(mode="after")
     def load_prompts(self):
+        """load prompts from the prompt module."""
         if self.project_name:
             weave.init(self.project_name)
         if self.prompt is not None:
@@ -85,38 +85,3 @@ class Heuristic(BaseModel):
         smi = row[1]["smiles"].split(">>")[0]
         ans = await self.run(smi)
         return ans
-
-
-async def main():
-    from steer.llm.prompts import toxicity
-
-    heur = Heuristic(
-        model="gpt-4o", PREFIX=toxicity.prefix, SUFFIX=toxicity.suffix
-    )
-
-    smis = pd.read_csv("src/steer/benchmark/smiles.csv", header=None)
-    labls = pd.read_csv(
-        "src/steer/benchmark/labels.csv", sep=";;", header=None
-    )
-
-    df = pd.concat([smis, labls], axis=1)
-    df.columns = ["smiles", "id", "label", "comment"]
-    df["cat"] = df["label"].apply(lambda x: 0 if "Unlikely" in x else 1)
-
-    df = df.iloc[:5]
-    from time import time
-
-    t0 = time()
-    answers = await asyncio.gather(
-        *[heur._run_row(row) for row in df.iterrows()]
-    )
-    print(time() - t0, df.shape[0])
-    scores = [Heuristic._parse_score(ans) for ans in answers]
-
-    df["answer"] = answers
-    df["llm_score"] = scores
-    df.to_csv("src/steer/benchmark/answers_3.csv", index=False)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
