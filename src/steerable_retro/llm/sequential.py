@@ -45,7 +45,7 @@ weave.init("liac/strategy_extraction_code_rewriting")
 
 # Rate limit tracking
 class RateLimitTracker:
-    def __init__(self, max_bytes_per_hour=20_000_000, cooldown_minutes=60):
+    def __init__(self, max_bytes_per_hour=20_000_000, cooldown_minutes=30):
         self.max_bytes_per_hour = max_bytes_per_hour
         self.cooldown_minutes = cooldown_minutes
         self.current_bytes = 0
@@ -578,6 +578,7 @@ async def process_file(
     # Randomly sample routes
     total_routes = len(data)
     sample_size = min(n_samples, total_routes)
+    print(f"Total routes: {total_routes}, Sample size: {sample_size}")
     if sample_size < total_routes:
         # Instead of random sampling, process in smaller batches with pauses between them
         sampled_indices = [
@@ -610,7 +611,7 @@ async def process_file(
                     query,
                     idx,
                     max_retries=10,
-                    initial_delay=60
+                    initial_delay=30
                 )
             except Exception as e:
                 print(
@@ -619,7 +620,7 @@ async def process_file(
                 return None
 
     # Process in smaller batches to avoid rate limits
-    batch_size = 8  # Smaller batch size
+    batch_size = 4  # Smaller batch size
     all_results = []
 
     for batch_start in range(0, len(sampled_data), batch_size):
@@ -653,8 +654,8 @@ async def main():
     model_aliases = [
         "claude-3-7-sonnet",
     ]
-    n_samples = 750  # Reduced from 20 to stay within limits
-    start_idx = 1500
+    n_samples = 250  # Reduced from 20 to stay within limits
+    start_idx = 2250
     max_concurrent = 8  # Reduced from 20 to avoid rate limits
     
     fg_args = {
