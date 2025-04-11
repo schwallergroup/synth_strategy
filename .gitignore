@@ -902,3 +902,7 @@ scratch/
 
 notebooks/
 .vscode/*
+# PyPI configuration file
+.pypirc
+runs/
+data/
