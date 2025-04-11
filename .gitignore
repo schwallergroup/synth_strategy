@@ -442,7 +442,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-<<<<<<< HEAD
 ### Vim ###
 # Swap
 [._]*.s[a-v][a-z]
@@ -903,9 +902,7 @@ scratch/
 
 notebooks/
 .vscode/*
-=======
 # PyPI configuration file
 .pypirc
 runs/
 data/
->>>>>>> 1de191c (changes)

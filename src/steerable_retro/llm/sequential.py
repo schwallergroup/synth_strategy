@@ -654,8 +654,8 @@ async def main():
     model_aliases = [
         "claude-3-7-sonnet",
     ]
-    n_samples = 250  # Reduced from 20 to stay within limits
-    start_idx = 2250
+    n_samples = 75  # Reduced from 20 to stay within limits
+    start_idx = 0
     max_concurrent = 8  # Reduced from 20 to avoid rate limits
     
     fg_args = {
@@ -694,7 +694,7 @@ async def main():
         )
 
         # Single file processing
-        file_path = "/home/dparm/steerable_retro/data/routes/syntrees/train_set.json"
+        file_path = "/home/dparm/reaction_utils/rxnutils/data/pa_routes/synthesis_viewer/ref_routes_n1.json"
         output_dir = "/home/dparm/reaction_utils/rxnutils/data/pa_routes"
 
         try:
