@@ -279,7 +279,7 @@ class LM(BaseModel):
         synthesis_route: dict,
         synthetic_strategy: str,
         rewriting_prompt: str,
-        rewriting_limit: int = 2,
+        rewriting_limit: int = 5,  # Increased from 2 to 5 to collect more data points
     ) -> dict:
         """
         Attempts to improve the generated code until it passes
@@ -288,11 +288,38 @@ class LM(BaseModel):
         "passed": bool
         "attempts": int
         "final_code": str
+        "pass_history": list - New field tracking pass/fail at each iteration
         """
         rewriting_count = 0
         passed = False
         final_code = ""
         current_code = code_and_description  # Start with the code snippet as "current_code"
+        
+        # Track pass/fail at each iteration (including initial code)
+        pass_history = []
+        
+        # First test the initial code (iteration 0)
+        initial_passed, initial_stdout, initial_errors = test_generated_code_and_capture(
+            synthesis_route, current_code, self.checker
+        )
+        pass_history.append({
+            "iteration": 0,
+            "passed": initial_passed,
+            "stdout": initial_stdout,
+            "errors": initial_errors
+        })
+        
+        # If initial code passes, no need for rewriting
+        if initial_passed:
+            passed = True
+            final_code = current_code
+            return {
+                "passed": passed,
+                "attempts": 0,
+                "final_code": final_code,
+                "pass_history": pass_history
+            }
+        
         # Prepare dictionary keys information
         fg_keys = "\n".join([f"- {key}" for key in self.fg_dict.keys()])
         reaction_keys = "\n".join(
@@ -381,7 +408,14 @@ class LM(BaseModel):
             except Exception as e:
                 print(f"Error in rewriting iteration {rewriting_count}: {e}")
                 logger.error(f"Rewriting error: {e}")
-                # If we get here after retries, continue to next iteration
+                # Record this iteration as a failure
+                pass_history.append({
+                    "iteration": rewriting_count,
+                    "passed": False,
+                    "stdout": "",
+                    "errors": f"LLM error: {str(e)}"
+                })
+                # Continue to next iteration
                 continue
 
             try:
@@ -392,17 +426,40 @@ class LM(BaseModel):
                 )
             except Exception as e:
                 print(f"Error parsing generated code: {e}")
+                # Record this iteration as a failure due to parsing error
+                pass_history.append({
+                    "iteration": rewriting_count,
+                    "passed": False,
+                    "stdout": "",
+                    "errors": f"Code parsing error: {str(e)}"
+                })
                 continue
 
             if not code_candidate.strip():
-                # No code found; break out
+                # No code found; record failure and break out
+                pass_history.append({
+                    "iteration": rewriting_count,
+                    "passed": False,
+                    "stdout": "",
+                    "errors": "No code generated"
+                })
                 break
 
             # Test if new code passes
             passed, stdout, errors = test_generated_code_and_capture(
                 synthesis_route, code_candidate, self.checker
             )
-            print(f"Passed: {passed}, STDOUT: {stdout}, Errors: {errors}")
+            
+            # Record the result for this iteration
+            pass_history.append({
+                "iteration": rewriting_count,
+                "passed": passed,
+                "stdout": stdout,
+                "errors": errors
+            })
+            
+            print(f"Iteration {rewriting_count} - Passed: {passed}, STDOUT: {stdout}, Errors: {errors}")
+            
             if passed:
                 final_code = code_candidate
             else:
@@ -411,16 +468,16 @@ class LM(BaseModel):
         return {
             "passed": passed,
             "attempts": rewriting_count,
-            "final_code": final_code,
+            "final_code": final_code if passed else current_code,
+            "pass_history": pass_history
         }
 
     async def run_single_route(self, d, task, idx):
         """
         Runs the LLM on a single route and stores the raw LLM response and score.
         It then parses any code blocks and, for each, tests the candidate code.
-        If a candidate fails its test, up to three rewriting iterations are attempted.
-        In every case, the final candidate for each code block is stored in
-        lmdata["generated_codes"] along with whether it passed and some extra info.
+        If a candidate fails its test, up to five rewriting iterations are attempted.
+        Pass data is tracked for each iteration to enable analysis of how pass rates improve.
         """
         try:
             # 1) Call the LLM as usual
@@ -433,7 +490,7 @@ class LM(BaseModel):
             code_rewriting_prompt = module.code_rewriting_prompt
             code_blocks = parse_generated_code(result["response"])
             strategy = parse_extractable_strategy(result["response"])
-            strategy = f""" Here is the synthetic strategy provied by the LLM. Please anlayse it and the generated code carefully.
+            strategy = f""" Here is the synthetic strategy provided by the LLM. Please analyze it and the generated code carefully.
             {strategy}
             """
 
@@ -441,7 +498,8 @@ class LM(BaseModel):
             output[idx] = {
                 "strategy": strategy,
                 "code_blocks": [],
-                "passed": [],
+                "final_passed": [],  # Whether the final code passed
+                "iteration_data": [],  # New field for per-iteration data
                 "stdout": [],
                 "errors": [],
             }
@@ -451,36 +509,37 @@ class LM(BaseModel):
             except Exception as e:
                 return output
 
-            for func_code in functions:
+            for func_idx, func_code in enumerate(functions):
                 current_code = imports_str + "\n" + func_code[1]
-                iterations = 0
-                passed, captured_stdout, captured_errors = (
-                    test_generated_code_and_capture(
-                        d, current_code, self.checker
-                    )
+                
+                # Attempt rewriting/improvement
+                rewriting_result = await self.iterate(
+                    code_and_description=current_code,
+                    test_case_pass="The function failed to return True",
+                    stdout="",  # Initial stdout is empty
+                    errors="",  # Initial errors is empty
+                    synthesis_route=d,
+                    synthetic_strategy=strategy,
+                    rewriting_prompt=code_rewriting_prompt,
+                    rewriting_limit=5,  # Increased from 3 to 5
                 )
-                if not passed:
-                    # Attempt rewriting/improvement
-                    rewriting_result = await self.iterate(
-                        code_and_description=current_code,
-                        test_case_pass="The function failed to return True",
-                        stdout=captured_stdout,
-                        errors=captured_errors,
-                        synthesis_route=d,
-                        synthetic_strategy=strategy,
-                        rewriting_prompt=code_rewriting_prompt,
-                        rewriting_limit=3,
-                    )
-                    if rewriting_result["passed"]:
-                        passed = True
-                        current_code = rewriting_result.get(
-                            "final_code", current_code
-                        )
-                # Save this candidate – whether it passed or not – along with details.
-                output[idx]["code_blocks"].append(current_code)
-                output[idx]["passed"].append(passed)
-                output[idx]["stdout"].append(captured_stdout)
-                output[idx]["errors"].append(captured_errors)
+                
+                # Save this candidate along with detailed iteration history
+                output[idx]["code_blocks"].append(rewriting_result.get("final_code", current_code))
+                output[idx]["final_passed"].append(rewriting_result.get("passed", False))
+                
+                # Store the full iteration history for this function
+                output[idx]["iteration_data"].append(rewriting_result.get("pass_history", []))
+                
+                # Store final stdout and errors
+                if rewriting_result.get("pass_history"):
+                    last_iteration = rewriting_result["pass_history"][-1]
+                    output[idx]["stdout"].append(last_iteration.get("stdout", ""))
+                    output[idx]["errors"].append(last_iteration.get("errors", ""))
+                else:
+                    output[idx]["stdout"].append("")
+                    output[idx]["errors"].append("No iteration data available")
+                    
             return output
         except Exception as e:
             print(f"Error processing route {idx}: {e}")
@@ -492,7 +551,8 @@ class LM(BaseModel):
                 idx: {
                     "strategy": "",
                     "code_blocks": [],
-                    "passed": [],
+                    "final_passed": [],
+                    "iteration_data": [],
                     "stdout": [],
                     "errors": [],
                 }
