@@ -40,7 +40,7 @@ from .llm_utils import (
 from .prompts import *
 
 logger = setup_logger(__name__)
-weave.init("liac/strategy_extraction_code_rewriting")
+weave.init("liac/steerable_retro_cod")
 
 
 # Rate limit tracking
@@ -194,7 +194,7 @@ class LM(BaseModel):
 
             response = await router.acompletion(
                 model=self.model,
-                temperature=0.1,
+                temperature=0.0,
                 max_completion_tokens=12288,
                 messages=[
                     {
@@ -279,7 +279,7 @@ class LM(BaseModel):
         synthesis_route: dict,
         synthetic_strategy: str,
         rewriting_prompt: str,
-        rewriting_limit: int = 5,  # Increased from 2 to 5 to collect more data points
+        rewriting_limit: int = 5, 
     ) -> dict:
         """
         Attempts to improve the generated code until it passes
@@ -680,7 +680,7 @@ async def process_file(
                 return None
 
     # Process in smaller batches to avoid rate limits
-    batch_size = 4  # Smaller batch size
+    batch_size = 8  # Smaller batch size
     all_results = []
 
     for batch_start in range(0, len(sampled_data), batch_size):
@@ -714,7 +714,7 @@ async def main():
     model_aliases = [
         "claude-3-7-sonnet",
     ]
-    n_samples = 75  # Reduced from 20 to stay within limits
+    n_samples = 50  # Reduced from 20 to stay within limits
     start_idx = 0
     max_concurrent = 8  # Reduced from 20 to avoid rate limits
     
@@ -754,7 +754,7 @@ async def main():
         )
 
         # Single file processing
-        file_path = "/home/dparm/reaction_utils/rxnutils/data/pa_routes/synthesis_viewer/ref_routes_n1.json"
+        file_path = "/home/dparm/reaction_utils/rxnutils/data/pa_routes/synthesis_viewer/sampled_routes.json"
         output_dir = "/home/dparm/reaction_utils/rxnutils/data/pa_routes"
 
         try:
@@ -768,7 +768,7 @@ async def main():
                 output_dir,
                 os.path.basename(file_path).replace(
                     ".json",
-                    f"_{model_name}3-7-extract-3-7-cod-{start_idx}-{start_idx + n_samples}.json",
+                    f"_{model_name}3-7-extract-3-7-cod.json",
                 ),
             )
 
