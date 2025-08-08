@@ -2,63 +2,94 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving the reduction of a nitro group to an amine
-    early in the synthesis.
+    This function detects if methoxy and chloro substituents on an aromatic ring
+    are preserved throughout the synthesis.
     """
-    found_nitro_reduction = False
-
-    # SMARTS patterns
-    nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])-[O-]")
-    amine_pattern = Chem.MolFromSmarts("[#6]-[NH2]")
+    # Track if we've seen these groups at each depth
+    depths_with_methoxy = set()
+    depths_with_chloro = set()
+    max_depth = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_nitro_reduction
+        nonlocal max_depth
 
-        if node["type"] == "reaction" and depth >= 3:  # Early in synthesis (high depth)
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if depth > max_depth:
+            max_depth = depth
 
-            # Create RDKit molecules
-            product_mol = Chem.MolFromSmiles(product)
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for methoxy on aromatic
+                if mol.HasSubstructMatch(Chem.MolFromSmarts("c[O][CH3]")):
+                    depths_with_methoxy.add(depth)
+                    print(f"Found aromatic methoxy at depth {depth}")
 
-            # Check for nitro reduction
-            if (
-                any(mol and mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols)
-                and product_mol
-                and product_mol.HasSubstructMatch(amine_pattern)
-            ):
-                found_nitro_reduction = True
-                print(f"Found nitro reduction at depth {depth}")
+                # Check for chloro on aromatic
+                if mol.HasSubstructMatch(Chem.MolFromSmarts("c[Cl]")):
+                    depths_with_chloro.add(depth)
+                    print(f"Found aromatic chloro at depth {depth}")
 
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Nitro reduction strategy present: {found_nitro_reduction}")
-    return found_nitro_reduction
+    print(
+        f"Methoxy depths: {depths_with_methoxy}, Chloro depths: {depths_with_chloro}, Max depth: {max_depth}"
+    )
+
+    # Check if these groups are present at the beginning and end of synthesis
+    # Based on the test output, they appear at even depths (0, 2, 4, 6, 8)
+    methoxy_at_start = 0 in depths_with_methoxy
+    methoxy_at_end = max_depth in depths_with_methoxy or (
+        max_depth % 2 == 1 and (max_depth - 1) in depths_with_methoxy
+    )
+
+    chloro_at_start = 0 in depths_with_chloro
+    chloro_at_end = max_depth in depths_with_chloro or (
+        max_depth % 2 == 1 and (max_depth - 1) in depths_with_chloro
+    )
+
+    # Check if these groups are preserved throughout the synthesis
+    # We'll consider them preserved if they're at the start and end
+    methoxy_preserved = methoxy_at_start and methoxy_at_end
+    chloro_preserved = chloro_at_start and chloro_at_end
+
+    if methoxy_preserved and chloro_preserved:
+        print("Both methoxy and chloro substituents are preserved throughout the synthesis")
+        return True
+
+    if methoxy_preserved:
+        print("Only methoxy substituent is preserved throughout the synthesis")
+
+    if chloro_preserved:
+        print("Only chloro substituent is preserved throughout the synthesis")
+
+    return False

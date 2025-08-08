@@ -2,65 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects N-arylation of a pyrazole heterocycle.
+    This function detects if the synthetic route involves an ester to hydrazide conversion.
     """
-    pyrazole_pattern = Chem.MolFromSmarts("[#6]1[#6][#7][#7][#6]1")
-    n_aryl_pyrazole_pattern = Chem.MolFromSmarts("[#6]1[#6][#7][#7](-[c])[#6]1")
-
-    strategy_detected = False
+    ester_to_hydrazide_found = False
 
     def dfs_traverse(node):
-        nonlocal strategy_detected
+        nonlocal ester_to_hydrazide_found
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if product contains N-arylated pyrazole
-                product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for ester in reactants
+                ester_pattern = Chem.MolFromSmarts("C(=O)OC")
+                # Check for hydrazide in product
+                hydrazide_pattern = Chem.MolFromSmarts("C(=O)NN")
 
-                # Check if any reactant has pyrazole without N-arylation
-                for reactant_smiles in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(ester_pattern):
+                            prod_mol = Chem.MolFromSmiles(product)
+                            if prod_mol and prod_mol.HasSubstructMatch(hydrazide_pattern):
+                                print("Ester to hydrazide conversion detected")
+                                ester_to_hydrazide_found = True
+                    except:
+                        continue
 
-                    if (
-                        product_mol
-                        and reactant_mol
-                        and product_mol.HasSubstructMatch(n_aryl_pyrazole_pattern)
-                        and reactant_mol.HasSubstructMatch(pyrazole_pattern)
-                        and not reactant_mol.HasSubstructMatch(n_aryl_pyrazole_pattern)
-                    ):
-                        print("Detected N-arylation of pyrazole")
-                        strategy_detected = True
-                        break
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
     dfs_traverse(route)
-    return strategy_detected
+    return ester_to_hydrazide_found

@@ -2,130 +2,89 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis preserves a 2,4-difluoro-anisole core
-    throughout the synthesis.
+    This function detects protection-deprotection cycling strategy with nitrogen protecting groups.
+    It looks for multiple protection and deprotection events in the synthesis route.
     """
-    # Track if we find the core in all molecules
-    all_molecules_have_core = True
-    molecule_count = 0
+    protection_count = 0
+    deprotection_count = 0
+
+    # SMARTS patterns for protecting groups
+    boc_pattern = Chem.MolFromSmarts("[#6](C)(C)(C)OC(=O)[#7]")
+    acetyl_pattern = Chem.MolFromSmarts("CC(=O)[#7]")
 
     def dfs_traverse(node):
-        nonlocal all_molecules_have_core, molecule_count
+        nonlocal protection_count, deprotection_count
 
-        if node["type"] == "mol" and node.get("smiles"):
-            mol_smiles = node["smiles"]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0]
+            products_smiles = rsmi.split(">")[-1]
 
-            # Skip simple reagents/solvents that wouldn't contain the core
-            if mol_smiles in ["O=C=O", "O=C(Cl)C(=O)Cl", "N"]:
-                print(f"Skipping reagent/solvent: {mol_smiles}")
-                return
-
-            molecule_count += 1
             try:
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if not mol:
-                    print(f"Failed to parse molecule: {mol_smiles}")
-                    all_molecules_have_core = False
-                    return
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".") if r]
+                product = Chem.MolFromSmiles(products_smiles)
 
-                # Check for benzene ring
-                has_benzene = checker.check_ring("benzene", mol_smiles)
-
-                if not has_benzene:
-                    print(f"Molecule without benzene ring: {mol_smiles}")
-                    all_molecules_have_core = False
-                    return
-
-                # Check for 2,4-difluoro-anisole core or its phenol precursor
-                # Using substructure matching for more reliable detection
-                anisole_pattern = Chem.MolFromSmarts("COc1cc(F)cc(F)c1")
-                phenol_pattern = Chem.MolFromSmarts("Oc1cc(F)cc(F)c1")
-
-                has_anisole_core = mol.HasSubstructMatch(anisole_pattern)
-                has_phenol_core = mol.HasSubstructMatch(phenol_pattern)
-
-                # Also check for variations where other groups are attached to the core
-                # This handles cases like the cyano or amide derivatives
-                anisole_core_with_substituent = Chem.MolFromSmarts("COc1cc(F)c([*])c(F)c1")
-                phenol_core_with_substituent = Chem.MolFromSmarts("Oc1cc(F)c([*])c(F)c1")
-
-                has_anisole_with_substituent = mol.HasSubstructMatch(anisole_core_with_substituent)
-                has_phenol_with_substituent = mol.HasSubstructMatch(phenol_core_with_substituent)
-
-                has_core = (
-                    has_anisole_core
-                    or has_phenol_core
-                    or has_anisole_with_substituent
-                    or has_phenol_with_substituent
+                # Check for protection (appearance of protecting group)
+                reactant_has_boc = any(
+                    r is not None and r.HasSubstructMatch(boc_pattern) for r in reactants
+                )
+                reactant_has_acetyl = any(
+                    r is not None and r.HasSubstructMatch(acetyl_pattern) for r in reactants
+                )
+                product_has_boc = product is not None and product.HasSubstructMatch(boc_pattern)
+                product_has_acetyl = product is not None and product.HasSubstructMatch(
+                    acetyl_pattern
                 )
 
-                if not has_core:
-                    print(f"Molecule without core or valid precursor: {mol_smiles}")
-                    all_molecules_have_core = False
-                else:
-                    if has_anisole_core or has_anisole_with_substituent:
-                        print(f"Molecule with core: {mol_smiles}")
-                    else:
-                        print(f"Molecule with core precursor (phenol): {mol_smiles}")
-            except Exception as e:
-                print(f"Error processing molecule {mol_smiles}: {str(e)}")
-                all_molecules_have_core = False
+                if (not reactant_has_boc and product_has_boc) or (
+                    not reactant_has_acetyl and product_has_acetyl
+                ):
+                    protection_count += 1
+                    print(f"Protection detected: {rsmi}")
 
-        # Traverse children
+                # Check for deprotection (disappearance of protecting group)
+                if (reactant_has_boc and not product_has_boc) or (
+                    reactant_has_acetyl and not product_has_acetyl
+                ):
+                    deprotection_count += 1
+                    print(f"Deprotection detected: {rsmi}")
+
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Only return true if we actually checked some molecules and they all had the core
-    return all_molecules_have_core and molecule_count > 0
+    # Return True if we have at least one protection and one deprotection
+    has_cycles = protection_count >= 1 and deprotection_count >= 1
+    print(f"Protection count: {protection_count}, Deprotection count: {deprotection_count}")
+    return has_cycles

@@ -2,131 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving C-C bond cleavage,
-    specifically methyl group removal.
+    This function detects if the synthetic route involves the strategic use of nitrile groups.
     """
-    has_cc_cleavage = False
+    nitrile_present = False
+    nitrile_transformed = False
 
     def dfs_traverse(node):
-        nonlocal has_cc_cleavage
+        nonlocal nitrile_present, nitrile_transformed
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1].split(".")
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                print(f"Checking reaction: {rsmi}")
+            # Check for nitrile in reactants
+            nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
+            for reactant in reactants_smiles:
+                if reactant.strip():
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(nitrile_pattern):
+                        nitrile_present = True
+                        print(f"Nitrile group found in reactant: {reactant}")
 
-                # Check for various C-C bond cleavage reactions
-                if checker.check_reaction("Decarboxylation", rsmi):
-                    print("Found C-C bond cleavage: Decarboxylation")
-                    has_cc_cleavage = True
-                elif checker.check_reaction("Oxidation of alkene to carboxylic acid", rsmi):
-                    print("Found C-C bond cleavage: Oxidation of alkene to carboxylic acid")
-                    has_cc_cleavage = True
-                elif checker.check_reaction("Oxidation of ketone to carboxylic acid", rsmi):
-                    print("Found C-C bond cleavage: Oxidation of ketone to carboxylic acid")
-                    has_cc_cleavage = True
-                elif checker.check_reaction(
-                    "Ketonization by decarboxylation of carbonic acids", rsmi
-                ):
-                    print("Found C-C bond cleavage: Ketonization by decarboxylation")
-                    has_cc_cleavage = True
-                elif checker.check_reaction(
-                    "Ketonization by decarboxylation of acid halides", rsmi
-                ):
-                    print(
-                        "Found C-C bond cleavage: Ketonization by decarboxylation of acid halides"
-                    )
-                    has_cc_cleavage = True
-                # Check for oxidative cleavage of alcohols
-                elif any(
-                    checker.check_fg("Secondary alcohol", r) for r in reactants_smiles
-                ) and any(checker.check_fg("Aldehyde", p) for p in product_smiles):
-                    print("Found C-C bond cleavage: Secondary alcohol → aldehyde")
-                    has_cc_cleavage = True
-                elif any(checker.check_fg("Tertiary alcohol", r) for r in reactants_smiles) and any(
-                    checker.check_fg("Ketone", p) for p in product_smiles
-                ):
-                    print("Found C-C bond cleavage: Tertiary alcohol → ketone")
-                    has_cc_cleavage = True
-                # Check for diol cleavage
-                elif (
-                    any(checker.check_fg("Primary alcohol", r) for r in reactants_smiles)
-                    and any(checker.check_fg("Primary alcohol", r) for r in reactants_smiles)
-                    and (
-                        any(checker.check_fg("Aldehyde", p) for p in product_smiles)
-                        or any(checker.check_fg("Carboxylic acid", p) for p in product_smiles)
-                    )
-                ):
-                    print("Found C-C bond cleavage: Diol cleavage")
-                    has_cc_cleavage = True
-                # Check for alkene cleavage
-                elif any(checker.check_fg("Alkene", r) for r in reactants_smiles) and (
-                    any(checker.check_fg("Aldehyde", p) for p in product_smiles)
-                    or any(checker.check_fg("Ketone", p) for p in product_smiles)
-                    or any(checker.check_fg("Carboxylic acid", p) for p in product_smiles)
-                ):
-                    print("Found C-C bond cleavage: Alkene cleavage")
-                    has_cc_cleavage = True
+            # Check if nitrile is transformed
+            if product_smiles and nitrile_present:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol:
+                    # Check if product has different nitrile pattern or count than reactants
+                    product_nitrile_count = len(product_mol.GetSubstructMatches(nitrile_pattern))
 
-        # Continue traversing
+                    reactants_nitrile_count = 0
+                    for reactant in reactants_smiles:
+                        if reactant.strip():
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol:
+                                reactants_nitrile_count += len(
+                                    reactant_mol.GetSubstructMatches(nitrile_pattern)
+                                )
+
+                    if product_nitrile_count != reactants_nitrile_count:
+                        nitrile_transformed = True
+                        print(
+                            f"Nitrile transformation detected: Reactants have {reactants_nitrile_count} nitriles, product has {product_nitrile_count}"
+                        )
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    if has_cc_cleavage:
-        print("Detected C-C bond cleavage strategy")
-    return has_cc_cleavage
+    # Return True if both conditions are met
+    result = nitrile_present and nitrile_transformed
+    print(f"Nitrile utilization strategy detected: {result}")
+    return result

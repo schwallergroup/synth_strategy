@@ -2,66 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route includes multiple N-alkylation steps.
+    Detects a synthetic strategy where a fluorinated aromatic group is maintained throughout the synthesis.
     """
-    n_alkylation_count = 0
+    fluoro_aromatic_count = 0
+    total_reactions = 0
 
     def dfs_traverse(node):
-        nonlocal n_alkylation_count
+        nonlocal fluoro_aromatic_count, total_reactions
 
         if node["type"] == "reaction":
+            total_reactions += 1
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+            product = rsmi.split(">")[-1]
 
-            # Check if reactants contain an amine
-            reactants = reactants_smiles.split(".")
-            has_amine = any(
-                Chem.MolFromSmiles(r)
-                and Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts("[#7]"))
-                for r in reactants
-                if r
-            )
-
-            # Check if product contains a new C-N bond
-            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-
-            if has_amine and product_mol:
-                # Check for N-alkylation pattern
-                n_alkyl_pattern = Chem.MolFromSmarts("[#7][#6;!$(C=O)]")
-                product_matches = len(product_mol.GetSubstructMatches(n_alkyl_pattern))
-                reactant_matches = sum(
-                    len(mol.GetSubstructMatches(n_alkyl_pattern)) for mol in reactant_mols if mol
-                )
-
-                if product_matches > reactant_matches:
-                    print(f"Found N-alkylation step, count now: {n_alkylation_count + 1}")
-                    n_alkylation_count += 1
+            # Check for fluorinated aromatic in product
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("c[F]")):
+                fluoro_aromatic_count += 1
+                print("Found fluorinated aromatic in reaction product")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return n_alkylation_count >= 2
+
+    # Return True if fluorinated aromatic is present in all reactions
+    result = fluoro_aromatic_count > 0 and fluoro_aromatic_count == total_reactions
+    print(f"Fluorinated aromatic retention strategy detected: {result}")
+    return result

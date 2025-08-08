@@ -2,34 +2,37 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves a Strecker reaction
-    (formation of α-aminonitrile from aldehyde, HCN, and ammonia).
+    This function detects amide coupling as part of the synthetic strategy.
     """
-    strecker_found = False
+    amide_coupling_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal strecker_found
+    def dfs_traverse(node):
+        nonlocal amide_coupling_found
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
@@ -37,51 +40,40 @@ def main(route):
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for aldehyde in reactants
-                aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
-                # Check for HCN in reactants
-                hcn_pattern = Chem.MolFromSmarts("[C]#[N]")
-                # Check for ammonia in reactants
-                ammonia_pattern = Chem.MolFromSmarts("[NH3]")
-                # Check for α-aminonitrile in product
-                aminonitrile_pattern = Chem.MolFromSmarts("[C]([NH2])[C]#[N]")
+                # Check for acid chloride in reactants
+                acid_chloride_pattern = Chem.MolFromSmarts("[#6](=[#8])[Cl]")
+                amine_pattern = Chem.MolFromSmarts("[#7H2]")
 
-                aldehyde_present = any(
-                    Chem.MolFromSmiles(r) is not None
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(aldehyde_pattern)
-                    for r in reactants
-                    if r
-                )
-                hcn_present = any(
-                    Chem.MolFromSmiles(r) is not None
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(hcn_pattern)
-                    for r in reactants
-                    if r
-                )
-                ammonia_present = any(
-                    Chem.MolFromSmiles(r) is not None
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(ammonia_pattern)
-                    for r in reactants
-                    if r
-                )
-                aminonitrile_in_product = Chem.MolFromSmiles(
-                    product
-                ) is not None and Chem.MolFromSmiles(product).HasSubstructMatch(
-                    aminonitrile_pattern
-                )
+                has_acid_chloride = False
+                has_amine = False
 
-                if (
-                    aldehyde_present
-                    and (hcn_present or ammonia_present)
-                    and aminonitrile_in_product
-                ):
-                    print(f"Found Strecker reaction at depth {depth}")
-                    strecker_found = True
+                for reactant in reactants:
+                    try:
+                        r_mol = Chem.MolFromSmiles(reactant)
+                        if r_mol:
+                            if r_mol.HasSubstructMatch(acid_chloride_pattern):
+                                has_acid_chloride = True
+                            if r_mol.HasSubstructMatch(amine_pattern):
+                                has_amine = True
+                    except:
+                        continue
 
-        # Continue traversal
+                # Check if product has amide bond
+                if has_acid_chloride and has_amine:
+                    try:
+                        p_mol = Chem.MolFromSmiles(product)
+                        if p_mol and p_mol.HasSubstructMatch(
+                            Chem.MolFromSmarts("[#7]-[#6](=[#8])")
+                        ):
+                            print("Detected amide coupling")
+                            amide_coupling_found = True
+                    except:
+                        pass
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal from root
     dfs_traverse(route)
-    return strecker_found
+    return amide_coupling_found

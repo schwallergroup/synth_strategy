@@ -2,69 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a protection/deprotection sequence for an alcohol.
-    Specifically looks for TBDMS (tert-butyldimethylsilyl) protection.
+    This function detects Suzuki coupling reactions (aryl-halide + boronic acid/ester).
     """
-    protection_events = []
+    has_suzuki_coupling = False
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node):
+        nonlocal has_suzuki_coupling
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            if product_mol and all(r for r in reactant_mols):
-                # TBDMS pattern
-                tbdms_pattern = Chem.MolFromSmarts("[#14]([#6])([#6])[#8]")
+                # Check for aryl halide pattern
+                aryl_halide_pattern = Chem.MolFromSmarts("c[Br,I,Cl]")
 
-                # Check for protection (TBDMS addition)
-                if product_mol.HasSubstructMatch(tbdms_pattern) and not any(
-                    r.HasSubstructMatch(tbdms_pattern) for r in reactant_mols
-                ):
-                    protection_events.append(("protection", depth))
-                    print(f"TBDMS protection detected at depth {depth}")
+                # Check for boronic acid/ester pattern
+                boronic_pattern = Chem.MolFromSmarts("cB(O[#6])(O[#6])")
 
-                # Check for deprotection (TBDMS removal)
-                if any(
-                    r.HasSubstructMatch(tbdms_pattern) for r in reactant_mols
-                ) and not product_mol.HasSubstructMatch(tbdms_pattern):
-                    protection_events.append(("deprotection", depth))
-                    print(f"TBDMS deprotection detected at depth {depth}")
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
+                has_aryl_halide = any(
+                    r and r.HasSubstructMatch(aryl_halide_pattern) for r in reactant_mols
+                )
+                has_boronic = any(r and r.HasSubstructMatch(boronic_pattern) for r in reactant_mols)
+
+                # If both patterns are found in reactants and product has a new C-C bond
+                if has_aryl_halide and has_boronic and product_mol:
+                    has_suzuki_coupling = True
+                    print("Detected Suzuki coupling reaction")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
 
-    # Check if we have both protection and deprotection events
-    has_protection = any(event == "protection" for event, _ in protection_events)
-    has_deprotection = any(event == "deprotection" for event, _ in protection_events)
-
-    if has_protection and has_deprotection:
-        print("Complete alcohol protection/deprotection sequence detected")
-
-    return has_protection and has_deprotection
+    return has_suzuki_coupling

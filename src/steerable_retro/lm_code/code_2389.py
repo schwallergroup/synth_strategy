@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,190 +54,148 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving olefination followed by C-N bond disconnection.
-    In retrosynthetic analysis, this means C-N disconnection appears at a lower depth than olefination.
+    This function detects if the synthesis follows a linear strategy of
+    functionalizing a piperidine scaffold at multiple positions.
     """
-    has_olefination = False
-    has_cn_disconnection = False
-    olefination_depth = -1
-    cn_disconnection_depth = -1
+    # Track piperidine-containing molecules at different depths
+    piperidine_steps = []
+    functionalization_events = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_olefination, has_cn_disconnection, olefination_depth, cn_disconnection_depth
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            # Check if this molecule contains a piperidine ring
+            if checker.check_ring("piperidine", mol_smiles):
+                print(f"Found piperidine at depth {depth}: {mol_smiles}")
+                piperidine_steps.append((depth, mol_smiles))
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Continue traversal
+            for child in node.get("children", []):
+                dfs_traverse(child, depth + 1)
 
-                # Check for olefination reactions
-                if not has_olefination:
+        elif node["type"] == "reaction":
+            # Extract reaction information
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                # Continue traversal if no reaction SMILES
+                for child in node.get("children", []):
+                    dfs_traverse(child, depth)
+                return
+
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Check if product contains piperidine
+            if checker.check_ring("piperidine", product):
+                # Check if any reactant also contains piperidine
+                piperidine_reactant = None
+                for reactant in reactants:
+                    if checker.check_ring("piperidine", reactant):
+                        piperidine_reactant = reactant
+                        break
+
+                # If no piperidine in reactants but in product, it's a piperidine formation
+                if not piperidine_reactant:
+                    print(f"Found piperidine formation at depth {depth}")
+                    print(f"Reaction: {rsmi}")
+                    functionalization_events.append((depth, rsmi))
+
+                # If we found a piperidine in both product and reactant, check for functionalization
+                elif piperidine_reactant:
+                    # Check for common functionalization reactions
                     if (
-                        checker.check_reaction("Wittig", rsmi)
-                        or checker.check_reaction("Wittig with Phosphonium", rsmi)
-                        or checker.check_reaction("Julia Olefination", rsmi)
-                        or checker.check_reaction("Heck terminal vinyl", rsmi)
-                        or checker.check_reaction("Heck_terminal_vinyl", rsmi)
-                        or checker.check_reaction("Heck_non-terminal_vinyl", rsmi)
+                        checker.check_reaction(
+                            "N-alkylation of secondary amines with alkyl halides", rsmi
+                        )
+                        or checker.check_reaction("Acylation of secondary amines", rsmi)
+                        or checker.check_reaction("Acylation of primary amines", rsmi)
                         or checker.check_reaction(
-                            "Olefination of ketones with Grignard reagents", rsmi
+                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
                         )
                         or checker.check_reaction(
-                            "Olefination of aldehydes with Grignard reagents", rsmi
+                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
                         )
+                        or checker.check_reaction("Reductive amination with ketone", rsmi)
+                        or checker.check_reaction("Reductive amination with aldehyde", rsmi)
+                        or checker.check_reaction("Boc amine protection", rsmi)
+                        or checker.check_reaction("Boc amine deprotection", rsmi)
+                        or checker.check_reaction("N-arylation", rsmi)
                     ):
-                        has_olefination = True
-                        olefination_depth = depth
-                        print(f"Detected olefination reaction at depth {depth}: {rsmi}")
 
-                    # Fallback to checking for C=C bond formation if specific reaction not found
-                    elif not has_olefination:
-                        try:
-                            product_mol = Chem.MolFromSmiles(product)
+                        print(f"Found piperidine functionalization reaction at depth {depth}")
+                        print(f"Reaction: {rsmi}")
+                        functionalization_events.append((depth, rsmi))
 
-                            # Check all reactants
-                            for reactant in reactants:
-                                reactant_mol = Chem.MolFromSmiles(reactant)
+                    # Check for other common functional group additions
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mol = Chem.MolFromSmiles(piperidine_reactant)
 
-                                if reactant_mol is not None and product_mol is not None:
-                                    # Count C=C bonds in reactant and product
-                                    cc_double_bond_pattern = Chem.MolFromSmarts("[#6]=[#6]")
-                                    reactant_cc_bonds = len(
-                                        reactant_mol.GetSubstructMatches(cc_double_bond_pattern)
-                                    )
-                                    product_cc_bonds = len(
-                                        product_mol.GetSubstructMatches(cc_double_bond_pattern)
-                                    )
+                    if product_mol and reactant_mol:
+                        # Check for new functional groups in the product
+                        new_functionalization = False
+                        for fg in [
+                            "Primary alcohol",
+                            "Secondary alcohol",
+                            "Tertiary alcohol",
+                            "Ester",
+                            "Primary amide",
+                            "Secondary amide",
+                            "Tertiary amide",
+                            "Nitrile",
+                            "Ketone",
+                            "Aldehyde",
+                            "Carboxylic acid",
+                            "Primary halide",
+                            "Secondary halide",
+                            "Tertiary halide",
+                            "Aromatic halide",
+                            "Sulfonamide",
+                            "Urea",
+                            "Carbamate",
+                            "Primary amine",
+                            "Secondary amine",
+                            "Tertiary amine",
+                        ]:
+                            if checker.check_fg(fg, product) and not checker.check_fg(
+                                fg, piperidine_reactant
+                            ):
+                                print(f"Added {fg} to piperidine at depth {depth}")
+                                new_functionalization = True
 
-                                    if product_cc_bonds > reactant_cc_bonds:
-                                        has_olefination = True
-                                        olefination_depth = depth
-                                        print(
-                                            f"Detected olefination by C=C bond increase at depth {depth}"
-                                        )
-                                        break
-                        except Exception as e:
-                            print(f"Error in olefination detection: {e}")
+                        if new_functionalization:
+                            functionalization_events.append((depth, rsmi))
 
-                # Check for C-N bond disconnection (independent of olefination)
-                if not has_cn_disconnection:
-                    # Check for common C-N disconnection reactions
-                    cn_disconnection_reactions = [
-                        "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
-                        "Hydrolysis of amides/imides/carbamates",
-                        "Hydrogenolysis of amides/imides/carbamates",
-                        "Boc amine deprotection",
-                        "N-glutarimide deprotection",
-                        "Phthalimide deprotection",
-                        "Reductive amination with aldehyde",
-                        "Reductive amination with ketone",
-                        "Reductive amination with alcohol",
-                        "Reductive amination",
-                        "N-alkylation of primary amines with alkyl halides",
-                        "N-alkylation of secondary amines with alkyl halides",
-                        "Alkylation of amines",
-                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                        "Acylation of primary amines",
-                        "Acylation of secondary amines",
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
-                        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-                        "Buchwald-Hartwig",
-                        "Urea synthesis via isocyanate and primary amine",
-                        "Urea synthesis via isocyanate and secondary amine",
-                    ]
+                        # If the piperidine structure changed but we didn't catch it with specific checks
+                        elif piperidine_reactant != product:
+                            print(f"Piperidine structure changed at depth {depth}")
+                            print(f"From: {piperidine_reactant}")
+                            print(f"To: {product}")
+                            functionalization_events.append((depth, rsmi))
 
-                    for rxn_type in cn_disconnection_reactions:
-                        if checker.check_reaction(rxn_type, rsmi):
-                            has_cn_disconnection = True
-                            cn_disconnection_depth = depth
-                            print(
-                                f"Detected C-N bond disconnection reaction at depth {depth}: {rxn_type}"
-                            )
-                            break
+            # Check if any reactant contains piperidine but product doesn't
+            elif any(checker.check_ring("piperidine", reactant) for reactant in reactants):
+                print(f"Piperidine transformation at depth {depth}")
+                print(f"Reaction: {rsmi}")
+                functionalization_events.append((depth, rsmi))
 
-                    # If no specific reaction found, check for C-N bond breaking
-                    if not has_cn_disconnection:
-                        try:
-                            # Check if product has nitrogen
-                            product_mol = Chem.MolFromSmiles(product)
-                            if product_mol and "N" in product:
-                                # Check for C-N bond formation in forward direction (disconnection in retro)
-                                cn_bond_pattern = Chem.MolFromSmarts("[#6]-[#7]")
-                                product_cn_bonds = len(
-                                    product_mol.GetSubstructMatches(cn_bond_pattern)
-                                )
+            # Continue traversal
+            for child in node.get("children", []):
+                dfs_traverse(child, depth + 1)
 
-                                # Check if any reactant has fewer C-N bonds
-                                for reactant in reactants:
-                                    reactant_mol = Chem.MolFromSmiles(reactant)
-                                    if reactant_mol is None:
-                                        continue
-
-                                    reactant_cn_bonds = len(
-                                        reactant_mol.GetSubstructMatches(cn_bond_pattern)
-                                    )
-
-                                    # If product has more C-N bonds than reactant, it's a C-N bond formation
-                                    if product_cn_bonds > reactant_cn_bonds:
-                                        has_cn_disconnection = True
-                                        cn_disconnection_depth = depth
-                                        print(
-                                            f"Detected C-N bond formation (disconnection in retro) at depth {depth}"
-                                        )
-                                        break
-
-                                    # Also check for nitrogen-containing functional groups
-                                    n_containing_fgs = [
-                                        "Primary amine",
-                                        "Secondary amine",
-                                        "Tertiary amine",
-                                        "Primary amide",
-                                        "Secondary amide",
-                                        "Tertiary amide",
-                                        "Urea",
-                                        "Thiourea",
-                                        "Aniline",
-                                        "Azide",
-                                        "Nitrile",
-                                        "Nitro group",
-                                        "Isocyanate",
-                                        "Isocyanide",
-                                        "Sulfonamide",
-                                    ]
-
-                                    for fg in n_containing_fgs:
-                                        if checker.check_fg(fg, product) and not checker.check_fg(
-                                            fg, reactant
-                                        ):
-                                            has_cn_disconnection = True
-                                            cn_disconnection_depth = depth
-                                            print(f"Detected {fg} formation at depth {depth}")
-                                            break
-
-                                    if has_cn_disconnection:
-                                        break
-                        except Exception as e:
-                            print(f"Error in C-N disconnection detection: {e}")
-
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
-
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if both reactions were found and in the correct sequence
-    # In retrosynthesis, C-N disconnection should be at a lower or equal depth (later or same stage)
-    # than olefination (earlier stage)
-    correct_sequence = (
-        has_olefination and has_cn_disconnection and cn_disconnection_depth <= olefination_depth
-    )
+    # Analyze results
+    print(f"Found piperidine at {len(piperidine_steps)} steps")
+    print(f"Found {len(functionalization_events)} functionalization events")
 
-    print(f"Olefination found: {has_olefination} at depth {olefination_depth}")
-    print(f"C-N disconnection found: {has_cn_disconnection} at depth {cn_disconnection_depth}")
-    print(f"Correct sequence (C-N after or with olefination in synthesis): {correct_sequence}")
+    # Check if we have a linear piperidine functionalization strategy
+    # Need at least 3 steps with piperidine and at least 2 functionalization events
+    if len(piperidine_steps) >= 3 and len(functionalization_events) >= 2:
+        # Check if the functionalizations occur at different depths
+        functionalization_depths = set(depth for depth, _ in functionalization_events)
+        if len(functionalization_depths) >= 2:
+            print("Found linear piperidine functionalization strategy")
+            return True
 
-    return correct_sequence
+    return False

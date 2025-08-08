@@ -2,68 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes a reductive amination sequence
-    (aldehyde/ketone + amine → amine).
+    This function detects if the synthetic route involves an amine to azide conversion.
     """
-    reductive_amination_detected = False
+    # Flag to track if we found the pattern
+    found_pattern = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal reductive_amination_detected
+    def dfs_traverse(node):
+        nonlocal found_pattern
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        # Only process reaction nodes
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Get reaction SMILES
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
 
-            # Check for reductive amination pattern
-            aldehyde_ketone_pattern = Chem.MolFromSmarts("[C;$(C=O)]")
-            amine_pattern = Chem.MolFromSmarts("[N;!$(N=*);!$(NC=O)]")
+            # Extract reactants and products
+            reactants_str = rsmi.split(">")[0]
+            product_str = rsmi.split(">")[-1]
 
-            # Check if reactants contain aldehyde/ketone and amine
-            has_carbonyl = False
-            has_amine = False
+            # Parse reactants and product
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
+            product = Chem.MolFromSmiles(product_str)
 
-            for r_smiles in reactants_smiles:
-                r_mol = Chem.MolFromSmiles(r_smiles)
-                if r_mol:
-                    if r_mol.HasSubstructMatch(aldehyde_ketone_pattern):
-                        has_carbonyl = True
-                    if r_mol.HasSubstructMatch(amine_pattern):
-                        has_amine = True
+            if product and all(r for r in reactants):
+                # Check for primary amine pattern in reactants
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                has_amine = any(r.HasSubstructMatch(amine_pattern) for r in reactants if r)
 
-            # Check if product has a new C-N bond
-            if has_carbonyl and has_amine:
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if product_mol and product_mol.HasSubstructMatch(amine_pattern):
-                    reductive_amination_detected = True
-                    print(f"Reductive amination detected at depth {depth}")
+                # Check for azide pattern in product
+                azide_pattern = Chem.MolFromSmarts("[N]=[N]=[N]")
+                has_azide_product = product.HasSubstructMatch(azide_pattern) if product else False
 
-        # Traverse children
+                # If we have amine in reactants and azide in product
+                if has_amine and has_azide_product:
+                    print("Found amine to azide conversion")
+                    found_pattern = True
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    return reductive_amination_detected
+    return found_pattern

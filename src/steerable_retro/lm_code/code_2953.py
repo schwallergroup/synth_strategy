@@ -2,70 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route contains a Boc protection followed by deprotection.
+    This function detects the reduction of a carbonyl group to an amine
+    in the synthesis route.
     """
-    boc_protected_intermediates = []
-    boc_deprotection_reactions = []
+    carbonyl_reduction_detected = False
 
     def dfs_traverse(node):
-        nonlocal boc_protected_intermediates, boc_deprotection_reactions
+        nonlocal carbonyl_reduction_detected
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0]
+                reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants.split(".")]
-                product_mol = Chem.MolFromSmiles(product)
+                # Carbonyl pattern
+                carbonyl_pattern = Chem.MolFromSmarts("[#6](=[O])")
 
-                # Boc group pattern
-                boc_pattern = Chem.MolFromSmarts("[C][C]([C])([C])[O][C](=[O])[N]")
+                # Amine pattern
+                amine_pattern = Chem.MolFromSmarts("[#6][NH2]")
 
-                # Check for Boc deprotection
-                has_boc_reactant = any(
-                    mol and mol.HasSubstructMatch(boc_pattern) for mol in reactant_mols
-                )
-                has_boc_product = product_mol and product_mol.HasSubstructMatch(boc_pattern)
+                try:
+                    # Check if any reactant has carbonyl group
+                    carbonyl_present = False
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(carbonyl_pattern):
+                            carbonyl_present = True
+                            break
 
-                if has_boc_reactant and not has_boc_product:
-                    boc_deprotection_reactions.append(node)
-                    print(f"Found Boc deprotection reaction: {rsmi}")
+                    # Check if product has amine group
+                    product_mol = Chem.MolFromSmiles(product)
+                    amine_present = product_mol and product_mol.HasSubstructMatch(amine_pattern)
 
-                # Track Boc-protected intermediates
-                if has_boc_product:
-                    boc_protected_intermediates.append(product)
-                    print(f"Found Boc-protected intermediate: {product}")
+                    if carbonyl_present and amine_present:
+                        print("Detected carbonyl reduction to amine")
+                        carbonyl_reduction_detected = True
+                except:
+                    pass
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if we have both Boc protection and deprotection
-    result = len(boc_protected_intermediates) > 0 and len(boc_deprotection_reactions) > 0
-    print(f"Boc protection/deprotection sequence detected: {result}")
-    return result
+    return carbonyl_reduction_detected

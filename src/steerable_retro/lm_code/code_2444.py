@@ -2,66 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route contains a biaryl formation via Suzuki coupling
-    (reaction between aryl halide and boronic acid).
+    Detects if the route incorporates a cyclopropyl group.
     """
-    found = False
+    found_cyclopropyl = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found
+    def dfs_traverse(node):
+        nonlocal found_cyclopropyl
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for aryl halide and boronic acid in reactants
-                has_aryl_halide = False
-                has_boronic_acid = False
+            # Pattern for cyclopropyl group
+            cyclopropyl_pattern = Chem.MolFromSmarts("[C]1[C][C]1")
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        # Check for aryl halide
-                        if mol.HasSubstructMatch(Chem.MolFromSmarts("[c][Br,I]")):
-                            has_aryl_halide = True
-                        # Check for boronic acid
-                        if mol.HasSubstructMatch(
-                            Chem.MolFromSmarts("[c][B]([O][H])[O][H]")
-                        ) or mol.HasSubstructMatch(Chem.MolFromSmarts("[c][B]([O])[O]")):
-                            has_boronic_acid = True
+            try:
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(cyclopropyl_pattern):
+                    # Check if any reactant has cyclopropyl
+                    has_cyclopropyl_reactant = False
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(cyclopropyl_pattern):
+                            has_cyclopropyl_reactant = True
+                            break
 
-                # Check if product has a biaryl system not present in reactants
-                if has_aryl_halide and has_boronic_acid:
-                    prod_mol = Chem.MolFromSmiles(product)
-                    if prod_mol and prod_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]!@[c]")):
-                        found = True
-                        print(f"Found biaryl formation via Suzuki coupling at depth {depth}")
+                    if has_cyclopropyl_reactant:
+                        found_cyclopropyl = True
+                        print(
+                            f"Found cyclopropyl incorporation at depth {node.get('depth', 'unknown')}"
+                        )
+            except:
+                pass
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return found
+    return found_cyclopropyl

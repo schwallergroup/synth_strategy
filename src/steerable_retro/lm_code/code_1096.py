@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,93 +54,105 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects late-stage amide formation in the synthetic route.
-    Late-stage is defined as reactions occurring at depths 0-2 in the synthesis tree.
+    Detects if heterocycles (pyrazole, pyridine, oxetane) are preserved throughout the synthesis.
     """
-    found_late_amide = False
+    # List of heterocycles to track
+    heterocycles = [
+        "pyrazole",
+        "pyridine",
+        "oxetane",
+        "furan",
+        "thiophene",
+        "imidazole",
+        "thiazole",
+        "oxazole",
+        "isoxazole",
+        "pyrimidine",
+        "piperidine",
+        "morpholine",
+    ]
+
+    # Track heterocycles at each depth and their atom indices
+    heterocycles_at_depth = {}
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_late_amide
+        if node["type"] == "mol":
+            smiles = node.get("smiles", "")
+            if smiles:
+                # Check for each heterocycle
+                for heterocycle in heterocycles:
+                    # Check if molecule contains the heterocycle
+                    has_heterocycle = checker.check_ring(heterocycle, smiles)
 
-        # Check reaction nodes at depths 0-2 (late-stage)
-        if node["type"] == "reaction" and depth <= 2:
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+                    # If heterocycle is found, get its atom indices
+                    if has_heterocycle:
+                        # Get atom indices for the heterocycle
+                        indices = checker.get_ring_atom_indices(heterocycle, smiles)
 
-                # Check if this is an amide formation reaction using the checker
-                amide_formation_reactions = [
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                    "Acyl chloride with ammonia to amide",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acyl chloride with secondary amine to amide",
-                    "Carboxylic acid with primary amine to amide",
-                    "Ester with ammonia to amide",
-                    "Ester with primary amine to amide",
-                    "Ester with secondary amine to amide",
-                    "Schotten-Baumann_amide",
-                ]
+                        # Initialize depth entry if not exists
+                        if depth not in heterocycles_at_depth:
+                            heterocycles_at_depth[depth] = {}
 
-                # Check if any of the amide formation reactions match
-                for reaction_type in amide_formation_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
+                        # Initialize heterocycle entry if not exists
+                        if heterocycle not in heterocycles_at_depth[depth]:
+                            heterocycles_at_depth[depth][heterocycle] = 0
+
+                        # Increment count of this heterocycle at this depth
+                        heterocycles_at_depth[depth][heterocycle] += len(indices)
+
                         print(
-                            f"Found late-stage amide formation reaction: {reaction_type} at depth {depth}"
+                            f"Depth {depth}: Found {heterocycle}, count: {heterocycles_at_depth[depth][heterocycle]}"
                         )
-                        found_late_amide = True
-                        return
 
-                # If no specific reaction matched, check for functional group transformation
-                # Split reactants and check product
-                reactants = reactants_str.split(".")
-                product = product_str
-
-                # Check if product contains amide
-                if (
-                    checker.check_fg("Primary amide", product)
-                    or checker.check_fg("Secondary amide", product)
-                    or checker.check_fg("Tertiary amide", product)
-                ):
-
-                    # Check if reactants contain amide precursors
-                    has_acid_precursor = False
-                    has_amine = False
-
-                    for reactant in reactants:
-                        # Check for carboxylic acid or derivatives
-                        if (
-                            checker.check_fg("Carboxylic acid", reactant)
-                            or checker.check_fg("Acyl halide", reactant)
-                            or checker.check_fg("Ester", reactant)
-                            or checker.check_fg("Anhydride", reactant)
-                        ):
-                            has_acid_precursor = True
-
-                        # Check for amine components
-                        if (
-                            checker.check_fg("Primary amine", reactant)
-                            or checker.check_fg("Secondary amine", reactant)
-                            or checker.check_fg("Aniline", reactant)
-                            or checker.check_fg("Ammonia", reactant)
-                        ):
-                            has_amine = True
-
-                    # If we have both precursors and the product has an amide, it's likely amide formation
-                    if has_acid_precursor and has_amine:
-                        print(
-                            f"Found late-stage amide formation (functional group analysis) at depth {depth}"
-                        )
-                        found_late_amide = True
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            if not found_late_amide:  # Stop traversal if we already found what we're looking for
-                dfs_traverse(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Late-stage amide formation strategy detected: {found_late_amide}")
-    return found_late_amide
+    # Check if heterocycles are preserved throughout
+    if not heterocycles_at_depth:
+        print("No heterocycles found in the route")
+        return False
+
+    max_depth = max(heterocycles_at_depth.keys())
+    print(f"Max depth: {max_depth}")
+    print(f"Heterocycles at each depth: {heterocycles_at_depth}")
+
+    # Get all depths where molecules were found
+    depths = sorted(heterocycles_at_depth.keys())
+
+    # Check if at least two heterocycles are preserved from beginning to end
+    preserved_count = 0
+    for heterocycle in heterocycles:
+        preserved = True
+        # Check if this heterocycle exists at depth 0 (final product)
+        if (
+            0 not in heterocycles_at_depth
+            or heterocycle not in heterocycles_at_depth[0]
+            or heterocycles_at_depth[0][heterocycle] == 0
+        ):
+            preserved = False
+            continue
+
+        # Check if this heterocycle exists at all depths where molecules were found
+        for depth in depths:
+            if (
+                heterocycle not in heterocycles_at_depth[depth]
+                or heterocycles_at_depth[depth][heterocycle] == 0
+            ):
+                preserved = False
+                break
+
+        if preserved:
+            print(f"Heterocycle {heterocycle} is preserved throughout the synthesis")
+            preserved_count += 1
+
+            # Early return if we've found at least two preserved heterocycles
+            if preserved_count >= 2:
+                print(f"Found {preserved_count} preserved heterocycles, returning True")
+                return True
+
+    print(f"Preserved heterocycles count: {preserved_count}")
+    return preserved_count >= 2

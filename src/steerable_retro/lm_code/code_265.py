@@ -2,71 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy with heterocycle formation.
+    Detects if the synthesis involves sequential functionalization of an existing scaffold.
     """
-    linear_synthesis = True
-    heterocycle_formation = False
+    # Count different types of functionalizations
+    functionalization_types = {
+        "protection": False,
+        "oxidation": False,
+        "c_c_bond_formation": False,
+        "functional_group_interconversion": False,
+    }
 
     def dfs_traverse(node):
-        nonlocal linear_synthesis, heterocycle_formation
-
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check if more than 2 reactants (would indicate convergent synthesis)
-            if len(reactants_smiles) > 2:
-                linear_synthesis = False
-                print("Convergent synthesis detected (more than 2 reactants)")
+            # Check for protection (OH to OCH3)
+            if "[OH:" in "".join(reactants) and "[O:" in product and "[CH3:" in product:
+                functionalization_types["protection"] = True
 
-            # Check for heterocycle formation
-            heterocycle_patterns = [
-                Chem.MolFromSmarts("[o;r5]1[c;r5][n;r5][c;r5][c;r5]1"),  # oxazole
-                Chem.MolFromSmarts("[n;r5]1[c;r5][c;r5][c;r5][c;r5]1"),  # pyrrole
-                Chem.MolFromSmarts("[n;r6]1[c;r6][c;r6][c;r6][c;r6][c;r6]1"),  # pyridine
-            ]
+            # Check for oxidation (S to SO2)
+            if "[S:" in "".join(reactants) and "[S:" in product and "=[O:" in product:
+                functionalization_types["oxidation"] = True
 
-            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check for C-C bond formation
+            if "[c:" in product and "[C:" in product and "=[O:" in product:
+                functionalization_types["c_c_bond_formation"] = True
 
-            if product_mol:
-                for pattern in heterocycle_patterns:
-                    if pattern and product_mol.HasSubstructMatch(pattern):
-                        reactants_have_pattern = any(
-                            r and r.HasSubstructMatch(pattern) for r in reactants_mols if r
-                        )
-                        if not reactants_have_pattern:
-                            heterocycle_formation = True
-                            print("Heterocycle formation detected")
+            # Check for functional group interconversion (ketone to acid)
+            if (
+                "[C:" in product
+                and "=[O:" in product
+                and "[OH:" in product
+                and "[CH3:" in "".join(reactants)
+            ):
+                functionalization_types["functional_group_interconversion"] = True
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return linear_synthesis and heterocycle_formation
+    # Count how many different types of functionalizations are present
+    functionalization_count = sum(1 for value in functionalization_types.values() if value)
+
+    # If at least 3 different types of functionalizations, consider it sequential functionalization
+    if functionalization_count >= 3:
+        print(
+            f"Sequential functionalization detected with {functionalization_count} different types"
+        )
+        return True
+    return False

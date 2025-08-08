@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,95 +54,86 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving C-C bond disconnection
-    that produces an aromatic aldehyde fragment.
+    Detects a synthesis strategy involving cyclopropanation in the middle steps
+    followed by late-stage amide formation.
     """
-    has_cc_disconnection = False
-    has_aromatic_aldehyde_fragment = False
+    # Initialize tracking variables
+    has_cyclopropanation = False
+    has_late_amide_formation = False
 
-    def has_carbon_carbon_bond(mol1, mol2, product_mol):
-        """Check if there's a C-C bond between fragments in the product"""
-        if mol1 is None or mol2 is None or product_mol is None:
-            return False
-
-        # Get atom maps from reactants
-        atom_maps1 = {
-            atom.GetIdx(): atom.GetAtomMapNum()
-            for atom in mol1.GetAtoms()
-            if atom.GetAtomMapNum() > 0
-        }
-        atom_maps2 = {
-            atom.GetIdx(): atom.GetAtomMapNum()
-            for atom in mol2.GetAtoms()
-            if atom.GetAtomMapNum() > 0
-        }
-
-        # Get carbon atoms from both reactants
-        carbon_maps1 = {
-            idx: map_num
-            for idx, map_num in atom_maps1.items()
-            if mol1.GetAtomWithIdx(idx).GetSymbol() == "C"
-        }
-        carbon_maps2 = {
-            idx: map_num
-            for idx, map_num in atom_maps2.items()
-            if mol2.GetAtomWithIdx(idx).GetSymbol() == "C"
-        }
-
-        # Check if any carbon in mol1 is bonded to any carbon in mol2 in the product
-        for _, map1 in carbon_maps1.items():
-            for _, map2 in carbon_maps2.items():
-                # Find corresponding atoms in product
-                prod_atoms = [
-                    (atom.GetIdx(), atom.GetAtomMapNum())
-                    for atom in product_mol.GetAtoms()
-                    if atom.GetAtomMapNum() == map1 or atom.GetAtomMapNum() == map2
-                ]
-
-                if len(prod_atoms) == 2:
-                    idx1, _ = prod_atoms[0]
-                    idx2, _ = prod_atoms[1]
-                    bond = product_mol.GetBondBetweenAtoms(idx1, idx2)
-                    if bond is not None:
-                        return True
-        return False
+    # Track reaction depths for sequence analysis
+    cyclopropanation_depth = None
+    amide_formation_depth = None
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_cc_disconnection, has_aromatic_aldehyde_fragment
+        nonlocal has_cyclopropanation, has_late_amide_formation
+        nonlocal cyclopropanation_depth, amide_formation_depth
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # In retrosynthesis, we're looking for reactions where one product
-                # is formed from multiple reactants (C-C bond formation in forward direction)
-                if len(reactants) > 1 and "." not in product:
-                    print(f"Potential C-C disconnection at depth {depth}: {rsmi}")
+                # Check for cyclopropanation
+                # Method 1: Direct reaction check
+                if checker.check_reaction("Diazo addition", rsmi):
+                    print(f"Found cyclopropanation via Diazo addition at depth {depth}")
+                    has_cyclopropanation = True
+                    cyclopropanation_depth = depth
+                # Method 2: Check for diazo reactant and cyclopropane product
+                else:
+                    diazo_present = any(
+                        checker.check_fg("Diazo", reactant) for reactant in reactants
+                    )
+                    if diazo_present and checker.check_ring("cyclopropane", product):
+                        # Verify cyclopropane wasn't already in reactants
+                        reactants_have_cyclopropane = any(
+                            checker.check_ring("cyclopropane", reactant) for reactant in reactants
+                        )
+                        if not reactants_have_cyclopropane:
+                            print(f"Found cyclopropanation with diazo compound at depth {depth}")
+                            has_cyclopropanation = True
+                            cyclopropanation_depth = depth
 
-                    # Check if one of the reactants is an aromatic aldehyde
-                    for reactant in reactants:
-                        if checker.check_fg("Aldehyde", reactant) and checker.check_ring(
-                            "benzene", reactant
-                        ):
-                            has_aromatic_aldehyde_fragment = True
-                            print(
-                                f"Detected aromatic aldehyde fragment at depth {depth}: {reactant}"
+                # Check for amide formation
+                # Method 1: Direct reaction checks for various amide formation reactions
+                amide_formation_reactions = [
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                    "Acyl chloride with secondary amine to amide",
+                    "Carboxylic acid with primary amine to amide",
+                    "Ester with primary amine to amide",
+                    "Ester with secondary amine to amide",
+                ]
+
+                for rxn_name in amide_formation_reactions:
+                    if checker.check_reaction(rxn_name, rsmi):
+                        print(f"Found amide formation ({rxn_name}) at depth {depth}")
+                        has_late_amide_formation = True
+                        amide_formation_depth = depth
+                        break
+
+                # Method 2: Check for amide product that wasn't in reactants
+                if not has_late_amide_formation:
+                    amide_types = ["Primary amide", "Secondary amide", "Tertiary amide"]
+                    product_has_amide = any(
+                        checker.check_fg(amide_type, product) for amide_type in amide_types
+                    )
+
+                    if product_has_amide:
+                        # Check if reactants already had the amide
+                        reactants_have_amide = any(
+                            any(
+                                checker.check_fg(amide_type, reactant) for amide_type in amide_types
                             )
+                            for reactant in reactants
+                        )
 
-                    # Verify C-C bond disconnection by checking pairs of reactants
-                    product_mol = Chem.MolFromSmiles(product)
-                    for i in range(len(reactants)):
-                        for j in range(i + 1, len(reactants)):
-                            mol1 = Chem.MolFromSmiles(reactants[i])
-                            mol2 = Chem.MolFromSmiles(reactants[j])
-                            if has_carbon_carbon_bond(mol1, mol2, product_mol):
-                                has_cc_disconnection = True
-                                print(f"Confirmed C-C bond disconnection at depth {depth}")
-                                break
-                        if has_cc_disconnection:
-                            break
+                        if not reactants_have_amide:
+                            print(f"Found amide formation (FG analysis) at depth {depth}")
+                            has_late_amide_formation = True
+                            amide_formation_depth = depth
 
         # Traverse children
         for child in node.get("children", []):
@@ -148,5 +142,23 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if both key features are detected
-    return has_cc_disconnection and has_aromatic_aldehyde_fragment
+    # Check if the strategy is present:
+    # 1. Both cyclopropanation and amide formation must be detected
+    # 2. Cyclopropanation should occur at a greater depth than amide formation (earlier in synthesis)
+    # 3. Amide formation should be late-stage (depth ≤ 1)
+
+    strategy_present = (
+        has_cyclopropanation
+        and has_late_amide_formation
+        and cyclopropanation_depth is not None
+        and amide_formation_depth is not None
+        and cyclopropanation_depth > amide_formation_depth
+        and amide_formation_depth <= 1
+    )
+
+    print(f"Strategy detection result: {strategy_present}")
+    print(
+        f"Cyclopropanation depth: {cyclopropanation_depth}, Amide formation depth: {amide_formation_depth}"
+    )
+
+    return strategy_present

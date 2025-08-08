@@ -2,79 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route contains an SNAr reaction
-    with a fluorinated aromatic compound.
+    This function detects multiple ester hydrolysis steps in a synthesis route.
     """
-    found_snar = False
+    ester_hydrolysis_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_snar
+    def dfs_traverse(node):
+        nonlocal ester_hydrolysis_count
 
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for SNAr pattern: fluorinated aromatic + nucleophile → substituted product
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    product_mol = Chem.MolFromSmiles(product)
+            # Check for ester pattern in reactants
+            ester_pattern = Chem.MolFromSmarts("C(=O)OC")
+            acid_pattern = Chem.MolFromSmarts("C(=O)O")
+            methanol_pattern = Chem.MolFromSmarts("CO")
 
-                    if reactant_mol and product_mol:
-                        # Pattern for fluorinated aromatic with electron-withdrawing group
-                        fluoro_aromatic = Chem.MolFromSmarts("c([F])")
-                        nitro_aromatic = Chem.MolFromSmarts("c([N+](=[O])[O-])")
+            has_ester = False
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(ester_pattern):
+                        has_ester = True
+                        break
+                except:
+                    continue
 
-                        # Pattern for nitrogen nucleophile in other reactant
-                        nitrogen_nucleophile = Chem.MolFromSmarts("[#7;H,H2]")
+            # Check for acid pattern in product and methanol in reactants
+            has_acid = False
+            has_methanol = False
 
-                        # Pattern for C-N bond in product where F was
-                        cn_bond_product = Chem.MolFromSmarts("c([#7])")
+            try:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol and product_mol.HasSubstructMatch(acid_pattern):
+                    has_acid = True
+            except:
+                pass
 
-                        if (
-                            reactant_mol.HasSubstructMatch(fluoro_aromatic)
-                            and reactant_mol.HasSubstructMatch(nitro_aromatic)
-                            and product_mol.HasSubstructMatch(cn_bond_product)
-                        ):
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.GetNumAtoms() <= 3 and mol.HasSubstructMatch(methanol_pattern):
+                        has_methanol = True
+                except:
+                    continue
 
-                            # Check if any other reactant has nitrogen nucleophile
-                            for other_reactant in reactants:
-                                if other_reactant != reactant:
-                                    other_mol = Chem.MolFromSmiles(other_reactant)
-                                    if other_mol and other_mol.HasSubstructMatch(
-                                        nitrogen_nucleophile
-                                    ):
-                                        print(
-                                            f"Found SNAr with fluorinated aromatic at depth {depth}"
-                                        )
-                                        found_snar = True
+            if has_ester and has_acid:
+                print("Detected ester hydrolysis")
+                ester_hydrolysis_count += 1
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
     dfs_traverse(route)
-    return found_snar
+    return ester_hydrolysis_count >= 2

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,52 +54,55 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects an ester to alcohol reduction in the synthetic route.
+    Detects conversion of an ester to an alcohol
     """
-    found_ester_reduction = False
+    conversion_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_ester_reduction
+        nonlocal conversion_found
 
-        # Check for reaction nodes
         if node["type"] == "reaction":
-            # Get reaction SMILES
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # First check if this is a known ester reduction reaction
-                if checker.check_reaction("Reduction of ester to primary alcohol", rsmi):
-                    print(f"Found ester to alcohol reduction via reaction check: {rsmi}")
-                    found_ester_reduction = True
-                    return
+            print(f"Depth {depth}, Examining reaction: {rsmi}")
 
-                # If reaction check fails, check for functional group transformation
-                # Check if any reactant contains an ester group
-                has_ester_reactant = any(checker.check_fg("Ester", r) for r in reactants)
-                # Check if product contains a primary alcohol
-                has_primary_alcohol_product = checker.check_fg("Primary alcohol", product)
+            # Check if any reactant contains an ester group
+            reactant_has_ester = any(checker.check_fg("Ester", r) for r in reactants)
 
-                if has_ester_reactant and has_primary_alcohol_product:
-                    # Additional check to ensure this is a reduction reaction
-                    # In a reduction, we should not see primary alcohol in reactants
-                    reactants_with_primary_alcohol = sum(
-                        1 for r in reactants if checker.check_fg("Primary alcohol", r)
-                    )
+            # Check if product contains an alcohol group
+            product_has_alcohol = (
+                checker.check_fg("Primary alcohol", product)
+                or checker.check_fg("Secondary alcohol", product)
+                or checker.check_fg("Tertiary alcohol", product)
+            )
 
-                    # If product has more primary alcohols than reactants, it's likely a reduction
-                    if reactants_with_primary_alcohol < has_primary_alcohol_product:
-                        print(f"Found ester to alcohol reduction via functional group check:")
-                        print(f"  Reactants: {reactants}")
-                        print(f"  Product: {product}")
-                        found_ester_reduction = True
+            # Check if this is a reduction reaction
+            is_reduction_reaction = checker.check_reaction(
+                "Reduction of ester to primary alcohol", rsmi
+            )
 
-        # Recursively process children
+            print(f"  Reactant has ester: {reactant_has_ester}")
+            print(f"  Product has alcohol: {product_has_alcohol}")
+            print(f"  Is reduction reaction: {is_reduction_reaction}")
+
+            # If direct reduction reaction is detected
+            if is_reduction_reaction:
+                conversion_found = True
+                print("  Found ester to alcohol conversion via reduction reaction")
+            # Fallback check for ester to alcohol conversion
+            elif reactant_has_ester and product_has_alcohol:
+                # This is a more general check that might catch other reaction types
+                # that convert esters to alcohols
+                conversion_found = True
+                print("  Found ester to alcohol conversion")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    return found_ester_reduction
+    return conversion_found

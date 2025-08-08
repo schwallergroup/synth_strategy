@@ -2,38 +2,37 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves early heterocycle formation
-    followed by late-stage functionalization.
+    This function detects O-deprotection reactions, particularly methoxy to hydroxyl conversion.
     """
-    heterocycle_depth = None
-    functionalization_depths = []
-    max_depth = 0
+    o_deprotection_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal heterocycle_depth, functionalization_depths, max_depth
-
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal o_deprotection_detected
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
@@ -41,63 +40,20 @@ def main(route):
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                product_mol = Chem.MolFromSmiles(product)
-                if not product_mol:
-                    return
+                # Patterns for O-deprotection
+                methoxy_pattern = Chem.MolFromSmarts("[#6][O][CH3]")  # Methoxy group
+                hydroxyl_pattern = Chem.MolFromSmarts("[#6][OH]")  # Hydroxyl group
 
-                # Check for heterocycle formation (pyrazole)
-                pyrazole_patt = Chem.MolFromSmarts("c1nn[c]c1")
-                if product_mol.HasSubstructMatch(pyrazole_patt):
-                    # Check if reactants don't have pyrazole
-                    pyrazole_in_reactants = False
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(pyrazole_patt):
-                            pyrazole_in_reactants = True
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-                    if not pyrazole_in_reactants:
-                        heterocycle_depth = depth
-                        print(f"Detected heterocycle formation at depth {depth}")
-
-                # Check for late functionalizations
-                # 1. Ether formation
-                ether_patt = Chem.MolFromSmarts("[#6]-[#8]-[#6]")
-                # 2. Cyanation
-                nitrile_patt = Chem.MolFromSmarts("C#N")
-                # 3. Formylation
-                aldehyde_patt = Chem.MolFromSmarts("[CX3H1](=O)")
-
-                for patt, name in [
-                    (ether_patt, "ether"),
-                    (nitrile_patt, "nitrile"),
-                    (aldehyde_patt, "aldehyde"),
-                ]:
-                    if product_mol.HasSubstructMatch(patt):
-                        # Check if reactants don't have the pattern
-                        pattern_in_reactants = False
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(patt):
-                                pattern_in_reactants = True
-
-                        if not pattern_in_reactants:
-                            functionalization_depths.append(depth)
-                            print(f"Detected {name} functionalization at depth {depth}")
+                if product_mol and product_mol.HasSubstructMatch(hydroxyl_pattern):
+                    if any(r and r.HasSubstructMatch(methoxy_pattern) for r in reactant_mols):
+                        print("Detected O-deprotection: methoxy to hydroxyl conversion")
+                        o_deprotection_detected = True
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Check if heterocycle formation is early (higher depth) and functionalizations are late (lower depth)
-    if heterocycle_depth is not None and functionalization_depths:
-        early_heterocycle = heterocycle_depth > max_depth / 2
-        late_functionalizations = any(depth < max_depth / 2 for depth in functionalization_depths)
-
-        if early_heterocycle and late_functionalizations:
-            print(
-                f"Confirmed early heterocycle formation (depth {heterocycle_depth}) with late functionalizations"
-            )
-            return True
-
-    return False
+    return o_deprotection_detected

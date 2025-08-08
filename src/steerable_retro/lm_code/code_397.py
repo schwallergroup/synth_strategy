@@ -2,70 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves nitrogen-rich compounds
-    with multiple nitrogen-containing functional groups.
+    This function detects a synthetic strategy that builds complexity around a pyridine scaffold.
     """
-    nitrogen_count = 0
-    n_functional_groups = 0
+    pyridine_core = False
+    elaboration_steps = 0
 
-    def dfs_traverse(node):
-        nonlocal nitrogen_count, n_functional_groups
+    def dfs_traverse(node, depth=0):
+        nonlocal pyridine_core, elaboration_steps
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Count nitrogen atoms
-                for atom in mol.GetAtoms():
-                    if atom.GetAtomicNum() == 7:  # Nitrogen
-                        nitrogen_count += 1
+        if node["type"] == "mol":
+            # Check if molecule contains pyridine core
+            if "smiles" in node:
+                try:
+                    mol = Chem.MolFromSmiles(node["smiles"])
+                    if mol:
+                        pyridine_pattern = Chem.MolFromSmarts(
+                            "[n;r6]1[c;r6][c;r6][c;r6][c;r6][c;r6]1"
+                        )
+                        if mol.HasSubstructMatch(pyridine_pattern):
+                            pyridine_core = True
+                except:
+                    print("Error processing SMILES in pyridine detection")
 
-                # Check for nitrogen-containing functional groups
-                n_functional_groups_patterns = [
-                    Chem.MolFromSmarts("[NX3]"),  # amine
-                    Chem.MolFromSmarts("[NX3][NX3]"),  # hydrazine
-                    Chem.MolFromSmarts("[#7]=[#6]=[#8]"),  # isocyanate
-                    Chem.MolFromSmarts("[NX3][CX3]=[O]"),  # amide
-                    Chem.MolFromSmarts("[NX3+](=[O])[O-]"),  # nitro
-                    Chem.MolFromSmarts("[n]"),  # aromatic nitrogen
-                ]
+        elif node["type"] == "reaction":
+            if pyridine_core:
+                elaboration_steps += 1
 
-                for pattern in n_functional_groups_patterns:
-                    if mol.HasSubstructMatch(pattern):
-                        n_functional_groups += 1
-
-        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
     dfs_traverse(route)
 
-    # Consider it nitrogen-rich if it has at least 3 nitrogen atoms and 2 different N-functional groups
-    is_nitrogen_rich = nitrogen_count >= 3 and n_functional_groups >= 2
-    if is_nitrogen_rich:
-        print(
-            f"Nitrogen-rich synthesis detected: {nitrogen_count} N atoms, {n_functional_groups} N-functional groups"
-        )
+    # Return True if we have a pyridine core and at least 2 elaboration steps
+    result = pyridine_core and elaboration_steps >= 2
+    if result:
+        print(f"Pyridine elaboration strategy detected with {elaboration_steps} steps")
 
-    return is_nitrogen_rich
+    return result

@@ -2,65 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves construction of a morpholine core
-    through a ring-forming reaction.
+    This function detects a synthetic strategy involving multiple ether formations.
     """
-    found_morpholine_formation = False
+    # Track ether formations
+    ether_formations = 0
 
-    def dfs_traverse(node):
-        nonlocal found_morpholine_formation
+    def dfs_traverse(node, depth=0):
+        nonlocal ether_formations
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-            product_mol = Chem.MolFromSmiles(product)
+                # Check for phenol in reactants
+                phenol_pattern = Chem.MolFromSmarts("[OH][c]")
+                alkyl_halide_pattern = Chem.MolFromSmarts("[#6][Cl,Br,I]")
 
-            # Look for morpholine ring in product
-            morpholine_pattern = Chem.MolFromSmarts("[NX3]1-[CX4]-[CX4]-[OX2]-[CX4]-[CX4]-1")
+                phenol_found = False
+                alkyl_halide_found = False
 
-            # Check if morpholine is in product but not in all reactants
-            has_morpholine_product = product_mol is not None and product_mol.HasSubstructMatch(
-                morpholine_pattern
-            )
-            all_reactants_have_morpholine = all(
-                mol is not None and mol.HasSubstructMatch(morpholine_pattern)
-                for mol in reactant_mols
-                if mol is not None
-            )
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(phenol_pattern):
+                            phenol_found = True
+                        if mol and mol.HasSubstructMatch(alkyl_halide_pattern):
+                            alkyl_halide_found = True
+                    except:
+                        continue
 
-            if has_morpholine_product and not all_reactants_have_morpholine:
-                found_morpholine_formation = True
-                print("Found morpholine ring formation step")
+                # Check if product has new ether bond
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    ether_pattern = Chem.MolFromSmarts("[c][O][#6]")
+                    if product_mol.HasSubstructMatch(ether_pattern):
+                        if phenol_found and alkyl_halide_found:
+                            print(f"Found ether formation at depth {depth}")
+                            ether_formations += 1
 
-        # Continue traversing
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-
-    return found_morpholine_formation
+    return ether_formations >= 2

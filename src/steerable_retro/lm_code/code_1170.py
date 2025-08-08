@@ -2,51 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis incorporates a 4-cyanoaniline fragment.
+    Detects if the synthesis follows a predominantly linear strategy.
     """
-    cyanoaniline_used = False
+    # Count branching points and total reactions in the synthesis route
+    branching_points = 0
+    total_reactions = 0
 
-    def dfs_traverse(node):
-        nonlocal cyanoaniline_used
+    def analyze_structure(node):
+        nonlocal branching_points, total_reactions
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            total_reactions += 1
+            # If a reaction node has more than 2 children, it's a branching point
+            if len(node.get("children", [])) > 2:
+                branching_points += 1
 
-                # Check for 4-cyanoaniline fragment
-                cyanoaniline_pattern = Chem.MolFromSmarts("c1cc(N)ccc1C#N")
-
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(cyanoaniline_pattern):
-                        cyanoaniline_used = True
-                        print("4-Cyanoaniline fragment detected")
-
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            analyze_structure(child)
 
-    dfs_traverse(route)
+    # Start DFS traversal
+    analyze_structure(route)
 
-    return cyanoaniline_used
+    # A linear synthesis should have minimal branching and sufficient steps
+    is_linear = branching_points <= 1 and total_reactions >= 3
+    print(f"Synthesis has {branching_points} branching points and {total_reactions} reactions")
+    if is_linear:
+        print("Linear synthesis strategy detected")
+
+    return is_linear

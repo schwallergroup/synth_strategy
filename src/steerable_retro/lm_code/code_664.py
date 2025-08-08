@@ -2,48 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
-    # Track if we've found a stereocenter in an early step
-    early_stereocenter = False
-    linear_steps = 0
+    """
+    Detects the use of a Grignard reaction to introduce an alkyl chain to an aromatic ring,
+    specifically looking for replacement of aryl-Cl with aryl-alkyl.
+    """
+    grignard_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal early_stereocenter, linear_steps
+    def dfs_traverse(node):
+        nonlocal grignard_found
 
-        if node["type"] == "reaction":
-            linear_steps += 1
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                product_smiles = rsmi.split(">")[-1]
+            # Check if one reactant contains "MgCl" or similar Grignard reagent pattern
+            grignard_reactant = False
+            for reactant in reactants:
+                if "[Mg]" in reactant and "Cl" in reactant:
+                    grignard_reactant = True
+                    break
 
-                # Check for stereochemistry in early steps (depth >= 3)
-                if depth >= 3 and "@" in product_smiles:
-                    print(f"Detected stereocenter in early step at depth {depth}")
-                    early_stereocenter = True
+            if grignard_reactant:
+                # Check for aryl-Cl to aryl-alkyl transformation
+                aryl_chloride_pattern = Chem.MolFromSmarts("c-Cl")
 
+                # Find the non-Grignard reactant
+                for reactant in reactants:
+                    if "[Mg]" not in reactant:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(aryl_chloride_pattern):
+                            product_mol = Chem.MolFromSmiles(product)
+
+                            # Check if product has alkyl chain where chloride was
+                            if product_mol:
+                                alkyl_chain_pattern = Chem.MolFromSmarts("c-C-C-C")
+                                if product_mol.HasSubstructMatch(alkyl_chain_pattern):
+                                    grignard_found = True
+                                    print("Found Grignard reaction introducing alkyl chain")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    # Return True if we have a linear synthesis (4+ steps) with early stereocenter
-    return linear_steps >= 4 and early_stereocenter
+
+    return grignard_found

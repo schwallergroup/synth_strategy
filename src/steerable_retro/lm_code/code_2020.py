@@ -2,49 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route follows a linear strategy rather than convergent.
+    Detects if the synthesis route involves multiple nitrogen-containing
+    heterocycles (pyrimidine, pyrazole, etc.).
     """
-    max_branching = 0
-
-    def count_reactants(rsmi):
-        reactants = rsmi.split(">")[0].split(".")
-        return len(reactants)
+    heterocycle_count = 0
 
     def dfs_traverse(node):
-        nonlocal max_branching
+        nonlocal heterocycle_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            num_reactants = count_reactants(rsmi)
-            max_branching = max(max_branching, num_reactants)
+        if node["type"] == "mol":
+            smiles = node.get("smiles", "")
+            if smiles:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    # Check for pyrimidine
+                    pyrimidine_pattern = Chem.MolFromSmarts("n1cnccc1")
+                    # Check for pyrazole
+                    pyrazole_pattern = Chem.MolFromSmarts("n1ncc[c,n]1")
+                    # Check for piperidine
+                    piperidine_pattern = Chem.MolFromSmarts("N1CCCCC1")
 
+                    unique_heterocycles = 0
+                    if mol.HasSubstructMatch(pyrimidine_pattern):
+                        unique_heterocycles += 1
+                    if mol.HasSubstructMatch(pyrazole_pattern):
+                        unique_heterocycles += 1
+                    if mol.HasSubstructMatch(piperidine_pattern):
+                        unique_heterocycles += 1
+
+                    heterocycle_count = max(heterocycle_count, unique_heterocycles)
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # If max_branching <= 2, it's likely a linear synthesis
-    is_linear = max_branching <= 2
-    print(f"Maximum branching: {max_branching}, Is linear: {is_linear}")
-    return is_linear
+    return heterocycle_count >= 2  # Return True if at least 2 different heterocycles detected

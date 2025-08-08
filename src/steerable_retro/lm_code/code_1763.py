@@ -2,71 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a nucleophilic substitution
-    between a thiol and a benzyl chloride.
+    This function detects if the synthetic route involves nitrile-mediated heterocycle formation,
+    where a nitrile group is maintained through multiple steps before being used in cyclization.
     """
-    thiol_benzyl_cl_coupling = False
+    nitrile_present_steps = 0
+    nitrile_used_in_cyclization = False
 
     def dfs_traverse(node):
-        nonlocal thiol_benzyl_cl_coupling
+        nonlocal nitrile_present_steps, nitrile_used_in_cyclization
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Check for thiol pattern in reactants
-            thiol_pattern = Chem.MolFromSmarts("[SH]")
-            benzyl_cl_pattern = Chem.MolFromSmarts("[#6][CH2]Cl")
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-            thiol_present = False
-            benzyl_cl_present = False
+            if product_mol and all(r for r in reactant_mols if r):
+                # Check for nitrile presence
+                nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
+                pyrazole_pattern = Chem.MolFromSmarts("c1[n]n[c]c1")
 
-            for r_smi in reactants_smiles:
-                try:
-                    r_mol = Chem.MolFromSmiles(r_smi)
-                    if r_mol:
-                        if r_mol.HasSubstructMatch(thiol_pattern):
-                            thiol_present = True
-                        if r_mol.HasSubstructMatch(benzyl_cl_pattern):
-                            benzyl_cl_present = True
-                except:
-                    continue
+                reactants_have_nitrile = any(
+                    r.HasSubstructMatch(nitrile_pattern) for r in reactant_mols if r
+                )
+                product_has_nitrile = product_mol.HasSubstructMatch(nitrile_pattern)
 
-            # Check if product has C-S bond where the thiol and benzyl chloride connected
-            if thiol_present and benzyl_cl_present:
-                try:
-                    p_mol = Chem.MolFromSmiles(product_smiles)
-                    cs_bond_pattern = Chem.MolFromSmarts("[#6][CH2][S][#6]")
-                    if p_mol and p_mol.HasSubstructMatch(cs_bond_pattern):
-                        thiol_benzyl_cl_coupling = True
-                        print("Detected thiol-benzyl chloride coupling")
-                except:
-                    pass
+                # Count steps where nitrile is present
+                if reactants_have_nitrile or product_has_nitrile:
+                    nitrile_present_steps += 1
 
+                # Check if nitrile is used in heterocycle formation
+                if (
+                    reactants_have_nitrile
+                    and not product_has_nitrile
+                    and product_mol.HasSubstructMatch(pyrazole_pattern)
+                ):
+                    print("Nitrile used in heterocycle formation")
+                    nitrile_used_in_cyclization = True
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return thiol_benzyl_cl_coupling
+
+    # Return True if nitrile is present in multiple steps and used in cyclization
+    return nitrile_present_steps >= 2 and nitrile_used_in_cyclization

@@ -2,83 +2,100 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves interconversion
-    between aldehydes and vinyl ethers.
+    Detects the use of silyl protection of hydroxyl groups
     """
-    # Track if we found the pattern
-    found_interconversion = False
+    silyl_protection_found = False
 
     def dfs_traverse(node):
-        nonlocal found_interconversion
+        nonlocal silyl_protection_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and not silyl_protection_found:
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for aldehyde pattern
-            aldehyde_pattern = "[#6]-[#6H1]=[O]"
-            # Check for vinyl ether pattern
-            vinyl_ether_pattern = "[#6]-[#8]-[#6]=[#6]"
+                # Primary check: Use the reaction checker
+                if checker.check_reaction("Alcohol protection with silyl ethers", rsmi):
+                    silyl_protection_found = True
+                    print(f"Found silyl protection reaction: {rsmi}")
+                else:
+                    # Fallback: Check for alcohol in reactants and silyl ether in product
+                    reactant_has_alcohol = any(
+                        checker.check_fg("Primary alcohol", r)
+                        or checker.check_fg("Secondary alcohol", r)
+                        or checker.check_fg("Tertiary alcohol", r)
+                        or checker.check_fg("Aromatic alcohol", r)
+                        for r in reactants
+                    )
 
-            # Check for aldehyde to vinyl ether conversion
-            reactant_has_aldehyde = False
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(Chem.MolFromSmarts(aldehyde_pattern)):
-                    reactant_has_aldehyde = True
-                    break
+                    product_has_silyl = checker.check_fg(
+                        "Silyl protective group", product
+                    ) or checker.check_fg("TMS ether protective group", product)
 
-            product_mol = Chem.MolFromSmiles(product)
-            product_has_vinyl_ether = product_mol and product_mol.HasSubstructMatch(
-                Chem.MolFromSmarts(vinyl_ether_pattern)
-            )
+                    if reactant_has_alcohol and product_has_silyl:
+                        silyl_protection_found = True
+                        print(f"Found silyl protection (functional group analysis): {rsmi}")
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
 
-            if reactant_has_aldehyde and product_has_vinyl_ether:
-                print("Found aldehyde to vinyl ether conversion")
-                found_interconversion = True
-
-            # Check for vinyl ether to aldehyde conversion
-            reactant_has_vinyl_ether = False
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(Chem.MolFromSmarts(vinyl_ether_pattern)):
-                    reactant_has_vinyl_ether = True
-                    break
-
-            product_has_aldehyde = product_mol and product_mol.HasSubstructMatch(
-                Chem.MolFromSmarts(aldehyde_pattern)
-            )
-
-            if reactant_has_vinyl_ether and product_has_aldehyde:
-                print("Found vinyl ether to aldehyde conversion")
-                found_interconversion = True
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-    return found_interconversion
+
+    return silyl_protection_found

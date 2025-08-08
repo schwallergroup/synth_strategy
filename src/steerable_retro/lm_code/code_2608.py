@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,101 +54,61 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis uses a late-stage thioether coupling strategy
-    to connect two complex fragments.
+    This function detects a synthetic strategy involving thiazole heterocycle formation
+    from fragment coupling.
     """
-    late_stage_thioether_coupling_found = False
+    found_thiazole_formation = False
 
     def dfs_traverse(node):
-        nonlocal late_stage_thioether_coupling_found
+        nonlocal found_thiazole_formation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            metadata = node.get("metadata", {})
+            rsmi = metadata.get("rsmi", "")
+            if not rsmi:
+                return
 
-            # Extract depth from ID - default to late stage (0) if not specified
-            depth = 0  # Default to low depth (late stage)
-            id_str = node.get("metadata", {}).get("ID", "")
-            if "Depth:" in id_str:
-                try:
-                    depth = int(id_str.split("Depth:")[1].strip().split()[0])
-                except (ValueError, IndexError):
-                    pass
+            parts = rsmi.split(">")
+            if len(parts) < 3:
+                return
 
-            print(f"Checking reaction at depth {depth}: {rsmi}")
+            reactants_smiles = parts[0].split(".")
+            product_smiles = parts[2]
 
-            # Consider depths 0, 1, and 2 as late-stage
-            if depth <= 2:
-                # Check if this is a thioether coupling reaction
-                is_thioether_reaction = (
-                    checker.check_reaction("thioether_nucl_sub", rsmi)
-                    or checker.check_reaction("S-alkylation of thiols", rsmi)
-                    or checker.check_reaction("S-alkylation of thiols with alcohols", rsmi)
-                    or checker.check_reaction("S-alkylation of thiols (ethyl)", rsmi)
+            # Check if this is a thiazole formation reaction
+            if checker.check_reaction("thiazole", rsmi):
+                print(f"Found thiazole formation reaction: {rsmi}")
+                found_thiazole_formation = True
+                return
+
+            # Alternative check: look for thiazole ring formation
+            product_has_thiazole = checker.check_ring("thiazole", product_smiles)
+
+            if product_has_thiazole:
+                # Check if any reactant already has a thiazole ring
+                reactants_have_thiazole = any(
+                    checker.check_ring("thiazole", r) for r in reactants_smiles if r
                 )
 
-                # Check if product contains a thioether (monosulfide)
-                has_thioether_product = checker.check_fg("Monosulfide", product)
+                if not reactants_have_thiazole:
+                    print(f"Found thiazole formation from fragment coupling")
+                    print(f"Reactants: {reactants_smiles}")
+                    print(f"Product: {product_smiles}")
+                    found_thiazole_formation = True
 
-                # Check if thioether is newly formed (not present in reactants)
-                thioether_in_reactants = any(checker.check_fg("Monosulfide", r) for r in reactants)
-
-                # Check for thiol reactant (required for thioether formation)
-                has_thiol_reactant = any(
-                    checker.check_fg("Aromatic thiol", r) or checker.check_fg("Aliphatic thiol", r)
-                    for r in reactants
-                )
-
-                # Check for thiocarbonyl reactant (can be converted to thioether)
-                has_thiocarbonyl_reactant = any(
-                    checker.check_fg("Thiocarbonyl", r) for r in reactants
-                )
-
-                # Check if coupling connects complex fragments
-                complex_fragments = 0
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
+                    # Additional check for specific reaction patterns
+                    # Check for common thiazole formation reactions if not already detected
                     if (
-                        mol and mol.GetNumHeavyAtoms() >= 8
-                    ):  # Define "complex" as having 8+ heavy atoms
-                        complex_fragments += 1
-                connects_complex_fragments = complex_fragments >= 1
-
-                print(f"  Thioether reaction: {is_thioether_reaction}")
-                print(f"  Has thioether product: {has_thioether_product}")
-                print(f"  Thioether in reactants: {thioether_in_reactants}")
-                print(f"  Has thiol reactant: {has_thiol_reactant}")
-                print(f"  Has thiocarbonyl reactant: {has_thiocarbonyl_reactant}")
-                print(f"  Complex fragments: {complex_fragments}")
-
-                # Check for the specific case: thiocarbonyl to thioether conversion
-                if (
-                    has_thioether_product
-                    and has_thiocarbonyl_reactant
-                    and not thioether_in_reactants
-                    and connects_complex_fragments
-                ):
-                    print(f"  Special case: Thiocarbonyl to thioether conversion at depth {depth}")
-                    print(f"  Product: {product}")
-                    print(f"  Reactants: {reactants}")
-                    late_stage_thioether_coupling_found = True
-
-                # If all conditions are met, we've found a late-stage thioether coupling
-                elif (
-                    is_thioether_reaction
-                    and has_thioether_product
-                    and (has_thiol_reactant or has_thiocarbonyl_reactant)
-                    and not thioether_in_reactants
-                    and connects_complex_fragments
-                ):
-                    print(f"  Late-stage thioether coupling found at depth {depth}")
-                    late_stage_thioether_coupling_found = True
+                        checker.check_reaction("benzothiazole", rsmi)
+                        or checker.check_reaction(
+                            "benzothiazole_derivatives_carboxylic-acid/ester", rsmi
+                        )
+                        or checker.check_reaction("benzothiazole_derivatives_aldehyde", rsmi)
+                    ):
+                        print(f"Confirmed specific thiazole formation reaction type")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    print(f"Late-stage thioether coupling detected: {late_stage_thioether_coupling_found}")
-    return late_stage_thioether_coupling_found
+    return found_thiazole_formation

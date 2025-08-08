@@ -2,92 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a sequence of
-    transformations from carboxylic acid to ester to alcohol to mesylate.
+    This function detects if the synthesis involves the formation of a benzothiophene ring
+    from non-ring precursors (typically involving an aldehyde and a thiol).
     """
-    # Track if we've seen each functional group transformation
-    acid_to_ester = False
-    ester_to_alcohol = False
-    alcohol_to_mesylate = False
+    # Initialize tracking variable
+    benzothiophene_formed = False
 
-    # SMARTS patterns for functional groups
-    carboxylic_acid_pattern = Chem.MolFromSmarts("[#6][C](=[O])[O;H]")
-    methyl_ester_pattern = Chem.MolFromSmarts("[#6][C](=[O])[O][C;H3]")
-    alcohol_pattern = Chem.MolFromSmarts("[#6][C;H2][O;H]")
-    mesylate_pattern = Chem.MolFromSmarts("[#6][C;H2][O][S](=[O])(=[O])[C;H3]")
+    # Define SMARTS patterns
+    benzothiophene_pattern = Chem.MolFromSmarts("c1ccc2sccc2c1")
+    aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
+    thiol_pattern = Chem.MolFromSmarts("[SH]")
 
     def dfs_traverse(node):
-        nonlocal acid_to_ester, ester_to_alcohol, alcohol_to_mesylate
+        nonlocal benzothiophene_formed
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for benzothiophene formation
+                product_mol = Chem.MolFromSmiles(product)
 
-            if reactants_mol and product_mol:
-                # Check for acid to ester transformation
-                if (
-                    reactants_mol.HasSubstructMatch(carboxylic_acid_pattern)
-                    and product_mol.HasSubstructMatch(methyl_ester_pattern)
-                    and not reactants_mol.HasSubstructMatch(methyl_ester_pattern)
-                ):
-                    acid_to_ester = True
-                    print("Carboxylic acid to ester transformation detected")
+                if product_mol and product_mol.HasSubstructMatch(benzothiophene_pattern):
+                    # Check if reactants contain aldehyde and thiol
+                    has_aldehyde = False
+                    has_thiol = False
 
-                # Check for ester to alcohol transformation
-                if (
-                    reactants_mol.HasSubstructMatch(methyl_ester_pattern)
-                    and product_mol.HasSubstructMatch(alcohol_pattern)
-                    and not reactants_mol.HasSubstructMatch(alcohol_pattern)
-                ):
-                    ester_to_alcohol = True
-                    print("Ester to alcohol transformation detected")
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if reactant_mol.HasSubstructMatch(aldehyde_pattern):
+                                has_aldehyde = True
+                            if reactant_mol.HasSubstructMatch(thiol_pattern):
+                                has_thiol = True
 
-                # Check for alcohol to mesylate transformation
-                if (
-                    reactants_mol.HasSubstructMatch(alcohol_pattern)
-                    and product_mol.HasSubstructMatch(mesylate_pattern)
-                    and not reactants_mol.HasSubstructMatch(mesylate_pattern)
-                ):
-                    alcohol_to_mesylate = True
-                    print("Alcohol to mesylate transformation detected")
+                    if has_aldehyde and has_thiol:
+                        benzothiophene_formed = True
+                        print("Found benzothiophene formation from aldehyde and thiol")
 
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if the complete sequence is present
-    sequence_present = acid_to_ester and ester_to_alcohol and alcohol_to_mesylate
-
-    if sequence_present:
-        print("Complete carboxylic acid → ester → alcohol → mesylate sequence detected")
-
-    return sequence_present
+    return benzothiophene_formed

@@ -2,62 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis maintains stereochemistry throughout the route
-    by tracking stereochemical notations.
+    Detects O-methylation protection of hydroxyl groups in the synthesis route.
     """
-    has_stereocenter = False
-    preserves_stereocenter = True
+    protection_found = False
 
     def dfs_traverse(node):
-        nonlocal has_stereocenter, preserves_stereocenter
+        nonlocal protection_found
 
-        if node["type"] == "mol" and "smiles" in node:
-            # Check for stereochemical notation in SMILES
-            if "@" in node["smiles"]:
-                has_stereocenter = True
-                print(f"Detected stereocenter in molecule: {node['smiles']}")
-
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0]
-            products = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # If reactants have stereochemistry but products don't, stereochemistry is lost
-            if "@" in reactants and "@" not in products:
-                preserves_stereocenter = False
-                print(
-                    f"Stereochemistry lost in reaction at depth {node['metadata'].get('depth', 'unknown')}"
-                )
+            # Check for OH to OCH3 transformation
+            reactant_mol = None
+            for r in reactants:
+                if "[OH:" in r:
+                    reactant_mol = Chem.MolFromSmiles(r)
+                    break
+
+            if reactant_mol and "[O:" in product and "[CH3:" in product:
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    # Check if this is an O-methylation
+                    for atom in reactant_mol.GetAtoms():
+                        if atom.GetSymbol() == "O" and atom.GetTotalNumHs() > 0:
+                            protection_found = True
+                            print("O-methylation protection detected")
+                            break
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Only return True if there is a stereocenter and it's preserved
-    result = has_stereocenter and preserves_stereocenter
-    print(
-        f"Route {'has and preserves stereocenters' if result else 'does not have or does not preserve stereocenters'}"
-    )
-    return result
+    return protection_found

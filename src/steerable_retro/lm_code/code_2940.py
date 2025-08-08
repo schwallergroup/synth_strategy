@@ -2,158 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if a complex polycyclic core structure is preserved throughout the synthesis.
-
-    This strategy checks if a polycyclic core (multiple fused rings) is maintained throughout
-    the main synthetic pathway, ignoring starting materials and reagents.
+    This function detects if an early stage of the synthesis involves
+    formation of a sulfonamide bond.
     """
-    # Track molecules in the main synthetic pathway
-    main_pathway_mols = []
+    has_sulfonamide_formation = False
 
-    # Function to check if a molecule has a polycyclic core and identify which ones
-    def identify_polycyclic_cores(mol_smiles):
-        mol = Chem.MolFromSmiles(mol_smiles)
-        if not mol:
-            print(f"Could not parse molecule: {mol_smiles}")
-            return []
-
-        # Check for common polycyclic ring systems
-        polycyclic_rings = [
-            "naphthalene",
-            "anthracene",
-            "purine",
-            "carbazole",
-            "acridine",
-            "phenothiazine",
-            "phenoxazine",
-            "dibenzofuran",
-            "dibenzothiophene",
-            "xanthene",
-            "thioxanthene",
-        ]
-
-        found_cores = []
-        for ring in polycyclic_rings:
-            if checker.check_ring(ring, mol_smiles):
-                print(f"Found polycyclic core ({ring}) in: {mol_smiles}")
-                found_cores.append(ring)
-
-        # If no predefined cores found, check for fused ring systems using RingInfo
-        if not found_cores:
-            ri = mol.GetRingInfo()
-            if ri.NumRings() >= 2:
-                # Check if rings share atoms (indicating fusion)
-                rings = ri.AtomRings()
-                for i in range(len(rings)):
-                    for j in range(i + 1, len(rings)):
-                        # Check if rings share any atoms (indicating fusion)
-                        if set(rings[i]).intersection(set(rings[j])):
-                            print(f"Found generic fused ring system in: {mol_smiles}")
-                            found_cores.append("fused_rings")
-                            break
-                    if "fused_rings" in found_cores:
-                        break
-
-        return found_cores
-
-    # DFS traversal with depth tracking
     def dfs_traverse(node, depth=0):
-        if node["type"] == "mol" and node["smiles"]:
-            # Skip explicitly marked starting materials
-            if node.get("in_stock", False):
-                print(f"Skipping starting material: {node['smiles']}")
-                return
+        nonlocal has_sulfonamide_formation
 
-            # Add to main pathway if not a starting material
-            cores = identify_polycyclic_cores(node["smiles"])
-            main_pathway_mols.append(
-                {"smiles": node["smiles"], "depth": depth, "polycyclic_cores": cores}
-            )
+        if node["type"] == "reaction" and depth >= 2:  # Early stage (depth 2 or greater)
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        # Traverse children
+            # Check if one reactant is a sulfonyl chloride
+            sulfonyl_chloride_pattern = Chem.MolFromSmarts("[SX4](=[OX1])(=[OX1])[Cl]")
+            amine_pattern = Chem.MolFromSmarts("[NX3;H2,H1]")
+            sulfonamide_pattern = Chem.MolFromSmarts("[NX3][SX4](=[OX1])(=[OX1])[#6]")
+
+            has_sulfonyl_chloride = False
+            has_amine = False
+
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(sulfonyl_chloride_pattern):
+                        has_sulfonyl_chloride = True
+                    if mol and mol.HasSubstructMatch(amine_pattern):
+                        has_amine = True
+                except:
+                    continue
+
+            # Check if product has sulfonamide bond
+            try:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                has_sulfonamide = product_mol and product_mol.HasSubstructMatch(sulfonamide_pattern)
+            except:
+                has_sulfonamide = False
+
+            if has_sulfonyl_chloride and has_amine and has_sulfonamide:
+                print(f"Detected early-stage sulfonamide formation at depth {depth}")
+                has_sulfonamide_formation = True
+
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-
-    # If no main pathway molecules found, return False
-    if not main_pathway_mols:
-        print("No main pathway molecules found")
-        return False
-
-    # Sort by depth (target molecule has lowest depth)
-    main_pathway_mols.sort(key=lambda x: x["depth"])
-    target_mol = main_pathway_mols[0]
-
-    # Check if the target molecule has a polycyclic core
-    if not target_mol["polycyclic_cores"]:
-        print("Target molecule does not have a polycyclic core")
-        return False
-
-    # Check if at least one of the target's polycyclic cores is preserved in intermediates
-    preserved_cores = []
-    for core in target_mol["polycyclic_cores"]:
-        # Check if this core appears in any intermediate
-        for mol in main_pathway_mols[1:]:
-            if core in mol["polycyclic_cores"]:
-                preserved_cores.append(core)
-                break
-
-    if not preserved_cores:
-        print("No polycyclic cores are preserved in intermediates")
-        return False
-
-    print(
-        f"Found {len(preserved_cores)} polycyclic cores preserved throughout synthesis: {preserved_cores}"
-    )
-    return True
+    return has_sulfonamide_formation

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,69 +54,82 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis route involves amide bond formation.
+    Detects if a methoxy group is preserved throughout the entire synthesis route.
     """
-    amide_formation = False
+    # Track if we've found a methoxy group that's preserved
+    target_has_methoxy = False
+    all_methoxy_preserved = True
 
-    def dfs_traverse(node):
-        nonlocal amide_formation
+    def dfs_traverse(node, depth=0):
+        nonlocal target_has_methoxy, all_methoxy_preserved
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+
+            # Check if molecule has a methoxy group
+            # Using the checker function to detect ether and then confirming it's a methoxy
+            has_methoxy = False
+            if checker.check_fg("Ether", mol_smiles):
+                mol = Chem.MolFromSmiles(mol_smiles)
+                if mol:
+                    # Look for -OCH3 pattern (methoxy group)
+                    methoxy_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6H3]")
+                    has_methoxy = mol.HasSubstructMatch(methoxy_pattern)
+
+            # If this is the target molecule (depth 0) and it has a methoxy group
+            if depth == 0:
+                if has_methoxy:
+                    print(f"Target molecule has methoxy group: {mol_smiles}")
+                    target_has_methoxy = True
+                else:
+                    print(f"Target molecule does not have methoxy group: {mol_smiles}")
+                    # If target doesn't have methoxy, no need to check preservation
+                    return
+
+            # If this is a starting material, check if it has methoxy
+            if node.get("in_stock", False) and has_methoxy:
+                print(f"Starting material has methoxy group: {mol_smiles}")
+
+        elif node["type"] == "reaction" and target_has_methoxy:
+            # Check if the methoxy group is preserved in this reaction
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
 
-                # Check for specific amide formation reaction types
-                amide_formation_reactions = [
-                    "Carboxylic acid with primary amine to amide",
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acyl chloride with secondary amine to amide",
-                    "Ester with primary amine to amide",
-                    "Ester with secondary amine to amide",
-                    "Ester with ammonia to amide",
-                    "Acyl chloride with ammonia to amide",
-                    "Schotten-Baumann_amide",
-                ]
+                # Check if product has methoxy
+                product_has_methoxy = False
+                if checker.check_fg("Ether", product):
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        methoxy_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6H3]")
+                        product_has_methoxy = product_mol.HasSubstructMatch(methoxy_pattern)
 
-                for reaction_type in amide_formation_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        amide_formation = True
-                        print(f"Amide formation detected via {reaction_type}: {rsmi}")
-                        return
+                # Check if at least one reactant has methoxy
+                reactant_has_methoxy = False
+                for r in reactants:
+                    if checker.check_fg("Ether", r):
+                        reactant_mol = Chem.MolFromSmiles(r)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(
+                            Chem.MolFromSmarts("[#6]-[#8]-[#6H3]")
+                        ):
+                            reactant_has_methoxy = True
+                            break
 
-                # Fallback to pattern matching if specific reaction types aren't detected
-                # Check for carboxylic acid in reactants
-                has_acid = any(checker.check_fg("Carboxylic acid", r) for r in reactants)
+                # In retrosynthesis, product is what we're making and reactants are what we're breaking down to
+                # If product has methoxy but none of the reactants do, methoxy is not preserved
+                if product_has_methoxy and not reactant_has_methoxy:
+                    print(f"Methoxy group not preserved in reaction: {rsmi}")
+                    all_methoxy_preserved = False
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+                all_methoxy_preserved = False
 
-                # Check for acyl halide in reactants (another common amide precursor)
-                has_acyl_halide = any(checker.check_fg("Acyl halide", r) for r in reactants)
-
-                # Check for ester in reactants (can form amides with amines)
-                has_ester = any(checker.check_fg("Ester", r) for r in reactants)
-
-                # Check for amine in reactants
-                has_primary_amine = any(checker.check_fg("Primary amine", r) for r in reactants)
-                has_secondary_amine = any(checker.check_fg("Secondary amine", r) for r in reactants)
-                has_amine = has_primary_amine or has_secondary_amine
-
-                # Check for amide in product
-                has_primary_amide = checker.check_fg("Primary amide", product)
-                has_secondary_amide = checker.check_fg("Secondary amide", product)
-                has_tertiary_amide = checker.check_fg("Tertiary amide", product)
-                has_amide_product = has_primary_amide or has_secondary_amide or has_tertiary_amide
-
-                # Check for amide formation conditions
-                if (has_acid or has_acyl_halide or has_ester) and has_amine and has_amide_product:
-                    amide_formation = True
-                    print(f"Amide formation detected through pattern matching: {rsmi}")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
     dfs_traverse(route)
 
-    return amide_formation
+    # Only return True if target has methoxy and all methoxy groups are preserved
+    return target_has_methoxy and all_methoxy_preserved

@@ -2,65 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route includes an amide formation from carboxylic acid and amine.
+    This function detects a linear fragment assembly strategy (as opposed to convergent).
     """
-    amide_formation_found = False
+    reaction_counts = 0
+    multi_reactant_counts = 0
 
     def dfs_traverse(node):
-        nonlocal amide_formation_found
+        nonlocal reaction_counts, multi_reactant_counts
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
 
-            # Check for carboxylic acid and amine in reactants
-            carboxylic_acid_found = False
-            amine_found = False
+            reaction_counts += 1
+            if len(reactants) >= 2:
+                multi_reactant_counts += 1
+                print(f"Detected multi-reactant step: {rsmi}")
 
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol:
-                    carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
-                    amine_pattern = Chem.MolFromSmarts("[NH2][c]")
-
-                    if reactant_mol.HasSubstructMatch(carboxylic_acid_pattern):
-                        carboxylic_acid_found = True
-                    if reactant_mol.HasSubstructMatch(amine_pattern):
-                        amine_found = True
-
-            # Check if product has amide bond
-            if carboxylic_acid_found and amine_found:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    amide_pattern = Chem.MolFromSmarts("[C](=O)[NH][c]")
-                    if product_mol.HasSubstructMatch(amide_pattern):
-                        amide_formation_found = True
-                        print("Amide formation detected")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return amide_formation_found
+
+    # Linear synthesis has most steps with single reactant or simple transformations
+    # If more than 70% of reactions have multiple reactants, it's likely convergent
+    is_linear = reaction_counts > 0 and (multi_reactant_counts / reaction_counts) < 0.7
+    print(
+        f"Linear fragment assembly detected: {is_linear} (multi-reactant steps: {multi_reactant_counts}/{reaction_counts})"
+    )
+    return is_linear

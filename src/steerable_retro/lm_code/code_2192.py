@@ -2,118 +2,91 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis preserves a 2,4-disubstituted aromatic core
-    (with F and Cl substituents) throughout the synthesis.
+    Detects if the synthesis involves multiple SNAr reactions for C-N bond formation,
+    particularly on pyrimidine or similar electron-deficient aromatic rings.
     """
-    # Track if we've found the core in the final product
-    core_found_in_final = False
-    # Track if the core is preserved throughout the main synthetic pathway
-    core_preserved = True
+    snar_count = 0
 
-    # First check if the final product has the core
-    final_product = route
-    if final_product["type"] == "mol":
-        mol_smiles = final_product["smiles"]
-        has_benzene = checker.check_ring("benzene", mol_smiles)
-        has_f = checker.check_fg("Aromatic halide", mol_smiles) and "F" in mol_smiles
-        has_cl = checker.check_fg("Aromatic halide", mol_smiles) and "Cl" in mol_smiles
+    def dfs_traverse(node):
+        nonlocal snar_count
 
-        if has_benzene and has_f and has_cl:
-            core_found_in_final = True
-            print(f"Core found in final product: {mol_smiles}")
-        else:
-            print(f"Core not found in final product: {mol_smiles}")
-            return False  # If final product doesn't have core, return False immediately
+        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-    # Track the main synthetic pathway
-    main_pathway_nodes = []
+            # Check for SNAr pattern: aromatic carbon with leaving group (Cl, F, Br)
+            # being replaced by nitrogen nucleophile
 
-    def trace_main_pathway(node, depth=0):
-        """Trace the main synthetic pathway by following product to reactants"""
-        if node["type"] == "mol":
-            main_pathway_nodes.append((node, depth))
+            # Create molecules
+            product_mol = Chem.MolFromSmiles(product)
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
 
-            # For molecule nodes, check all reaction children
-            for child in node.get("children", []):
-                if child["type"] == "reaction":
-                    trace_main_pathway(child, depth + 1)
+            if product_mol and all(reactant_mols):
+                # Look for pyrimidine or similar electron-deficient aromatic rings in reactants
+                pyrimidine_pattern = Chem.MolFromSmarts("c1ncncc1")
 
-        elif node["type"] == "reaction":
-            # For reaction nodes, only follow the main product path
-            # (the first molecule child, which is typically the main reactant)
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    trace_main_pathway(child, depth + 1)
-                    break  # Only follow the first non-stock molecule
+                # Check if any reactant contains pyrimidine
+                has_pyrimidine = False
+                for r_mol in reactant_mols:
+                    if r_mol.HasSubstructMatch(pyrimidine_pattern):
+                        has_pyrimidine = True
+                        break
 
-    # Start tracing from the final product
-    trace_main_pathway(route)
+                # Look for C-N bond formation
+                # This is a simplified check - in a real implementation, you would need to
+                # analyze the reaction more carefully using atom mapping
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                halide_pattern = Chem.MolFromSmarts("c[Cl,F,Br]")
 
-    # Sort by depth (later stages first)
-    main_pathway_nodes.sort(key=lambda x: x[1])
+                has_amine = False
+                has_halide = False
 
-    # Check each molecule in the main pathway
-    for node, depth in main_pathway_nodes:
-        mol_smiles = node["smiles"]
-        has_benzene = checker.check_ring("benzene", mol_smiles)
-        has_f = checker.check_fg("Aromatic halide", mol_smiles) and "F" in mol_smiles
-        has_cl = checker.check_fg("Aromatic halide", mol_smiles) and "Cl" in mol_smiles
+                for r_mol in reactant_mols:
+                    if r_mol.HasSubstructMatch(amine_pattern):
+                        has_amine = True
+                    if r_mol.HasSubstructMatch(halide_pattern):
+                        has_halide = True
 
-        if has_benzene and has_f and has_cl:
-            print(f"Core found in molecule at depth {depth}: {mol_smiles}")
-        else:
-            # If we're past the first molecule and the core is missing, mark as not preserved
-            if depth > 0:
-                print(f"Core not found in molecule at depth {depth}: {mol_smiles}")
-                core_preserved = False
+                # If we have a pyrimidine, an amine, and a halide, it's likely an SNAr
+                if has_pyrimidine and has_amine and has_halide:
+                    snar_count += 1
+                    print(f"SNAr reaction detected: {rsmi}")
 
-    return core_preserved and core_found_in_final
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child)
+
+    # Start traversal
+    dfs_traverse(route)
+
+    # Check if we have multiple SNAr reactions
+    has_multiple_snar = snar_count >= 2
+    print(f"Number of SNAr reactions detected: {snar_count}")
+
+    return has_multiple_snar

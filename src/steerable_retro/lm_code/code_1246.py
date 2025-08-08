@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,108 +54,116 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis includes an O-demethylation step (conversion of methoxy to hydroxyl).
+    Detects if the synthesis route involves protection and deprotection sequences.
     """
-    demethylation_detected = False
+    protection_reactions = []
+    deprotection_reactions = []
 
-    def dfs_traverse(node):
-        nonlocal demethylation_detected
-        if demethylation_detected:
-            return  # Early return if already detected
-
+    def find_protection_deprotection(node, depth=0):
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+            rxn_smiles = node["metadata"]["rsmi"]
 
-            # Check for known demethylation reaction types
+            # Check for protection reactions
             if (
-                checker.check_reaction("Cleavage of methoxy ethers to alcohols", rsmi)
-                or checker.check_reaction("Cleavage of alkoxy ethers to alcohols", rsmi)
-                or checker.check_reaction("Ether cleavage to primary alcohol", rsmi)
+                checker.check_reaction("Alcohol protection with silyl ethers", rxn_smiles)
+                or checker.check_reaction("Protection of carboxylic acid", rxn_smiles)
+                or checker.check_reaction("Boc amine protection", rxn_smiles)
+                or checker.check_reaction("Boc amine protection explicit", rxn_smiles)
+                or checker.check_reaction("Boc amine protection with Boc anhydride", rxn_smiles)
+                or checker.check_reaction("Boc amine protection (ethyl Boc)", rxn_smiles)
+                or checker.check_reaction("Boc amine protection of secondary amine", rxn_smiles)
+                or checker.check_reaction("Boc amine protection of primary amine", rxn_smiles)
+                or checker.check_reaction("Acetal hydrolysis to diol", rxn_smiles)
+                or checker.check_reaction("Acetal hydrolysis to aldehyde", rxn_smiles)
+                or checker.check_reaction("Ketal hydrolysis to ketone", rxn_smiles)
+                or checker.check_reaction("Aldehyde or ketone acetalization", rxn_smiles)
+                or checker.check_reaction("Diol acetalization", rxn_smiles)
             ):
-                print(f"Detected O-demethylation via reaction type: {rsmi}")
-                demethylation_detected = True
-                return
+                protection_reactions.append((rxn_smiles, depth))
 
-            # If not identified by reaction type, check for the functional group transformation
-            try:
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+            # Check for deprotection reactions
+            if (
+                checker.check_reaction("Alcohol deprotection from silyl ethers", rxn_smiles)
+                or checker.check_reaction(
+                    "Alcohol deprotection from silyl ethers (double)", rxn_smiles
+                )
+                or checker.check_reaction(
+                    "Alcohol deprotection from silyl ethers (diol)", rxn_smiles
+                )
+                or checker.check_reaction("Deprotection of carboxylic acid", rxn_smiles)
+                or checker.check_reaction("Boc amine deprotection", rxn_smiles)
+                or checker.check_reaction("Boc amine deprotection of guanidine", rxn_smiles)
+                or checker.check_reaction("Boc amine deprotection to NH-NH2", rxn_smiles)
+                or checker.check_reaction("Ester saponification (methyl deprotection)", rxn_smiles)
+                or checker.check_reaction("Ester saponification (alkyl deprotection)", rxn_smiles)
+                or checker.check_reaction("TMS deprotection from alkyne", rxn_smiles)
+                or checker.check_reaction("Tert-butyl deprotection of amine", rxn_smiles)
+                or checker.check_reaction("Phthalimide deprotection", rxn_smiles)
+                or checker.check_reaction("N-glutarimide deprotection", rxn_smiles)
+                or checker.check_reaction("Hydroxyl benzyl deprotection", rxn_smiles)
+                or checker.check_reaction("Carboxyl benzyl deprotection", rxn_smiles)
+                or checker.check_reaction("Cleavage of methoxy ethers to alcohols", rxn_smiles)
+                or checker.check_reaction("Cleavage of alkoxy ethers to alcohols", rxn_smiles)
+                or checker.check_reaction("Ether cleavage to primary alcohol", rxn_smiles)
+            ):
+                deprotection_reactions.append((rxn_smiles, depth))
 
-                # Split reactants and check each one
-                reactants = reactants_part.split(".")
-                product_mol = Chem.MolFromSmiles(product_part)
+            # Check for functional group transformations that might indicate protection/deprotection
+            product = rxn_smiles.split(">")[-1]
+            reactants = rxn_smiles.split(">")[0].split(".")
 
-                if product_mol:
-                    # Check for any hydroxyl group in product (phenol or alcohol)
-                    has_hydroxyl = (
-                        checker.check_fg("Phenol", product_part)
-                        or checker.check_fg("Primary alcohol", product_part)
-                        or checker.check_fg("Secondary alcohol", product_part)
-                        or checker.check_fg("Tertiary alcohol", product_part)
+            # Check for TMS or silyl groups in reactants or products
+            if (
+                any(
+                    checker.check_fg("TMS ether protective group", r)
+                    or checker.check_fg("Silyl protective group", r)
+                    for r in reactants
+                )
+                or checker.check_fg("TMS ether protective group", product)
+                or checker.check_fg("Silyl protective group", product)
+            ):
+                if (
+                    any(
+                        checker.check_fg("Primary alcohol", r)
+                        or checker.check_fg("Secondary alcohol", r)
+                        or checker.check_fg("Tertiary alcohol", r)
+                        for r in reactants
                     )
+                    or checker.check_fg("Primary alcohol", product)
+                    or checker.check_fg("Secondary alcohol", product)
+                    or checker.check_fg("Tertiary alcohol", product)
+                ):
+                    protection_reactions.append((rxn_smiles, depth))
 
-                    if has_hydroxyl:
-                        for reactant in reactants:
-                            # Check if reactant has a methoxy group
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                # Check for methoxy group (both aromatic and aliphatic)
-                                methoxy_pattern = Chem.MolFromSmarts("[#6]-O[CH3]")
-                                if reactant_mol.HasSubstructMatch(methoxy_pattern):
-                                    # For atom-mapped reactions, verify the transformation occurs at the same position
-                                    if (
-                                        "[" in rsmi and ":" in rsmi
-                                    ):  # Check if reaction is atom-mapped
-                                        # Get atom indices of methoxy in reactant
-                                        matches = reactant_mol.GetSubstructMatches(methoxy_pattern)
-                                        for match in matches:
-                                            carbon_idx = match[0]  # Carbon attached to oxygen
-                                            # Check if this carbon has a hydroxyl in the product
-                                            carbon_map_num = None
-                                            for atom in reactant_mol.GetAtoms():
-                                                if atom.GetIdx() == carbon_idx:
-                                                    if atom.HasProp("molAtomMapNumber"):
-                                                        carbon_map_num = atom.GetProp(
-                                                            "molAtomMapNumber"
-                                                        )
-                                                    break
+            # Check for Boc groups
+            if any(checker.check_fg("Boc", r) for r in reactants) or checker.check_fg(
+                "Boc", product
+            ):
+                if (
+                    any(
+                        checker.check_fg("Primary amine", r)
+                        or checker.check_fg("Secondary amine", r)
+                        for r in reactants
+                    )
+                    or checker.check_fg("Primary amine", product)
+                    or checker.check_fg("Secondary amine", product)
+                ):
+                    protection_reactions.append((rxn_smiles, depth))
 
-                                            if carbon_map_num:
-                                                # Look for this mapped atom in product with hydroxyl
-                                                hydroxyl_pattern = Chem.MolFromSmarts("[#6]-[OH]")
-                                                for atom in product_mol.GetAtoms():
-                                                    if (
-                                                        atom.HasProp("molAtomMapNumber")
-                                                        and atom.GetProp("molAtomMapNumber")
-                                                        == carbon_map_num
-                                                    ):
-                                                        # Check if this atom is part of a hydroxyl group
-                                                        for (
-                                                            match
-                                                        ) in product_mol.GetSubstructMatches(
-                                                            hydroxyl_pattern
-                                                        ):
-                                                            if (
-                                                                atom.GetIdx() == match[0]
-                                                            ):  # Carbon attached to hydroxyl
-                                                                print(
-                                                                    f"Detected O-demethylation via atom mapping: {rsmi}"
-                                                                )
-                                                                demethylation_detected = True
-                                                                return
-                                    else:
-                                        # For non-atom-mapped reactions, just confirm the presence of both groups
-                                        print(
-                                            f"Detected O-demethylation via functional group analysis: {rsmi}"
-                                        )
-                                        demethylation_detected = True
-                                        return
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
-
-        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            find_protection_deprotection(child, depth + 1)
 
-    dfs_traverse(route)
-    return demethylation_detected
+    find_protection_deprotection(route)
+
+    # Remove duplicates
+    unique_protection = set(rxn for rxn, _ in protection_reactions)
+    unique_deprotection = set(rxn for rxn, _ in deprotection_reactions)
+
+    # Consider it a protection/deprotection strategy if at least one protection and one deprotection are found
+    has_protection = len(unique_protection) > 0
+    has_deprotection = len(unique_deprotection) > 0
+    print(
+        f"Protection reactions: {len(unique_protection)}, Deprotection reactions: {len(unique_deprotection)}"
+    )
+
+    return has_protection or has_deprotection  # Changed to OR to be more lenient

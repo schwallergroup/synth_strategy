@@ -2,67 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves reduction of a nitro group to an amine.
+    Detects if the synthetic route involves multiple nitrogen-containing functional groups
+    (amines, amides, carbamates).
     """
-    has_nitro_reduction = False
+    has_multiple_n_groups = False
 
     def dfs_traverse(node):
-        nonlocal has_nitro_reduction
+        nonlocal has_multiple_n_groups
 
-        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node and not node.get("in_stock", False):
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if not mol:
+                    return
 
-            # Create molecules
-            product_mol = Chem.MolFromSmiles(product)
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+                # Define patterns for different N-containing functional groups
+                amine_pattern = Chem.MolFromSmarts("[NX3;H0,H1,H2]")
+                amide_pattern = Chem.MolFromSmarts("[NX3][CX3]=[OX1]")
+                carbamate_pattern = Chem.MolFromSmarts("[NX3][CX3](=[OX1])[OX2]")
 
-            if product_mol and all(reactant_mols):
-                # Check for nitro reduction pattern
-                nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
-                amine_pattern = Chem.MolFromSmarts("[#6]-[NH2]")
+                # Count different N-containing functional groups
+                n_groups = 0
+                if mol.HasSubstructMatch(amine_pattern):
+                    n_groups += 1
+                if mol.HasSubstructMatch(amide_pattern):
+                    n_groups += 1
+                if mol.HasSubstructMatch(carbamate_pattern):
+                    n_groups += 1
 
-                has_nitro = False
-                for r_mol in reactant_mols:
-                    if r_mol.HasSubstructMatch(nitro_pattern):
-                        has_nitro = True
-                        break
+                if n_groups >= 2:
+                    print(
+                        f"Found molecule with {n_groups} different N-containing functional groups"
+                    )
+                    has_multiple_n_groups = True
+            except:
+                pass  # Handle parsing errors gracefully
 
-                has_amine = product_mol.HasSubstructMatch(amine_pattern)
-
-                # If we have a nitro group as reactant and an amine as product,
-                # it's likely a nitro reduction
-                if has_nitro and has_amine:
-                    has_nitro_reduction = True
-                    print(f"Nitro reduction detected: {rsmi}")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return has_nitro_reduction
+    return has_multiple_n_groups

@@ -2,110 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects purine scaffold construction in early stage synthesis.
+    This function detects a synthetic strategy involving the construction of
+    a nitrogen-containing heterocyclic system.
     """
-    early_stage_construction = False
+    n_heterocycle_formed = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal early_stage_construction
+        nonlocal n_heterocycle_formed
 
-        if node["type"] == "reaction" and depth >= 2:  # Early stage (depth >= 2)
-            try:
-                # Get reaction SMILES
-                rsmi = node["metadata"]["rsmi"]
-                print(f"Examining reaction at depth {depth}: {rsmi}")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Extract product and reactants
-                product_smiles = rsmi.split(">")[-1]
-                reactants_smiles = rsmi.split(">")[0].split(".")
+            # Check for nitrogen heterocycle formation
+            product_mol = Chem.MolFromSmiles(product)
+            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
 
-                # Check if product contains purine scaffold
-                has_purine_in_product = checker.check_ring("purine", product_smiles)
-                print(f"Product contains purine: {has_purine_in_product}")
+            if product_mol and reactants_mols:
+                # Check for nitrogen in aromatic ring in product
+                n_heterocycle_pattern = Chem.MolFromSmarts("[n;R]")
+                if product_mol.HasSubstructMatch(n_heterocycle_pattern):
+                    # Check if any reactant doesn't have this pattern
+                    if any(not r.HasSubstructMatch(n_heterocycle_pattern) for r in reactants_mols):
+                        n_heterocycle_formed = True
+                        print(f"Nitrogen heterocycle formation detected at depth {depth}")
 
-                # Check if any reactant contains purine scaffold
-                reactants_have_purine = False
-                for reactant in reactants_smiles:
-                    if checker.check_ring("purine", reactant):
-                        reactants_have_purine = True
-                        print(f"Reactant contains purine: {reactant}")
-                        break
-
-                # If product has purine but reactants don't, it's a purine formation
-                if has_purine_in_product and not reactants_have_purine:
-                    print(f"Detected purine scaffold construction at depth {depth}")
-                    early_stage_construction = True
-
-                    # Additional check for specific ring formation reactions, but not required
-                    if any(
-                        checker.check_reaction(rxn_type, rsmi)
-                        for rxn_type in [
-                            "Formation of NOS Heterocycles",
-                            "{Pictet-Spengler}",
-                            "{benzimidazole_derivatives_carboxylic-acid/ester}",
-                            "{benzimidazole_derivatives_aldehyde}",
-                            "{imidazole}",
-                            "{tetrazole_terminal}",
-                            "{tetrazole_connect_regioisomere_1}",
-                            "{tetrazole_connect_regioisomere_2}",
-                        ]
-                    ):
-                        print(f"Confirmed specific ring formation reaction at depth {depth}")
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Early stage purine construction detected: {early_stage_construction}")
-    return early_stage_construction
+
+    if n_heterocycle_formed:
+        print("Nitrogen heterocycle construction strategy detected")
+
+    return n_heterocycle_formed

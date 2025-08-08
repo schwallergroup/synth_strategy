@@ -2,71 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis uses a Wittig reaction for carbon chain extension.
+    This function detects if the synthesis involves sequential formation of different heteroatom bonds.
     """
-    result = False
+    # Track bond formations at different depths
+    bond_formations = {}
 
-    def dfs_traverse(node):
-        nonlocal result
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction":
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check for Wittig reaction patterns
-            phosphorus_pattern = Chem.MolFromSmarts("[P]")
-            aldehyde_pattern = Chem.MolFromSmarts("[#6H](=O)")
-            alkene_pattern = Chem.MolFromSmarts("[#6]=[#6]")
-
-            try:
                 product_mol = Chem.MolFromSmiles(product)
 
-                # Check if product contains new alkene
-                if product_mol and product_mol.HasSubstructMatch(alkene_pattern):
-                    # Check if reactants contain phosphorus and aldehyde
-                    has_phosphorus = False
-                    has_aldehyde = False
+                # Check for different bond formations
+                c_n_amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+                c_o_ether_pattern = Chem.MolFromSmarts("[c][O][CH2][c]")
+                s_n_sulfonamide_pattern = Chem.MolFromSmarts("[S](=[O])(=[O])[N]")
+                c_s_pattern = Chem.MolFromSmarts("[c][S]")
 
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if reactant_mol.HasSubstructMatch(phosphorus_pattern):
-                                has_phosphorus = True
-                            if reactant_mol.HasSubstructMatch(aldehyde_pattern):
-                                has_aldehyde = True
+                if product_mol:
+                    if product_mol.HasSubstructMatch(c_n_amide_pattern):
+                        bond_formations[depth] = "C-N amide"
+                    elif product_mol.HasSubstructMatch(c_o_ether_pattern):
+                        bond_formations[depth] = "C-O ether"
+                    elif product_mol.HasSubstructMatch(s_n_sulfonamide_pattern):
+                        bond_formations[depth] = "S-N sulfonamide"
+                    elif product_mol.HasSubstructMatch(c_s_pattern):
+                        bond_formations[depth] = "C-S"
 
-                    if has_phosphorus and has_aldehyde:
-                        result = True
-                        print("Detected Wittig olefination for carbon chain extension")
-            except:
-                print("Error processing SMILES in wittig_olefination_strategy")
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-    return result
+
+    # Check if we have at least 3 different types of heteroatom bond formations
+    unique_bond_types = set(bond_formations.values())
+    print(f"Detected bond formations: {bond_formations}")
+    print(f"Unique bond types: {unique_bond_types}")
+
+    return len(unique_bond_types) >= 3

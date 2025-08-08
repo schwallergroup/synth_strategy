@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,163 +54,78 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a convergent synthesis strategy involving heterocycle formation.
+    Detects if the final step (depth 0) is a Suzuki coupling between an aryl halide
+    and a boronic ester/acid to form a biaryl C-C bond.
     """
-    # List of heterocycles to check
-    heterocycles = [
-        "tetrazole",
-        "triazole",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "isoxazole",
-        "isothiazole",
-        "oxadiazole",
-        "thiadiazole",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
-        "indole",
-        "benzotriazole",
-        "furan",
-        "thiophene",
-        "pyrrole",
-        "pyridine",
-    ]
-
-    # Heterocycle formation reaction types
-    heterocycle_rxn_types = [
-        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-        "Huisgen 1,3 dipolar cycloaddition",
-        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-        "Pyrazole formation",
-        "Azide-nitrile click cycloaddition to tetrazole",
-        "Azide-nitrile click cycloaddition to triazole",
-        "{tetrazole_terminal}",
-        "{tetrazole_connect_regioisomere_1}",
-        "{tetrazole_connect_regioisomere_2}",
-        "{Huisgen_Cu-catalyzed_1,4-subst}",
-        "{Huisgen_Ru-catalyzed_1,5_subst}",
-        "{1,2,4-triazole_acetohydrazide}",
-        "{1,2,4-triazole_carboxylic-acid/ester}",
-        "{pyrazole}",
-        "{benzimidazole_derivatives_carboxylic-acid/ester}",
-        "{benzimidazole_derivatives_aldehyde}",
-        "{benzothiazole}",
-        "{benzoxazole_arom-aldehyde}",
-        "{benzoxazole_carboxylic-acid}",
-        "{thiazole}",
-        "benzimidazole formation from aldehyde",
-        "benzimidazole formation from acyl halide",
-        "benzimidazole formation from ester/carboxylic acid",
-        "benzoxazole formation from aldehyde",
-        "benzoxazole formation from acyl halide",
-        "benzoxazole formation from ester/carboxylic acid",
-        "benzoxazole formation (intramolecular)",
-        "benzothiazole formation from aldehyde",
-        "benzothiazole formation from acyl halide",
-        "benzothiazole formation from ester/carboxylic acid",
-        "Formation of NOS Heterocycles",
-        "Paal-Knorr pyrrole synthesis",
-        "{Paal-Knorr pyrrole}",
-        "{Fischer indole}",
-        "{indole}",
-        "{oxadiazole}",
-        "A3 coupling to imidazoles",
-        "Alkyne-imine cycloaddition",
-    ]
-
-    convergent_steps = []
-    heterocycle_formations = []
+    final_step_is_suzuki = False
+    first_reaction_found = False
 
     def dfs_traverse(node, depth=0):
+        nonlocal final_step_is_suzuki, first_reaction_found
+
+        # If we already found the final step, no need to continue
+        if first_reaction_found:
+            return
+
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # The first reaction node we encounter is the final step
+            first_reaction_found = True
 
-                # Check for convergent step (multiple reactants)
-                if len(reactants) >= 2:
-                    print(f"Found convergent step with {len(reactants)} fragments at depth {depth}")
-                    # Track all convergent steps
-                    convergent_steps.append(depth)
+            # Extract reactants and product from the reaction SMILES
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-                    # Check if this reaction forms a heterocycle
-                    heterocycle_formed = False
+            print(f"Checking final step reaction: {rsmi}")
 
-                    # Check if the reaction is a known heterocycle formation reaction
-                    for rxn_type in heterocycle_rxn_types:
-                        if checker.check_reaction(rxn_type, rsmi):
-                            print(f"Detected heterocycle formation reaction: {rxn_type}")
-                            heterocycle_formed = True
-                            heterocycle_formations.append(depth)
-                            break
+            # Check if this is a Suzuki coupling reaction using the checker function
+            is_suzuki = (
+                checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
+                or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
+                or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
+                or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
+            )
 
-                    # If not a known reaction type, check if a heterocycle appears in the product but not in ALL reactants
-                    if not heterocycle_formed:
-                        for heterocycle in heterocycles:
-                            if checker.check_ring(heterocycle, product):
-                                # Check if the heterocycle is present in all reactants
-                                reactants_with_heterocycle = 0
-                                for reactant in reactants:
-                                    if checker.check_ring(heterocycle, reactant):
-                                        reactants_with_heterocycle += 1
+            if is_suzuki:
+                final_step_is_suzuki = True
+                print("Detected Suzuki coupling in final step")
+                return  # Stop traversal once we find the final step
 
-                                # If heterocycle is in product but not in all reactants, it's likely being formed or modified
-                                if reactants_with_heterocycle < len(reactants):
-                                    print(
-                                        f"Detected heterocycle formation or modification: {heterocycle} at depth {depth}"
-                                    )
-                                    heterocycle_formed = True
-                                    heterocycle_formations.append(depth)
-                                    break
+            # If the checker function didn't identify it as Suzuki, do a manual check
+            # This is a fallback in case the reaction isn't properly categorized
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                    # Additional check for reactions that might form heterocycles but aren't in our predefined lists
-                    if not heterocycle_formed:
-                        # Check if any heterocycle is in the product
-                        product_heterocycles = set()
-                        for heterocycle in heterocycles:
-                            if checker.check_ring(heterocycle, product):
-                                product_heterocycles.add(heterocycle)
+            has_aryl_halide = False
+            has_boronic = False
 
-                        # Check reactants for heterocycles
-                        reactant_heterocycles = set()
-                        for reactant in reactants:
-                            for heterocycle in heterocycles:
-                                if checker.check_ring(heterocycle, reactant):
-                                    reactant_heterocycles.add(heterocycle)
+            for reactant in reactants_smiles:
+                try:
+                    # Check for aromatic halide
+                    if checker.check_fg("Aromatic halide", reactant):
+                        has_aryl_halide = True
+                        print(f"Found aromatic halide in reactant: {reactant}")
 
-                        # If there's a heterocycle in the product that's not in any reactant
-                        new_heterocycles = product_heterocycles - reactant_heterocycles
-                        if new_heterocycles:
-                            print(
-                                f"Detected new heterocycle(s) in product: {new_heterocycles} at depth {depth}"
-                            )
-                            heterocycle_formed = True
-                            heterocycle_formations.append(depth)
+                    # Check for boronic acid/ester
+                    if checker.check_fg("Boronic acid", reactant) or checker.check_fg(
+                        "Boronic ester", reactant
+                    ):
+                        has_boronic = True
+                        print(f"Found boronic acid/ester in reactant: {reactant}")
+                except Exception as e:
+                    print(f"Error checking reactant {reactant}: {e}")
+                    continue
 
-        # Check if this is the final target molecule and contains a heterocycle
-        elif node["type"] == "mol" and depth == 0:
-            for heterocycle in heterocycles:
-                if checker.check_ring(heterocycle, node["smiles"]):
-                    print(f"Final target molecule contains heterocycle: {heterocycle}")
+            # If we have both required functional groups, it's likely a Suzuki coupling
+            if has_aryl_halide and has_boronic:
+                final_step_is_suzuki = True
+                print("Detected Suzuki coupling in final step (manual check)")
+                return  # Stop traversal
 
+        # Continue traversing children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-
-    # Strategy is present if there's at least one convergent step that forms a heterocycle in late-stage synthesis
-    late_stage_convergent_heterocycle = any(
-        depth in convergent_steps and depth <= 4 for depth in heterocycle_formations
-    )
-
-    print(f"Convergent steps: {convergent_steps}")
-    print(f"Heterocycle formations: {heterocycle_formations}")
-    print(f"Result: {late_stage_convergent_heterocycle}")
-    return late_stage_convergent_heterocycle
+    return final_step_is_suzuki

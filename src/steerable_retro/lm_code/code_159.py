@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,92 +54,67 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route involves O-alkylation of a piperidine ring.
+    This function detects if an oxetane ring is present throughout the synthesis.
+    The oxetane must be maintained in every step of the synthesis route.
     """
-    o_alkylation_detected = False
+    # Track complete paths with oxetane
+    paths_with_oxetane = []
 
-    def dfs_traverse(node, depth=0):
-        nonlocal o_alkylation_detected
+    def dfs_traverse(node, current_path=None, depth=0):
+        if current_path is None:
+            current_path = []
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        # Create a copy of the current path
+        path = current_path.copy()
 
-            print(f"Analyzing reaction at depth {depth}: {rsmi}")
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            has_oxetane = checker.check_ring("oxetane", mol_smiles)
 
-            # Check if product contains piperidine ring
-            if checker.check_ring("piperidine", product):
-                print(f"Piperidine ring found in product at depth {depth}")
+            # Add molecule info to the path
+            path.append(
+                {"depth": depth, "smiles": mol_smiles, "has_oxetane": has_oxetane, "type": "mol"}
+            )
 
-                # Check if this is an O-alkylation reaction
-                is_o_alkylation_reaction = (
-                    checker.check_reaction("Williamson Ether Synthesis", rsmi)
-                    or checker.check_reaction("Mitsunobu aryl ether", rsmi)
-                    or checker.check_reaction("Mitsunobu_phenole", rsmi)
-                    or checker.check_reaction("Williamson ether", rsmi)
-                    or checker.check_reaction("Mitsunobu_imide", rsmi)
-                    or checker.check_reaction("Williamson Ether Synthesis (intra to epoxy)", rsmi)
-                )
+            print(f"Depth {depth}: {'Found' if has_oxetane else 'No'} oxetane ring in {mol_smiles}")
 
-                if is_o_alkylation_reaction:
-                    print(f"O-alkylation reaction detected at depth {depth}")
+            # If this is a leaf node (no children), save the complete path
+            if not node.get("children", []):
+                paths_with_oxetane.append(path)
+        else:  # Reaction node
+            # Add reaction info to the path
+            reaction_smiles = node.get("metadata", {}).get("rsmi", "")
+            path.append({"depth": depth, "rsmi": reaction_smiles, "type": "reaction"})
 
-                    # Check if piperidine was in reactants
-                    piperidine_in_reactants = any(
-                        checker.check_ring("piperidine", r) for r in reactants
-                    )
-
-                    if piperidine_in_reactants:
-                        print(f"Piperidine was present in reactants at depth {depth}")
-                        o_alkylation_detected = True
-                        return
-
-                # Check for ether formation
-                if checker.check_fg("Ether", product):
-                    print(f"Ether found in product at depth {depth}")
-
-                    # Check if piperidine was in reactants
-                    piperidine_in_reactants = False
-                    alcohol_in_reactants = False
-
-                    for reactant in reactants:
-                        if checker.check_ring("piperidine", reactant):
-                            piperidine_in_reactants = True
-                            # Check if this piperidine has an alcohol group
-                            if (
-                                checker.check_fg("Primary alcohol", reactant)
-                                or checker.check_fg("Secondary alcohol", reactant)
-                                or checker.check_fg("Tertiary alcohol", reactant)
-                                or checker.check_fg("Aromatic alcohol", reactant)
-                                or checker.check_fg("Phenol", reactant)
-                            ):
-                                alcohol_in_reactants = True
-                                print(
-                                    f"Piperidine with alcohol found in reactants at depth {depth}"
-                                )
-                                break
-
-                    if piperidine_in_reactants and alcohol_in_reactants:
-                        # Check if the alcohol was converted to an ether
-                        # This is a key step in O-alkylation
-                        print(f"Potential piperidine O-alkylation detected at depth {depth}")
-
-                        # Additional check for common O-alkylation reagents
-                        reagents = rsmi.split(">")[1].split(".")
-                        mitsunobu_reagents = any(
-                            "P(" in r or "DEAD" in r or "DIAD" in r for r in reagents
-                        )
-
-                        if mitsunobu_reagents or is_o_alkylation_reaction:
-                            print(f"Confirmed piperidine O-alkylation at depth {depth}")
-                            o_alkylation_detected = True
-                            return
-
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, path, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: Piperidine O-alkylation detected = {o_alkylation_detected}")
 
-    return o_alkylation_detected
+    if not paths_with_oxetane:
+        print("No complete paths found")
+        return False
+
+    # Check each complete path
+    valid_paths = []
+    for path in paths_with_oxetane:
+        # Filter out reaction nodes for oxetane check
+        mol_nodes = [node for node in path if node["type"] == "mol"]
+
+        # Check if all molecule nodes in this path have oxetane
+        if all(node["has_oxetane"] for node in mol_nodes):
+            # Check if path has at least 3 steps (2 reactions)
+            if len(mol_nodes) >= 3:
+                valid_paths.append(path)
+                print(f"Valid path found with {len(mol_nodes)} molecules, all containing oxetane")
+            else:
+                print(f"Path too short: only {len(mol_nodes)} molecules")
+        else:
+            print(f"Path invalid: not all molecules contain oxetane")
+
+    # Return True if at least one valid path exists
+    result = len(valid_paths) > 0
+    print(f"Found {len(valid_paths)} valid paths with oxetane maintained throughout")
+    return result

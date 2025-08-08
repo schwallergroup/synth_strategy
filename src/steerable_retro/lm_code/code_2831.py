@@ -2,58 +2,93 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy without convergent steps.
+    This function detects if the synthetic route involves dichlorinated aromatic compounds.
     """
-    is_linear = True
+    dichlorinated_aromatic_found = False
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        nonlocal dichlorinated_aromatic_found
 
-        if node["type"] == "reaction":
-            # Count number of non-trivial reactants (complex molecules)
-            complex_reactants = 0
+        if node["type"] == "mol" and node.get("smiles"):
+            mol_smiles = node["smiles"]
+            mol = Chem.MolFromSmiles(mol_smiles)
 
-            if node.get("metadata", {}).get("rsmi"):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            if mol:
+                # Check if molecule has aromatic halide functional group
+                if checker.check_fg("Aromatic halide", mol_smiles):
+                    # Count chlorines attached to aromatic rings
+                    aromatic_atoms = [atom for atom in mol.GetAtoms() if atom.GetIsAromatic()]
 
-                for reactant in reactants:
-                    # Consider a reactant complex if it has more than 10 atoms
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.GetNumAtoms() > 10:
-                        complex_reactants += 1
+                    # Count chlorines attached to aromatic atoms
+                    chlorine_count = 0
+                    for atom in aromatic_atoms:
+                        for neighbor in atom.GetNeighbors():
+                            if neighbor.GetSymbol() == "Cl":
+                                chlorine_count += 1
 
-            # If a reaction has more than one complex reactant, it's likely convergent
-            if complex_reactants > 1:
-                is_linear = False
-                print(
-                    f"Detected convergent step in reaction {node.get('metadata', {}).get('ID', '')}"
-                )
+                    # Check if there are exactly 2 chlorines attached to aromatic rings
+                    if chlorine_count == 2:
+                        dichlorinated_aromatic_found = True
+                        print(f"Found dichlorinated aromatic: {mol_smiles}")
 
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from root
     dfs_traverse(route)
-    return is_linear
+
+    print(f"Dichlorinated aromatic strategy detected: {dichlorinated_aromatic_found}")
+    return dichlorinated_aromatic_found

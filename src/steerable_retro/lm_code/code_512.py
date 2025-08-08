@@ -2,75 +2,52 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage amide bond formation.
+    This function detects a synthetic strategy involving N,N-dimethylaniline as a key structural motif.
     """
-    amide_formation_depth = None
-    max_depth = -1
+    has_dimethylaniline_motif = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_formation_depth, max_depth
+    def dfs_traverse(node):
+        nonlocal has_dimethylaniline_motif
 
-        max_depth = max(max_depth, depth)
-
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check for amide formation
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol:
-                amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
-                if product_mol.HasSubstructMatch(amide_pattern):
-                    # Check if any reactant doesn't have the amide
-                    amide_in_all_reactants = True
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if not reactant_mol.HasSubstructMatch(amide_pattern):
-                                amide_in_all_reactants = False
-                                break
-
-                    if not amide_in_all_reactants:
-                        # This reaction forms an amide
-                        if amide_formation_depth is None or depth < amide_formation_depth:
-                            amide_formation_depth = depth
-                            print(f"Amide formation detected at depth {depth} in reaction: {rsmi}")
+        if node["type"] == "mol":
+            if "smiles" in node:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Check for N,N-dimethylaniline pattern
+                    dimethylaniline_pattern = Chem.MolFromSmarts("c-N(C)C")
+                    if mol.HasSubstructMatch(dimethylaniline_pattern):
+                        print("Detected N,N-dimethylaniline motif")
+                        has_dimethylaniline_motif = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-
-    # Consider it late-stage if it's in the first half of the synthesis
-    # (remember depth 0 is the final step)
-    if amide_formation_depth is not None and amide_formation_depth <= max_depth / 2:
-        print(
-            f"Late-stage amide formation detected at depth {amide_formation_depth} (max depth: {max_depth})"
-        )
-        return True
-    return False
+    return has_dimethylaniline_motif

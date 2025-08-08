@@ -2,64 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a protection/deprotection sequence in the synthesis,
-    specifically looking for Cbz protection of amines.
+    This function detects if the route maintains a difluoro group throughout the synthesis.
     """
-    has_deprotection = False
+    difluoro_present_in_final = False
+    difluoro_present_in_intermediates = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_deprotection
+    def dfs_traverse(node):
+        nonlocal difluoro_present_in_final, difluoro_present_in_intermediates
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            # Check for difluoro group
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                difluoro_pattern = Chem.MolFromSmarts("[#6]([F])([F])")
+                if mol.HasSubstructMatch(difluoro_pattern):
+                    if node.get("in_stock", False):
+                        # This is a starting material
+                        difluoro_present_in_intermediates = True
+                    elif not node.get("children"):
+                        # This is the final product
+                        difluoro_present_in_final = True
+                    else:
+                        # This is an intermediate
+                        difluoro_present_in_intermediates = True
 
-            # Check for Cbz deprotection
-            if len(reactants) == 1:
-                reactant_mol = Chem.MolFromSmiles(reactants[0])
-                product_mol = Chem.MolFromSmiles(product)
-
-                # Pattern for Cbz-protected amine
-                cbz_pattern = Chem.MolFromSmarts("[O]=[C][O][C][c]1[cH][cH][cH][cH][cH]1")
-                # Pattern for amine
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
-
-                if (
-                    reactant_mol.HasSubstructMatch(cbz_pattern)
-                    and product_mol.HasSubstructMatch(amine_pattern)
-                    and not product_mol.HasSubstructMatch(cbz_pattern)
-                ):
-                    has_deprotection = True
-                    print("Found Cbz deprotection")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    return has_deprotection
+    # The strategy is present if difluoro is in both final product and intermediates
+    if difluoro_present_in_final and difluoro_present_in_intermediates:
+        print("Detected maintenance of difluoro group throughout synthesis")
+        return True
+    return False

@@ -2,101 +2,153 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a specific sequence of functional group transformations:
-    hydroxyl → ether → bromide → nitrogen substitution.
+    Detects if the synthesis route involves amide formation in the final step.
     """
-    # Track the transformations observed
-    transformations = []
+    result = False
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+    # Find the final synthetic step (the first reaction node in retrosynthetic analysis)
+    final_step = None
 
-            reactants_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+    def find_final_step(node):
+        nonlocal final_step
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            # This is the target molecule
+            if node.get("children", []):
+                for child in node["children"]:
+                    if child["type"] == "reaction":
+                        final_step = child
+                        return True
+        return False
 
-            if product_mol and all(reactants_mols):
-                # Check for hydroxyl → ether transformation
-                if (
-                    any(mol.HasSubstructMatch(Chem.MolFromSmarts("[OH]")) for mol in reactants_mols)
-                    and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[O][C]"))
-                    and not product_mol.HasSubstructMatch(Chem.MolFromSmarts("[OH]"))
-                ):
-                    transformations.append(("hydroxyl_to_ether", depth))
-                    print(f"Detected hydroxyl → ether transformation at depth {depth}")
+    # First identify the final step
+    find_final_step(route)
 
-                # Check for ether → bromide transformation (specifically benzylic bromination)
-                if any(
-                    mol.HasSubstructMatch(Chem.MolFromSmarts("c[CH3]")) for mol in reactants_mols
-                ) and product_mol.HasSubstructMatch(Chem.MolFromSmarts("c[CH2][Br]")):
-                    transformations.append(("methyl_to_bromomethyl", depth))
-                    print(f"Detected methyl → bromomethyl transformation at depth {depth}")
+    print(f"Final step identified: {final_step is not None}")
 
-                # Check for bromide → nitrogen substitution
-                if any(
-                    mol.HasSubstructMatch(Chem.MolFromSmarts("c[CH2][Br]"))
-                    for mol in reactants_mols
-                ) and product_mol.HasSubstructMatch(Chem.MolFromSmarts("c[CH2][n]")):
-                    transformations.append(("bromide_to_nitrogen", depth))
-                    print(f"Detected bromide → nitrogen substitution at depth {depth}")
+    if final_step:
+        try:
+            # Check if this is an amide formation reaction using reaction checker
+            if "rsmi" in final_step.get("metadata", {}):
+                rsmi = final_step["metadata"]["rsmi"]
+                print(f"Final step reaction SMILES: {rsmi}")
 
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+                # Check for known amide formation reaction types
+                amide_reaction_types = [
+                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                    "Carboxylic acid with primary amine to amide",
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                    "Acyl chloride with secondary amine to amide",
+                    "Ester with primary amine to amide",
+                    "Ester with secondary amine to amide",
+                    "Acyl chloride with ammonia to amide",
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    "Schotten-Baumann to ester",
+                    "Schotten-Baumann_amide",
+                    "Acylation of primary amines",
+                    "Acylation of secondary amines",
+                ]
 
-    # Start traversal from the root
-    dfs_traverse(route)
+                for rxn_type in amide_reaction_types:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        print(f"Detected amide formation reaction: {rxn_type}")
+                        result = True
+                        break
 
-    # Check if the transformations follow the expected sequence
-    # Sort by depth (higher depth = earlier in synthesis)
-    transformations.sort(key=lambda x: x[1], reverse=True)
+                # If no specific reaction type matched, check for functional group transformation
+                if not result:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-    # Extract just the transformation types in sequence
-    transformation_sequence = [t[0] for t in transformations]
+                    # Check for amine and carboxylic acid in reactants
+                    has_primary_amine = any(checker.check_fg("Primary amine", r) for r in reactants)
+                    has_secondary_amine = any(
+                        checker.check_fg("Secondary amine", r) for r in reactants
+                    )
+                    has_carboxylic_acid = any(
+                        checker.check_fg("Carboxylic acid", r) for r in reactants
+                    )
+                    has_acyl_halide = any(checker.check_fg("Acyl halide", r) for r in reactants)
+                    has_ester = any(checker.check_fg("Ester", r) for r in reactants)
+                    has_anhydride = any(checker.check_fg("Anhydride", r) for r in reactants)
 
-    # Check if our sequence is present (may not be complete)
-    expected_sequence = ["hydroxyl_to_ether", "methyl_to_bromomethyl", "bromide_to_nitrogen"]
+                    # Check for amide in product
+                    has_primary_amide = checker.check_fg("Primary amide", product)
+                    has_secondary_amide = checker.check_fg("Secondary amide", product)
+                    has_tertiary_amide = checker.check_fg("Tertiary amide", product)
 
-    # Check if the transformations appear in the correct order
-    for i in range(len(expected_sequence) - 1):
-        if (
-            expected_sequence[i] in transformation_sequence
-            and expected_sequence[i + 1] in transformation_sequence
-        ):
-            if transformation_sequence.index(expected_sequence[i]) > transformation_sequence.index(
-                expected_sequence[i + 1]
-            ):
-                return False
+                    print(
+                        f"Reactants - Primary amine: {has_primary_amine}, Secondary amine: {has_secondary_amine}"
+                    )
+                    print(
+                        f"Reactants - Carboxylic acid: {has_carboxylic_acid}, Acyl halide: {has_acyl_halide}, Ester: {has_ester}, Anhydride: {has_anhydride}"
+                    )
+                    print(
+                        f"Product - Primary amide: {has_primary_amide}, Secondary amide: {has_secondary_amide}, Tertiary amide: {has_tertiary_amide}"
+                    )
 
-    # Return True if we found at least 2 of the expected transformations in the correct order
-    found_count = sum(1 for t in expected_sequence if t in transformation_sequence)
-    has_sequence = found_count >= 2
+                    # Check for amide formation conditions
+                    if (
+                        (has_primary_amine or has_secondary_amine)
+                        and (has_carboxylic_acid or has_acyl_halide or has_ester or has_anhydride)
+                        and (has_primary_amide or has_secondary_amide or has_tertiary_amide)
+                    ):
+                        print(
+                            "Detected amide formation in final step based on functional group analysis"
+                        )
+                        result = True
+        except Exception as e:
+            print(f"Error analyzing reaction: {e}")
 
-    if has_sequence:
-        print(f"Detected functional group transformation sequence: {transformation_sequence}")
-
-    return has_sequence
+    return result

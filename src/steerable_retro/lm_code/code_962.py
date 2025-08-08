@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,78 +54,103 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis includes a late-stage oxidation,
-    particularly focusing on alcohol to carboxylic acid or aldehyde transformations
-    in the first half of the synthesis depth.
+    Detects nitro reduction to amine in the synthetic route.
     """
-    late_oxidation_found = False
-    max_depth = 0
-    oxidation_depths = []
+    found_nitro_reduction = False
 
-    # First pass: determine maximum depth
-    def find_max_depth(node, current_depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, current_depth)
+    def dfs_traverse(node, depth=0):
+        nonlocal found_nitro_reduction
 
-        for child in node.get("children", []):
-            find_max_depth(child, current_depth + 1)
-
-    # Second pass: identify oxidation reactions
-    def find_oxidations(node, depth=0):
-        nonlocal oxidation_depths
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
             rsmi = node["metadata"]["rsmi"]
 
-            # Check for oxidation reactions using the checker function
-            oxidation_reactions = [
-                "Oxidation of alcohol to carboxylic acid",
-                "Oxidation of aldehydes to carboxylic acids",
-                "Oxidation of alcohol to aldehyde",
-                "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones",
-            ]
+            # Check if this is a nitro reduction reaction
+            if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                print(f"Found nitro reduction reaction at depth {depth}: {rsmi}")
+                found_nitro_reduction = True
+                return
 
-            for reaction_type in oxidation_reactions:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Oxidation reaction detected: {reaction_type} at depth {depth}")
-                    oxidation_depths.append(depth)
-                    break
+            # Alternative check by looking at functional group changes
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # If no specific reaction type matched, check for functional group transformation
-            if not oxidation_depths or depth not in oxidation_depths:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Check if any reactant has a nitro group
+            has_nitro_reactant = False
+            nitro_reactant = None
+            for reactant in reactants:
+                if checker.check_fg("Nitro group", reactant):
+                    has_nitro_reactant = True
+                    nitro_reactant = reactant
+                    print(f"Found reactant with nitro group: {reactant}")
 
-                # Check for alcohol in reactants and carbonyl in product
-                alcohol_in_reactants = any(
-                    checker.check_fg("Primary alcohol", r)
-                    or checker.check_fg("Secondary alcohol", r)
-                    or checker.check_fg("Tertiary alcohol", r)
-                    for r in reactants
-                )
+                    # Check if product has an amine (any type) but no nitro group
+                    has_amine_product = (
+                        checker.check_fg("Primary amine", product)
+                        or checker.check_fg("Secondary amine", product)
+                        or checker.check_fg("Tertiary amine", product)
+                        or checker.check_fg("Aniline", product)
+                    )
+                    has_nitro_product = checker.check_fg("Nitro group", product)
 
-                aldehyde_in_product = checker.check_fg("Aldehyde", product)
-                carboxylic_acid_in_product = checker.check_fg("Carboxylic acid", product)
+                    print(
+                        f"Product has amine: {has_amine_product}, Product has nitro: {has_nitro_product}"
+                    )
 
-                if alcohol_in_reactants and (aldehyde_in_product or carboxylic_acid_in_product):
-                    print(f"Functional group oxidation detected at depth {depth}")
-                    oxidation_depths.append(depth)
+                    if has_amine_product and not has_nitro_product:
+                        # Try to verify using atom mapping that the nitro group was converted to amine
+                        try:
+                            # Get atom indices for nitro group in reactant
+                            nitro_indices = checker.get_fg_atom_indices(
+                                "Nitro group", nitro_reactant
+                            )
+                            if nitro_indices:
+                                # Get the atom mapping numbers for the nitro group atoms
+                                reactant_mol = Chem.MolFromSmiles(nitro_reactant)
+                                if reactant_mol:
+                                    # Find the nitrogen atom in the nitro group
+                                    for atom_indices in nitro_indices:
+                                        for idx in atom_indices[
+                                            0
+                                        ]:  # Get the first tuple of indices
+                                            atom = reactant_mol.GetAtomWithIdx(idx)
+                                            if atom.GetSymbol() == "N":
+                                                # Get the atom mapping number
+                                                map_num = atom.GetAtomMapNum()
+                                                if map_num > 0:
+                                                    print(
+                                                        f"Found nitro N atom with map number: {map_num}"
+                                                    )
+                                                    # Check if this atom is part of an amine in the product
+                                                    product_mol = Chem.MolFromSmiles(product)
+                                                    if product_mol:
+                                                        for atom in product_mol.GetAtoms():
+                                                            if (
+                                                                atom.GetAtomMapNum() == map_num
+                                                                and atom.GetSymbol() == "N"
+                                                            ):
+                                                                print(
+                                                                    f"Found matching N atom in product with map number: {map_num}"
+                                                                )
+                                                                # Check if this N is part of an amine
+                                                                found_nitro_reduction = True
+                                                                print(
+                                                                    f"Setting found_nitro_reduction to True"
+                                                                )
+                                                                return
+                        except Exception as e:
+                            print(f"Error in atom mapping check: {e}")
 
-        # Traverse children
+                        # If atom mapping check failed but we still have evidence of nitro reduction
+                        print(f"Found nitro reduction at depth {depth}: {rsmi}")
+                        print(f"Setting found_nitro_reduction to True")
+                        found_nitro_reduction = True
+                        return
+
+        # Continue traversal
         for child in node.get("children", []):
-            find_oxidations(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    # Execute passes
-    find_max_depth(route)
-    find_oxidations(route)
-
-    # Determine if any oxidations are in the first half (late stage)
-    if oxidation_depths:
-        half_depth = max_depth / 2
-        for depth in oxidation_depths:
-            if depth <= half_depth:  # First half of synthesis (late stage)
-                late_oxidation_found = True
-                print(f"Late-stage oxidation found at depth {depth} (max depth: {max_depth})")
-                break
-
-    return late_oxidation_found
+    # Start traversal
+    dfs_traverse(route)
+    print(f"Final result: {found_nitro_reduction}")
+    return found_nitro_reduction

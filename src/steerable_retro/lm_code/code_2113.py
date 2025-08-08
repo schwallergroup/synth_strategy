@@ -2,54 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves hydrolysis of an ester to a carboxylic acid.
+    This function detects if the synthesis route employs ester hydrolysis to form a carboxylic acid.
     """
-    ester_hydrolysis_detected = False
+    # Flag to track if we found ester hydrolysis
+    found_ester_hydrolysis = False
 
     def dfs_traverse(node):
-        nonlocal ester_hydrolysis_detected
+        nonlocal found_ester_hydrolysis
 
+        # Check if this is a reaction node
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            # Get the reaction SMILES
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for ester in reactants
-            ester_pattern = Chem.MolFromSmarts("C(=O)OC")
-            carboxylic_acid_pattern = Chem.MolFromSmarts("C(=O)O")
+                try:
+                    # Create RDKit mol objects
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
 
-            # Look for ester in reactants
-            for reactant in reactants_smiles:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(ester_pattern):
-                    # Check if the product has a carboxylic acid
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-                    if product_mol and product_mol.HasSubstructMatch(carboxylic_acid_pattern):
-                        ester_hydrolysis_detected = True
-                        print("Ester hydrolysis to carboxylic acid detected")
-                        break
+                    # Check for ester in reactants
+                    ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]")
+
+                    # Check for carboxylic acid in product
+                    carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
+
+                    # Check conditions for ester hydrolysis
+                    has_ester = any(
+                        mol and mol.HasSubstructMatch(ester_pattern) for mol in reactant_mols
+                    )
+                    has_carboxylic_acid = product_mol and product_mol.HasSubstructMatch(
+                        carboxylic_acid_pattern
+                    )
+
+                    if has_ester and has_carboxylic_acid:
+                        print("Found ester hydrolysis to form carboxylic acid")
+                        found_ester_hydrolysis = True
+                except:
+                    print("Error processing reaction SMILES")
 
         # Traverse children
         for child in node.get("children", []):
@@ -58,4 +75,4 @@ def main(route):
     # Start traversal from the root
     dfs_traverse(route)
 
-    return ester_hydrolysis_detected
+    return found_ester_hydrolysis

@@ -2,83 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects synthesis of biaryl pyrazole compounds.
+    This function detects if the synthesis route involves sequential functionalization
+    of a pyridine core scaffold.
     """
-    has_biaryl_pyrazole = False
+    pyridine_modifications = 0
 
     def dfs_traverse(node):
-        nonlocal has_biaryl_pyrazole
+        nonlocal pyridine_modifications
 
-        if node["type"] == "mol" and node.get("in_stock", False) == False:
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol is None:
-                    return
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for pyrazole
-                pyrazole_pattern = Chem.MolFromSmarts("[n]1[n]cc[c]1")
+                # Check if product contains pyridine
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("c1ccncc1")):
+                    # Check if this is a modification of the pyridine ring
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(
+                            Chem.MolFromSmarts("c1ccncc1")
+                        ):
+                            pyridine_modifications += 1
+                            print(f"Pyridine modification detected: {rsmi}")
+                            break
 
-                # Check for biaryl system
-                biaryl_pattern = Chem.MolFromSmarts("[c]-!@[c]")
-
-                if mol.HasSubstructMatch(pyrazole_pattern) and mol.HasSubstructMatch(
-                    biaryl_pattern
-                ):
-                    # Further check if one of the rings in the biaryl is the pyrazole
-                    for bond in mol.GetBonds():
-                        if bond.GetBondType() == rdkit.Chem.rdchem.BondType.SINGLE:
-                            a1 = bond.GetBeginAtomIdx()
-                            a2 = bond.GetEndAtomIdx()
-
-                            # Check if both atoms are aromatic
-                            if (
-                                mol.GetAtomWithIdx(a1).GetIsAromatic()
-                                and mol.GetAtomWithIdx(a2).GetIsAromatic()
-                            ):
-                                # Create fragments by breaking this bond
-                                fragmentation = Chem.FragmentOnBonds(
-                                    mol, [bond.GetIdx()], addDummies=False
-                                )
-                                frags = Chem.GetMolFrags(fragmentation, asMols=True)
-
-                                if len(frags) == 2:
-                                    # Check if one fragment has pyrazole
-                                    if frags[0].HasSubstructMatch(pyrazole_pattern) or frags[
-                                        1
-                                    ].HasSubstructMatch(pyrazole_pattern):
-                                        has_biaryl_pyrazole = True
-                                        print("Detected biaryl pyrazole structure")
-                                        break
-            except Exception as e:
-                print(f"Error processing molecule: {e}")
-
-        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Biaryl pyrazole detected: {has_biaryl_pyrazole}")
-    return has_biaryl_pyrazole
+    return pyridine_modifications >= 2  # At least 2 modifications to consider it a strategy

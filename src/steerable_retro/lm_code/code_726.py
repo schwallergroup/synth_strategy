@@ -2,65 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving piperazine ring formation
-    while maintaining Boc protection throughout the synthesis.
+    This function detects if the synthetic route involves reduction of a nitro group to an amine.
     """
-    piperazine_formed = False
-    boc_protected = False
+    nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
+    amine_pattern = Chem.MolFromSmarts("[NH2]")
+
+    nitro_to_amine = False
 
     def dfs_traverse(node):
-        nonlocal piperazine_formed, boc_protected
+        nonlocal nitro_to_amine
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for piperazine formation
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    piperazine_pattern = Chem.MolFromSmarts("[N]1[C][C][N][C][C]1")
-                    if product_mol.HasSubstructMatch(piperazine_pattern):
-                        # Check if any reactant doesn't have piperazine
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and not reactant_mol.HasSubstructMatch(
-                                piperazine_pattern
-                            ):
-                                piperazine_formed = True
-                                print("Detected piperazine ring formation")
-                                break
+                try:
+                    # Check for nitro in reactants
+                    reactants_have_nitro = any(
+                        Chem.MolFromSmiles(r)
+                        and Chem.MolFromSmiles(r).HasSubstructMatch(nitro_pattern)
+                        for r in reactants_smiles
+                        if Chem.MolFromSmiles(r)
+                    )
 
-                # Check for Boc protection
-                boc_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]([C])([C])[C]")
-                if product_mol and product_mol.HasSubstructMatch(boc_pattern):
-                    boc_protected = True
-                    print("Detected Boc protection")
+                    # Check for amine in product
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if (
+                        reactants_have_nitro
+                        and product_mol
+                        and product_mol.HasSubstructMatch(amine_pattern)
+                    ):
+                        nitro_to_amine = True
+                        print("Detected nitro to amine reduction")
+                except:
+                    pass
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return piperazine_formed and boc_protected
+    return nitro_to_amine

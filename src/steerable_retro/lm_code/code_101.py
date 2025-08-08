@@ -2,81 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving sequential aromatic functionalization
-    (bromination followed by coupling or nitro reduction).
+    This function detects a late-stage SNAr reaction that introduces a piperazine group
+    to an aromatic ring, typically replacing a fluorine atom.
     """
-    aromatic_bromination = False
-    nitro_reduction = False
+    snar_with_piperazine_found = False
+    snar_depth = -1
+    max_depth = -1
 
-    def dfs_traverse(node):
-        nonlocal aromatic_bromination, nitro_reduction
+    def dfs_traverse(node, depth=0):
+        nonlocal snar_with_piperazine_found, snar_depth, max_depth
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        max_depth = max(max_depth, depth)
+
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
+            reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            try:
-                # Parse reactants and products
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
-                product = Chem.MolFromSmiles(product_smiles)
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                if all(r is not None for r in reactants) and product is not None:
-                    # Check for aromatic bromination
-                    aryl_br_pattern = Chem.MolFromSmarts("[#6;a]-[Br]")
+            # Check for SNAr with piperazine
+            fluoro_aromatic_pattern = Chem.MolFromSmarts("c-F")
+            piperazine_pattern = Chem.MolFromSmarts("[N]1CCN([C,c])CC1")
+            aromatic_piperazine_pattern = Chem.MolFromSmarts("c-[N]1CCN([C,c])CC1")
 
-                    product_has_aryl_br = product.HasSubstructMatch(aryl_br_pattern)
-                    reactants_have_aryl_br = any(
-                        r.HasSubstructMatch(aryl_br_pattern) for r in reactants if r is not None
-                    )
+            has_fluoro_aromatic = any(
+                r.HasSubstructMatch(fluoro_aromatic_pattern) for r in reactants if r
+            )
+            has_piperazine = any(r.HasSubstructMatch(piperazine_pattern) for r in reactants if r)
+            has_aromatic_piperazine = product.HasSubstructMatch(aromatic_piperazine_pattern)
 
-                    if product_has_aryl_br and not reactants_have_aryl_br:
-                        aromatic_bromination = True
-                        print(f"Aromatic bromination detected at reaction with RSMI: {rsmi}")
+            if has_fluoro_aromatic and has_piperazine and has_aromatic_piperazine:
+                snar_with_piperazine_found = True
+                snar_depth = depth
+                print(f"SNAr with piperazine found at depth {depth}")
 
-                    # Check for nitro reduction
-                    nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])-[O-]")
-                    amine_pattern = Chem.MolFromSmarts("[#6]-[NH2]")
-
-                    reactants_have_nitro = any(
-                        r.HasSubstructMatch(nitro_pattern) for r in reactants if r is not None
-                    )
-                    product_has_amine = product.HasSubstructMatch(amine_pattern)
-
-                    if reactants_have_nitro and product_has_amine:
-                        nitro_reduction = True
-                        print(f"Nitro reduction detected at reaction with RSMI: {rsmi}")
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if the strategy is detected
-    return aromatic_bromination and nitro_reduction
+    # Check if SNAr with piperazine was found and is late-stage (depth < max_depth/2)
+    is_late_stage = snar_depth < max_depth / 2
+
+    if snar_with_piperazine_found and is_late_stage:
+        print(f"Found late-stage SNAr with piperazine (depth {snar_depth} out of max {max_depth})")
+        return True
+    return False

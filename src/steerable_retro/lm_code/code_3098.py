@@ -2,95 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
-def main(route, min_count=2):
+def main(route):
     """
-    Detects if the synthetic route involves multiple amide bond formations.
+    This function detects if the synthetic route uses benzyl protection/deprotection
+    of nitrogen atoms as a key strategy.
     """
-    # Count amide formations
-    amide_formation_count = 0
+    # Track if we find both protection and deprotection
+    benzyl_protected_intermediates = []
+    deprotection_detected = False
 
-    def is_amide_formation(reaction_smiles):
-        """Check if a reaction forms an amide bond"""
-        # Split into reactants and product
-        parts = reaction_smiles.split(">")
-        if len(parts) < 3:
-            return False
+    def dfs_traverse(node, depth=0):
+        nonlocal deprotection_detected
 
-        reactants = parts[0].split(".")
-        product = parts[2]
+        if node["type"] == "reaction":
+            # Extract reactants and products
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        # Check for carboxylic acid in reactants
-        carboxylic_acid_pattern = Chem.MolFromSmarts("[#6](=[#8])[#8;H1]")
+            # Check for N-benzyl pattern
+            nbenzyl_pattern = Chem.MolFromSmarts("[#7]-[#6]-[c]")
 
-        # Check for amine in reactants
-        amine_pattern = Chem.MolFromSmarts("[#7;!$(NC=O)]")
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                has_nbenzyl_product = product_mol.HasSubstructMatch(nbenzyl_pattern)
 
-        # Check for amide in product
-        amide_pattern = Chem.MolFromSmarts("[#6](=[#8])[#7]")
+                # Check each reactant
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        has_nbenzyl_reactant = reactant_mol.HasSubstructMatch(nbenzyl_pattern)
 
-        has_acid = False
-        has_amine = False
+                        # If reactant has N-benzyl but product doesn't, it's a deprotection
+                        if has_nbenzyl_reactant and not has_nbenzyl_product:
+                            print(f"Detected benzyl deprotection at depth {depth}")
+                            deprotection_detected = True
 
-        for reactant in reactants:
-            try:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol:
-                    if mol.HasSubstructMatch(carboxylic_acid_pattern):
-                        has_acid = True
-                    if mol.HasSubstructMatch(amine_pattern):
-                        has_amine = True
-            except:
-                continue
-
-        has_amide = False
-        try:
-            prod_mol = Chem.MolFromSmiles(product)
-            if prod_mol and prod_mol.HasSubstructMatch(amide_pattern):
-                has_amide = True
-        except:
-            pass
-
-        return (has_acid or has_amine) and has_amide
-
-    def dfs_traverse(node):
-        nonlocal amide_formation_count
-
-        # Check if this is a reaction node
-        if node.get("type") == "reaction":
-            # Get reaction SMILES from metadata
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-
-                # Check if this is an amide formation
-                if is_amide_formation(rsmi):
-                    amide_formation_count += 1
-                    print(f"Found amide formation (count: {amide_formation_count})")
+                        # If product has N-benzyl but reactant doesn't, it's a protection
+                        if not has_nbenzyl_reactant and has_nbenzyl_product:
+                            print(f"Detected benzyl protection at depth {depth}")
+                            benzyl_protected_intermediates.append(depth)
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Total amide formations: {amide_formation_count}")
-    return amide_formation_count >= min_count
+    # Return True if we found both protection and deprotection
+    strategy_detected = deprotection_detected and len(benzyl_protected_intermediates) > 0
+    if strategy_detected:
+        print("Benzyl protection/deprotection strategy detected in the route")
+    return strategy_detected

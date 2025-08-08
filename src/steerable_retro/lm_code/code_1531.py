@@ -2,97 +2,87 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving multiple heteroatom alkylations (O-alkylation and N-alkylation).
+    Detects if the synthesis route involves a sequence of functional group
+    interconversions: ester → acid → amide.
     """
-    o_alkylation_count = 0
-    n_alkylation_count = 0
+    # Track functional groups at each depth
+    functional_groups = {}
 
     def dfs_traverse(node, depth=0):
-        nonlocal o_alkylation_count, n_alkylation_count
+        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            product_smiles = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                try:
-                    # Check for O-alkylation
-                    if "[OH]" in reactants_str and "[O][C]" in product_str:
-                        o_alkylation_count += 1
-                        print(f"Detected O-alkylation at depth {depth}")
+            if product_mol:
+                # Check for functional groups
+                ester_pattern = Chem.MolFromSmarts("[C](=O)[O][C]")
+                acid_pattern = Chem.MolFromSmarts("[C](=O)[O;H,-]")
+                amide_pattern = Chem.MolFromSmarts("[C](=O)[N]")
 
-                    # Check for N-alkylation
-                    if "[NH]" in reactants_str and "[N][C]" in product_str:
-                        n_alkylation_count += 1
-                        print(f"Detected N-alkylation at depth {depth}")
+                has_ester = product_mol.HasSubstructMatch(ester_pattern) if ester_pattern else False
+                has_acid = product_mol.HasSubstructMatch(acid_pattern) if acid_pattern else False
+                has_amide = product_mol.HasSubstructMatch(amide_pattern) if amide_pattern else False
 
-                    # Alternative detection using SMARTS
-                    reactants = reactants_str.split(".")
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        product_mol = Chem.MolFromSmiles(product_str)
+                functional_groups[depth] = {
+                    "ester": has_ester,
+                    "acid": has_acid,
+                    "amide": has_amide,
+                }
 
-                        if reactant_mol and product_mol:
-                            # O-alkylation patterns
-                            phenol_pattern = Chem.MolFromSmarts("[OH]c")
-                            alkoxy_pattern = Chem.MolFromSmarts("[O][CH2]")
+                if has_ester:
+                    print(f"Ester found at depth {depth}")
+                if has_acid:
+                    print(f"Carboxylic acid found at depth {depth}")
+                if has_amide:
+                    print(f"Amide found at depth {depth}")
 
-                            # N-alkylation patterns
-                            amine_pattern = Chem.MolFromSmarts("[NH]")
-                            alkyl_amine_pattern = Chem.MolFromSmarts("[N][CH2]")
-
-                            if reactant_mol.HasSubstructMatch(
-                                phenol_pattern
-                            ) and product_mol.HasSubstructMatch(alkoxy_pattern):
-                                o_alkylation_count += 1
-                                print(f"Detected O-alkylation at depth {depth} using SMARTS")
-
-                            if reactant_mol.HasSubstructMatch(
-                                amine_pattern
-                            ) and product_mol.HasSubstructMatch(alkyl_amine_pattern):
-                                n_alkylation_count += 1
-                                print(f"Detected N-alkylation at depth {depth} using SMARTS")
-                except:
-                    print(f"Error processing alkylation detection at depth {depth}")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if we have multiple heteroatom alkylations
-    total_alkylations = o_alkylation_count + n_alkylation_count
-    has_multiple_heteroatom_alkylations = total_alkylations >= 2
+    # Check for the sequence: ester → acid → amide
+    # Note: In retrosynthetic direction (increasing depth), this would be amide → acid → ester
+    depths = sorted(functional_groups.keys())
 
-    print(
-        f"Multiple heteroatom alkylation strategy detected: {has_multiple_heteroatom_alkylations}"
-    )
-    print(f"- O-alkylations: {o_alkylation_count}")
-    print(f"- N-alkylations: {n_alkylation_count}")
-    print(f"- Total alkylations: {total_alkylations}")
+    sequence_found = False
+    for i in range(len(depths) - 2):
+        d1, d2, d3 = depths[i], depths[i + 1], depths[i + 2]
 
-    return has_multiple_heteroatom_alkylations
+        if (
+            functional_groups[d1]["amide"]
+            and functional_groups[d2]["acid"]
+            and functional_groups[d3]["ester"]
+        ):
+            sequence_found = True
+            print(f"Found ester→acid→amide sequence at depths {d3}→{d2}→{d1}")
+            break
+
+    return sequence_found

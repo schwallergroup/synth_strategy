@@ -2,183 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy (no convergent steps).
-
-    A linear synthesis builds the target molecule step by step, with each reaction
-    adding complexity to a single growing intermediate. Convergent synthesis combines
-    multiple complex intermediates in key steps.
-
-    Returns:
-        bool: True if the synthesis is linear, False if convergent steps are detected.
+    Detects if the synthetic route employs a Suzuki coupling to form a biaryl system.
     """
-    is_linear = True
+    has_suzuki_coupling = False
 
-    # Helper function to determine if a molecule is a simple reagent
-    def is_simple_reagent(smiles):
-        try:
-            mol = Chem.MolFromSmiles(smiles)
-            if not mol:
-                return True  # Invalid SMILES treated as simple
+    def dfs_traverse(node):
+        nonlocal has_suzuki_coupling
 
-            # Check for common reagents by functional groups
-            if (
-                checker.check_fg("Magnesium halide", smiles)
-                or checker.check_fg("Alkyl lithium", smiles)
-                or checker.check_fg("Aryl lithium", smiles)
-                or checker.check_fg("Zinc halide", smiles)
-                or checker.check_fg("Triflate", smiles)
-                or checker.check_fg("Tosylate", smiles)
-                or checker.check_fg("Mesylate", smiles)
-            ):
-                return True
-
-            # Common solvents and bases
-            common_solvents = [
-                "CCO",
-                "CCOC",
-                "CC(=O)OC",
-                "CS(=O)C",
-                "CN(C)C=O",
-                "c1ccccc1",
-                "ClCCl",
-                "CC(C)O",
-                "O",
-                "CO",
-                "CC#N",
-                "C1COCCO1",
-                "CCOCC",
-            ]
-            if smiles in common_solvents:
-                return True
-
-            # Common catalysts and reagents often contain Pd, Pt, Rh, Ru, Cu
-            if any(metal in smiles for metal in ["Pd", "Pt", "Rh", "Ru", "Cu", "Fe", "Ni", "Zn"]):
-                return True
-
-            # Simple molecules with few atoms
-            if mol.GetNumAtoms() <= 8:
-                return True
-
-            # Simple molecules with low complexity
-            ring_count = len(Chem.GetSSSR(mol))
-            if mol.GetNumAtoms() <= 12 and ring_count == 0:
-                return True
-
-            # Common reagents
-            if any(
-                reagent in smiles
-                for reagent in [
-                    "B(O)O",
-                    "P",
-                    "S(=O)(=O)",
-                    "C(=O)O",
-                    "[Na+]",
-                    "[K+]",
-                    "[Li+]",
-                    "Cl",
-                    "Br",
-                    "I",
-                ]
-            ):
-                if mol.GetNumAtoms() <= 15:
-                    return True
-
-            return False
-        except Exception as e:
-            print(f"Error in is_simple_reagent: {e}")
-            return True  # If error, assume it's simple
-
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear
-
-        if node["type"] == "reaction" and is_linear:  # Skip if already found non-linear
-            try:
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                reactants = reactants_part.split(".")
 
-                # Check if this is a known reaction type that's inherently convergent
-                # but typically used in linear strategies
-                if (
-                    checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                    or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                    or checker.check_reaction("Sonogashira acetylene_aryl halide", rsmi)
-                    or checker.check_reaction("Sonogashira alkyne_aryl halide", rsmi)
-                    or checker.check_reaction("Heck terminal vinyl", rsmi)
-                    or checker.check_reaction("Buchwald-Hartwig", rsmi)
-                    or checker.check_reaction("N-arylation", rsmi)
-                    or checker.check_reaction("Negishi coupling", rsmi)
-                    or checker.check_reaction("Stille reaction", rsmi)
-                    or checker.check_reaction("Hiyama-Denmark Coupling", rsmi)
-                    or checker.check_reaction("Kumada cross-coupling", rsmi)
-                ):
-                    # These coupling reactions are often part of linear strategies
-                    # despite having multiple reactants
-                    pass
-                else:
-                    # Count significant reactants (not simple reagents)
-                    significant_reactants = [r for r in reactants if not is_simple_reagent(r)]
+                # Split into reactants and product
+                parts = rsmi.split(">")
+                if len(parts) >= 3:
+                    reactants = parts[0].split(".")
+                    product = parts[-1]
 
-                    if len(significant_reactants) > 1:
-                        print(f"Detected convergent step at depth {depth}: {rsmi}")
-                        print(f"Significant reactants: {significant_reactants}")
-                        print(f"Number of significant reactants: {len(significant_reactants)}")
-                        is_linear = False
-            except Exception as e:
-                print(f"Error analyzing reaction at depth {depth}: {e}")
+                    # Check for boronic acid in reactants
+                    boronic_acid_pattern = Chem.MolFromSmarts("[#6]B(O)O")
 
-        # Process children
+                    # Check for aryl halide in reactants
+                    aryl_halide_pattern = Chem.MolFromSmarts("[#6]!@[#53,#35,#17]")
+
+                    has_boronic_acid = False
+                    has_aryl_halide = False
+
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol:
+                                if mol.HasSubstructMatch(boronic_acid_pattern):
+                                    has_boronic_acid = True
+                                if mol.HasSubstructMatch(aryl_halide_pattern):
+                                    has_aryl_halide = True
+                        except:
+                            continue
+
+                    # Check if product has a biaryl system
+                    if has_boronic_acid and has_aryl_halide:
+                        try:
+                            product_mol = Chem.MolFromSmiles(product)
+                            # Simple check for biaryl - two aromatic rings connected
+                            biaryl_pattern = Chem.MolFromSmarts("c!@c")
+                            if product_mol and product_mol.HasSubstructMatch(biaryl_pattern):
+                                print("Found Suzuki coupling forming biaryl system")
+                                has_suzuki_coupling = True
+                        except:
+                            pass
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return is_linear
+
+    return has_suzuki_coupling

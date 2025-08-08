@@ -2,77 +2,109 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis route uses an SNAr coupling strategy to form C-N bonds
-    between an amine and a chloro-aromatic system.
+    Detects if the final step involves reduction of a nitro group to an amine.
     """
-    snar_coupling_found = False
+    final_step_has_nitro_reduction = False
 
-    def dfs_traverse(node):
-        nonlocal snar_coupling_found
+    def dfs_traverse(node, depth=0):
+        nonlocal final_step_has_nitro_reduction
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+        # If we already found a nitro reduction in the final step, no need to continue
+        if final_step_has_nitro_reduction:
+            return
+
+        # Check if this is a reaction node
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
+
+            # Check if this is the final step (depth 0 in retrosynthetic analysis)
+            if depth == 0:
+                print(f"Examining final step reaction: {rsmi}")
+
+                # Check if this is a nitro reduction reaction
+                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                    print(f"Detected nitro reduction reaction in final step: {rsmi}")
+                    final_step_has_nitro_reduction = True
+                    return
+
+                # Fallback: Check functional groups manually
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for SNAr pattern: chloro-aromatic + amine → aryl-amine
-                product_mol = Chem.MolFromSmiles(product)
+                # Check if any reactant has a nitro group
+                has_nitro_reactant = any(
+                    checker.check_fg("Nitro group", reactant) for reactant in reactants
+                )
 
-                # Look for patterns in reactants
-                chloro_aromatic_found = False
-                amine_found = False
+                # Check if product has a primary amine
+                has_primary_amine_product = checker.check_fg("Primary amine", product)
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
+                if has_nitro_reactant and has_primary_amine_product:
+                    print(f"Detected nitro group in reactant and primary amine in product: {rsmi}")
+                    final_step_has_nitro_reduction = True
+                    return
 
-                    # Check for chloro-aromatic
-                    chloro_aromatic_pattern = Chem.MolFromSmarts("[Cl][c]")
-                    if reactant_mol.HasSubstructMatch(chloro_aromatic_pattern):
-                        chloro_aromatic_found = True
-
-                    # Check for amine
-                    amine_pattern = Chem.MolFromSmarts("[N;!$(N=*);!$(NC=O)]")
-                    if reactant_mol.HasSubstructMatch(amine_pattern):
-                        amine_found = True
-
-                # Check if product has aryl-amine bond
-                if product_mol:
-                    aryl_amine_pattern = Chem.MolFromSmarts("[c][N;!$(N=*);!$(NC=O)]")
-                    if (
-                        chloro_aromatic_found
-                        and amine_found
-                        and product_mol.HasSubstructMatch(aryl_amine_pattern)
-                    ):
-                        snar_coupling_found = True
-                        print("SNAr coupling detected")
-
-        # Traverse children
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    dfs_traverse(route)
-    return snar_coupling_found
+    # Start traversal from the target molecule
+    if route["type"] == "mol":
+        for child in route.get("children", []):
+            dfs_traverse(child, 0)
+    else:
+        dfs_traverse(route, 0)
+
+    return final_step_has_nitro_reduction

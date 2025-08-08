@@ -2,72 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves a Sonogashira-type coupling between
-    an aryl halide and a terminal alkyne.
+    Detects a strategy where an alkyne undergoes functionalization to form
+    a more complex structure, particularly through addition reactions.
     """
-    # Track if we found the pattern
-    found_pattern = False
+    # Initialize tracking variables
+    has_alkyne_functionalization = False
+    alkyne_reactions = []
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
+    def dfs_traverse(node):
+        nonlocal has_alkyne_functionalization
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+                reactants = rsmi.split(">")[0]
                 product = rsmi.split(">")[-1]
 
-                # Check for aryl halide in reactants
-                aryl_halide_present = False
-                terminal_alkyne_present = False
+                reactant_mol = Chem.MolFromSmiles(reactants)
+                product_mol = Chem.MolFromSmiles(product)
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        # Check for aryl iodide
-                        aryl_iodide_pattern = Chem.MolFromSmarts("[c]-[#53]")
-                        if reactant_mol.HasSubstructMatch(aryl_iodide_pattern):
-                            aryl_halide_present = True
+                if reactant_mol and product_mol:
+                    # Check for alkyne in reactants
+                    if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[C]#[C]")):
+                        # Check for vinyl group in product (indicating addition)
+                        if product_mol.HasSubstructMatch(Chem.MolFromSmarts("[C]=[C]")):
+                            has_alkyne_functionalization = True
+                            alkyne_reactions.append(rsmi)
+                            print(f"Detected alkyne functionalization: {rsmi}")
 
-                        # Check for terminal alkyne (propargyl alcohol)
-                        terminal_alkyne_pattern = Chem.MolFromSmarts("[C]#[C][C][O]")
-                        if reactant_mol.HasSubstructMatch(terminal_alkyne_pattern):
-                            terminal_alkyne_present = True
-
-                # Check if product has C-C≡C where aryl-I was
-                if aryl_halide_present and terminal_alkyne_present:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        alkyne_connection_pattern = Chem.MolFromSmarts("[c]-[C]#[C]")
-                        if product_mol.HasSubstructMatch(alkyne_connection_pattern):
-                            print("Found Sonogashira-type coupling with terminal alkyne")
-                            found_pattern = True
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-    return found_pattern
+
+    # Check if the strategy is present
+    strategy_present = has_alkyne_functionalization
+
+    if strategy_present:
+        print(f"Detected alkyne functionalization strategy with {len(alkyne_reactions)} reactions")
+    else:
+        print("Alkyne functionalization strategy not detected")
+
+    return strategy_present

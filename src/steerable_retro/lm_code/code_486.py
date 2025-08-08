@@ -2,78 +2,88 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a sulfonamide group is introduced in the second half of the synthesis.
+    Detects if the synthesis uses chloroacetyl chloride as a linker/handle
+    for subsequent substitution reactions.
     """
-    sulfonamide_formation_depth = None
-    max_depth = 0
+    has_chloroacetyl_chloride = False
+    has_chloroacetamide_intermediate = False
+    has_substitution_product = False
 
-    # SMARTS patterns
-    sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])-[#7]")
-    sulfonyl_chloride_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])-[Cl]")
-
-    def dfs_traverse(node, depth=0):
-        nonlocal sulfonamide_formation_depth, max_depth
-
-        # Track maximum depth
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal has_chloroacetyl_chloride, has_chloroacetamide_intermediate, has_substitution_product
 
         if node["type"] == "reaction":
-            # Extract reactants and products
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            products_part = rsmi.split(">")[-1]
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
-            product = Chem.MolFromSmiles(products_part)
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for sulfonamide formation
-            if (
-                any(
-                    r is not None and r.HasSubstructMatch(sulfonyl_chloride_pattern)
-                    for r in reactants
-                )
-                and product is not None
-                and product.HasSubstructMatch(sulfonamide_pattern)
-            ):
-                sulfonamide_formation_depth = depth
-                print(f"Found sulfonamide formation at depth {depth}")
+            # Check for chloroacetyl chloride
+            chloroacetyl_pattern = Chem.MolFromSmarts("Cl[C](=[O])[CH2][Cl]")
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(chloroacetyl_pattern):
+                        has_chloroacetyl_chloride = True
+                        print("Found chloroacetyl chloride")
+                except:
+                    continue
+
+            # Check for chloroacetamide intermediate
+            chloroacetamide_pattern = Chem.MolFromSmarts("[NH][C](=[O])[CH2][Cl]")
+            try:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol and product_mol.HasSubstructMatch(chloroacetamide_pattern):
+                    has_chloroacetamide_intermediate = True
+                    print("Found chloroacetamide intermediate")
+            except:
+                pass
+
+            # Check for substitution product
+            substitution_product_pattern = Chem.MolFromSmarts("[NH][C](=[O])[CH2][N]")
+            try:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol and product_mol.HasSubstructMatch(substitution_product_pattern):
+                    has_substitution_product = True
+                    print("Found substitution product")
+            except:
+                pass
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if sulfonamide formation occurs in the second half of synthesis
-    # (lower depth values correspond to later stages in synthesis)
-    if sulfonamide_formation_depth is not None:
-        is_late_stage = sulfonamide_formation_depth < (max_depth / 2)
-        print(
-            f"Sulfonamide formation at depth {sulfonamide_formation_depth}, max depth {max_depth}"
-        )
-        print(f"Is late stage: {is_late_stage}")
-        return is_late_stage
-
-    return False
+    # Strategy is present if all three conditions are met
+    return (
+        has_chloroacetyl_chloride and has_chloroacetamide_intermediate and has_substitution_product
+    )

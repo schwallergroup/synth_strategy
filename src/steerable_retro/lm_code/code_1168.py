@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,57 +54,71 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves late-stage incorporation of a pyrrolidine ring.
+    Detects if the synthesis route includes sequential nitrogen functional group interconversions.
     """
-    late_stage_pyrrolidine = False
+    # Track nitrogen functional group transformations
+    n_transformations = []
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_pyrrolidine
+    def dfs(node, depth=0):
+        nonlocal n_transformations
 
-        if (
-            node["type"] == "reaction" and depth <= 2
-        ):  # Consider only reactions in the first 3 levels (late stage)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if product contains pyrrolidine
-                has_pyrrolidine_product = checker.check_ring("pyrrolidine", product)
+            # Check for various nitrogen functional group interconversions
+            nitrogen_reactions = [
+                "Reduction of nitro groups to amines",
+                "N-alkylation of primary amines with alkyl halides",
+                "N-alkylation of secondary amines with alkyl halides",
+                "Reductive amination with aldehyde",
+                "Reductive amination with ketone",
+                "Acylation of primary amines",
+                "Acylation of secondary amines",
+                "Boc amine protection",
+                "Boc amine deprotection",
+            ]
 
-                # Check if any reactant contains pyrrolidine
-                pyrrolidine_reactants = [
-                    r for r in reactants if checker.check_ring("pyrrolidine", r)
-                ]
-
-                # Check for pyrrolidine-forming reactions
-                pyrrolidine_forming_reaction = (
-                    checker.check_reaction("Paal-Knorr pyrrole synthesis", rsmi)
-                    or checker.check_reaction(
-                        "N-alkylation of secondary amines with alkyl halides", rsmi
+            for reaction_type in nitrogen_reactions:
+                if checker.check_reaction(reaction_type, rsmi):
+                    # Verify nitrogen functional group change
+                    n_fg_before = any(
+                        checker.check_fg("Primary amine", r)
+                        or checker.check_fg("Secondary amine", r)
+                        or checker.check_fg("Tertiary amine", r)
+                        or checker.check_fg("Nitro group", r)
+                        or checker.check_fg("Primary amide", r)
+                        or checker.check_fg("Secondary amide", r)
+                        for r in reactants
                     )
-                    or checker.check_reaction(
-                        "N-alkylation of primary amines with alkyl halides", rsmi
+
+                    n_fg_after = (
+                        checker.check_fg("Primary amine", product)
+                        or checker.check_fg("Secondary amine", product)
+                        or checker.check_fg("Tertiary amine", product)
+                        or checker.check_fg("Primary amide", product)
+                        or checker.check_fg("Secondary amide", product)
                     )
-                    or checker.check_reaction("reductive amination with aldehyde", rsmi)
-                    or checker.check_reaction("reductive amination with ketone", rsmi)
-                )
 
-                # Check for direct incorporation of pyrrolidine
-                pyrrolidine_incorporation = (
-                    has_pyrrolidine_product and len(pyrrolidine_reactants) > 0
-                )
+                    if n_fg_before and n_fg_after:
+                        n_transformations.append((reaction_type, depth))
+                        print(f"Found nitrogen transformation: {reaction_type} at depth {depth}")
+                    break
 
-                # Check if the pyrrolidine is actually being incorporated (not just present in both)
-                if pyrrolidine_incorporation or (
-                    has_pyrrolidine_product and pyrrolidine_forming_reaction
-                ):
-                    print(f"Detected late-stage pyrrolidine incorporation at depth {depth}")
-                    print(f"Reaction SMILES: {rsmi}")
-                    late_stage_pyrrolidine = True
-
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs(child, depth + 1)
 
-    dfs_traverse(route)
-    return late_stage_pyrrolidine
+    # Start DFS traversal
+    dfs(route)
+
+    # Check if we have at least two sequential nitrogen transformations
+    # Sort by depth to check if they're sequential
+    n_transformations.sort(key=lambda x: x[1])
+
+    # Need at least two transformations to be sequential (adjacent depths)
+    return len(n_transformations) >= 2 and any(
+        abs(n_transformations[i][1] - n_transformations[i + 1][1]) == 1
+        for i in range(len(n_transformations) - 1)
+    )

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,141 +54,68 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route involves modification of a heterocyclic core.
-    Specifically looks for transformations of heterocycles like benzimidazole, pyridine, etc.
+    This function detects transformation of an aldehyde to a terminal alkyne.
+    Typically a late-stage functional group interconversion.
     """
-    heterocycle_modification_found = False
+    transformation_detected = False
 
-    # List of heterocycles to check
-    heterocycles = [
-        "benzimidazole",
-        "pyridine",
-        "pyrrole",
-        "furan",
-        "thiophene",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrazole",
-        "isoxazole",
-        "isothiazole",
-        "triazole",
-        "tetrazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "indole",
-        "benzofuran",
-        "benzothiophene",
-        "quinoline",
-        "isoquinoline",
-        "piperidine",
-        "morpholine",
-        "piperazine",
-        "pyrrolidine",
-    ]
+    def dfs_traverse(node, depth=0):
+        nonlocal transformation_detected
 
-    def dfs_traverse(node):
-        nonlocal heterocycle_modification_found
+        # Consider reactions at depth < 3 as late-stage
+        is_late_stage = depth < 3
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            try:
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                product_mol = Chem.MolFromSmiles(product)
-                if not product_mol:
-                    return
+                # Check for aldehyde in reactants using checker function
+                has_aldehyde = any(checker.check_fg("Aldehyde", reactant) for reactant in reactants)
 
-                # Check if product contains any heterocycle
-                product_heterocycles = []
-                for heterocycle in heterocycles:
-                    if checker.check_ring(heterocycle, product):
-                        product_heterocycles.append(heterocycle)
-                        print(f"Product contains {heterocycle}")
+                # Check for terminal alkyne in product using checker function
+                has_terminal_alkyne = checker.check_fg("Alkyne", product)
 
-                if not product_heterocycles:
-                    return
+                # Check if aldehyde is gone in product
+                product_has_aldehyde = checker.check_fg("Aldehyde", product)
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
+                # Check if alkyne already exists in reactants
+                reactants_have_alkyne = any(
+                    checker.check_fg("Alkyne", reactant) for reactant in reactants
+                )
 
-                    # Check if reactant contains any heterocycle
-                    reactant_heterocycles = []
-                    for heterocycle in heterocycles:
-                        if checker.check_ring(heterocycle, reactant):
-                            reactant_heterocycles.append(heterocycle)
-                            print(f"Reactant contains {heterocycle}")
+                # Check if this is a relevant reaction type
+                is_homologation = checker.check_reaction(
+                    "Homologation of aldehydes with formaldehyde", rsmi
+                )
 
-                    # Case 1: Heterocycle is present in both reactant and product
-                    common_heterocycles = set(reactant_heterocycles).intersection(
-                        set(product_heterocycles)
-                    )
-                    if common_heterocycles:
-                        print(f"Common heterocycles: {common_heterocycles}")
+                # Verify transformation: aldehyde should be consumed, alkyne should be new
+                if (
+                    has_aldehyde
+                    and has_terminal_alkyne
+                    and is_late_stage
+                    and not reactants_have_alkyne
+                ):
+                    if is_homologation:
+                        print(
+                            f"Detected aldehyde to terminal alkyne transformation via homologation at depth {depth}"
+                        )
+                        transformation_detected = True
+                    elif not product_has_aldehyde:
+                        # If specific reaction check fails, look for general pattern
+                        # The aldehyde must be consumed and the alkyne must be new
+                        print(
+                            f"Detected general aldehyde to terminal alkyne transformation at depth {depth}"
+                        )
+                        transformation_detected = True
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
-                        # Check for functional group changes on the heterocycle
-                        # This is a simplification - ideally we would use atom mapping to track specific changes
-                        functional_groups = [
-                            "Primary amine",
-                            "Secondary amine",
-                            "Tertiary amine",
-                            "Primary alcohol",
-                            "Secondary alcohol",
-                            "Tertiary alcohol",
-                            "Carboxylic acid",
-                            "Ester",
-                            "Amide",
-                            "Nitrile",
-                            "Halide",
-                            "Nitro group",
-                            "Sulfonamide",
-                        ]
-
-                        reactant_fgs = set()
-                        product_fgs = set()
-
-                        for fg in functional_groups:
-                            if checker.check_fg(fg, reactant):
-                                reactant_fgs.add(fg)
-                            if checker.check_fg(fg, product):
-                                product_fgs.add(fg)
-
-                        if reactant_fgs != product_fgs:
-                            print(
-                                f"Functional group change detected: {reactant_fgs} -> {product_fgs}"
-                            )
-                            heterocycle_modification_found = True
-
-                        # Check for specific reactions that modify heterocycles
-                        reaction_types = [
-                            "N-alkylation of primary amines with alkyl halides",
-                            "N-alkylation of secondary amines with alkyl halides",
-                            "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                            "Friedel-Crafts alkylation",
-                            "Friedel-Crafts acylation",
-                        ]
-
-                        for rxn_type in reaction_types:
-                            if checker.check_reaction(rxn_type, rsmi):
-                                print(f"Heterocycle-modifying reaction detected: {rxn_type}")
-                                heterocycle_modification_found = True
-
-                    # Case 2: Heterocycle is formed in the reaction
-                    if not reactant_heterocycles and product_heterocycles:
-                        print(f"Heterocycle formation detected: {product_heterocycles}")
-                        heterocycle_modification_found = True
-
-                    # Case 3: Heterocycle is broken in the reaction
-                    if reactant_heterocycles and not product_heterocycles:
-                        print(f"Heterocycle breaking detected: {reactant_heterocycles}")
-                        heterocycle_modification_found = True
-
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return heterocycle_modification_found
+    return transformation_detected

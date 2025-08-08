@@ -2,76 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a Friedel-Crafts acylation is present in the synthesis.
+    This function detects if the synthesis follows a linear fragment assembly pattern.
     """
-    friedel_crafts_found = False
+    fragment_coupling_count = 0
+    linear_assembly = True
 
-    def dfs_traverse(node):
-        nonlocal friedel_crafts_found
+    def dfs_traverse(node, depth=0):
+        nonlocal fragment_coupling_count, linear_assembly
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Get reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
 
-                # Check for acid chloride in reactants
-                acid_chloride_pattern = Chem.MolFromSmarts("[C](=O)Cl")
-                # Check for aromatic in reactants
-                aromatic_pattern = Chem.MolFromSmarts("[c]1[c][c][c][c][c]1")
-                # Check for diaryl ketone in product
-                diaryl_ketone_pattern = Chem.MolFromSmarts("[c]-[C](=O)-[c]")
+            # Count number of reactants
+            reactant_count = len(reactants_part.split("."))
 
-                acid_chloride_found = False
-                aromatic_found = False
+            if reactant_count > 1:
+                fragment_coupling_count += 1
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
-
-                    if reactant_mol.HasSubstructMatch(acid_chloride_pattern):
-                        acid_chloride_found = True
-
-                    if reactant_mol.HasSubstructMatch(aromatic_pattern):
-                        aromatic_found = True
-
-                product_mol = Chem.MolFromSmiles(product)
+                # If we have more than one fragment coupling at the same depth level,
+                # it's not a strictly linear assembly
                 if (
-                    acid_chloride_found
-                    and aromatic_found
-                    and product_mol
-                    and product_mol.HasSubstructMatch(diaryl_ketone_pattern)
+                    fragment_coupling_count > 1
+                    and node.get("children", [])
+                    and any(
+                        child["type"] == "reaction"
+                        and len(child["metadata"]["rsmi"].split(">")[0].split(".")) > 1
+                        for child in node.get("children", [])
+                    )
                 ):
-                    friedel_crafts_found = True
-                    print("Found Friedel-Crafts acylation")
+                    linear_assembly = False
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-
-    return friedel_crafts_found
+    return linear_assembly and fragment_coupling_count > 0

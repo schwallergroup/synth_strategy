@@ -2,67 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis uses a leaving group activation strategy,
-    specifically looking for alcohol to mesylate conversion.
+    Detects a synthesis that combines dimethoxyphenyl and fluorophenyl moieties.
     """
-    # Initialize tracking variable
-    has_alcohol_to_mesylate = False
+    # Track if both moieties are present in the final product
+    dimethoxyphenyl_present = False
+    fluorophenyl_present = False
 
-    def dfs_traverse(node):
-        nonlocal has_alcohol_to_mesylate
+    def dfs_traverse(node, depth=0):
+        nonlocal dimethoxyphenyl_present, fluorophenyl_present
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and depth == 0:  # Final product
+            if node.get("smiles"):
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    if mol.HasSubstructMatch(
+                        Chem.MolFromSmarts("[c]1([O][C])[c]([O][C])[c][c][c][c]1")
+                    ):
+                        dimethoxyphenyl_present = True
+                        print("Found dimethoxyphenyl moiety in final product")
 
-            # Patterns for alcohol and mesylate
-            alcohol_pattern = Chem.MolFromSmarts("[#8H1]")
-            mesylate_pattern = Chem.MolFromSmarts("[#8][S](=[#8])(=[#8])[#6]")
+                    if mol.HasSubstructMatch(Chem.MolFromSmarts("[c]1[c][c][c]([F])[c][c]1")):
+                        fluorophenyl_present = True
+                        print("Found fluorophenyl moiety in final product")
 
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-
-                # Check for alcohol to mesylate conversion
-                if (
-                    any(m and m.HasSubstructMatch(alcohol_pattern) for m in reactant_mols)
-                    and product_mol
-                    and product_mol.HasSubstructMatch(mesylate_pattern)
-                ):
-                    print("Detected alcohol to mesylate conversion")
-                    has_alcohol_to_mesylate = True
-
-            except Exception as e:
-                print(f"Error processing reaction SMILES: {e}")
-
-        # Traverse children
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Leaving group activation strategy detected: {has_alcohol_to_mesylate}")
-    return has_alcohol_to_mesylate
+    return dimethoxyphenyl_present and fluorophenyl_present

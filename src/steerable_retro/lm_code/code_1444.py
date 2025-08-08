@@ -2,62 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis preserves stereochemistry throughout.
+    Detects a strategy involving a sequence of functional group interconversions,
+    such as alkyne reduction and azide reduction.
     """
-    stereocenters_preserved = True
+    found_alkyne_reduction = False
+    found_azide_reduction = False
 
-    def dfs_traverse(node):
-        nonlocal stereocenters_preserved
+    def dfs_traverse(node, depth=0):
+        nonlocal found_alkyne_reduction, found_azide_reduction
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_str = rsmi.split(">")[0]
+                product_str = rsmi.split(">")[-1]
 
-            # Check for stereochemistry markers in SMILES
-            stereo_markers = ["@", "/", "\\"]
+                # Check for alkyne reduction
+                alkyne_pattern = Chem.MolFromSmarts("[C]#[C]")
 
-            # If product has stereochemistry markers
-            if any(marker in product_smiles for marker in stereo_markers):
-                # Check if any reactant also has stereochemistry
-                reactants_have_stereo = any(
-                    any(marker in r for marker in stereo_markers) for r in reactants_smiles
-                )
+                try:
+                    reactant_mol = Chem.MolFromSmiles(reactants_str)
+                    product_mol = Chem.MolFromSmiles(product_str)
 
-                # If reactants have stereo but product doesn't have expected number, stereo might be lost
-                if reactants_have_stereo:
-                    # This is a simplified check - a more robust implementation would count and compare
-                    # the actual number of stereocenters in reactants and products
-                    print("Stereochemistry preserved in this step")
-                else:
-                    # This step creates new stereochemistry
-                    print("New stereochemistry created in this step")
+                    if (
+                        reactant_mol
+                        and product_mol
+                        and reactant_mol.HasSubstructMatch(alkyne_pattern)
+                        and not product_mol.HasSubstructMatch(alkyne_pattern)
+                    ):
+                        found_alkyne_reduction = True
+                        print(f"Found alkyne reduction at depth {depth}")
+                except:
+                    pass
 
+                # Check for azide reduction
+                azide_pattern = Chem.MolFromSmarts("[N-]=[N+]=[N]")
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+
+                try:
+                    for reactant in reactants_str.split("."):
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(azide_pattern):
+                            product_mol = Chem.MolFromSmiles(product_str)
+                            if product_mol and product_mol.HasSubstructMatch(amine_pattern):
+                                found_azide_reduction = True
+                                print(f"Found azide reduction at depth {depth}")
+                except:
+                    pass
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
 
-    print(f"Has stereocenter preservation strategy: {stereocenters_preserved}")
-    return stereocenters_preserved
+    # Return True if we found multiple functional group interconversions
+    return found_alkyne_reduction and found_azide_reduction

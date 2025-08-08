@@ -2,61 +2,47 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes a nitro group reduction to an amine.
+    This function detects the use of aldehyde intermediates in the synthetic route.
     """
-    nitro_reduction_found = False
+    aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
+    aldehyde_intermediate_detected = False
 
     def dfs_traverse(node):
-        nonlocal nitro_reduction_found
+        nonlocal aldehyde_intermediate_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(aldehyde_pattern):
+                print("Aldehyde intermediate detected")
+                aldehyde_intermediate_detected = True
 
-            try:
-                # Check if any reactant has a nitro group
-                nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
-
-                product_mol = Chem.MolFromSmiles(product_smiles)
-
-                for reactant_smiles in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
-                        # Check if product has an amine where the nitro group was
-                        if product_mol and product_mol.HasSubstructMatch(amine_pattern):
-                            print(f"Nitro reduction detected in reaction: {rsmi}")
-                            nitro_reduction_found = True
-                            break
-            except Exception as e:
-                print(f"Error in nitro_reduction_strategy: {e}")
-
-        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return nitro_reduction_found
+    return aldehyde_intermediate_detected

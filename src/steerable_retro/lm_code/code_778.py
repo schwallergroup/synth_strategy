@@ -2,66 +2,89 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route uses TBDMS protection strategy
-    for hydroxyl groups multiple times.
+    This function detects if the final step (or one of the last steps)
+    in the synthesis is an amide formation.
     """
-    protection_count = 0
+    # Track depth of amide formation
+    amide_formation_depth = None
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal protection_count
+    def dfs_traverse(node, depth=0):
+        nonlocal amide_formation_depth, max_depth
+
+        max_depth = max(max_depth, depth)
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+                # Convert to RDKit molecules
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [
+                        Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)
+                    ]
 
-            # Check for TBDMS protection pattern
-            # Look for alcohol in reactants
-            alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
-            # Look for TBDMS ether in product
-            tbdms_pattern = Chem.MolFromSmarts("[#8]-[#14]([#6])([#6])[#6]([#6])([#6])[#6]")
+                    if product_mol and reactant_mols:
+                        # Check for amide formation
+                        amide_pattern = Chem.MolFromSmarts("[C](=O)[N]")
+                        carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
+                        amine_pattern = Chem.MolFromSmarts("[N;!$(NC=O)]")
 
-            if (
-                product
-                and any(r for r in reactants if r and r.HasSubstructMatch(alcohol_pattern))
-                and product.HasSubstructMatch(tbdms_pattern)
-            ):
-                protection_count += 1
-                print(f"TBDMS protection detected at reaction with SMILES: {rsmi}")
+                        # Check if product has amide
+                        if product_mol.HasSubstructMatch(amide_pattern):
+                            # Check if reactants have carboxylic acid and amine
+                            has_acid = any(
+                                mol.HasSubstructMatch(carboxylic_acid_pattern)
+                                for mol in reactant_mols
+                            )
+                            has_amine = any(
+                                mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols
+                            )
 
-        # Traverse children
+                            if has_acid and has_amine:
+                                amide_formation_depth = depth
+                except:
+                    print("Error processing molecule in late_stage_amide_formation")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
 
-    # Return True if multiple TBDMS protections are found
-    result = protection_count >= 2
-    print(f"TBDMS protection strategy detected: {result} (count: {protection_count})")
-    return result
+    # Check if amide formation is in the last 30% of steps
+    if amide_formation_depth is not None and amide_formation_depth <= max_depth * 0.3:
+        print(
+            f"Detected late-stage amide formation at depth {amide_formation_depth} of {max_depth}"
+        )
+        return True
+    return False

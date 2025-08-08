@@ -2,83 +2,174 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis route involves sequential redox transformations,
-    specifically looking for carboxylic acid → alcohol → aldehyde sequence.
+    This function detects if the synthesis uses a late-stage olefination to introduce a cyanoethylidene group.
     """
-    # Track if we've seen each transformation
-    acid_to_alcohol = False
-    alcohol_to_aldehyde = False
+    olefination_with_nitrile_detected = False
+
+    # List of olefination reaction types to check
+    olefination_reactions = [
+        "Wittig",
+        "Wittig reaction with triphenylphosphorane",
+        "Wittig with Phosphonium",
+        "Julia Olefination",
+        "O-alkylation of carboxylic acids with diazo compounds",
+        "O-alkylation of amides with diazo compounds",
+        "Horner-Wadsworth-Emmons",  # Adding HWE reaction which uses phosphonates
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal acid_to_alcohol, alcohol_to_aldehyde
+        nonlocal olefination_with_nitrile_detected
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        # Print node information for debugging
+        if node["type"] == "mol":
+            print(f"Examining molecule at depth {depth}: {node['smiles']}")
+        elif node["type"] == "reaction":
             rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+            print(f"Examining reaction at depth {depth}: {rsmi}")
 
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            # Check if this is a late-stage reaction (depth ≤ 2)
+            if depth <= 2:
+                # Check if this is an olefination reaction
+                is_olefination = False
 
-            # Define patterns
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2H1]")
-            alcohol_pattern = Chem.MolFromSmarts("[CX4H2][OX2H]")
-            aldehyde_pattern = Chem.MolFromSmarts("[CX3H1](=[OX1])[#6]")
+                # First check if it's a known olefination reaction
+                for reaction_type in olefination_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        is_olefination = True
+                        print(f"Olefination reaction detected: {reaction_type}")
+                        break
 
-            # Check for acid to alcohol transformation
-            try:
-                reactant_mol = Chem.MolFromSmiles(reactants[0])
-                product_mol = Chem.MolFromSmiles(product)
+                # If not a known type, check for phosphonate reagents (HWE-type)
+                if not is_olefination and "P(=O)" in rsmi.split(">")[0]:
+                    print("Potential phosphonate olefination detected")
+                    is_olefination = True
 
-                if (
-                    reactant_mol
-                    and product_mol
-                    and reactant_mol.HasSubstructMatch(carboxylic_acid_pattern)
-                    and product_mol.HasSubstructMatch(alcohol_pattern)
-                    and not reactant_mol.HasSubstructMatch(alcohol_pattern)
-                ):
-                    print(f"Detected carboxylic acid to alcohol reduction at depth {depth}")
-                    acid_to_alcohol = True
+                if is_olefination:
+                    try:
+                        reactants = rsmi.split(">")[0].split(".")
+                        product = rsmi.split(">")[-1]
 
-                # Check for alcohol to aldehyde transformation
-                if (
-                    reactant_mol
-                    and product_mol
-                    and reactant_mol.HasSubstructMatch(alcohol_pattern)
-                    and product_mol.HasSubstructMatch(aldehyde_pattern)
-                    and not reactant_mol.HasSubstructMatch(aldehyde_pattern)
-                ):
-                    print(f"Detected alcohol to aldehyde oxidation at depth {depth}")
-                    alcohol_to_aldehyde = True
-            except:
-                pass
+                        print(f"Product: {product}")
+                        print(f"Reactants: {reactants}")
 
-        # Continue traversing
+                        # Check if product contains a nitrile group
+                        if checker.check_fg("Nitrile", product):
+                            print("Product contains nitrile group")
+
+                            # Check if the product contains an alkene
+                            product_mol = Chem.MolFromSmiles(product)
+                            alkene_pattern = Chem.MolFromSmarts("C=C")
+
+                            if product_mol and product_mol.HasSubstructMatch(alkene_pattern):
+                                print("Product contains alkene")
+
+                                # Check if at least one reactant contains a nitrile group
+                                nitrile_in_reactants = False
+                                for reactant in reactants:
+                                    if checker.check_fg("Nitrile", reactant):
+                                        nitrile_in_reactants = True
+                                        print(f"Nitrile group found in reactant: {reactant}")
+                                        break
+
+                                if nitrile_in_reactants:
+                                    # Check if the cyanoethylidene group is newly formed
+                                    # Using a more general pattern without specifying bond type
+                                    cyanoethylidene_pattern = Chem.MolFromSmarts("C=CC#N")
+
+                                    # Check if cyanoethylidene exists in product
+                                    if product_mol.HasSubstructMatch(cyanoethylidene_pattern):
+                                        print("Product contains cyanoethylidene group")
+
+                                        # Check if cyanoethylidene exists in any reactant
+                                        cyanoethylidene_in_reactants = False
+                                        for reactant in reactants:
+                                            reactant_mol = Chem.MolFromSmiles(reactant)
+                                            if reactant_mol and reactant_mol.HasSubstructMatch(
+                                                cyanoethylidene_pattern
+                                            ):
+                                                cyanoethylidene_in_reactants = True
+                                                print(
+                                                    f"Cyanoethylidene found in reactant: {reactant}"
+                                                )
+                                                break
+
+                                        if not cyanoethylidene_in_reactants:
+                                            print(
+                                                f"Late-stage olefination with nitrile detected at depth {depth}"
+                                            )
+                                            olefination_with_nitrile_detected = True
+                                    else:
+                                        print("Product does not contain cyanoethylidene group")
+                                        # Try an alternative pattern for cyanoethylidene
+                                        alt_pattern = Chem.MolFromSmarts("C=C-C#N")
+                                        if product_mol.HasSubstructMatch(alt_pattern):
+                                            print(
+                                                "Product contains cyanoethylidene group (alternative pattern)"
+                                            )
+                                            olefination_with_nitrile_detected = True
+                    except Exception as e:
+                        print(f"Error processing reaction: {e}")
+
+        # Traverse children with incremented depth
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    # Return True only if both transformations are detected
-    return acid_to_alcohol and alcohol_to_aldehyde
+
+    print(
+        f"Late-stage olefination with nitrile strategy detected: {olefination_with_nitrile_detected}"
+    )
+    return olefination_with_nitrile_detected

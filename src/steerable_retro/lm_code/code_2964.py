@@ -2,100 +2,243 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving TMS protection and deprotection
-    of an alcohol.
+    Detects late-stage heterocycle formation via cyclization.
+    Specifically looks for formation of a ring system in the final step.
     """
-    has_tms_protection = False
-    has_tms_deprotection = False
+    final_reaction_found = False
+    ring_formation = False
 
-    def dfs_traverse(node):
-        nonlocal has_tms_protection, has_tms_deprotection
+    # List of common heterocycles to check
+    heterocycles = [
+        "furan",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "oxolane",
+        "oxane",
+        "dioxolane",
+        "dioxolene",
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "thiomorpholine",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "thiophene",
+        "thiopyran",
+        "thiirane",
+        "thietane",
+        "thiolane",
+        "thiane",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "pteridin",
+        "phenothiazine",
+        "phenoxazine",
+        "dibenzofuran",
+        "dibenzothiophene",
+        "xanthene",
+        "thioxanthene",
+        "pyrroline",
+        "pyrrolidone",
+        "imidazolidine",
+        "porphyrin",
+        "indazole",
+        "benzotriazole",
+    ]
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+    # List of heterocycle formation reactions
+    heterocycle_reactions = [
+        "Formation of NOS Heterocycles",
+        "Paal-Knorr pyrrole synthesis",
+        "benzimidazole_derivatives_carboxylic-acid/ester",
+        "benzimidazole_derivatives_aldehyde",
+        "benzothiazole",
+        "benzoxazole_arom-aldehyde",
+        "benzoxazole_carboxylic-acid",
+        "thiazole",
+        "Niementowski_quinazoline",
+        "tetrazole_terminal",
+        "tetrazole_connect_regioisomere_1",
+        "tetrazole_connect_regioisomere_2",
+        "1,2,4-triazole_acetohydrazide",
+        "1,2,4-triazole_carboxylic-acid/ester",
+        "3-nitrile-pyridine",
+        "pyrazole",
+        "phthalazinone",
+        "Paal-Knorr pyrrole",
+        "triaryl-imidazole",
+        "Fischer indole",
+        "Friedlaender chinoline",
+        "benzofuran",
+        "benzothiophene",
+        "indole",
+        "oxadiazole",
+        "imidazole",
+        "Pictet-Spengler",
+        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
+        "Huisgen 1,3 dipolar cycloaddition",
+        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
+        "Pyrazole formation",
+        "Azide-nitrile click cycloaddition to tetrazole",
+        "Azide-nitrile click cycloaddition to triazole",
+        "Huisgen_Cu-catalyzed_1,4-subst",
+        "Huisgen_Ru-catalyzed_1,5_subst",
+        "Huisgen_disubst-alkyne",
+    ]
+
+    print("Starting late_stage_heterocycle_formation analysis")
+
+    def dfs_traverse(node, depth=0):
+        nonlocal final_reaction_found, ring_formation
+
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
+
+        # In retrosynthetic analysis, the final reaction is at depth 1
+        # (depth 0 is the final product molecule)
+        if node["type"] == "reaction" and depth == 1 and not final_reaction_found:
+            # This is the final reaction (depth 1 in retrosynthetic analysis)
+            final_reaction_found = True
+            print(f"Found final reaction at depth {depth}")
+
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                print(f"Reaction SMILES: {rsmi}")
 
-                # Check for TMS patterns
-                tms_pattern = Chem.MolFromSmarts("[O][Si]([C])([C])[C]")
-                alcohol_pattern = Chem.MolFromSmarts("[OH]")
+                # Check if this is a known heterocycle formation reaction
+                for reaction_type in heterocycle_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(f"Detected heterocycle formation reaction: {reaction_type}")
+                        ring_formation = True
+                        return
 
-                # Check for TMS deprotection
-                reactant_has_tms = False
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(tms_pattern):
-                            reactant_has_tms = True
-                            break
-                    except:
-                        continue
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if (
-                        reactant_has_tms
-                        and product_mol
-                        and product_mol.HasSubstructMatch(alcohol_pattern)
-                    ):
-                        has_tms_deprotection = True
-                        print("Found TMS deprotection")
-                except:
-                    pass
+                print(f"Reactants: {reactants_smiles}")
+                print(f"Product: {product_smiles}")
 
-                # Check for TMS protection
-                reactant_has_alcohol = False
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(alcohol_pattern):
-                            reactant_has_alcohol = True
-                            break
-                    except:
-                        continue
+                # Count rings in reactants and product
+                reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if (
-                        reactant_has_alcohol
-                        and product_mol
-                        and product_mol.HasSubstructMatch(tms_pattern)
-                    ):
-                        has_tms_protection = True
-                        print("Found TMS protection")
-                except:
-                    pass
+                if product_mol and all(reactant_mol for reactant_mol in reactant_mols):
+                    # Count rings properly using RingInfo
+                    reactant_ring_count = sum(mol.GetRingInfo().NumRings() for mol in reactant_mols)
+                    product_ring_count = product_mol.GetRingInfo().NumRings()
 
-        # Traverse children
+                    print(f"Reactant ring count: {reactant_ring_count}")
+                    print(f"Product ring count: {product_ring_count}")
+
+                    # Check if there's a net increase in rings
+                    if product_ring_count > reactant_ring_count:
+                        print("Net increase in ring count detected")
+
+                        # Check if any of the new rings are heterocycles
+                        for heterocycle in heterocycles:
+                            # Check if heterocycle exists in product
+                            if checker.check_ring(heterocycle, product_smiles):
+                                print(f"Found heterocycle in product: {heterocycle}")
+
+                                # Check if this heterocycle didn't exist in any reactant
+                                if not any(
+                                    checker.check_ring(heterocycle, reactant)
+                                    for reactant in reactants_smiles
+                                ):
+                                    print(f"Confirmed new heterocycle formation: {heterocycle}")
+                                    ring_formation = True
+                                    return
+
+                    # Even if ring count doesn't increase, check for specific heterocycle formation
+                    # This handles rearrangements or cases where a ring is broken and a heterocycle is formed
+                    for heterocycle in heterocycles:
+                        if checker.check_ring(heterocycle, product_smiles):
+                            # Check if this specific heterocycle pattern is new
+                            if not any(
+                                checker.check_ring(heterocycle, reactant)
+                                for reactant in reactants_smiles
+                            ):
+                                print(
+                                    f"Detected heterocycle formation without net ring increase: {heterocycle}"
+                                )
+                                ring_formation = True
+                                return
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Strategy is present if we have either protection or deprotection
-    strategy_present = has_tms_protection or has_tms_deprotection
-    print(f"TMS protection/deprotection strategy detected: {strategy_present}")
-    return strategy_present
+    print(f"Final result: {ring_formation}")
+    return ring_formation

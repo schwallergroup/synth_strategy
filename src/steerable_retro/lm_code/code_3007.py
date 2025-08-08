@@ -2,68 +2,44 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a synthetic route contains benzylic functionalization
-    (specifically tolyl to benzyl bromide conversion) as a key step.
+    This function detects a linear synthesis strategy (as opposed to convergent).
     """
-    found_benzylic_functionalization = False
+    # Track branching in the synthesis tree
+    max_children = 0
 
     def dfs_traverse(node):
-        nonlocal found_benzylic_functionalization
+        nonlocal max_children
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check for tolyl to benzyl bromide conversion
-            tolyl_pattern = Chem.MolFromSmarts("[c][C]")
-            benzyl_bromide_pattern = Chem.MolFromSmarts("[c][C][Br]")
-
-            has_tolyl = False
-            for reactant in reactants:
-                if reactant.strip():
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(tolyl_pattern):
-                            has_tolyl = True
-                            break
-                    except:
-                        continue
-
-            has_benzyl_bromide = False
-            if product.strip():
-                try:
-                    mol = Chem.MolFromSmiles(product)
-                    if mol and mol.HasSubstructMatch(benzyl_bromide_pattern):
-                        has_benzyl_bromide = True
-                except:
-                    pass
-
-            # If transformation is tolyl to benzyl bromide
-            if has_tolyl and has_benzyl_bromide:
-                found_benzylic_functionalization = True
-                print(f"Found benzylic functionalization: {rsmi}")
+        if node["type"] == "reaction":
+            # Count number of reactants (children)
+            num_children = len(node.get("children", []))
+            max_children = max(max_children, num_children)
+            print(f"Reaction with {num_children} reactants found")
 
         # Process children
         for child in node.get("children", []):
@@ -72,5 +48,8 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Benzylic functionalization strategy detected: {found_benzylic_functionalization}")
-    return found_benzylic_functionalization
+    # Linear synthesis typically has at most 2 reactants per step
+    strategy_present = max_children <= 2
+
+    print(f"Linear synthesis strategy detected: {strategy_present}")
+    return strategy_present

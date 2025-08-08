@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,94 +54,186 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves joining two complex fragments in a convergent manner.
+    This function detects if the synthesis follows a linear strategy with
+    sequential heteroaromatic functionalization steps.
     """
-    convergent_synthesis_found = False
+    # List of heteroaromatic rings to check
+    heteroaromatic_rings = [
+        "pyridine",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "pyrrole",
+        "furan",
+        "thiophene",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "triazole",
+        "tetrazole",
+        "indole",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+    ]
 
-    def dfs_traverse(node, current_depth=0):
-        nonlocal convergent_synthesis_found
+    # Reactions that typically involve heteroaromatic functionalization
+    functionalization_reactions = [
+        "Suzuki",
+        "Buchwald-Hartwig",
+        "N-arylation",
+        "Heck",
+        "Sonogashira",
+        "Negishi",
+        "Stille",
+        "Friedel-Crafts",
+        "Minisci",
+        "Directed ortho metalation",
+        "Catellani reaction",
+        "Minisci-like halide substitution",
+        "Aromatic halogenation",
+        "Aromatic fluorination",
+        "Aromatic chlorination",
+        "Aromatic bromination",
+        "Aromatic iodination",
+        "Aromatic nitration",
+        "Aromatic hydroxylation",
+    ]
 
-        if convergent_synthesis_found:
-            return  # Stop traversal if we already found what we're looking for
+    heteroaromatic_functionalizations = 0
+    max_depth = 0
+    linear_steps = []  # Track the sequence of functionalization steps
+
+    def dfs_traverse(node, depth=0, parent_product=None):
+        nonlocal heteroaromatic_functionalizations, max_depth
+
+        max_depth = max(max_depth, depth)
 
         if node["type"] == "reaction":
-            # Get reaction SMILES
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                print("No reaction SMILES found")
-                return
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Extract reactants and product
-            parts = rsmi.split(">")
-            if len(parts) != 3:
-                print(f"Invalid reaction SMILES format: {rsmi}")
-                return
+                try:
+                    # Check if any reactant has heteroaromatic ring
+                    reactant_has_heteroaromatic = False
+                    reactant_with_heteroaromatic = None
 
-            reactants = parts[0].split(".")
-            product = parts[2]
+                    for r in reactants:
+                        for ring in heteroaromatic_rings:
+                            if checker.check_ring(ring, r):
+                                reactant_has_heteroaromatic = True
+                                reactant_with_heteroaromatic = r
+                                print(f"Found {ring} in reactant at depth {depth}")
+                                break
+                        if reactant_has_heteroaromatic:
+                            break
 
-            print(f"Checking reaction at depth {current_depth}: {rsmi}")
+                    # Check if product has heteroaromatic ring
+                    product_has_heteroaromatic = False
+                    product_ring = None
 
-            # Check if this is a potential fragment joining reaction
-            if len(reactants) >= 2:
-                # Count complex reactants (fragments)
-                complex_reactants = []
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.GetNumAtoms() > 7:  # Threshold for meaningful fragments
-                        complex_reactants.append(reactant)
+                    for ring in heteroaromatic_rings:
+                        if checker.check_ring(ring, product):
+                            product_has_heteroaromatic = True
+                            product_ring = ring
+                            print(f"Found {ring} in product at depth {depth}")
+                            break
 
-                print(f"Found {len(complex_reactants)} complex reactants out of {len(reactants)}")
-
-                # If we have at least 2 complex reactants, check if this is a joining reaction
-                if len(complex_reactants) >= 2:
-                    # Check for common coupling reactions
-                    coupling_reactions = [
-                        "Suzuki coupling with boronic acids",
-                        "Suzuki coupling with boronic esters",
-                        "Sonogashira acetylene_aryl halide",
-                        "Sonogashira alkyne_aryl halide",
-                        "Heck terminal vinyl",
-                        "Stille reaction_aryl",
-                        "Negishi coupling",
-                        "Buchwald-Hartwig",
-                        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-                        "Williamson Ether Synthesis",
-                        "Mitsunobu aryl ether",
-                        "Ullmann condensation",
-                    ]
-
-                    for rxn_type in coupling_reactions:
+                    # Check if this is a known functionalization reaction
+                    is_functionalization_reaction = False
+                    reaction_type = None
+                    for rxn_type in functionalization_reactions:
                         if checker.check_reaction(rxn_type, rsmi):
-                            print(
-                                f"Found convergent synthesis with {rxn_type} at depth {current_depth}"
-                            )
-                            convergent_synthesis_found = True
-                            return
+                            is_functionalization_reaction = True
+                            reaction_type = rxn_type
+                            print(f"Detected {rxn_type} reaction at depth {depth}")
+                            break
 
-                    # Check for other joining reactions by looking at functional groups
-                    # Common functional groups involved in fragment joining
-                    joining_fgs = ["Ether", "Ester", "Amide", "Sulfonamide", "Urea", "Carbamate"]
+                    # Fallback: check for structural changes if no specific reaction detected
+                    if (
+                        not is_functionalization_reaction
+                        and reactant_has_heteroaromatic
+                        and product_has_heteroaromatic
+                    ):
+                        # Check if there's a structural change while preserving the heteroaromatic core
+                        if product != reactant_with_heteroaromatic:
+                            is_functionalization_reaction = True
+                            reaction_type = "Heteroaromatic modification"
+                            print(f"Detected generic heteroaromatic modification at depth {depth}")
 
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        for fg in joining_fgs:
-                            if checker.check_fg(fg, product):
-                                # Check if this FG is newly formed (not present in all reactants)
-                                all_reactants_have_fg = all(
-                                    checker.check_fg(fg, r) for r in reactants
+                    # Verify linearity: check if the heteroaromatic core is preserved
+                    is_linear = False
+                    if parent_product and reactant_with_heteroaromatic:
+                        # Check if parent product contains the same heteroaromatic ring
+                        for ring in heteroaromatic_rings:
+                            if checker.check_ring(ring, parent_product) and checker.check_ring(
+                                ring, reactant_with_heteroaromatic
+                            ):
+                                is_linear = True
+                                print(
+                                    f"Linearity confirmed: same {ring} ring in parent product and reactant at depth {depth}"
                                 )
-                                if not all_reactants_have_fg:
-                                    print(
-                                        f"Found convergent synthesis with {fg} formation at depth {current_depth}"
-                                    )
-                                    convergent_synthesis_found = True
-                                    return
+                                break
+                    else:
+                        # If this is the first reaction or we don't have parent info, assume it's linear
+                        is_linear = True
+                        print(
+                            f"Assuming linearity at depth {depth} (first reaction or no parent info)"
+                        )
 
-        # Continue traversal with incremented depth
+                    # If both reactant and product have heteroaromatic rings and there's a modification
+                    if reactant_has_heteroaromatic and product_has_heteroaromatic:
+                        if is_functionalization_reaction and is_linear:
+                            heteroaromatic_functionalizations += 1
+                            linear_steps.append(
+                                (depth, rsmi, reaction_type if reaction_type else "Modification")
+                            )
+                            print(
+                                f"Confirmed heteroaromatic functionalization at depth {depth}: {reaction_type if reaction_type else 'Modification'}"
+                            )
+
+                except Exception as e:
+                    print(f"Error processing reaction at depth {depth}: {e}")
+                    pass
+
+                # Pass the current product to child nodes to check linearity
+                parent_for_children = product
+            else:
+                parent_for_children = parent_product
+        else:
+            # For molecule nodes, pass the molecule SMILES to children
+            parent_for_children = node["smiles"] if node["type"] == "mol" else parent_product
+
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            dfs_traverse(child, depth + 1, parent_for_children)
 
     dfs_traverse(route)
-    print(f"Convergent synthesis found: {convergent_synthesis_found}")
-    return convergent_synthesis_found
+
+    # Sort steps by depth to check if they form a sequence
+    linear_steps.sort(key=lambda x: x[0])
+
+    # Check if steps form a continuous sequence (depths should be consecutive or close)
+    is_sequential = True
+    if len(linear_steps) >= 2:
+        for i in range(1, len(linear_steps)):
+            if linear_steps[i][0] - linear_steps[i - 1][0] > 2:  # Allow for some flexibility
+                is_sequential = False
+                break
+
+    print(f"Found {heteroaromatic_functionalizations} heteroaromatic functionalizations")
+    print(f"Maximum depth: {max_depth}")
+    print(f"Linear steps: {linear_steps}")
+    print(f"Is sequential: {is_sequential}")
+
+    # Return True if we found at least 3 functionalization steps, the synthesis is deep enough,
+    # and the steps form a sequential pattern
+    return heteroaromatic_functionalizations >= 3 and max_depth >= 4 and is_sequential

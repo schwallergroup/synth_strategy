@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,113 +54,141 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a late-stage N-alkylation (in the last two steps of synthesis).
+    This function detects if the synthesis preserves complex heterocyclic systems
+    (trifluoromethyl pyrazole and fused thiophene-cyclohexane) throughout.
     """
-    found_n_alkylation = False
+    # Track if heterocycles are present in final product
+    final_product_has_tf_pyrazole = False
+    final_product_has_thiophene_cyclohexane = False
+
+    # Track if heterocycles are broken during synthesis
+    tf_pyrazole_broken = False
+    thiophene_cyclohexane_broken = False
+
+    def are_rings_fused(mol_smiles, ring1, ring2):
+        """Helper function to check if two rings are fused in a molecule"""
+        try:
+            mol = Chem.MolFromSmiles(mol_smiles)
+            if not mol:
+                return False
+
+            # Get ring info
+            ring_info = mol.GetRingInfo()
+
+            # Get atom indices for each ring
+            ring1_indices_list = checker.get_ring_atom_indices(ring1, mol_smiles)
+            ring2_indices_list = checker.get_ring_atom_indices(ring2, mol_smiles)
+
+            if not ring1_indices_list or not ring2_indices_list:
+                return False
+
+            # Check if any pair of rings share at least two atoms (fusion)
+            for ring1_indices in ring1_indices_list:
+                for ring2_indices in ring2_indices_list:
+                    # Convert to sets for intersection
+                    ring1_set = set(ring1_indices[0])
+                    ring2_set = set(ring2_indices[0])
+
+                    # If they share at least 2 atoms, they're fused
+                    if len(ring1_set.intersection(ring2_set)) >= 2:
+                        return True
+
+            return False
+        except Exception as e:
+            print(f"Error checking fused rings: {e}")
+            return False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_n_alkylation
+        nonlocal final_product_has_tf_pyrazole, final_product_has_thiophene_cyclohexane
+        nonlocal tf_pyrazole_broken, thiophene_cyclohexane_broken
 
-        if node["type"] == "reaction" and depth <= 1:  # Only check the last two steps
+        if node["type"] == "mol" and "smiles" in node:
+            mol_smiles = node["smiles"]
+
+            # Check for heterocycles in the molecule
+            has_tf_pyrazole = checker.check_fg(
+                "Trifluoro group", mol_smiles
+            ) and checker.check_ring("pyrazole", mol_smiles)
+            has_thiophene_cyclohexane = (
+                checker.check_ring("thiophene", mol_smiles)
+                and checker.check_ring("cyclohexane", mol_smiles)
+                and are_rings_fused(mol_smiles, "thiophene", "cyclohexane")
+            )
+
+            # For final product (depth 0), check if heterocycles are present
+            if depth == 0:
+                final_product_has_tf_pyrazole = has_tf_pyrazole
+                final_product_has_thiophene_cyclohexane = has_thiophene_cyclohexane
+                print(
+                    f"Final product has trifluoromethyl pyrazole: {final_product_has_tf_pyrazole}"
+                )
+                print(
+                    f"Final product has fused thiophene-cyclohexane: {final_product_has_thiophene_cyclohexane}"
+                )
+
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Analyze reaction to check if heterocycles are preserved
             try:
-                # Extract reaction SMILES
                 rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for N-alkylation reactions using the checker
-                n_alkylation_reaction_types = [
-                    "N-alkylation of primary amines with alkyl halides",
-                    "N-alkylation of secondary amines with alkyl halides",
-                    "Methylation with MeI_primary",
-                    "Methylation with MeI_secondary",
-                    "Methylation with MeI_tertiary",
-                    "DMS Amine methylation",
-                    "Eschweiler-Clarke Primary Amine Methylation",
-                    "Eschweiler-Clarke Secondary Amine Methylation",
-                    "Reductive methylation of primary amine with formaldehyde",
-                    "N-methylation",
-                    "Alkylation of amines",
-                    "Reductive amination with aldehyde",
-                    "Reductive amination with ketone",
-                    "Reductive amination with alcohol",
-                ]
+                # Check if heterocycles are present in product (forward direction)
+                product_has_tf_pyrazole = checker.check_fg(
+                    "Trifluoro group", product
+                ) and checker.check_ring("pyrazole", product)
+                product_has_thiophene_cyclohexane = (
+                    checker.check_ring("thiophene", product)
+                    and checker.check_ring("cyclohexane", product)
+                    and are_rings_fused(product, "thiophene", "cyclohexane")
+                )
 
-                for reaction_type in n_alkylation_reaction_types:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Detected late-stage N-alkylation: {reaction_type} at depth {depth}")
-                        found_n_alkylation = True
-                        return  # Exit early once found
+                # Check if heterocycles are present in reactants (forward direction)
+                reactants_have_tf_pyrazole = any(
+                    checker.check_fg("Trifluoro group", r) and checker.check_ring("pyrazole", r)
+                    for r in reactants
+                )
+                reactants_have_thiophene_cyclohexane = any(
+                    checker.check_ring("thiophene", r)
+                    and checker.check_ring("cyclohexane", r)
+                    and are_rings_fused(r, "thiophene", "cyclohexane")
+                    for r in reactants
+                )
 
-                # If no specific reaction type matched, check for general pattern
-                if not found_n_alkylation:
-                    # Extract reactants and product
-                    reactants_smiles = rsmi.split(">")[0].split(".")
-                    product_smiles = rsmi.split(">")[-1]
-
-                    # Check if any reactant has primary or secondary amine
-                    has_amine_reactant = False
-                    for r_smiles in reactants_smiles:
-                        if checker.check_fg("Primary amine", r_smiles) or checker.check_fg(
-                            "Secondary amine", r_smiles
-                        ):
-                            has_amine_reactant = True
-                            break
-
-                    # Check if any reactant has alkylating agent
-                    has_alkylating_agent = False
-                    for r_smiles in reactants_smiles:
-                        if (
-                            checker.check_fg("Primary halide", r_smiles)
-                            or checker.check_fg("Secondary halide", r_smiles)
-                            or checker.check_fg("Tertiary halide", r_smiles)
-                            or checker.check_fg("Mesylate", r_smiles)
-                            or checker.check_fg("Tosylate", r_smiles)
-                            or checker.check_fg("Triflate", r_smiles)
-                        ):
-                            has_alkylating_agent = True
-                            break
-
-                    # Check for carbonyl compounds for reductive amination
-                    has_carbonyl = False
-                    for r_smiles in reactants_smiles:
-                        if (
-                            checker.check_fg("Aldehyde", r_smiles)
-                            or checker.check_fg("Ketone", r_smiles)
-                            or checker.check_fg("Formaldehyde", r_smiles)
-                        ):
-                            has_carbonyl = True
-                            break
-
-                    # Count tertiary amines in reactants and product
-                    reactant_tertiary_count = sum(
-                        1 for r in reactants_smiles if checker.check_fg("Tertiary amine", r)
+                # Check if heterocycles are formed during reaction (not preserved in retrosynthesis)
+                # In retrosynthesis, we're going from product to reactants
+                if product_has_tf_pyrazole and not reactants_have_tf_pyrazole:
+                    print(
+                        f"Trifluoromethyl pyrazole formed in reaction at depth {depth} (broken in retrosynthesis)"
                     )
-                    product_has_tertiary = checker.check_fg("Tertiary amine", product_smiles)
+                    tf_pyrazole_broken = True
 
-                    # If we have amine reactant and alkylating agent or carbonyl compound,
-                    # and the product has tertiary amine (indicating N-alkylation occurred),
-                    # mark as found
-                    if (
-                        has_amine_reactant
-                        and (has_alkylating_agent or has_carbonyl)
-                        and product_has_tertiary
-                    ):
-                        # Additional check: product should have more tertiary amines than reactants combined
-                        # or the reaction should convert primary/secondary to tertiary
-                        if reactant_tertiary_count == 0 or has_alkylating_agent:
-                            print(
-                                f"Detected late-stage N-alkylation through functional group analysis at depth {depth}"
-                            )
-                            found_n_alkylation = True
-                            return  # Exit early once found
+                if product_has_thiophene_cyclohexane and not reactants_have_thiophene_cyclohexane:
+                    print(
+                        f"Fused thiophene-cyclohexane formed in reaction at depth {depth} (broken in retrosynthesis)"
+                    )
+                    thiophene_cyclohexane_broken = True
+
             except Exception as e:
-                print(f"Error analyzing reaction at depth {depth}: {e}")
+                print(f"Error analyzing reaction: {e}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    print(f"Late-stage N-alkylation detected: {found_n_alkylation}")
-    return found_n_alkylation
+    # Check if heterocycles are preserved throughout synthesis
+    tf_pyrazole_preserved = final_product_has_tf_pyrazole and not tf_pyrazole_broken
+    thiophene_cyclohexane_preserved = (
+        final_product_has_thiophene_cyclohexane and not thiophene_cyclohexane_broken
+    )
+
+    print(f"Trifluoromethyl pyrazole preserved: {tf_pyrazole_preserved}")
+    print(f"Fused thiophene-cyclohexane preserved: {thiophene_cyclohexane_preserved}")
+
+    # Return true only if both heterocycles are preserved or if they weren't in the final product
+    return (tf_pyrazole_preserved or not final_product_has_tf_pyrazole) and (
+        thiophene_cyclohexane_preserved or not final_product_has_thiophene_cyclohexane
+    )

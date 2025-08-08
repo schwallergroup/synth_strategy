@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,123 +54,41 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis uses a late-stage reductive amination strategy
-    (conversion of a ketone or aldehyde to an amine in the final steps).
+    This function detects if the synthesis involves quinoline-containing
+    compounds as key intermediates or products.
     """
-    found_reductive_amination = False
+    quinoline_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_reductive_amination
+        nonlocal quinoline_found
 
-        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                print(f"Examining reaction at depth {depth}: {rsmi}")
+        if node["type"] == "mol" and "smiles" in node:
+            try:
+                mol_smiles = node["smiles"]
+                mol = Chem.MolFromSmiles(mol_smiles)
 
-                # Check if this is a reductive amination reaction
-                is_reductive_amination = (
-                    checker.check_reaction("Reductive amination with ketone", rsmi)
-                    or checker.check_reaction("Reductive amination with aldehyde", rsmi)
-                    or checker.check_reaction("Reductive amination with alcohol", rsmi)
-                    or checker.check_reaction("reductive amination", rsmi)
-                )
+                if mol:
+                    # Check for quinoline structure using the checker function
+                    if checker.check_ring("quinoline", mol_smiles):
+                        print(f"Quinoline ring detected at depth {depth}, SMILES: {mol_smiles}")
+                        quinoline_found = True
 
-                if is_reductive_amination:
-                    print(f"Detected reductive amination reaction at depth {depth}")
-
-                    # Extract reactants and product to verify functional group transformation
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
-
-                    print(f"Reactants: {reactants}")
-                    print(f"Product: {product}")
-
-                    # Check for ketone, aldehyde, or alcohol in reactants
-                    has_carbonyl = any(
-                        checker.check_fg("Ketone", r)
-                        or checker.check_fg("Aldehyde", r)
-                        or checker.check_fg(
-                            "Alcohol", r
-                        )  # Include alcohols which can be oxidized in situ
-                        for r in reactants
-                        if r
-                    )
-
-                    # Check for ammonia in reactants
-                    has_ammonia = any("NH3" in r for r in reactants)
-
-                    # Check for amine in product
-                    has_amine = (
-                        checker.check_fg("Primary amine", product)
-                        or checker.check_fg("Secondary amine", product)
-                        or checker.check_fg("Tertiary amine", product)
-                    )
-
-                    print(f"Carbonyl/alcohol in reactants: {has_carbonyl}")
-                    print(f"Ammonia in reactants: {has_ammonia}")
-                    print(f"Amine in product: {has_amine}")
-
-                    if (has_carbonyl and has_amine) or (has_carbonyl and has_ammonia):
-                        print(f"Found late-stage reductive amination at depth {depth}")
-                        found_reductive_amination = True
+                    # Also check for isoquinoline which is a structural isomer
+                    elif checker.check_ring("isoquinoline", mol_smiles):
+                        print(f"Isoquinoline ring detected at depth {depth}, SMILES: {mol_smiles}")
+                        quinoline_found = True
                 else:
-                    # Try to detect reductive amination by examining functional group changes
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
-
-                    # Check for ketone, aldehyde, or alcohol in reactants
-                    has_carbonyl = any(
-                        checker.check_fg("Ketone", r)
-                        or checker.check_fg("Aldehyde", r)
-                        or checker.check_fg("Alcohol", r)
-                        for r in reactants
-                        if r
+                    print(
+                        f"Warning: Could not parse molecule SMILES at depth {depth}: {mol_smiles}"
                     )
+            except Exception as e:
+                print(f"Error processing molecule at depth {depth}: {e}")
 
-                    # Check for nitrogen source in reactants
-                    has_nitrogen_source = any(
-                        "NH3" in r
-                        or checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        for r in reactants
-                        if r
-                    )
-
-                    # Check for amine in product
-                    has_amine = (
-                        checker.check_fg("Primary amine", product)
-                        or checker.check_fg("Secondary amine", product)
-                        or checker.check_fg("Tertiary amine", product)
-                    )
-
-                    # Check for reducing agents or conditions
-                    has_reducing_conditions = any(
-                        "B" in r
-                        or "NaBH" in r
-                        or "LiAlH" in r
-                        or "Ti" in r
-                        or "H2" in r
-                        or "[H]" in r
-                        for r in reactants
-                        if r
-                    )
-
-                    if (
-                        has_carbonyl
-                        and has_nitrogen_source
-                        and has_amine
-                        and has_reducing_conditions
-                    ):
-                        print(
-                            f"Found late-stage reductive amination by functional group analysis at depth {depth}"
-                        )
-                        found_reductive_amination = True
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Final result: {found_reductive_amination}")
-    return found_reductive_amination
+    print(f"Quinoline containing strategy result: {quinoline_found}")
+    return quinoline_found

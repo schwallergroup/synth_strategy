@@ -2,70 +2,93 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a convergent synthesis strategy using Suzuki coupling.
-    It looks for reactions where a boronic acid/ester and aryl halide are combined.
+    This function detects a synthesis involving a fluoroalkoxy substituent
+    (O-CH2-CH2-CH2-F) that remains unchanged throughout the synthesis
     """
-    suzuki_detected = False
+    # Track if we've found a fluoroalkoxy group that persists through the synthesis
+    fluoroalkoxy_preserved = False
 
-    def dfs_traverse(node):
-        nonlocal suzuki_detected
+    # Define a custom function to check for the fluoroalkoxy group
+    # since it's not in the standard functional groups list
+    def has_fluoroalkoxy(smiles):
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return False
+        pattern = Chem.MolFromSmarts("[O][CH2][CH2][CH2][F]")
+        return mol.HasSubstructMatch(pattern)
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    # Find the final product (root node)
+    if route["type"] == "mol" and has_fluoroalkoxy(route["smiles"]):
+        print(f"Final product contains fluoroalkoxy group: {route['smiles']}")
 
-            # Check if we have multiple reactants (convergent)
-            if len(reactants) > 1:
-                # Look for boronic acid/ester pattern in any reactant
-                boronic_pattern = Chem.MolFromSmarts("[#6]-[#5;X3,X4]")
-                # Look for aryl halide pattern in any reactant
-                halide_pattern = Chem.MolFromSmarts("[#6]:[#6]-[#35,#53,#17]")
+        # Now check if this group is preserved throughout the synthesis
+        def trace_fluoroalkoxy(node, depth=0):
+            nonlocal fluoroalkoxy_preserved
 
-                has_boronic = False
-                has_halide = False
+            if node["type"] == "mol":
+                mol_has_group = has_fluoroalkoxy(node["smiles"])
+                indent = "  " * depth
+                print(
+                    f"{indent}Checking molecule: {node['smiles']} - Has fluoroalkoxy: {mol_has_group}"
+                )
 
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            if mol.HasSubstructMatch(boronic_pattern):
-                                has_boronic = True
-                            if mol.HasSubstructMatch(halide_pattern):
-                                has_halide = True
-                    except:
-                        continue
+                # If we reach a starting material with the group, it's preserved
+                if mol_has_group and node.get("in_stock", False):
+                    print(f"{indent}Found starting material with fluoroalkoxy group")
+                    fluoroalkoxy_preserved = True
+                    return True
 
-                # If both patterns are found in different reactants, it's likely a Suzuki coupling
-                if has_boronic and has_halide:
-                    print("Suzuki coupling detected in reaction with RSMI:", rsmi)
-                    suzuki_detected = True
+                # If molecule doesn't have the group but isn't a starting material,
+                # check its precursors
+                if not mol_has_group and not node.get("in_stock", False):
+                    return False
 
-        # Continue traversing
-        for child in node.get("children", []):
-            dfs_traverse(child)
+            # For reaction nodes or molecules with the group that aren't starting materials
+            if "children" in node:
+                all_children_have_group = True
+                for child in node["children"]:
+                    # For reaction nodes, we need at least one child to have the group
+                    # For molecule nodes, all children must preserve the group
+                    child_result = trace_fluoroalkoxy(child, depth + 1)
+                    if node["type"] == "reaction":
+                        if child_result:
+                            return True
+                    else:  # molecule node
+                        all_children_have_group = all_children_have_group and child_result
 
-    # Start traversal
-    dfs_traverse(route)
-    return suzuki_detected
+                if node["type"] == "mol":
+                    return all_children_have_group
+
+            return False
+
+        # Start tracing from the root
+        trace_fluoroalkoxy(route)
+    else:
+        print(f"Final product does not contain fluoroalkoxy group")
+
+    return fluoroalkoxy_preserved

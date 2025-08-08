@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,98 +54,116 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy that is primarily linear but ends with a convergent step
-    (typically a cross-coupling reaction).
+    This function detects a synthetic strategy involving late-stage amide formation
+    as the final step of the synthesis.
     """
-    # Track reaction depths and types
-    reaction_types = {}  # depth -> reaction type
-    max_depth = [0]  # Use a list to allow modification in nested function
-
-    def calculate_depth(node, parent_depth=0):
-        """Calculate the depth of a node in the synthesis tree"""
-        if node["type"] == "reaction":
-            depth = parent_depth
-            max_depth[0] = max(max_depth[0], depth)
-            return depth
-        else:  # It's a molecule node
-            if not node.get("children", []):  # Leaf node (starting material)
-                return parent_depth
-            max_child_depth = parent_depth
-            for child in node.get("children", []):
-                child_depth = calculate_depth(child, parent_depth + 1)
-                max_child_depth = max(max_child_depth, child_depth)
-            return max_child_depth
-
-    # First pass: calculate depths
-    calculate_depth(route)
+    late_stage_amide_formation = False
+    amide_formation_depths = []
+    root_is_molecule = route["type"] == "mol"
 
     def dfs_traverse(node, depth=0):
+        nonlocal late_stage_amide_formation
+
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
+
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                print(f"Analyzing reaction SMILES at depth {depth}: {rsmi}")
 
-            # Count number of significant reactants (ignoring small molecules)
-            significant_reactants = 0
-            for r in reactants_smiles:
-                mol = Chem.MolFromSmiles(r)
-                if mol and mol.GetNumHeavyAtoms() > 5:  # Consider only substantial fragments
-                    significant_reactants += 1
+                # Handle both > and >> formats in reaction SMILES
+                if ">>" in rsmi:
+                    reactants_part = rsmi.split(">>")[0]
+                    product_part = rsmi.split(">>")[1]
+                else:
+                    parts = rsmi.split(">")
+                    reactants_part = parts[0]
+                    product_part = parts[-1]
 
-            # Check if this is a cross-coupling reaction
-            is_cross_coupling = (
-                checker.check_reaction("Suzuki", rsmi)
-                or checker.check_reaction("Negishi", rsmi)
-                or checker.check_reaction("Stille", rsmi)
-                or checker.check_reaction("Heck", rsmi)
-                or checker.check_reaction("Sonogashira", rsmi)
-                or checker.check_reaction("Buchwald-Hartwig", rsmi)
-                or checker.check_reaction("Ullmann", rsmi)
-            )
+                reactants_smiles = reactants_part.split(".")
+                product_smiles = product_part
 
-            # Classify the reaction
-            if is_cross_coupling and significant_reactants >= 2:
-                reaction_type = "convergent"
-            elif significant_reactants >= 2:
-                reaction_type = "convergent"
-            else:
-                reaction_type = "linear"
+                # Check for amide formation reaction types using the checker
+                amide_formation_reactions = [
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
+                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                    "Acyl chloride with ammonia to amide",
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                    "Acyl chloride with primary amine to imide",
+                    "Acyl chloride with secondary amine to amide",
+                    "Carboxylic acid with primary amine to amide",
+                    "Ester with ammonia to amide",
+                    "Ester with primary amine to amide",
+                    "Ester with secondary amine to amide",
+                    "Schotten-Baumann_amide",
+                    "Carboxylic acid to amide conversion",
+                    "Schotten-Baumann to ester",
+                    "Acylation of secondary amines",
+                    "Acylation of primary amines",
+                ]
 
-            reaction_types[depth] = reaction_type
-            print(
-                f"Reaction at depth {depth} classified as {reaction_type} with {significant_reactants} significant reactants"
-            )
+                is_amide_formation = False
 
-            # Continue traversal with incremented depth
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1)
-        else:  # It's a molecule node
-            for child in node.get("children", []):
-                dfs_traverse(child, depth)
+                # Check if any of the amide formation reactions match
+                for reaction_type in amide_formation_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(
+                            f"Detected amide formation reaction: {reaction_type} at depth {depth}"
+                        )
+                        is_amide_formation = True
+                        break
 
-    # Second pass: classify reactions
+                # If no specific reaction type matched, check for functional group changes
+                if not is_amide_formation:
+                    # Check for carboxylic acid, amine, and amide functional groups
+                    has_acid = any(checker.check_fg("Carboxylic acid", r) for r in reactants_smiles)
+                    has_primary_amine = any(
+                        checker.check_fg("Primary amine", r) for r in reactants_smiles
+                    )
+                    has_secondary_amine = any(
+                        checker.check_fg("Secondary amine", r) for r in reactants_smiles
+                    )
+                    has_acyl_halide = any(
+                        checker.check_fg("Acyl halide", r) for r in reactants_smiles
+                    )
+                    has_ester = any(checker.check_fg("Ester", r) for r in reactants_smiles)
+                    has_anhydride = any(checker.check_fg("Anhydride", r) for r in reactants_smiles)
+
+                    # Check if product has amide group
+                    has_primary_amide = checker.check_fg("Primary amide", product_smiles)
+                    has_secondary_amide = checker.check_fg("Secondary amide", product_smiles)
+                    has_tertiary_amide = checker.check_fg("Tertiary amide", product_smiles)
+
+                    # Various amide formation pathways
+                    if (
+                        (has_acid or has_acyl_halide or has_ester or has_anhydride)
+                        and (has_primary_amine or has_secondary_amine)
+                    ) and (has_primary_amide or has_secondary_amide or has_tertiary_amide):
+                        print(
+                            f"Detected amide formation via functional group analysis at depth {depth}"
+                        )
+                        is_amide_formation = True
+
+                if is_amide_formation:
+                    amide_formation_depths.append(depth)
+
+                    # Consider depth 0 or 1 (if root is molecule) as late-stage
+                    if (depth == 0) or (root_is_molecule and depth == 1):
+                        late_stage_amide_formation = True
+                        print(f"Late-stage amide formation detected at depth {depth}")
+
+            except Exception as e:
+                print(f"Error analyzing reaction at depth {depth}: {e}")
+
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
+
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if the pattern matches linear-to-convergent
-    if not reaction_types:
-        print("No reactions found in the route")
-        return False
+    print(f"Amide formation detected at depths: {amide_formation_depths}")
+    print(f"Late-stage amide formation: {late_stage_amide_formation}")
 
-    # The final step (depth 0) should be convergent
-    final_step_convergent = reaction_types.get(0) == "convergent"
-
-    # Most earlier steps should be linear
-    linear_steps = sum(
-        1 for depth, type in reaction_types.items() if depth > 0 and type == "linear"
-    )
-    total_earlier_steps = sum(1 for depth in reaction_types if depth > 0)
-
-    # Strategy is true if final step is convergent and at least 70% of earlier steps are linear
-    linear_ratio = linear_steps / max(1, total_earlier_steps) if total_earlier_steps > 0 else 0
-    is_linear_to_convergent = final_step_convergent and (linear_ratio >= 0.7)
-
-    print(f"Final step convergent: {final_step_convergent}")
-    print(f"Linear steps: {linear_steps}/{total_earlier_steps} ({linear_ratio:.2f})")
-    print(f"Linear-to-convergent strategy: {is_linear_to_convergent}")
-
-    return is_linear_to_convergent
+    return late_stage_amide_formation

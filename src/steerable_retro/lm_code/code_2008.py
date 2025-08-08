@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,97 +54,312 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthetic route contains amide formation in the late stage (depth 0-1).
+    This function detects the synthesis of a nitrogen-rich molecule containing
+    multiple nitrogen-containing heterocycles (pyridine, piperidine, benzimidazole, etc.).
     """
-    late_stage_amide_found = False
+    # List of nitrogen-containing heterocycles to check
+    n_heterocycles = [
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "aziridine",
+        "azetidine",
+        "azepane",
+        "diazepane",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "carbazole",
+        "acridine",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "indazole",
+        "benzotriazole",
+    ]
+
+    # Track if we found synthesis of nitrogen-rich heterocycles
+    found_n_rich_synthesis = False
+
+    # Track heterocycles in final product
+    final_product_heterocycles = set()
+    final_product_n_count = 0
+    has_nitrile = False
+
+    # Track heterocycles created in reactions
+    synthesized_heterocycles = set()
+    heterocycle_forming_reactions = False
+
+    # Track heterocycles in starting materials
+    starting_material_heterocycles = set()
+
+    # Track heterocycle modifications
+    modified_heterocycles = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_amide_found
+        nonlocal found_n_rich_synthesis, final_product_heterocycles, final_product_n_count
+        nonlocal synthesized_heterocycles, has_nitrile, heterocycle_forming_reactions
+        nonlocal starting_material_heterocycles, modified_heterocycles
 
-        if node["type"] == "reaction" and depth <= 1:
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+            # For the final product (depth 0), check all nitrogen heterocycles
+            if depth == 0:
+                # Count nitrogen atoms
+                try:
+                    mol = Chem.MolFromSmiles(mol_smiles)
+                    if mol:
+                        for atom in mol.GetAtoms():
+                            if atom.GetAtomicNum() == 7:  # Nitrogen
+                                final_product_n_count += 1
+                except Exception as e:
+                    print(f"Error counting nitrogen atoms: {e}")
 
-                # Check for amide formation reaction types
-                amide_formation_reactions = [
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                    "Acyl chloride with ammonia to amide",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acyl chloride with secondary amine to amide",
-                    "Carboxylic acid with primary amine to amide",
-                    "Ester with ammonia to amide",
-                    "Ester with primary amine to amide",
-                    "Ester with secondary amine to amide",
-                    "Schotten-Baumann_amide",
-                    "Carboxylic acid to amide conversion",
-                ]
+                # Check for nitrogen heterocycles
+                for ring in n_heterocycles:
+                    try:
+                        if checker.check_ring(ring, mol_smiles):
+                            final_product_heterocycles.add(ring)
+                            print(f"Found {ring} in final product")
+                    except Exception as e:
+                        print(f"Error checking for {ring}: {e}")
 
-                # First check if it's directly an amide formation reaction
-                is_amide_reaction = False
-                for reaction_type in amide_formation_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Found amide formation reaction: {reaction_type}")
-                        is_amide_reaction = True
-                        break
+                # Also check for cyano group (separate from heterocycles)
+                try:
+                    if checker.check_fg("Nitrile", mol_smiles):
+                        has_nitrile = True
+                        print(f"Found Nitrile in final product")
+                except Exception as e:
+                    print(f"Error checking for Nitrile: {e}")
 
-                # If not a known reaction type, check for functional group patterns
-                if not is_amide_reaction:
-                    # Check for amide in product
-                    has_amide_product = any(
-                        checker.check_fg(amide_type, product)
-                        for amide_type in ["Primary amide", "Secondary amide", "Tertiary amide"]
+            # Check if this is a starting material (in_stock)
+            elif node.get("in_stock", False):
+                # Check for nitrogen heterocycles in starting materials
+                for ring in n_heterocycles:
+                    try:
+                        if checker.check_ring(ring, mol_smiles):
+                            starting_material_heterocycles.add(ring)
+                            print(f"Found {ring} in starting material")
+                    except Exception as e:
+                        print(f"Error checking for {ring} in starting material: {e}")
+
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Get reaction SMILES
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Check if this reaction creates any nitrogen heterocycles
+            # by comparing reactants and products
+            product_rings = set()
+            reactant_rings = set()
+
+            # Check rings in product
+            for ring in n_heterocycles:
+                try:
+                    if checker.check_ring(ring, product):
+                        product_rings.add(ring)
+                except Exception as e:
+                    print(f"Error checking for {ring} in product: {e}")
+
+            # Check rings in reactants
+            for reactant in reactants:
+                for ring in n_heterocycles:
+                    try:
+                        if checker.check_ring(ring, reactant):
+                            reactant_rings.add(ring)
+                    except Exception as e:
+                        print(f"Error checking for {ring} in reactant: {e}")
+
+            # Rings in product but not in reactants were synthesized
+            newly_synthesized = product_rings - reactant_rings
+            for ring in newly_synthesized:
+                synthesized_heterocycles.add(ring)
+                print(f"Synthesized {ring} in reaction at depth {depth}")
+
+            # Check if existing heterocycles were modified (different count or different types)
+            if len(product_rings) != len(reactant_rings) or product_rings != reactant_rings:
+                if len(reactant_rings) > 0 and len(product_rings) > 0:
+                    modified_heterocycles = True
+                    print(f"Modified heterocycles in reaction at depth {depth}")
+
+            # Check for specific heterocycle-forming reactions
+            try:
+                # Expanded list of heterocycle-forming reactions
+                if (
+                    checker.check_reaction("benzimidazole_derivatives_aldehyde", rsmi)
+                    or checker.check_reaction(
+                        "benzimidazole_derivatives_carboxylic-acid/ester", rsmi
                     )
+                    or checker.check_reaction("benzoxazole_arom-aldehyde", rsmi)
+                    or checker.check_reaction("benzoxazole_carboxylic-acid", rsmi)
+                    or checker.check_reaction("thiazole", rsmi)
+                    or checker.check_reaction("tetrazole_terminal", rsmi)
+                    or checker.check_reaction("tetrazole_connect_regioisomere_1", rsmi)
+                    or checker.check_reaction("tetrazole_connect_regioisomere_2", rsmi)
+                    or checker.check_reaction("pyrazole", rsmi)
+                    or checker.check_reaction("Fischer indole", rsmi)
+                    or checker.check_reaction("indole", rsmi)
+                    or checker.check_reaction("imidazole", rsmi)
+                    or checker.check_reaction("1,2,4-triazole_acetohydrazide", rsmi)
+                    or checker.check_reaction("1,2,4-triazole_carboxylic-acid/ester", rsmi)
+                    or checker.check_reaction("Paal-Knorr pyrrole", rsmi)
+                    or checker.check_reaction("triaryl-imidazole", rsmi)
+                    or checker.check_reaction("oxadiazole", rsmi)
+                    or checker.check_reaction("Huisgen_Cu-catalyzed_1,4-subst", rsmi)
+                    or checker.check_reaction("Huisgen_Ru-catalyzed_1,5_subst", rsmi)
+                    or checker.check_reaction("Huisgen_disubst-alkyne", rsmi)
+                    or checker.check_reaction("Pictet-Spengler", rsmi)
+                    or checker.check_reaction("Niementowski_quinazoline", rsmi)
+                    or checker.check_reaction("N-arylation", rsmi)
+                    or checker.check_reaction("N-arylation_heterocycles", rsmi)
+                    or checker.check_reaction("Buchwald-Hartwig", rsmi)
+                    or checker.check_reaction(
+                        "Azide-nitrile click cycloaddition to tetrazole", rsmi
+                    )
+                    or checker.check_reaction("Azide-nitrile click cycloaddition to triazole", rsmi)
+                    or checker.check_reaction(
+                        "Huisgen alkyne-azide 1,3 dipolar cycloaddition", rsmi
+                    )
+                    or checker.check_reaction("Huisgen 1,3 dipolar cycloaddition", rsmi)
+                ):
 
-                    if has_amide_product:
-                        print(f"Found amide in product: {product}")
+                    print(f"Detected heterocycle-forming reaction at depth {depth}")
+                    heterocycle_forming_reactions = True
+            except Exception as e:
+                print(f"Error checking for heterocycle-forming reactions: {e}")
 
-                        # Check for acid derivatives and amines in reactants
-                        has_acid_derivative = False
-                        has_amine = False
+            # Check for reactions that modify nitrogen-containing rings
+            try:
+                if (
+                    checker.check_reaction(
+                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
+                    )
+                    or checker.check_reaction(
+                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
+                    )
+                    or checker.check_reaction("Goldberg coupling aryl amine-aryl chloride", rsmi)
+                    or checker.check_reaction("Goldberg coupling aryl amide-aryl chloride", rsmi)
+                    or checker.check_reaction("Goldberg coupling", rsmi)
+                    or checker.check_reaction("Ullmann-Goldberg Substitution amine", rsmi)
+                ):
 
-                        acid_derivatives = ["Carboxylic acid", "Acyl halide", "Ester", "Anhydride"]
-                        amine_types = ["Primary amine", "Secondary amine", "Aniline"]
+                    # Check if any reactant has a nitrogen heterocycle
+                    for reactant in reactants:
+                        for ring in n_heterocycles:
+                            if checker.check_ring(ring, reactant):
+                                print(f"Detected heterocycle-modifying reaction at depth {depth}")
+                                modified_heterocycles = True
+                                break
+            except Exception as e:
+                print(f"Error checking for heterocycle-modifying reactions: {e}")
 
-                        for reactant in reactants:
-                            if any(checker.check_fg(acid, reactant) for acid in acid_derivatives):
-                                print(f"Found acid derivative in reactant: {reactant}")
-                                has_acid_derivative = True
+            # Check for reactions involving nitrile groups that might lead to heterocycles
+            try:
+                if (
+                    checker.check_reaction("Nitrile to amide", rsmi)
+                    or checker.check_reaction("Reduction of nitrile to amine", rsmi)
+                    or checker.check_reaction("Oxidation of nitrile to carboxylic acid", rsmi)
+                ):
 
-                            if any(checker.check_fg(amine, reactant) for amine in amine_types):
-                                print(f"Found amine in reactant: {reactant}")
-                                has_amine = True
-
-                        if has_acid_derivative and has_amine:
+                    # Check if product has a nitrogen heterocycle
+                    for ring in n_heterocycles:
+                        if checker.check_ring(ring, product):
                             print(
-                                f"Detected amide formation based on functional groups at depth {depth}"
+                                f"Detected nitrile-involving heterocycle formation at depth {depth}"
                             )
-                            is_amide_reaction = True
+                            heterocycle_forming_reactions = True
+                            break
+            except Exception as e:
+                print(f"Error checking for nitrile-involving reactions: {e}")
 
-                # If we've confirmed this is an amide formation reaction
-                if is_amide_reaction:
-                    # Double-check that the product actually contains an amide
-                    if any(
-                        checker.check_fg(amide_type, product)
-                        for amide_type in ["Primary amide", "Secondary amide", "Tertiary amide"]
-                    ):
-                        print(f"Confirmed late-stage amide formation at depth {depth}")
-                        late_stage_amide_found = True
-                        return  # Found what we're looking for, no need to continue
-
-        # Traverse children with increased depth
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
-    print("Starting traversal to find late-stage amide formation...")
     dfs_traverse(route)
 
-    if not late_stage_amide_found:
-        print("No late-stage amide formation found in the route")
+    # Determine if we found a nitrogen-rich heterocycle synthesis
+    # Criteria:
+    # 1. Final product has at least 3 different nitrogen heterocycles or
+    #    at least 2 heterocycles and a cyano group
+    # 2. Final product has at least 4 nitrogen atoms
+    # 3. At least one of:
+    #    a) A heterocycle was synthesized during the route
+    #    b) A heterocycle-forming reaction was detected
+    #    c) Existing heterocycles were modified
+    #    d) Final product heterocycles are different from starting material heterocycles
 
-    return late_stage_amide_found
+    heterocycle_count = len(final_product_heterocycles)
+
+    # Check if final product heterocycles are different from starting materials
+    heterocycle_difference = final_product_heterocycles - starting_material_heterocycles
+    heterocycle_transformation = len(heterocycle_difference) > 0
+
+    print(f"Final evaluation:")
+    print(f"- Heterocycle count: {heterocycle_count}")
+    print(f"- Has nitrile: {has_nitrile}")
+    print(f"- Nitrogen count: {final_product_n_count}")
+    print(f"- Synthesized heterocycles: {synthesized_heterocycles}")
+    print(f"- Heterocycle-forming reactions detected: {heterocycle_forming_reactions}")
+    print(f"- Modified heterocycles: {modified_heterocycles}")
+    print(f"- Starting material heterocycles: {starting_material_heterocycles}")
+    print(f"- Final product heterocycles: {final_product_heterocycles}")
+    print(f"- New heterocycles in final product: {heterocycle_difference}")
+
+    condition1 = heterocycle_count >= 3 or (heterocycle_count >= 2 and has_nitrile)
+    condition2 = final_product_n_count >= 4
+    condition3 = (
+        len(synthesized_heterocycles) > 0
+        or heterocycle_forming_reactions
+        or modified_heterocycles
+        or heterocycle_transformation
+    )
+
+    print(f"Condition 1 (heterocycle count): {condition1}")
+    print(f"Condition 2 (nitrogen count): {condition2}")
+    print(f"Condition 3 (synthesis/modification): {condition3}")
+
+    if condition1 and condition2 and condition3:
+        found_n_rich_synthesis = True
+        print(
+            f"Found nitrogen-rich heterocycle synthesis with {heterocycle_count} heterocycles, "
+            f"{final_product_n_count} nitrogen atoms"
+        )
+
+    # If we have a nitrogen-rich molecule but couldn't detect synthesis, check if the route is complex enough
+    # to warrant considering it a synthesis (at least 3 reaction steps)
+    if condition1 and condition2 and not condition3:
+        # Count reaction steps
+        reaction_count = 0
+
+        def count_reactions(node):
+            nonlocal reaction_count
+            if node["type"] == "reaction":
+                reaction_count += 1
+            for child in node.get("children", []):
+                count_reactions(child)
+
+        count_reactions(route)
+        print(f"Route contains {reaction_count} reaction steps")
+
+        # If we have at least 3 reaction steps, consider it a synthesis
+        if reaction_count >= 3:
+            found_n_rich_synthesis = True
+            print(f"Found nitrogen-rich heterocycle synthesis based on route complexity")
+
+    return found_n_rich_synthesis

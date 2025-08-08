@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,78 +54,92 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects the use of azide chemistry as a key strategy in the synthesis,
-    specifically looking for azide formation and utilization.
+    This function detects aromatic C-N coupling reactions.
     """
-    # Track azide-related transformations
-    azide_forming_reactions = 0
-    azide_utilizing_reactions = 0
-    azide_intermediates = 0
+    c_n_coupling_count = 0
+
+    # List of reaction types that involve aromatic C-N coupling
+    c_n_coupling_reactions = [
+        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
+        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
+        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
+        "Goldberg coupling aryl amine-aryl chloride",
+        "Goldberg coupling aryl amide-aryl chloride",
+        "Goldberg coupling",
+        "Ullmann-Goldberg Substitution amine",
+        "Ullmann condensation",
+        "{N-arylation_heterocycles}",
+        "{Buchwald-Hartwig}",
+    ]
 
     def dfs_traverse(node):
-        nonlocal azide_forming_reactions, azide_utilizing_reactions, azide_intermediates
+        nonlocal c_n_coupling_count
 
-        if node["type"] == "mol":
-            # Check if molecule contains azide group
-            if checker.check_fg("Azide", node["smiles"]):
-                azide_intermediates += 1
-                print(f"Azide intermediate detected: {node['smiles']}")
+        if (
+            node["type"] == "reaction"
+            and "children" in node
+            and "metadata" in node
+            and "rsmi" in node["metadata"]
+        ):
+            try:
+                # Get reaction SMILES
+                rsmi = node["metadata"]["rsmi"]
 
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                # Check if this is a C-N coupling reaction using the checker
+                is_c_n_coupling = False
+                detected_reaction_type = None
 
-            # Check for azide formation reactions
-            if (
-                checker.check_reaction("Formation of Azides from halogens", rsmi)
-                or checker.check_reaction("Formation of Azides from boronic acids", rsmi)
-                or checker.check_reaction("Amine to azide", rsmi)
-            ):
-                azide_forming_reactions += 1
-                print(f"Azide formation reaction detected: {rsmi}")
+                for reaction_type in c_n_coupling_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        is_c_n_coupling = True
+                        detected_reaction_type = reaction_type
+                        break
 
-            # Check for azide utilization reactions
-            elif (
-                checker.check_reaction("Huisgen alkyne-azide 1,3 dipolar cycloaddition", rsmi)
-                or checker.check_reaction("Huisgen 1,3 dipolar cycloaddition", rsmi)
-                or checker.check_reaction("Huisgen alkene-azide 1,3 dipolar cycloaddition", rsmi)
-                or checker.check_reaction("Azide to amine reduction (Staudinger)", rsmi)
-                or checker.check_reaction("Azide-nitrile click cycloaddition to tetrazole", rsmi)
-                or checker.check_reaction("Azide-nitrile click cycloaddition to triazole", rsmi)
-            ):
-                azide_utilizing_reactions += 1
-                print(f"Azide utilizing reaction detected: {rsmi}")
+                # If not detected by specific reaction types, check for general patterns
+                if not is_c_n_coupling:
+                    # Extract reactants and product
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
 
-            # Fallback method if specific reaction checks fail
-            else:
-                # Check for azide formation
-                reactants_have_precursor = any(
-                    checker.check_fg("Primary amine", r)
-                    or checker.check_fg("Secondary amine", r)
-                    or checker.check_fg("Tertiary amine", r)
-                    or checker.check_fg("Primary halide", r)
-                    or checker.check_fg("Secondary halide", r)
-                    or checker.check_fg("Tertiary halide", r)
-                    or checker.check_fg("Aromatic halide", r)
-                    or checker.check_fg("Boronic acid", r)
-                    or checker.check_fg("Boronic ester", r)
-                    for r in reactants
-                )
+                    # Convert to RDKit molecules
+                    reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
+                    product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-                product_has_azide = checker.check_fg("Azide", product)
+                    if all(reactant_mols) and product_mol:
+                        # Check for aromatic C-N bonds in product that aren't in reactants
+                        # Use a more comprehensive pattern for aromatic C-N bonds
+                        aromatic_c_n_pattern = Chem.MolFromSmarts("[c]-[N]")
 
-                if reactants_have_precursor and product_has_azide:
-                    azide_forming_reactions += 1
-                    print(f"Azide formation detected through functional group analysis: {rsmi}")
+                        # Count aromatic C-N bonds in reactants
+                        reactant_c_n_count = sum(
+                            len(mol.GetSubstructMatches(aromatic_c_n_pattern))
+                            for mol in reactant_mols
+                        )
 
-                # Check for azide utilization
-                reactants_have_azide = any(checker.check_fg("Azide", r) for r in reactants)
-                product_lacks_azide = not checker.check_fg("Azide", product)
+                        # Count aromatic C-N bonds in product
+                        product_c_n_count = len(
+                            product_mol.GetSubstructMatches(aromatic_c_n_pattern)
+                        )
 
-                if reactants_have_azide and product_lacks_azide:
-                    azide_utilizing_reactions += 1
-                    print(f"Azide utilization detected through functional group analysis: {rsmi}")
+                        # If product has more aromatic C-N bonds than reactants combined
+                        if product_c_n_count > reactant_c_n_count:
+                            is_c_n_coupling = True
+                            detected_reaction_type = "Generic C-N coupling (bond count)"
+
+                        # Additional check for aniline formation
+                        if not is_c_n_coupling and checker.check_fg("Aniline", product_smiles):
+                            # Check if aniline was not present in reactants
+                            if not any(checker.check_fg("Aniline", r) for r in reactants_smiles):
+                                is_c_n_coupling = True
+                                detected_reaction_type = "Aniline formation"
+
+                if is_c_n_coupling:
+                    print(f"Aromatic C-N coupling detected: {detected_reaction_type}")
+                    print(f"Reaction SMILES: {rsmi}")
+                    c_n_coupling_count += 1
+
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -130,16 +147,7 @@ def main(route):
 
     # Start traversal
     dfs_traverse(route)
+    print(f"Total C-N couplings found: {c_n_coupling_count}")
 
-    # Determine if our strategy is present
-    # Strategy is present if we have azide intermediates AND either formation or utilization reactions
-    azide_strategy_present = azide_intermediates > 0 and (
-        azide_forming_reactions > 0 or azide_utilizing_reactions > 0
-    )
-
-    print(f"Azide-based functional group manipulation strategy detected: {azide_strategy_present}")
-    print(f"Azide forming reactions: {azide_forming_reactions}")
-    print(f"Azide utilizing reactions: {azide_utilizing_reactions}")
-    print(f"Azide intermediates: {azide_intermediates}")
-
-    return azide_strategy_present
+    # Return True if at least 1 C-N coupling is found (changed from 2)
+    return c_n_coupling_count >= 1

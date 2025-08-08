@@ -2,61 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes borylation of an aryl halide.
+    This function detects nucleophilic aromatic substitution reactions
+    involving fluorinated aromatics to form diaryl ethers.
     """
-    has_borylation = False
+    snar_found = False
 
     def dfs_traverse(node):
-        nonlocal has_borylation
+        nonlocal snar_found
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for aryl halide in reactant
-            aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,I]")
-            boronic_ester_pattern = Chem.MolFromSmarts("[c]-[B]([O])[O]")
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-            has_aryl_halide = False
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(aryl_halide_pattern):
-                    has_aryl_halide = True
-                    break
+            # Check for fluorinated aromatic
+            fluoro_aromatic_pattern = Chem.MolFromSmarts("cF")
+            # Check for phenol
+            phenol_pattern = Chem.MolFromSmarts("c[OH]")
+            # Check for diaryl ether
+            diaryl_ether_pattern = Chem.MolFromSmarts("cOc")
 
-            # Check if product has boronic ester
-            if has_aryl_halide:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(boronic_ester_pattern):
-                    print("Detected borylation of aryl halide")
-                    has_borylation = True
+            has_fluoro_aromatic = any(
+                mol and mol.HasSubstructMatch(fluoro_aromatic_pattern) for mol in reactant_mols
+            )
+            has_phenol = any(mol and mol.HasSubstructMatch(phenol_pattern) for mol in reactant_mols)
+            has_diaryl_ether = product_mol and product_mol.HasSubstructMatch(diaryl_ether_pattern)
 
-        # Continue traversal
+            if has_fluoro_aromatic and has_phenol and has_diaryl_ether:
+                snar_found = True
+                print(f"Detected nucleophilic aromatic substitution: {rsmi}")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return has_borylation
+
+    return snar_found

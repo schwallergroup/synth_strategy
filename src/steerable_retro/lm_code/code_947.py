@@ -2,60 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear pattern where each reaction
-    adds or modifies one fragment at a time, rather than convergent synthesis.
+    This function detects the construction of a polyether chain through
+    sequential fragment assembly.
     """
-    # Track if we've found any convergent steps (more than one complex fragment)
-    convergent_step_found = False
+    polyether_pattern = Chem.MolFromSmarts("[#6][#8][#6][#6][#8][#6]")
 
-    def dfs_traverse(node, depth=0):
-        nonlocal convergent_step_found
+    found_polyether = False
+    sequential_assembly = False
+    ether_formation_steps = 0
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+    def dfs_traverse(node):
+        nonlocal found_polyether, sequential_assembly, ether_formation_steps
 
-            # Count complex reactants (those with more than 10 atoms)
-            complex_reactants = 0
-            for r in reactants:
-                mol = Chem.MolFromSmiles(r)
-                if mol and mol.GetNumAtoms() > 10:
-                    complex_reactants += 1
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(polyether_pattern):
+                found_polyether = True
 
-            # If more than one complex reactant, it's a convergent step
-            if complex_reactants > 1:
-                convergent_step_found = True
-                print(
-                    f"Found convergent step at depth {depth} with {complex_reactants} complex reactants"
-                )
+        elif node["type"] == "reaction":
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        # Process children
+                product_mol = Chem.MolFromSmiles(product)
+
+                # Count C-O-C formations
+                if product_mol:
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            # Check if this reaction forms a new ether linkage
+                            if product_mol.HasSubstructMatch(
+                                Chem.MolFromSmarts("[#6][#8][#6]")
+                            ) and not reactant_mol.HasSubstructMatch(
+                                Chem.MolFromSmarts("[#6][#8][#6]")
+                            ):
+                                ether_formation_steps += 1
+                                print("Found ether formation step")
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Return True if it's a linear synthesis (no convergent steps)
-    return not convergent_step_found
+    # Consider it sequential assembly if multiple ether formation steps are found
+    if ether_formation_steps >= 2:
+        sequential_assembly = True
+
+    return found_polyether and sequential_assembly

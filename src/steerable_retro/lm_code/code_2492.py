@@ -2,79 +2,82 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route employs a late-stage Suzuki coupling (depth 0-1)
-    to connect two aromatic fragments.
+    This function detects if the synthesis involves O-alkylation with an epoxide.
     """
-    suzuki_detected = False
-    max_depth = 1  # Consider only reactions at depth 0-1 as "late-stage"
+    found_epoxide_alkylation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal suzuki_detected
+    def dfs_traverse(node):
+        nonlocal found_epoxide_alkylation
 
-        if node["type"] == "reaction" and depth <= max_depth:
-            # Extract reactants and product
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                # Check if one reactant contains an epoxide
+                epoxide_pattern = Chem.MolFromSmarts("[#6]1[#8][#6]1")
+                phenol_pattern = Chem.MolFromSmarts("c[OH]")
 
-            # Check for Suzuki coupling patterns
-            boronic_acid_pattern = Chem.MolFromSmarts("[c]-[B]([O])[O]")
-            aryl_halide_pattern = Chem.MolFromSmarts("[c]-[#17,#35,#53]")
-            biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
+                epoxide_found = False
+                phenol_found = False
 
-            # Check if reactants contain boronic acid and aryl halide
-            has_boronic_acid = False
-            has_aryl_halide = False
+                for reactant in reactants_smiles:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            if mol.HasSubstructMatch(epoxide_pattern):
+                                epoxide_found = True
+                            if mol.HasSubstructMatch(phenol_pattern):
+                                phenol_found = True
+                    except:
+                        continue
 
-            for reactant in reactants:
+                # Check if product has a C-O-C linkage where one C is aromatic
+                ether_pattern = Chem.MolFromSmarts("c-[#8]-[#6]")
                 try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(boronic_acid_pattern):
-                        has_boronic_acid = True
-                    if mol and mol.HasSubstructMatch(aryl_halide_pattern):
-                        has_aryl_halide = True
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if (
+                        product_mol
+                        and product_mol.HasSubstructMatch(ether_pattern)
+                        and epoxide_found
+                        and phenol_found
+                    ):
+                        print("Found epoxide alkylation of phenol")
+                        found_epoxide_alkylation = True
                 except:
-                    continue
-
-            # Check if product has biaryl bond
-            try:
-                prod_mol = Chem.MolFromSmiles(product)
-                has_biaryl = prod_mol and prod_mol.HasSubstructMatch(biaryl_pattern)
-            except:
-                has_biaryl = False
-
-            # If all conditions are met, it's likely a Suzuki coupling
-            if has_boronic_acid and has_aryl_halide and has_biaryl:
-                print(f"Detected Suzuki coupling at depth {depth}")
-                suzuki_detected = True
+                    pass
 
         # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return suzuki_detected
+
+    return found_epoxide_alkylation

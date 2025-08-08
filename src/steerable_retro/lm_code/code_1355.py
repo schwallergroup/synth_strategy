@@ -2,67 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving preservation of stereocenters throughout the synthesis.
+    This function detects a strategy where a halogen (Br, Cl, I) is installed early
+    and then used in a late-stage coupling reaction.
     """
-    stereocenters_by_depth = {}
+    early_halogenation = False
+    halogen_used_in_coupling = False
 
-    def dfs_traverse(node):
-        nonlocal stereocenters_by_depth
+    def dfs_traverse(node, depth=0):
+        nonlocal early_halogenation, halogen_used_in_coupling
 
-        if node["type"] == "mol":
-            smiles = node["smiles"]
-            depth = node.get("depth", 0)
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            try:
-                mol = Chem.MolFromSmiles(smiles)
-                if mol:
-                    # Find chiral centers
-                    chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
-                    stereocenters_by_depth[depth] = len(chiral_centers)
-            except:
-                pass
+                # Check for halogenation in early steps
+                if depth >= 2:  # Early step
+                    try:
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol:
+                            halogen_pattern = Chem.MolFromSmarts("[c]-[Br,Cl,I]")
+                            if product_mol.HasSubstructMatch(halogen_pattern):
+                                print(f"Early halogenation detected at depth {depth}")
+                                early_halogenation = True
+                    except:
+                        pass
+
+                # Check for halogen used in coupling in late steps
+                if depth <= 1:  # Late step
+                    aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,Cl,I]")
+
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.HasSubstructMatch(aryl_halide_pattern):
+                                # Check if this is likely a coupling reaction
+                                if any("B(O" in r for r in reactants) or any(
+                                    "Sn(" in r for r in reactants
+                                ):
+                                    print(f"Halogen used in coupling at depth {depth}")
+                                    halogen_used_in_coupling = True
+                        except:
+                            continue
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if stereocenters are preserved (at least 2 stereocenters in final product and maintained throughout)
-    if not stereocenters_by_depth:
-        return False
-
-    final_stereocenters = stereocenters_by_depth.get(0, 0)
-    if final_stereocenters < 2:
-        return False
-
-    # Check if the number of stereocenters is maintained or increased throughout
-    depths = sorted(stereocenters_by_depth.keys())
-    for i in range(len(depths) - 1):
-        if stereocenters_by_depth[depths[i]] < stereocenters_by_depth[depths[i + 1]]:
-            return False
-
-    print(f"Found stereocenter preservation: {stereocenters_by_depth}")
-    return True
+    # Return True if halogen is installed early and used in late coupling
+    return early_halogenation and halogen_used_in_coupling

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,75 +54,134 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects the conversion of a primary amine to a nitrile.
+    This function detects orthogonal protection-deprotection strategy with Boc and Cbz groups
+    on a piperazine scaffold or similar nitrogen-containing heterocycles.
     """
-    found_amine_to_nitrile = False
+    # Track protection/deprotection events
+    boc_protection = False
+    boc_deprotection = False
+    cbz_protection = False
+    cbz_deprotection = False
+    n_heterocycle_present = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_amine_to_nitrile
+    def dfs_traverse(node):
+        nonlocal boc_protection, boc_deprotection, cbz_protection, cbz_deprotection, n_heterocycle_present
 
-        # For debugging
-        indent = "  " * depth
+        if node["type"] == "mol":
+            # Check if molecule contains piperazine or similar N-heterocycles
+            if (
+                checker.check_ring("piperazine", node["smiles"])
+                or checker.check_ring("morpholine", node["smiles"])
+                or checker.check_ring("diazepane", node["smiles"])
+                or checker.check_ring("piperidine", node["smiles"])
+                or checker.check_ring("pyrrolidine", node["smiles"])
+                or checker.check_ring("azepane", node["smiles"])
+                or checker.check_ring("azetidine", node["smiles"])
+                or checker.check_ring("aziridine", node["smiles"])
+            ):
+                n_heterocycle_present = True
+                print(f"Detected N-heterocycle in: {node['smiles']}")
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            print(f"{indent}Examining reaction: {rsmi}")
+        elif node["type"] == "reaction":
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+                # Check for Boc protection
+                if not checker.check_fg("Boc", reactants_smiles) and checker.check_fg(
+                    "Boc", product_smiles
+                ):
+                    # Check for any Boc protection reaction
+                    if any(
+                        checker.check_reaction(rxn, rsmi)
+                        for rxn in [
+                            "Boc amine protection",
+                            "Boc amine protection explicit",
+                            "Boc amine protection with Boc anhydride",
+                            "Boc amine protection (ethyl Boc)",
+                            "Boc amine protection of secondary amine",
+                            "Boc amine protection of primary amine",
+                        ]
+                    ):
+                        boc_protection = True
+                        print(f"Detected Boc protection: {rsmi}")
+                    # Fallback check if reaction type not detected
+                    elif "C(C)(C)OC(=O)" in product_smiles:
+                        boc_protection = True
+                        print(f"Detected Boc protection (pattern match): {rsmi}")
 
-            # Split reactants in case there are multiple
-            reactants = reactants_part.split(".")
+                # Check for Boc deprotection
+                if checker.check_fg("Boc", reactants_smiles) and not checker.check_fg(
+                    "Boc", product_smiles
+                ):
+                    if any(
+                        checker.check_reaction(rxn, rsmi)
+                        for rxn in [
+                            "Boc amine deprotection",
+                            "Boc amine deprotection of guanidine",
+                            "Boc amine deprotection to NH-NH2",
+                            "Tert-butyl deprotection of amine",
+                        ]
+                    ):
+                        boc_deprotection = True
+                        print(f"Detected Boc deprotection: {rsmi}")
+                    # Fallback check if reaction type not detected
+                    elif "C(C)(C)OC(=O)" in reactants_smiles:
+                        boc_deprotection = True
+                        print(f"Detected Boc deprotection (pattern match): {rsmi}")
 
-            # Check if any reactant contains a nitrile
-            has_nitrile = False
-            nitrile_reactant = None
-            for reactant in reactants:
-                if checker.check_fg("Nitrile", reactant):
-                    has_nitrile = True
-                    nitrile_reactant = reactant
-                    print(f"{indent}Found nitrile in reactant: {reactant}")
-                    break
+                # Check for Cbz protection
+                if not checker.check_fg("Carbamic ester", reactants_smiles) and checker.check_fg(
+                    "Carbamic ester", product_smiles
+                ):
+                    # Check for benzyl pattern in the product
+                    if "c1ccccc1" in product_smiles and "OCc1ccccc1" in product_smiles:
+                        cbz_protection = True
+                        print(f"Detected Cbz protection: {rsmi}")
 
-            # Check if product contains a primary amine
-            has_primary_amine = checker.check_fg("Primary amine", product_part)
-            if has_primary_amine:
-                print(f"{indent}Found primary amine in product: {product_part}")
-
-            # If we found a nitrile in reactants and a primary amine in product
-            if has_nitrile and has_primary_amine:
-                print(f"{indent}Potential nitrile to amine conversion found!")
-
-                # Check for specific reactions that could convert nitrile to amine
-                if checker.check_reaction("Reduction of nitrile to amine", rsmi):
-                    print(f"{indent}Confirmed nitrile to amine conversion via known reaction!")
-                    found_amine_to_nitrile = True
-                else:
-                    # If no specific reaction is found, check if the transformation is chemically plausible
-                    # by looking at atom mapping
-                    try:
-                        # This is a simplified check - in a real implementation,
-                        # we would need to parse the atom mapping more carefully
-                        print(f"{indent}Checking atom mapping for direct transformation...")
-
-                        # Even without specific reaction type, if we have nitrile → primary amine
-                        # it's likely the transformation we're looking for
-                        found_amine_to_nitrile = True
-                        print(
-                            f"{indent}Confirmed nitrile to amine conversion based on functional group change!"
-                        )
-                    except Exception as e:
-                        print(f"{indent}Error checking atom mapping: {e}")
+                # Check for Cbz deprotection
+                if checker.check_fg("Carbamic ester", reactants_smiles) and not checker.check_fg(
+                    "Carbamic ester", product_smiles
+                ):
+                    # Check for benzyl pattern in the reactants
+                    if "c1ccccc1" in reactants_smiles and "OCc1ccccc1" in reactants_smiles:
+                        if any(
+                            checker.check_reaction(rxn, rsmi)
+                            for rxn in [
+                                "Carboxyl benzyl deprotection",
+                                "Hydrogenolysis of amides/imides/carbamates",
+                            ]
+                        ):
+                            cbz_deprotection = True
+                            print(f"Detected Cbz deprotection: {rsmi}")
+                        # Fallback check if reaction type not detected
+                        else:
+                            cbz_deprotection = True
+                            print(f"Detected Cbz deprotection (pattern match): {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
-    print("Starting traversal to find nitrile to amine conversion...")
+    # Start traversal
     dfs_traverse(route)
 
-    print(
-        f"Final result: {'Found' if found_amine_to_nitrile else 'Did not find'} nitrile to amine conversion"
+    # Strategy is present if we have N-heterocycle and evidence of orthogonal protection
+    # This means we need both Boc and Cbz groups involved in protection/deprotection
+    strategy_present = n_heterocycle_present and (
+        (boc_protection or boc_deprotection) and (cbz_protection or cbz_deprotection)
     )
-    return found_amine_to_nitrile
+
+    print(f"N-heterocycle present: {n_heterocycle_present}")
+    print(f"Boc protection: {boc_protection}")
+    print(f"Boc deprotection: {boc_deprotection}")
+    print(f"Cbz protection: {cbz_protection}")
+    print(f"Cbz deprotection: {cbz_deprotection}")
+
+    if strategy_present:
+        print("Orthogonal protection-deprotection strategy detected")
+    else:
+        print("No orthogonal protection-deprotection strategy detected")
+
+    return strategy_present

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,134 +54,68 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if a synthetic route employs a convergent synthesis strategy
-    by joining two complex fragments in a late-stage reaction.
+    This function detects if the synthesis is based on forming a pyrazolone core
+    and preserves specific substituents (like dichlorophenyl) throughout.
     """
-    found_convergent = False
-
-    def calculate_complexity(mol_smiles):
-        """Calculate molecular complexity based on atoms, rings, and functional groups"""
-        if not mol_smiles or not mol_smiles.strip():
-            return 0
-
-        try:
-            mol = Chem.MolFromSmiles(mol_smiles)
-            if not mol:
-                return 0
-
-            # Base complexity: heavy atom count
-            complexity = mol.GetNumHeavyAtoms()
-
-            # Add complexity for rings
-            ring_info = mol.GetRingInfo()
-            complexity += len(ring_info.AtomRings()) * 2
-
-            # Add complexity for functional groups
-            fg_list = [
-                "Ester",
-                "Amide",
-                "Alcohol",
-                "Amine",
-                "Carboxylic acid",
-                "Nitrile",
-                "Aromatic halide",
-                "Aldehyde",
-                "Ketone",
-                "Alkyne",
-                "Alkene",
-            ]
-
-            for fg in fg_list:
-                if checker.check_fg(fg, mol_smiles):
-                    complexity += 2
-
-            return complexity
-        except Exception as e:
-            print(f"Error calculating complexity: {e}")
-            return 0
-
-    def is_coupling_or_joining_reaction(rxn_smiles):
-        """Check if the reaction is a coupling or joining reaction commonly used in convergent synthesis"""
-        coupling_reactions = [
-            "Suzuki coupling",
-            "Negishi coupling",
-            "Stille reaction",
-            "Heck reaction",
-            "Sonogashira",
-            "Buchwald-Hartwig",
-            "N-arylation",
-            "Ullmann condensation",
-            "Wittig reaction",
-            "Diels-Alder",
-            "Michael addition",
-            "Aldol condensation",
-            "Mitsunobu reaction",
-            "Huisgen",
-            "Ugi reaction",
-            "Schotten-Baumann",
-        ]
-
-        for rxn_type in coupling_reactions:
-            if checker.check_reaction(rxn_type, rxn_smiles):
-                print(f"Detected coupling/joining reaction: {rxn_type}")
-                return True
-        return False
+    # Track if we've found a pyrazolone formation reaction
+    found_pyrazolone_formation = False
+    # Track if dichlorophenyl is preserved throughout relevant reactions
+    dichlorophenyl_preserved = False
+    # Check if final product has both pyrazolone and dichlorophenyl
+    final_has_both = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_convergent
+        nonlocal found_pyrazolone_formation, dichlorophenyl_preserved, final_has_both
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        # Check final product (depth 0)
+        if depth == 0 and node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            has_pyrazolone = checker.check_ring("pyrazole", mol_smiles)
+            has_dichlorophenyl = checker.check_fg("Aromatic halide", mol_smiles)
 
-            # Only consider reactions with at least 2 reactants
-            if len(reactants) >= 2:
-                # Calculate complexity for each reactant
-                reactant_complexities = []
+            if has_pyrazolone and has_dichlorophenyl:
+                print(f"Final product has both pyrazolone and dichlorophenyl: {mol_smiles}")
+                final_has_both = True
+            else:
+                print(
+                    f"Final product missing required structures. Pyrazolone: {has_pyrazolone}, Dichlorophenyl: {has_dichlorophenyl}"
+                )
+                return
 
-                for reactant in reactants:
-                    if reactant.strip():
-                        complexity = calculate_complexity(reactant)
-                        reactant_complexities.append(complexity)
+        # Check reaction nodes for pyrazolone formation
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rxn_smiles = node["metadata"]["rsmi"]
+            reactants = rxn_smiles.split(">")[0]
+            product = rxn_smiles.split(">")[-1]
 
-                # Calculate product complexity
-                product_complexity = calculate_complexity(product)
+            # Check if this reaction forms a pyrazolone
+            product_has_pyrazolone = checker.check_ring("pyrazole", product)
+            reactants_have_pyrazolone = any(
+                checker.check_ring("pyrazole", r) for r in reactants.split(".")
+            )
 
-                # Check if we have at least 2 substantial fragments being joined
-                # Define "substantial" as having complexity score >= 10
-                substantial_fragments = [
-                    (i, complexity)
-                    for i, complexity in enumerate(reactant_complexities)
-                    if complexity >= 10
-                ]
+            if product_has_pyrazolone and not reactants_have_pyrazolone:
+                print(f"Found pyrazolone formation reaction: {rxn_smiles}")
+                found_pyrazolone_formation = True
 
-                # Check for convergent synthesis conditions:
-                # 1. At least 2 substantial fragments
-                # 2. Late-stage reaction (depth <= 3)
-                # 3. Either a known coupling reaction OR product complexity significantly higher than individual reactants
-                if (
-                    len(substantial_fragments) >= 2
-                    and depth <= 3  # Late-stage = depth 0, 1, 2, or 3
-                    and (
-                        is_coupling_or_joining_reaction(rsmi)
-                        or (product_complexity > 0.8 * sum(reactant_complexities))
-                    )
-                ):
+            # Check if dichlorophenyl is preserved in this reaction
+            if checker.check_fg("Aromatic halide", product):
+                for reactant in reactants.split("."):
+                    if checker.check_fg("Aromatic halide", reactant):
+                        dichlorophenyl_preserved = True
+                        print(f"Dichlorophenyl preserved in reaction: {rxn_smiles}")
+                        break
 
-                    print(f"Found convergent synthesis at depth {depth}: {rsmi}")
-                    print(f"Reactant complexities: {reactant_complexities}")
-                    print(f"Product complexity: {product_complexity}")
-                    print(f"Substantial fragments: {substantial_fragments}")
-
-                    found_convergent = True
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Convergent synthesis strategy detected: {found_convergent}")
-    return found_convergent
+    # Return true if all conditions are met
+    result = final_has_both and found_pyrazolone_formation and dichlorophenyl_preserved
+    print(
+        f"Final result: {result} (final_has_both: {final_has_both}, found_pyrazolone_formation: {found_pyrazolone_formation}, dichlorophenyl_preserved: {dichlorophenyl_preserved})"
+    )
+    return result

@@ -2,65 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a convergent synthesis strategy with biaryl ether formation.
-    It looks for a reaction where two complex fragments are joined via C-O-C bond formation.
+    This function detects a synthetic strategy involving thione (C=S) to carbonyl (C=O) conversion
+    as a key intermediate step.
     """
-    has_biaryl_ether_formation = False
+    thione_to_carbonyl_detected = False
 
     def dfs_traverse(node):
-        nonlocal has_biaryl_ether_formation
+        nonlocal thione_to_carbonyl_detected
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check if we have multiple reactants (convergent)
-                if len(reactants) >= 2:
-                    # Check for biaryl ether formation
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        # Look for biaryl ether pattern in product
-                        biaryl_ether_pattern = Chem.MolFromSmarts("[c]-[O]-[c]")
-                        if product_mol.HasSubstructMatch(biaryl_ether_pattern):
-                            # Check if reactants have aromatic rings
-                            aromatic_reactants = 0
-                            for reactant in reactants:
-                                reactant_mol = Chem.MolFromSmiles(reactant)
-                                if reactant_mol and reactant_mol.HasSubstructMatch(
-                                    Chem.MolFromSmarts("c")
-                                ):
-                                    aromatic_reactants += 1
+                # Check if reactant contains thione and product contains carbonyl
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+                product_mol = Chem.MolFromSmiles(product)
 
-                            # If at least 2 aromatic reactants, likely biaryl ether formation
-                            if aromatic_reactants >= 2:
-                                print("Found biaryl ether formation in convergent step")
-                                has_biaryl_ether_formation = True
+                thione_pattern = Chem.MolFromSmarts("[#6]=[#16]")
+                carbonyl_pattern = Chem.MolFromSmarts("[#6]=[#8]")
+
+                reactant_has_thione = any(
+                    mol is not None and mol.HasSubstructMatch(thione_pattern)
+                    for mol in reactant_mols
+                )
+                product_has_carbonyl = product_mol is not None and product_mol.HasSubstructMatch(
+                    carbonyl_pattern
+                )
+
+                if reactant_has_thione and product_has_carbonyl:
+                    print("Found thione to carbonyl conversion")
+                    thione_to_carbonyl_detected = True
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return has_biaryl_ether_formation
+    return thione_to_carbonyl_detected

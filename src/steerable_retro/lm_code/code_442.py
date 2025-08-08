@@ -2,87 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route contains a thiazole ring formation reaction.
+    This function detects if a primary amide group is preserved throughout the synthesis.
     """
-    has_thiazole_formation = False
+    has_primary_amide_in_final = False
+    has_primary_amide_in_intermediate = False
 
-    def dfs(node, depth=0):
-        nonlocal has_thiazole_formation
+    def dfs_traverse(node, depth=0):
+        nonlocal has_primary_amide_in_final, has_primary_amide_in_intermediate
 
-        # Check if this is a molecule node with a thiazole ring
-        if node["type"] == "mol" and node["smiles"]:
-            if checker.check_ring("thiazole", node["smiles"]):
-                # Check if this molecule is a product of a reaction
-                if not node.get("in_stock", False) and node.get("children", []):
-                    for child in node["children"]:
-                        if (
-                            child["type"] == "reaction"
-                            and "metadata" in child
-                            and "rsmi" in child["metadata"]
-                        ):
-                            rxn_smiles = child["metadata"]["rsmi"]
-                            product = rxn_smiles.split(">")[-1]
-                            reactants = rxn_smiles.split(">")[0].split(".")
-
-                            # Check if thiazole is formed in this reaction (not present in reactants)
-                            thiazole_in_reactants = any(
-                                checker.check_ring("thiazole", r) for r in reactants
-                            )
-                            if not thiazole_in_reactants:
-                                has_thiazole_formation = True
-                                print(f"Found thiazole formation reaction: {rxn_smiles}")
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # SMARTS pattern for primary amide
+                primary_amide_pattern = Chem.MolFromSmarts("[C](=[O])[NH2]")
+                if mol.HasSubstructMatch(primary_amide_pattern):
+                    if depth == 0:
+                        has_primary_amide_in_final = True
+                        print(f"Found primary amide in final product: {node['smiles']}")
+                    else:
+                        has_primary_amide_in_intermediate = True
+                        print(
+                            f"Found primary amide in intermediate at depth {depth}: {node['smiles']}"
+                        )
 
         for child in node.get("children", []):
-            dfs(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    dfs(route)
-    return has_thiazole_formation
+    dfs_traverse(route)
+    return has_primary_amide_in_final and has_primary_amide_in_intermediate

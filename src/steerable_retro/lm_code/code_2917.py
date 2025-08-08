@@ -2,88 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route includes a protection-deprotection sequence for carboxylic acid
-    (esterification followed by hydrolysis).
+    Detects a synthetic strategy where a heterocyclic scaffold (pyrazole)
+    is maintained throughout the synthesis.
     """
-    # Track reactions by depth
-    reactions_by_depth = {}
+    # Initialize tracking variables
+    reactions_with_pyrazole = 0
+    total_reactions = 0
 
-    def collect_reactions(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            if depth not in reactions_by_depth:
-                reactions_by_depth[depth] = []
-            reactions_by_depth[depth].append(node["metadata"]["rsmi"])
+    def dfs_traverse(node, depth=0):
+        nonlocal reactions_with_pyrazole, total_reactions
 
+        if node["type"] == "reaction":
+            total_reactions += 1
+
+            # Extract reactants and products
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
+
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+
+            if product:
+                # Check for pyrazole scaffold
+                pyrazole_pattern = Chem.MolFromSmarts("c1nn(C)cc1")
+                if product.HasSubstructMatch(pyrazole_pattern):
+                    reactions_with_pyrazole += 1
+                    print(f"Detected pyrazole scaffold at depth {depth}")
+
+        # Recursively process children
         for child in node.get("children", []):
-            collect_reactions(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    collect_reactions(route)
+    # Start traversal from the root
+    dfs_traverse(route)
 
-    # Check for esterification followed by hydrolysis
-    esterification_depths = []
-    hydrolysis_depths = []
+    # Check if pyrazole scaffold is maintained throughout
+    scaffold_maintained = (total_reactions > 0) and (reactions_with_pyrazole == total_reactions)
 
-    for depth, reactions in reactions_by_depth.items():
-        for rsmi in reactions:
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            try:
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-                product_mol = Chem.MolFromSmiles(product)
-
-                # Check for esterification
-                has_acid_reactant = any(
-                    r and r.HasSubstructMatch(Chem.MolFromSmarts("[C](=[O])[OH]"))
-                    for r in reactant_mols
-                )
-                has_ester_product = product_mol and product_mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("[C](=[O])[O][C]")
-                )
-                if has_acid_reactant and has_ester_product:
-                    esterification_depths.append(depth)
-
-                # Check for hydrolysis
-                has_ester_reactant = any(
-                    r and r.HasSubstructMatch(Chem.MolFromSmarts("[C](=[O])[O][C]"))
-                    for r in reactant_mols
-                )
-                has_acid_product = product_mol and product_mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("[C](=[O])[OH]")
-                )
-                if has_ester_reactant and has_acid_product:
-                    hydrolysis_depths.append(depth)
-            except:
-                print(f"Error processing reaction SMILES at depth {depth}")
-
-    # Check if there's an esterification at a higher depth followed by hydrolysis at a lower depth
-    for ester_depth in esterification_depths:
-        for hydro_depth in hydrolysis_depths:
-            if ester_depth > hydro_depth:  # Remember higher depth = earlier in synthesis
-                print(
-                    f"Protection-deprotection sequence detected: esterification at depth {ester_depth}, hydrolysis at depth {hydro_depth}"
-                )
-                return True
-
-    return False
+    if scaffold_maintained:
+        print("Maintained heterocyclic scaffold strategy detected")
+    return scaffold_maintained

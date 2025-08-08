@@ -2,77 +2,86 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if phosphonate groups are preserved throughout the synthesis.
+    This function detects if a BOC protection/deprotection strategy is used
+    for a piperazine nitrogen.
     """
-    phosphonate_pattern = Chem.MolFromSmarts("[P](=[O])([O][#6])[O][#6]")
-
-    # Track if phosphonates are present and preserved
-    phosphonate_present = False
-    phosphonate_modified = False
+    boc_protected_piperazine = False
+    boc_deprotection = False
 
     def dfs_traverse(node):
-        nonlocal phosphonate_present, phosphonate_modified
+        nonlocal boc_protected_piperazine, boc_deprotection
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+        if node["type"] == "mol":
+            if "smiles" in node:
+                smiles = node["smiles"]
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Check for BOC-protected piperazine
+                boc_piperazine_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]1[C][C][N][C][C]1")
+                try:
+                    mol = Chem.MolFromSmiles(smiles)
+                    if mol and mol.HasSubstructMatch(boc_piperazine_pattern):
+                        boc_protected_piperazine = True
+                        print(f"Found BOC-protected piperazine: {smiles}")
+                except:
+                    pass
 
-            try:
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+        elif node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Count phosphonate groups in reactants and product
-                reactant_phosphonates = sum(
-                    len(mol.GetSubstructMatches(phosphonate_pattern))
-                    for mol in reactant_mols
-                    if mol
-                )
+                # Check for BOC deprotection
+                boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")
 
-                product_phosphonates = (
-                    len(product_mol.GetSubstructMatches(phosphonate_pattern)) if product_mol else 0
-                )
+                try:
+                    # Check if any reactant has BOC group
+                    reactant_has_boc = False
+                    for r in reactants:
+                        r_mol = Chem.MolFromSmiles(r)
+                        if r_mol and r_mol.HasSubstructMatch(boc_pattern):
+                            reactant_has_boc = True
+                            break
 
-                if reactant_phosphonates > 0 or product_phosphonates > 0:
-                    phosphonate_present = True
+                    # Check if product doesn't have BOC group
+                    product_mol = Chem.MolFromSmiles(product)
+                    product_has_boc = product_mol and product_mol.HasSubstructMatch(boc_pattern)
 
-                # If phosphonate count decreases, they're being modified
-                if product_phosphonates < reactant_phosphonates:
-                    phosphonate_modified = True
-                    print("Phosphonate groups are being modified")
-            except:
-                print("Error processing molecules for phosphonate detection")
+                    if reactant_has_boc and not product_has_boc:
+                        boc_deprotection = True
+                        print(f"Detected BOC deprotection: {rsmi}")
+                except:
+                    pass
 
-        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Return True if phosphonates are present and preserved
-    return phosphonate_present and not phosphonate_modified
+    # Return True if both BOC protection and deprotection are detected
+    return boc_protected_piperazine and boc_deprotection

@@ -2,81 +2,52 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects biaryl formation via Suzuki coupling (aryl halide + boronic acid/ester).
+    This function detects if the synthetic route involves the use of trimethylsilyl (TMS)
+    protecting groups throughout the synthesis.
     """
-    # Track if we found the pattern
-    found_pattern = False
+    tms_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
+        nonlocal tms_found
 
-        if node["type"] == "reaction":
-            # Check if this is a reaction node
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            if "smiles" in node:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Check for TMS group
+                    tms_pattern = Chem.MolFromSmarts("[C][Si]([C])([C])[C]")
+                    if mol.HasSubstructMatch(tms_pattern):
+                        print(f"Found TMS protecting group in molecule at depth {depth}")
+                        tms_found = True
 
-                # Check for Suzuki coupling patterns
-                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,I,Cl]")
-                boronic_acid_pattern = Chem.MolFromSmarts("[c]-[B]([O])[O]")
-                biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
+        # Continue traversal
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
 
-                # Check reactants for aryl halide and boronic acid
-                has_aryl_halide = False
-                has_boronic_acid = False
-
-                for r in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(r)
-                        if mol:
-                            if mol.HasSubstructMatch(aryl_halide_pattern):
-                                has_aryl_halide = True
-                            if mol.HasSubstructMatch(boronic_acid_pattern):
-                                has_boronic_acid = True
-                    except:
-                        continue
-
-                # Check product for biaryl formation
-                try:
-                    prod_mol = Chem.MolFromSmiles(product)
-                    has_biaryl = prod_mol and prod_mol.HasSubstructMatch(biaryl_pattern)
-                except:
-                    has_biaryl = False
-
-                # If we have aryl halide, boronic acid, and biaryl in product, it's likely Suzuki coupling
-                if has_aryl_halide and has_boronic_acid and has_biaryl:
-                    found_pattern = True
-                    print(f"Found biaryl formation via Suzuki coupling at depth {depth}")
-
-        # Traverse children
-        if "children" in node:
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1)
-
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Biaryl formation via Suzuki coupling: {found_pattern}")
-    return found_pattern
+    return tms_found

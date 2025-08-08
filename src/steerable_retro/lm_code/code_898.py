@@ -2,49 +2,43 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthetic strategy where complexity is built
-    through sequential addition of fragments rather than convergent synthesis.
+    Detects a strategy where a tert-butyl group is present throughout the synthesis
+    and remains unchanged while other parts of the molecule are modified.
     """
-    # Track reaction depths and branching
-    reaction_depths = []
-    max_children_per_node = 0
+    # Track presence of tert-butyl group at different depths
+    tert_butyl_depths = set()
 
     def dfs_traverse(node, depth=0):
-        nonlocal max_children_per_node
-
-        if node["type"] == "reaction":
-            reaction_depths.append(depth)
-
-            # Count number of reactants
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            num_reactants = len(reactants)
-            max_children_per_node = max(max_children_per_node, len(node.get("children", [])))
-
-            print(
-                f"Reaction at depth {depth} has {num_reactants} reactants and {len(node.get('children', []))} children"
-            )
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[C]([CH3])([CH3])[CH3]")):
+                tert_butyl_depths.add(depth)
+                print(f"Found tert-butyl group at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -53,22 +47,7 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Analyze reaction pattern
-    # Linear synthesis typically has:
-    # 1. Reactions at multiple depths (sequential)
-    # 2. Limited branching (max 2 children per node)
-    # 3. At least 3 reaction steps
-
-    is_linear = (
-        len(reaction_depths) >= 3  # At least 3 reaction steps
-        and max_children_per_node <= 2  # Limited branching
-        and len(set(reaction_depths)) >= 3  # Reactions at multiple depths
-    )
-
-    print(f"Strategy detection results:")
-    print(f"  - Number of reaction steps: {len(reaction_depths)}")
-    print(f"  - Max children per node: {max_children_per_node}")
-    print(f"  - Unique reaction depths: {len(set(reaction_depths))}")
-    print(f"  - Linear strategy detected: {is_linear}")
-
-    return is_linear
+    # Strategy is present if tert-butyl appears at multiple depths (preserved throughout)
+    result = len(tert_butyl_depths) >= 3  # Present in at least 3 intermediates
+    print(f"Preserved tert-butyl group strategy detected: {result}")
+    return result

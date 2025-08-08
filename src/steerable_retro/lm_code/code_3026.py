@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,118 +54,130 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis uses multiple Friedel-Crafts reactions in sequence.
+    This function detects a strategy for synthesizing phosphonate-containing aniline compounds.
     """
-    friedel_crafts_reactions = []
+    # Track if we found the target structure and the synthesis strategy
+    has_target_structure = False
+    has_phosphonate_strategy = False
+    has_aniline_strategy = False
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+    # Track the depth of each node to identify the final product
+    node_depths = {}
 
-            print(f"Checking reaction at depth {depth}: {rsmi}")
+    # First pass: calculate depths
+    def calculate_depths(node, depth=0):
+        node_id = id(node)
+        node_depths[node_id] = depth
 
-            # Check if this is a Friedel-Crafts reaction using the checker function
-            is_friedel_crafts_acylation = checker.check_reaction("Friedel-Crafts acylation", rsmi)
-            is_friedel_crafts_alkylation = checker.check_reaction("Friedel-Crafts alkylation", rsmi)
-            is_friedel_crafts_alkylation_halide = checker.check_reaction(
-                "Friedel-Crafts alkylation with halide", rsmi
-            )
-
-            print(f"Is Friedel-Crafts acylation: {is_friedel_crafts_acylation}")
-            print(f"Is Friedel-Crafts alkylation: {is_friedel_crafts_alkylation}")
-            print(
-                f"Is Friedel-Crafts alkylation with halide: {is_friedel_crafts_alkylation_halide}"
-            )
-
-            # If direct check fails, try pattern-based detection
-            is_friedel_crafts = (
-                is_friedel_crafts_acylation
-                or is_friedel_crafts_alkylation
-                or is_friedel_crafts_alkylation_halide
-            )
-
-            if not is_friedel_crafts:
-                # Parse reactants and products
-                try:
-                    reactants_part = rsmi.split(">")[0]
-                    reagents_part = rsmi.split(">")[1] if len(rsmi.split(">")) > 2 else ""
-                    product_part = rsmi.split(">")[-1]
-
-                    reactants = reactants_part.split(".")
-                    reagents = reagents_part.split(".") if reagents_part else []
-
-                    # Check for Lewis acid catalysts (common in Friedel-Crafts)
-                    lewis_acid_present = any(
-                        re.search(r"Al|FeCl|AlCl|BF3|TiCl", r) for r in reagents
-                    )
-
-                    # Check for acyl halides (for acylation)
-                    acyl_halide_present = any(checker.check_fg("Acyl halide", r) for r in reactants)
-
-                    # Check for aromatic compounds
-                    aromatic_present = any("c" in r.lower() for r in reactants)
-
-                    # Check for alkyl halides (for alkylation)
-                    alkyl_halide_present = any(
-                        checker.check_fg("Primary halide", r)
-                        or checker.check_fg("Secondary halide", r)
-                        or checker.check_fg("Tertiary halide", r)
-                        for r in reactants
-                    )
-
-                    # Detect Friedel-Crafts acylation
-                    if (
-                        acyl_halide_present
-                        and aromatic_present
-                        and (
-                            lewis_acid_present
-                            or "AlCl3" in reagents_part
-                            or "[Al+3]" in reagents_part
-                        )
-                    ):
-                        is_friedel_crafts = True
-                        print(f"Detected Friedel-Crafts acylation pattern at depth {depth}")
-
-                    # Detect Friedel-Crafts alkylation
-                    elif (
-                        alkyl_halide_present
-                        and aromatic_present
-                        and (
-                            lewis_acid_present
-                            or "AlCl3" in reagents_part
-                            or "[Al+3]" in reagents_part
-                        )
-                    ):
-                        is_friedel_crafts = True
-                        print(f"Detected Friedel-Crafts alkylation pattern at depth {depth}")
-
-                except Exception as e:
-                    print(f"Error analyzing reaction: {e}")
-
-            if is_friedel_crafts:
-                friedel_crafts_reactions.append(depth)
-                print(f"Found Friedel-Crafts reaction at depth {depth}")
-
-        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            calculate_depths(child, depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
+    calculate_depths(route)
 
-    print(f"All Friedel-Crafts reactions found at depths: {friedel_crafts_reactions}")
+    # Find the root node (final product) - it has the minimum depth
+    min_depth = min(node_depths.values()) if node_depths else 0
 
-    # Check if we have at least 2 Friedel-Crafts reactions
-    if len(friedel_crafts_reactions) >= 2:
-        # Check if they are in sequence (adjacent depths or with only 1 step between)
-        friedel_crafts_reactions.sort()
-        for i in range(len(friedel_crafts_reactions) - 1):
-            if friedel_crafts_reactions[i + 1] - friedel_crafts_reactions[i] <= 2:
-                print(
-                    f"Found Friedel-Crafts sequence at depths {friedel_crafts_reactions[i]} and {friedel_crafts_reactions[i+1]}"
-                )
-                return True
+    # Helper function to check for phosphonate groups
+    def has_phosphonate_group(smiles):
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol:
+                # Check for any phosphorus atom
+                for atom in mol.GetAtoms():
+                    if atom.GetSymbol() == "P":
+                        return True
+                # Also check for phosphate ester specifically
+                return checker.check_fg("Phosphate ester", smiles)
+            return False
+        except:
+            return False
 
-    return False
+    # Second pass: analyze the synthesis route
+    def analyze_route(node):
+        nonlocal has_target_structure, has_phosphonate_strategy, has_aniline_strategy
+
+        if node["type"] == "mol" and "smiles" in node:
+            node_id = id(node)
+            mol_smiles = node["smiles"]
+
+            # Check if this is the final product (root node or close to it)
+            if node_depths[node_id] <= min_depth + 1:
+                # Check for phosphonate group
+                has_phosphonate = has_phosphonate_group(mol_smiles)
+                # Check for aniline group
+                has_aniline = checker.check_fg("Aniline", mol_smiles)
+
+                if has_phosphonate and has_aniline:
+                    has_target_structure = True
+                    print(
+                        f"Found target structure with phosphonate and aniline groups: {mol_smiles}"
+                    )
+
+        # Check reactions for synthesis strategy
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Check if this reaction introduces or modifies phosphonate group
+            product_has_phosphonate = has_phosphonate_group(product)
+            reactants_have_phosphonate = any(has_phosphonate_group(r) for r in reactants)
+
+            # Check if this reaction introduces or modifies aniline group
+            product_has_aniline = checker.check_fg("Aniline", product)
+            reactants_have_aniline = any(checker.check_fg("Aniline", r) for r in reactants)
+            reactants_have_nitro = any(checker.check_fg("Nitro group", r) for r in reactants)
+
+            # Check for phosphonate formation or modification
+            if product_has_phosphonate:
+                if not reactants_have_phosphonate:
+                    print(f"Found phosphonate formation reaction: {rsmi}")
+                    has_phosphonate_strategy = True
+                elif reactants_have_phosphonate:
+                    # Check if this is a modification of an existing phosphonate
+                    print(f"Found phosphonate modification reaction: {rsmi}")
+                    has_phosphonate_strategy = True
+
+            # Check for aniline formation or modification
+            if product_has_aniline:
+                if not reactants_have_aniline:
+                    print(f"Found aniline formation reaction: {rsmi}")
+                    has_aniline_strategy = True
+
+                    # Specifically check for nitro reduction to aniline
+                    if reactants_have_nitro and checker.check_reaction(
+                        "Reduction of nitro groups to amines", rsmi
+                    ):
+                        print(f"Found nitro reduction to aniline: {rsmi}")
+                        has_aniline_strategy = True
+                    # Check for other amine formation reactions
+                    elif (
+                        checker.check_reaction("Reductive amination with aldehyde", rsmi)
+                        or checker.check_reaction("Reductive amination with ketone", rsmi)
+                        or checker.check_reaction(
+                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
+                        )
+                    ):
+                        print(f"Found aniline formation through alternative reaction: {rsmi}")
+                        has_aniline_strategy = True
+                elif reactants_have_aniline:
+                    # Check if this is a modification of an existing aniline
+                    print(f"Found aniline modification reaction: {rsmi}")
+                    has_aniline_strategy = True
+
+        # Traverse children
+        for child in node.get("children", []):
+            analyze_route(child)
+
+    # Start traversal from the root
+    analyze_route(route)
+
+    # Return True if both target structure and synthesis strategies are found
+    has_synthesis_strategy = has_phosphonate_strategy or has_aniline_strategy
+    result = has_target_structure or has_synthesis_strategy
+    print(f"Target structure found: {has_target_structure}")
+    print(f"Phosphonate strategy found: {has_phosphonate_strategy}")
+    print(f"Aniline strategy found: {has_aniline_strategy}")
+    print(f"Final result: {result}")
+
+    return result

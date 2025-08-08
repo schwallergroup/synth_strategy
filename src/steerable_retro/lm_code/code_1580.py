@@ -2,73 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves a late-stage Suzuki coupling (at depth 0 or 1).
+    Detects if the synthesis involves reduction of an amide to an amine.
     """
-    late_stage_suzuki = False
+    amide_reduction_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_suzuki
+    def dfs_traverse(node):
+        nonlocal amide_reduction_detected
 
-        if node["type"] == "reaction" and depth <= 1:  # Only check reactions at depth 0 or 1
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for boronic acid/ester in one reactant
-                boronic_pattern = Chem.MolFromSmarts("[c]-[B]([O])[O]")
-                boronic_ester_pattern = Chem.MolFromSmarts("[c]-[B]1[O][C][C][O]1")
+            try:
+                prod_mol = Chem.MolFromSmiles(product)
+                react_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
 
-                # Check for aryl halide in another reactant
-                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,I,Cl]")
+                # Check for amide in reactants
+                amide_patt = Chem.MolFromSmarts("[C;!$(C=C)](=O)[N]")
 
-                has_boronic = False
-                has_aryl_halide = False
+                # Check if any reactant has an amide
+                amide_in_reactants = any(
+                    m and m.HasSubstructMatch(amide_patt) for m in react_mols if m
+                )
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(boronic_pattern) or mol.HasSubstructMatch(
-                            boronic_ester_pattern
-                        ):
-                            has_boronic = True
-                        if mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
+                # Check if product has a CH2-N where the amide was
+                if amide_in_reactants and prod_mol:
+                    # This is a simplified check - in a real implementation, you'd need to track
+                    # the specific atoms involved in the transformation
+                    amine_patt = Chem.MolFromSmarts("[CH2][N;!$(NC=O)]")
+                    if prod_mol.HasSubstructMatch(amine_patt):
+                        print("Amide reduction detected")
+                        amide_reduction_detected = True
+            except:
+                print("Error in processing reaction SMILES")
 
-                # Check if product has biaryl system
-                if has_boronic and has_aryl_halide:
-                    prod_mol = Chem.MolFromSmiles(product)
-                    if prod_mol:
-                        # Simple check for biaryl formation
-                        biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
-                        if prod_mol.HasSubstructMatch(biaryl_pattern):
-                            print(f"Detected late-stage Suzuki coupling at depth {depth}")
-                            late_stage_suzuki = True
-
-        # Traverse children with increased depth
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return late_stage_suzuki
+
+    return amide_reduction_detected

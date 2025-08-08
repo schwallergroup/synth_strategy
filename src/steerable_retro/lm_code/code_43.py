@@ -2,102 +2,100 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves nitrile to amide conversion.
+    Detects if the synthetic route involves bromination followed by nucleophilic substitution,
+    which is a common strategy for introducing new substituents.
     """
-    conversion_detected = False
+    # Track bromination and substitution reactions
+    bromination_reactions = []
+    substitution_reactions = []
+    reaction_depths = {}
 
-    def dfs_traverse(node):
-        nonlocal conversion_detected
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Store reaction depth
+            reaction_id = node["metadata"].get("ID", str(depth))
+            reaction_depths[reaction_id] = depth
+
             try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                # Check for bromination: addition of Br
+                product_mol = Chem.MolFromSmiles(product)
 
-                # Check for nitrile in reactants and primary amide in product
+                has_bromo_in_product = product_mol and product_mol.HasSubstructMatch(
+                    Chem.MolFromSmarts("[#6]-[Br]")
+                )
+
+                has_bromo_in_reactants = False
                 for reactant in reactants:
-                    if not reactant:
-                        continue
+                    if "Br" in reactant:  # Simple check for bromine-containing reagent
+                        has_bromo_in_reactants = True
+                        break
 
-                    # Check if reactant contains nitrile and product contains primary amide
-                    if checker.check_fg("Nitrile", reactant) and checker.check_fg(
-                        "Primary amide", product
+                if has_bromo_in_product and has_bromo_in_reactants:
+                    bromination_reactions.append(reaction_id)
+
+                # Check for nucleophilic substitution: Br replaced by N, O, S
+                has_bromo_in_reactants_mol = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts("[#6]-[Br]")
                     ):
-                        # Verify this is a nitrile to amide reaction
-                        if checker.check_reaction("Nitrile and hydrogen peroxide to amide", rsmi):
-                            conversion_detected = True
-                            print(f"Detected nitrile to amide conversion in reaction: {rsmi}")
-                            break
+                        has_bromo_in_reactants_mol = True
+                        break
 
-                        # If specific reaction check fails, try a more general approach
-                        # Get the nitrile carbon atom indices in reactant
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        product_mol = Chem.MolFromSmiles(product)
+                # Check if product has new C-N, C-O or C-S bond
+                if has_bromo_in_reactants_mol and product_mol:
+                    if (
+                        product_mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]-[#7]"))
+                        or product_mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]-[#8]"))
+                        or product_mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]-[#16]"))
+                    ):
+                        substitution_reactions.append(reaction_id)
+            except:
+                pass
 
-                        if reactant_mol and product_mol:
-                            # Check if the reaction involves nitrile hydrolysis
-                            # This is a fallback if the specific reaction check fails
-                            conversion_detected = True
-                            print(
-                                f"Detected potential nitrile to amide conversion in reaction: {rsmi}"
-                            )
-                            break
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return conversion_detected
+
+    # Check if there's a bromination followed by substitution
+    for bromination_id in bromination_reactions:
+        for substitution_id in substitution_reactions:
+            # If substitution depth is less than bromination depth, it comes after in synthesis
+            if reaction_depths[substitution_id] < reaction_depths[bromination_id]:
+                print(
+                    f"Found bromination-substitution sequence: bromination at depth {reaction_depths[bromination_id]}, substitution at depth {reaction_depths[substitution_id]}"
+                )
+                return True
+
+    return False

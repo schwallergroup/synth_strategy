@@ -2,69 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy
-    (each reaction has only one product that's used in the next step).
-
-    In a retrosynthetic context, this means each intermediate molecule
-    (except the target) is produced by exactly one reaction and used in
-    exactly one subsequent reaction.
+    Detects if the synthesis follows a linear build-up strategy rather than
+    a convergent approach by analyzing the reaction tree structure.
     """
-    # Track molecule usage across the synthesis
-    molecule_usage = {}  # smiles -> count of reactions using it
+    # Track branching factor at each depth
+    depth_to_children = {}
+    max_branching = 0
 
-    # Track if we've seen the target molecule
-    target_smiles = route["smiles"]
+    def dfs_traverse(node, current_depth=0):
+        nonlocal max_branching
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol":
-            # Skip the target molecule (depth 0)
-            if depth > 0:
-                mol_smiles = node["smiles"]
-                if mol_smiles in molecule_usage:
-                    molecule_usage[mol_smiles] += 1
-                else:
-                    molecule_usage[mol_smiles] = 1
+        if node["type"] == "reaction":
+            depth = node["metadata"].get("depth", current_depth)
+            children = node.get("children", [])
+            child_count = len(children)
 
-                # If a molecule is used in more than one reaction, it's not linear
-                if molecule_usage[mol_smiles] > 1:
-                    print(f"Molecule {mol_smiles} is used in multiple reactions (non-linear)")
-                    return False
+            if depth not in depth_to_children:
+                depth_to_children[depth] = child_count
+            else:
+                depth_to_children[depth] += child_count
 
-        # Continue traversal
-        for child in node.get("children", []):
-            if not dfs_traverse(child, depth + 1):
-                return False
+            max_branching = max(max_branching, child_count)
 
-        return True
+            for child in children:
+                dfs_traverse(child, depth + 1)
+        else:
+            for child in node.get("children", []):
+                dfs_traverse(child, current_depth)
 
-    # Start traversal from the root
-    is_linear = dfs_traverse(route)
+    dfs_traverse(route)
 
-    # Debug output
-    if is_linear:
-        print("Synthesis follows a linear strategy")
-    else:
-        print("Synthesis does not follow a linear strategy")
+    # If max branching factor is <= 2, it's likely a linear synthesis
+    # (allowing for 2 in case of protection groups or similar)
+    is_linear = max_branching <= 2
 
+    print(
+        f"Synthesis has max branching factor of {max_branching}, classified as {'linear' if is_linear else 'convergent'}"
+    )
     return is_linear

@@ -2,57 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis uses a late-stage coupling to connect
-    two complex fragments.
+    This function detects a sequence involving alcohol protection (as acetate),
+    deprotection, and subsequent activation (as mesylate) for nucleophilic substitution.
     """
-    late_stage_coupling = False
+    acetate_deprotection = False
+    alcohol_mesylation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_coupling
+        nonlocal acetate_deprotection, alcohol_mesylation
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if this is a late-stage reaction (depth 0 or 1)
-            if depth <= 1 and len(reactants) >= 2:
-                # Check if both reactants are complex (more than 15 atoms)
-                complex_reactants = 0
+                # Check for acetate deprotection
+                acetate_pattern = Chem.MolFromSmarts("[C]-[O]-[C](=[O])-[C]")
+                alcohol_pattern = Chem.MolFromSmarts("[C]-[O;H1]")
+
                 for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.GetNumAtoms() > 15:
-                        complex_reactants += 1
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(acetate_pattern):
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol and product_mol.HasSubstructMatch(alcohol_pattern):
+                            acetate_deprotection = True
+                            print("Acetate deprotection detected at depth", depth)
 
-                if complex_reactants >= 2:
-                    late_stage_coupling = True
-                    print(f"Late-stage fragment coupling detected at depth {depth}")
+                # Check for alcohol mesylation
+                mesylate_product_pattern = Chem.MolFromSmarts("[C]-[O]-[S](=[O])(=[O])-[C]")
 
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(alcohol_pattern):
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol and product_mol.HasSubstructMatch(mesylate_product_pattern):
+                            alcohol_mesylation = True
+                            print("Alcohol mesylation detected at depth", depth)
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-
-    print(f"Late-stage fragment coupling strategy detected: {late_stage_coupling}")
-    return late_stage_coupling
+    return acetate_deprotection and alcohol_mesylation

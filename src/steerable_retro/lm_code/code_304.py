@@ -2,70 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving N-arylation of a heterocycle.
+    Detects if the synthesis follows a linear strategy where each step
+    builds upon the previous product without convergent branches.
     """
-    found_n_arylation = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal found_n_arylation
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Check number of reactants in this reaction
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            # Check for N-arylation pattern
-            if len(reactants) >= 2 and product:
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                product_mol = Chem.MolFromSmiles(product) if product else None
+                # If there are more than 2 reactants, it might be convergent
+                # We allow 2 because many reactions have a reagent in addition to the main substrate
+                if len(reactants) > 2:
+                    # Check if the reactants are complex (not just simple reagents)
+                    complex_reactants = 0
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.GetNumAtoms() > 5:  # Arbitrary threshold for "complex"
+                            complex_reactants += 1
 
-                if all(mol is not None for mol in reactant_mols) and product_mol is not None:
-                    # Look for aryl halide in reactants
-                    aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,Cl,I]")
-                    nh_heterocycle_pattern = Chem.MolFromSmarts("[nH]")
-                    n_aryl_pattern = Chem.MolFromSmarts("[n][c]")
-
-                    has_aryl_halide = any(
-                        len(mol.GetSubstructMatches(aryl_halide_pattern)) > 0
-                        for mol in reactant_mols
-                    )
-                    has_nh_heterocycle = any(
-                        len(mol.GetSubstructMatches(nh_heterocycle_pattern)) > 0
-                        for mol in reactant_mols
-                    )
-                    has_n_aryl_product = len(product_mol.GetSubstructMatches(n_aryl_pattern)) > 0
-
-                    if has_aryl_halide and has_nh_heterocycle and has_n_aryl_product:
-                        found_n_arylation = True
-                        print(f"Detected N-arylation of heterocycle: {rsmi}")
+                    if complex_reactants > 1:
+                        print(
+                            f"Convergent step detected with {complex_reactants} complex reactants"
+                        )
+                        is_linear = False
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"N-arylation of heterocycle detected: {found_n_arylation}")
-    return found_n_arylation
+    return is_linear

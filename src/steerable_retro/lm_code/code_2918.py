@@ -2,45 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route includes a trifluoromethyl group.
+    Detects a synthetic strategy involving isocyanate as a key building block
+    in the early stages of the synthesis.
     """
-    trifluoromethyl_found = False
+    has_isocyanate = False
 
     def dfs_traverse(node):
-        nonlocal trifluoromethyl_found
+        nonlocal has_isocyanate
 
-        if node["type"] == "mol" and "smiles" in node:
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]([F])([F])[F]")):
-                    print("Trifluoromethyl group detected")
-                    trifluoromethyl_found = True
-            except:
-                print("Error processing molecule SMILES for trifluoromethyl detection")
+        if node["type"] == "reaction":
+            # Extract reactants and products
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
+            # Check for isocyanate in reactants or products
+            isocyanate_pattern = Chem.MolFromSmarts("[#6][N]=[C]=[O]")
+
+            for smiles in reactants_smiles + [product_smiles]:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol and mol.HasSubstructMatch(isocyanate_pattern):
+                    print(f"Detected isocyanate in molecule: {smiles}")
+                    has_isocyanate = True
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return trifluoromethyl_found
+
+    return has_isocyanate

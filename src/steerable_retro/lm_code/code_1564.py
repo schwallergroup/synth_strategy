@@ -2,63 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy where each step
-    adds one fragment to build the molecule (as opposed to convergent synthesis).
+    This function detects reductive amination for amine formation.
     """
-    # In a linear synthesis, most reactions have only one product-contributing reactant
-    linear_steps = 0
-    total_steps = 0
+    reductive_amination_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal linear_steps, total_steps
+    def dfs_traverse(node):
+        nonlocal reductive_amination_found
 
-        if node["type"] == "reaction":
-            total_steps += 1
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Count significant reactants (those with more than 6 atoms)
-                significant_reactants = 0
-                for r in reactants:
-                    if Chem.MolFromSmiles(r) is not None:
-                        if Chem.MolFromSmiles(r).GetNumAtoms() > 6:
-                            significant_reactants += 1
+            # Check for carbonyl pattern in reactants
+            carbonyl_pattern = Chem.MolFromSmarts("[C](=[O])[#6]")
+            # Check for amine pattern in reactants
+            amine_pattern = Chem.MolFromSmarts("[N;H]")
+            # Check for alkylated amine pattern in product
+            alkylated_amine_pattern = Chem.MolFromSmarts("[N]([#6])[#6]")
 
-                if significant_reactants <= 1:
-                    linear_steps += 1
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-        # Continue traversal
+            if (
+                product_mol
+                and any(r and r.HasSubstructMatch(carbonyl_pattern) for r in reactant_mols)
+                and any(r and r.HasSubstructMatch(amine_pattern) for r in reactant_mols)
+                and product_mol.HasSubstructMatch(alkylated_amine_pattern)
+            ):
+                print("Reductive amination detected")
+                reductive_amination_found = True
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    # If more than 75% of steps are linear, consider it a linear synthesis
-    is_linear = (total_steps > 0) and (linear_steps / total_steps >= 0.75)
-    if is_linear:
-        print(f"Linear synthesis strategy detected: {linear_steps}/{total_steps} steps are linear")
-
-    return is_linear
+    return reductive_amination_found

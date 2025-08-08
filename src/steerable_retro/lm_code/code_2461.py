@@ -2,82 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects TMS-alkyne protection/deprotection sequence in the synthetic route.
+    This function detects a strategy where the final step (or one of the last steps)
+    is an acylation reaction, particularly on a nitrogen atom.
     """
-    found_tms_protection = False
-    found_tms_deprotection = False
+    acylation_depths = []
 
-    def dfs_traverse(node):
-        nonlocal found_tms_protection, found_tms_deprotection
+    def dfs_traverse(node, depth=0):
+        nonlocal acylation_depths
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                # Check for acyl chloride pattern in reactants
+                acyl_chloride_pattern = Chem.MolFromSmarts("[C](=O)Cl")
 
-            if not product_mol or not all(reactant_mols):
-                return
+                # Check for amide formation in product
+                amide_pattern = Chem.MolFromSmarts("[#7][C](=O)")
 
-            # Check for TMS-alkyne coupling
-            tms_alkyne_pattern = Chem.MolFromSmarts("[C]#[C]-[Si]([C])([C])[C]")
-            aryl_bromide_pattern = Chem.MolFromSmarts("[c]-[Br]")
+                acyl_chloride_present = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(acyl_chloride_pattern):
+                        acyl_chloride_present = True
+                        break
 
-            has_tms_alkyne = any(mol.HasSubstructMatch(tms_alkyne_pattern) for mol in reactant_mols)
-            has_aryl_bromide = any(
-                mol.HasSubstructMatch(aryl_bromide_pattern) for mol in reactant_mols
-            )
-            forms_tms_product = product_mol.HasSubstructMatch(tms_alkyne_pattern)
+                product_mol = Chem.MolFromSmiles(product)
+                if (
+                    acyl_chloride_present
+                    and product_mol
+                    and product_mol.HasSubstructMatch(amide_pattern)
+                ):
+                    print(f"Acylation reaction detected at depth {depth}")
+                    acylation_depths.append(depth)
 
-            if has_tms_alkyne and has_aryl_bromide and forms_tms_product:
-                print("Found TMS-alkyne coupling")
-                found_tms_protection = True
-
-            # Check for TMS deprotection
-            terminal_alkyne_pattern = Chem.MolFromSmarts("[C]#[C]-[#6]")
-
-            has_tms_alkyne = any(mol.HasSubstructMatch(tms_alkyne_pattern) for mol in reactant_mols)
-            forms_terminal_alkyne = product_mol.HasSubstructMatch(terminal_alkyne_pattern)
-
-            if (
-                has_tms_alkyne
-                and forms_terminal_alkyne
-                and not product_mol.HasSubstructMatch(tms_alkyne_pattern)
-            ):
-                print("Found TMS-alkyne deprotection")
-                found_tms_deprotection = True
-
-        # Continue traversing the tree
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we found both protection and deprotection
-    return found_tms_protection and found_tms_deprotection
+    # Check if acylation occurs at depth 0 or 1 (late stage)
+    return any(depth <= 1 for depth in acylation_depths)

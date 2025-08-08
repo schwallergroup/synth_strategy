@@ -2,106 +2,120 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis follows a primarily linear rather than convergent approach.
-    This is determined by analyzing the structure of the synthetic tree.
+    Detects if the synthesis route involves Boc protection followed by deprotection.
     """
-    # Track branching in the tree
-    max_branches = 0
-    convergent_pattern_found = False
+    boc_protection_found = False
+    boc_deprotection_found = False
 
-    def is_significant_reactant(smiles):
-        """Determine if a reactant is significant (not just a reagent)"""
-        try:
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                return False
-
-            # Check molecular complexity
-            num_atoms = mol.GetNumAtoms()
-            num_rings = len(Chem.GetSSSR(mol))
-
-            # Simple reagents typically have few atoms and no rings
-            if num_atoms <= 5 and num_rings == 0:
-                return False
-
-            # Check for common reagents
-            common_reagents = ["O", "C(=O)O", "CC(=O)O", "Cl", "Br", "I", "F", "[OH-]", "[H+]"]
-            if smiles in common_reagents:
-                return False
-
-            return True
-        except:
-            # If there's an error, assume it's significant
-            return True
-
-    def dfs_traverse(node, depth=0, branch_path=None):
-        nonlocal max_branches, convergent_pattern_found
-
-        if branch_path is None:
-            branch_path = []
+    def dfs_traverse(node, depth=0):
+        nonlocal boc_protection_found, boc_deprotection_found
 
         if node["type"] == "reaction":
-            # Count number of significant reactants in this reaction
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                significant_reactants = [r for r in reactants if is_significant_reactant(r)]
-                num_significant_reactants = len(significant_reactants)
+                # Check for Boc protection reactions
+                if (
+                    checker.check_reaction("Boc amine protection", rsmi)
+                    or checker.check_reaction("Boc amine protection explicit", rsmi)
+                    or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
+                    or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
+                    or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
+                    or checker.check_reaction("Boc amine protection of primary amine", rsmi)
+                ):
+                    print(f"Found Boc protection reaction at depth {depth}: {rsmi}")
+                    boc_protection_found = True
 
-                print(
-                    f"Depth {depth}: Found {num_significant_reactants} significant reactants out of {len(reactants)} total"
-                )
+                # Check for Boc deprotection reactions
+                if (
+                    checker.check_reaction("Boc amine deprotection", rsmi)
+                    or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
+                    or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
+                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
+                ):
+                    print(f"Found Boc deprotection reaction at depth {depth}: {rsmi}")
+                    boc_deprotection_found = True
 
-                # Update max branches if needed
-                if num_significant_reactants > max_branches:
-                    max_branches = num_significant_reactants
-
-                # Check for convergent pattern - multiple complex reactants coming together
-                if num_significant_reactants > 2:
-                    convergent_pattern_found = True
-                    print(
-                        f"Convergent pattern found at depth {depth} with {num_significant_reactants} significant reactants"
+                # Additional check: verify Boc group is actually being added/removed
+                if not boc_protection_found:
+                    # Check if any reactant doesn't have Boc but product does
+                    reactant_has_boc = all(
+                        checker.check_fg("Boc", r) for r in reactants if r.strip()
                     )
+                    product_has_boc = checker.check_fg("Boc", product)
+                    if not reactant_has_boc and product_has_boc:
+                        print(f"Found Boc addition (FG check) at depth {depth}: {rsmi}")
+                        boc_protection_found = True
 
-        # Process children
-        child_count = len(node.get("children", []))
+                if not boc_deprotection_found:
+                    # Check if any reactant has Boc but product doesn't
+                    reactant_has_boc = any(
+                        checker.check_fg("Boc", r) for r in reactants if r.strip()
+                    )
+                    product_has_boc = checker.check_fg("Boc", product)
+                    if reactant_has_boc and not product_has_boc:
+                        print(f"Found Boc removal (FG check) at depth {depth}: {rsmi}")
+                        boc_deprotection_found = True
 
-        # If this node has multiple children, it might indicate branching
-        if child_count > 1 and node["type"] == "mol":
-            print(f"Branching detected at depth {depth} with {child_count} paths")
+        # Recursively process children
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
 
-        for i, child in enumerate(node.get("children", [])):
-            new_branch_path = branch_path + [i]
-            dfs_traverse(child, depth + 1, new_branch_path)
-
-    # Start traversal
     dfs_traverse(route)
 
-    # Linear synthesis has max 2 significant reactants per step and no convergent patterns
-    is_linear = max_branches <= 2 and not convergent_pattern_found
-    print(
-        f"Max significant branches: {max_branches}, Convergent pattern: {convergent_pattern_found}"
-    )
-    return is_linear
+    print(f"Protection found: {boc_protection_found}, Deprotection found: {boc_deprotection_found}")
+    return boc_protection_found and boc_deprotection_found

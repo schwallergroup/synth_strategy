@@ -2,68 +2,89 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a late-stage N-alkylation strategy where an amine attacks
-    an activated alcohol (typically as mesylate or similar leaving group).
+    This function detects if the synthetic route involves multiple interconversions
+    of carboxylic acid derivatives (acid, ester, amide).
     """
-    n_alkylation_detected = False
+    transformations = []
 
-    def dfs_traverse(node, depth=0):
-        nonlocal n_alkylation_detected
+    def dfs_traverse(node):
+        nonlocal transformations
 
-        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for mesylate or similar leaving group in reactants
-                mesylate_pattern = Chem.MolFromSmarts("[C]-[O]-[S](=[O])(=[O])-[C]")
-                amine_pattern = Chem.MolFromSmarts("[N;H2,H1;!$(NC=O)]")
+            # Check for carboxylic acid derivative transformations
+            acid_pattern = Chem.MolFromSmarts("[CX3](=O)[OX2H1]")
+            ester_pattern = Chem.MolFromSmarts("[CX3](=O)[OX2][C]")
+            amide_pattern = Chem.MolFromSmarts("[CX3](=O)[NX3]")
 
-                has_mesylate = False
-                has_amine = False
+            reactant_has_acid = any(
+                Chem.MolFromSmiles(r).HasSubstructMatch(acid_pattern) for r in reactants
+            )
+            reactant_has_ester = any(
+                Chem.MolFromSmiles(r).HasSubstructMatch(ester_pattern) for r in reactants
+            )
+            reactant_has_amide = any(
+                Chem.MolFromSmiles(r).HasSubstructMatch(amide_pattern) for r in reactants
+            )
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(mesylate_pattern):
-                            has_mesylate = True
-                        if mol.HasSubstructMatch(amine_pattern):
-                            has_amine = True
+            product_has_acid = Chem.MolFromSmiles(product).HasSubstructMatch(acid_pattern)
+            product_has_ester = Chem.MolFromSmiles(product).HasSubstructMatch(ester_pattern)
+            product_has_amide = Chem.MolFromSmiles(product).HasSubstructMatch(amide_pattern)
 
-                # Check if product has a new C-N bond that wasn't in reactants
-                if has_mesylate and has_amine:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        # This is a simplified check - in practice would need more sophisticated analysis
-                        n_alkylation_detected = True
-                        print("Late-stage N-alkylation detected at depth", depth)
+            # Detect transformations
+            if reactant_has_acid and product_has_ester:
+                transformations.append("acid_to_ester")
+                print("Transformation: acid to ester")
+            elif reactant_has_acid and product_has_amide:
+                transformations.append("acid_to_amide")
+                print("Transformation: acid to amide")
+            elif reactant_has_ester and product_has_acid:
+                transformations.append("ester_to_acid")
+                print("Transformation: ester to acid")
+            elif reactant_has_ester and product_has_amide:
+                transformations.append("ester_to_amide")
+                print("Transformation: ester to amide")
+            elif reactant_has_amide and product_has_acid:
+                transformations.append("amide_to_acid")
+                print("Transformation: amide to acid")
+            elif reactant_has_amide and product_has_ester:
+                transformations.append("amide_to_ester")
+                print("Transformation: amide to ester")
 
-        # Continue traversing
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-    return n_alkylation_detected
+
+    # Return True if multiple carboxylic acid derivative transformations are found
+    return len(transformations) >= 2

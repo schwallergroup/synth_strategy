@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,106 +54,229 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the final step involves ester hydrolysis to form a carboxylic acid.
+    This function detects if the synthesis involves formation of a heterocycle
+    in the second half of the synthesis (late stage).
     """
-    final_step_is_hydrolysis = False
+    heterocycle_formation_depths = []
+    max_depth = 0
 
-    # First, identify the final product (target molecule)
-    final_product = None
-    if route["type"] == "mol" and not route.get("in_stock", False):
-        final_product = route
+    # List of common heterocycles to check
+    heterocycles = [
+        "furan",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "oxolane",
+        "oxane",
+        "dioxolane",
+        "dioxolene",
+        "trioxane",
+        "dioxepane",
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "thiomorpholine",
+        "aziridine",
+        "azetidine",
+        "azepane",
+        "diazepane",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "carbazole",
+        "acridine",
+        "thiophene",
+        "thiopyran",
+        "thiirane",
+        "thietane",
+        "thiolane",
+        "thiane",
+        "dithiane",
+        "dithiolane",
+        "benzothiophene",
+        "oxathiolane",
+        "dioxathiolane",
+        "thiazolidine",
+        "oxazolidine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "pteridin",
+        "phenothiazine",
+        "phenoxazine",
+        "dibenzofuran",
+        "dibenzothiophene",
+        "xanthene",
+        "thioxanthene",
+        "pyrroline",
+        "pyrrolidone",
+        "imidazolidine",
+        "porphyrin",
+        "indazole",
+        "benzotriazole",
+    ]
 
-    if final_product is None:
-        print("Could not identify final product")
-        return False
+    # List of common heterocycle formation reactions
+    heterocycle_formation_reactions = [
+        "Formation of NOS Heterocycles",
+        "Paal-Knorr pyrrole synthesis",
+        "benzimidazole_derivatives_carboxylic-acid/ester",
+        "benzimidazole_derivatives_aldehyde",
+        "benzothiazole",
+        "benzoxazole_arom-aldehyde",
+        "benzoxazole_carboxylic-acid",
+        "thiazole",
+        "Niementowski_quinazoline",
+        "tetrazole_terminal",
+        "tetrazole_connect_regioisomere_1",
+        "tetrazole_connect_regioisomere_2",
+        "1,2,4-triazole_acetohydrazide",
+        "1,2,4-triazole_carboxylic-acid/ester",
+        "3-nitrile-pyridine",
+        "spiro-chromanone",
+        "pyrazole",
+        "phthalazinone",
+        "Paal-Knorr pyrrole",
+        "triaryl-imidazole",
+        "Fischer indole",
+        "Friedlaender chinoline",
+        "benzofuran",
+        "benzothiophene",
+        "indole",
+        "oxadiazole",
+        "imidazole",
+        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
+        "Huisgen 1,3 dipolar cycloaddition",
+        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
+        "Pyrazole formation",
+        "Azide-nitrile click cycloaddition to tetrazole",
+        "Azide-nitrile click cycloaddition to triazole",
+        "Huisgen_Cu-catalyzed_1,4-subst",
+        "Huisgen_Ru-catalyzed_1,5_subst",
+        "Huisgen_disubst-alkyne",
+        "Huisgen 1,3,4-oxadiazoles from COOH and tetrazole",
+        "Pictet-Spengler",
+    ]
 
-    print(f"Final product identified: {final_product['smiles']}")
+    def dfs_traverse(node, depth=0):
+        nonlocal max_depth
 
-    # Check if the final product has a carboxylic acid group
-    has_carboxylic_acid = checker.check_fg("Carboxylic acid", final_product["smiles"])
-    print(f"Final product has carboxylic acid: {has_carboxylic_acid}")
+        if depth > max_depth:
+            max_depth = depth
 
-    if not has_carboxylic_acid:
-        print("Final product does not have a carboxylic acid group")
-        return False
+        if node["type"] == "reaction":
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
 
-    # Check the immediate precursor reaction (should be the only child of the final product)
-    if "children" in final_product and len(final_product["children"]) > 0:
-        final_reaction = final_product["children"][0]
+                # Check if this is a known heterocycle formation reaction
+                if any(
+                    checker.check_reaction(rxn_name, rsmi)
+                    for rxn_name in heterocycle_formation_reactions
+                ):
+                    print(f"Known heterocycle formation reaction detected at depth {depth}: {rsmi}")
+                    heterocycle_formation_depths.append(depth)
+                else:
+                    # Count heterocycles in reactants and product
+                    reactants_smiles = reactants_part.split(".")
+                    product_smiles = product_part
 
-        if final_reaction["type"] != "reaction":
-            print("Child of final product is not a reaction")
-            return False
+                    # Check heterocycles in reactants
+                    reactant_heterocycles = set()
+                    for r_smiles in reactants_smiles:
+                        for heterocycle in heterocycles:
+                            if checker.check_ring(heterocycle, r_smiles):
+                                reactant_heterocycles.add(heterocycle)
 
-        print("Examining final reaction step")
+                    # Check heterocycles in product
+                    product_heterocycles = set()
+                    for heterocycle in heterocycles:
+                        if checker.check_ring(heterocycle, product_smiles):
+                            product_heterocycles.add(heterocycle)
 
-        # Extract reactants and product
-        try:
-            rsmi = final_reaction["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
-            print(f"Reaction SMILES: {rsmi}")
-            print(f"Reactants: {reactants_smiles}")
-            print(f"Product: {product_smiles}")
+                    # If product has heterocycles not present in reactants, it's a heterocycle formation
+                    new_heterocycles = product_heterocycles - reactant_heterocycles
+                    if new_heterocycles:
+                        print(
+                            f"Heterocycle formation detected at depth {depth}: {new_heterocycles}"
+                        )
+                        heterocycle_formation_depths.append(depth)
 
-            # Check if this is an ester hydrolysis reaction - check multiple reaction types
-            is_hydrolysis_reaction = checker.check_reaction(
-                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-            )
-            is_saponification_methyl = checker.check_reaction(
-                "Ester saponification (methyl deprotection)", rsmi
-            )
-            is_saponification_alkyl = checker.check_reaction(
-                "Ester saponification (alkyl deprotection)", rsmi
-            )
-            is_cooh_deprotection = checker.check_reaction("COOH ethyl deprotection", rsmi)
+                    # Alternative method: check if product has more heterocyclic rings than reactants
+                    try:
+                        reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                        product_mol = Chem.MolFromSmiles(product_smiles)
 
-            print(f"Is hydrolysis reaction: {is_hydrolysis_reaction}")
-            print(f"Is methyl saponification: {is_saponification_methyl}")
-            print(f"Is alkyl saponification: {is_saponification_alkyl}")
-            print(f"Is COOH deprotection: {is_cooh_deprotection}")
+                        if None not in reactants_mols and product_mol is not None:
+                            # Count heterocyclic rings in reactants
+                            reactant_hetero_ring_count = 0
+                            for mol in reactants_mols:
+                                for ring in Chem.GetSSSR(mol):
+                                    if any(
+                                        mol.GetAtomWithIdx(atom_idx).GetSymbol() in ["N", "O", "S"]
+                                        for atom_idx in ring
+                                    ):
+                                        reactant_hetero_ring_count += 1
 
-            if (
-                is_hydrolysis_reaction
-                or is_saponification_methyl
-                or is_saponification_alkyl
-                or is_cooh_deprotection
-            ):
-                # Verify ester in reactants and carboxylic acid in product
-                reactants_have_ester = any(
-                    checker.check_fg("Ester", smi) for smi in reactants_smiles
-                )
-                product_has_acid = checker.check_fg("Carboxylic acid", product_smiles)
+                            # Count heterocyclic rings in product
+                            product_hetero_ring_count = 0
+                            for ring in Chem.GetSSSR(product_mol):
+                                if any(
+                                    product_mol.GetAtomWithIdx(atom_idx).GetSymbol()
+                                    in ["N", "O", "S"]
+                                    for atom_idx in ring
+                                ):
+                                    product_hetero_ring_count += 1
 
-                print(f"Reactants have ester: {reactants_have_ester}")
-                print(f"Product has carboxylic acid: {product_has_acid}")
+                            # If product has more heterocyclic rings than reactants combined
+                            if (
+                                product_hetero_ring_count > reactant_hetero_ring_count
+                                and depth not in heterocycle_formation_depths
+                            ):
+                                print(
+                                    f"Additional heterocycle formation detected at depth {depth} (ring count method)"
+                                )
+                                heterocycle_formation_depths.append(depth)
+                    except Exception as e:
+                        print(f"Error in ring counting: {e}")
+            except Exception as e:
+                print(f"Error processing reaction at depth {depth}: {e}")
 
-                if reactants_have_ester and product_has_acid:
-                    print("Late-stage ester hydrolysis detected!")
-                    final_step_is_hydrolysis = True
-            else:
-                # Manual check for ester hydrolysis pattern if reaction type checks fail
-                reactants_have_ester = any(
-                    checker.check_fg("Ester", smi) for smi in reactants_smiles
-                )
-                product_has_acid = checker.check_fg("Carboxylic acid", product_smiles)
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
 
-                print(f"Manual check - Reactants have ester: {reactants_have_ester}")
-                print(f"Manual check - Product has carboxylic acid: {product_has_acid}")
+    # Start traversal
+    dfs_traverse(route)
 
-                # Check if reactants contain common hydrolysis reagents
-                hydrolysis_reagents = ["CCO", "O", "[Na+]", "[OH-]", "NaOH", "KOH", "LiOH"]
-                has_hydrolysis_reagents = any(
-                    reagent in rsmi.split(">")[1] for reagent in hydrolysis_reagents
-                )
+    # Check if heterocycle formation occurs in the second half of synthesis
+    if heterocycle_formation_depths and max_depth > 0:
+        # In retrosynthetic direction, lower depths are later in the synthesis
+        for depth in heterocycle_formation_depths:
+            if depth <= max_depth / 2:  # Second half of synthesis
+                print(f"Late-stage heterocycle formation detected at depth {depth}/{max_depth}")
+                return True
 
-                if reactants_have_ester and product_has_acid and has_hydrolysis_reagents:
-                    print("Late-stage ester hydrolysis detected through manual pattern check!")
-                    final_step_is_hydrolysis = True
-        except Exception as e:
-            print(f"Error processing reaction: {e}")
-    else:
-        print("Final product has no precursor reactions")
-
-    print(f"Final result: {final_step_is_hydrolysis}")
-    return final_step_is_hydrolysis
+    print(f"No late-stage heterocycle formation detected. Max depth: {max_depth}")
+    return False

@@ -2,53 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a linear fragment coupling strategy with 3+ distinct fragments.
+    This function detects a synthetic strategy where the number of rings progressively
+    increases throughout the synthesis.
     """
-    fragment_count = 0
-    coupling_reactions = 0
+    ring_counts_by_depth = {}
 
-    def dfs_traverse(node):
-        nonlocal fragment_count, coupling_reactions
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "mol" and "smiles" in node:
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    ring_info = mol.GetRingInfo()
+                    ring_count = ring_info.NumRings()
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+                    if depth not in ring_counts_by_depth:
+                        ring_counts_by_depth[depth] = ring_count
+                    else:
+                        ring_counts_by_depth[depth] = max(ring_counts_by_depth[depth], ring_count)
+            except:
+                print(f"Error processing molecule SMILES: {node['smiles']}")
 
-                # If reaction has multiple reactants, it might be a coupling reaction
-                if len(reactants) >= 2:
-                    coupling_reactions += 1
-
-                    # Count distinct fragments by analyzing reactants
-                    for reactant in reactants:
-                        if reactant and Chem.MolFromSmiles(reactant):
-                            fragment_count += 1
-
+        # Process children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Found {fragment_count} fragments and {coupling_reactions} coupling reactions")
-    return fragment_count >= 3 and coupling_reactions >= 2
+    # Check if ring count increases as depth increases
+    depths = sorted(ring_counts_by_depth.keys())
+    if len(depths) < 2:
+        return False
+
+    is_increasing = True
+    for i in range(1, len(depths)):
+        if ring_counts_by_depth[depths[i - 1]] <= ring_counts_by_depth[depths[i]]:
+            is_increasing = False
+            break
+
+    if is_increasing:
+        print(f"Detected progressive ring count increase: {ring_counts_by_depth}")
+
+    return is_increasing

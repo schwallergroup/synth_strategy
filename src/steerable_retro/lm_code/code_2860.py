@@ -2,60 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy without
-    convergent steps (each reaction has only one non-reagent reactant).
+    Detects if the synthesis involves heterocyclic systems (thiazole, pyridine) throughout
     """
-    is_linear = True
+    thiazole_present = False
+    pyridine_present = False
 
-    def dfs_traverse(node):
-        nonlocal is_linear
+    def dfs_traverse(node, depth=0):
+        nonlocal thiazole_present, pyridine_present
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for thiazole pattern
+                thiazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#6][#6][#16]1")
+                if mol.HasSubstructMatch(thiazole_pattern):
+                    thiazole_present = True
+                    print(f"Found thiazole at depth {depth}")
 
-                # Count significant reactants (excluding small reagents)
-                significant_reactants = 0
-                for reactant in reactants:
-                    # Skip small molecules/reagents (fewer than 10 atoms)
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.GetNumAtoms() > 10:
-                        significant_reactants += 1
-
-                # If more than one significant reactant, it's not a linear synthesis
-                if significant_reactants > 1:
-                    print(
-                        f"Found convergent step with {significant_reactants} significant reactants"
-                    )
-                    is_linear = False
+                # Check for pyridine pattern
+                pyridine_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6][#6][#7]1")
+                if mol.HasSubstructMatch(pyridine_pattern):
+                    pyridine_present = True
+                    print(f"Found pyridine at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return is_linear
+    # Return True if both heterocycles are present
+    return thiazole_present and pyridine_present

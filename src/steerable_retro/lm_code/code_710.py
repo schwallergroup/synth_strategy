@@ -2,49 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves a tetralin scaffold
-    that is maintained throughout the synthesis.
+    This function detects a linear synthesis strategy where fragments are added
+    sequentially rather than in a convergent manner.
     """
-    tetralin_count = 0
+    # Track the number of reactions with multiple fragments
+    multi_fragment_reactions = 0
+    total_reactions = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal tetralin_count
+    def dfs_traverse(node):
+        nonlocal multi_fragment_reactions, total_reactions
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Tetralin scaffold pattern
-                tetralin_pattern = Chem.MolFromSmarts(
-                    "[#6]1[#6][#6][#6]2[#6][#6][#6][#6][#6]2[#6]1"
-                )
-                if mol.HasSubstructMatch(tetralin_pattern):
-                    tetralin_count += 1
-                    print(f"Detected tetralin scaffold at depth {depth}")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                total_reactions += 1
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
 
+                # Count the number of reactants
+                reactant_count = len(reactants_smiles.split("."))
+
+                if reactant_count >= 2:
+                    multi_fragment_reactions += 1
+                    print(f"Detected multi-fragment reaction with {reactant_count} reactants")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    # Return True if tetralin scaffold appears in multiple intermediates
-    return tetralin_count >= 2
+
+    # If most reactions involve multiple fragments and we have a reasonable number of reactions,
+    # consider it a linear fragment assembly strategy
+    return total_reactions >= 3 and multi_fragment_reactions >= 3

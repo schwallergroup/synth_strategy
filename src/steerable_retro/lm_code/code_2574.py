@@ -2,161 +2,168 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy without convergent steps.
-
-    A linear synthesis strategy is characterized by:
-    1. Each reaction step has one main reactant that contributes most atoms to the product
-    2. The synthesis follows a clear path from starting materials to the target molecule
-    3. There are at least 2 reaction steps
-
-    Returns:
-        bool: True if the synthesis follows a linear strategy, False otherwise
+    Detects a synthetic strategy involving late-stage allylation,
+    particularly focusing on O-alkylation with allyl groups.
     """
-    # Common reagents that shouldn't count toward convergence
-    common_reagents = [
-        "CC(C)=O",  # acetone
-        "O",  # water
-        "O=[Mn](=O)(=O)O",  # permanganate
-        "[K+]",  # potassium ion
-        "C1COCCO1",  # dioxane
-        "CC(C)(C)O",  # tert-butanol
-        "[Na+]",  # sodium ion
-        "[O-][I+3]([O-])([O-])O",  # periodate
-        "CN1CCCC1=O",  # N-methylpyrrolidone
-        "CC(=O)O",  # acetic acid
-        "CCO",  # ethanol
-        "CO",  # methanol
-        "CC#N",  # acetonitrile
-        "[H][H]",  # hydrogen
-        "ClC(Cl)Cl",  # chloroform
-        "C1CCCC1",  # cyclopentane (common solvent)
-    ]
+    # Initialize tracking variables
+    has_late_allylation = False
 
-    # Initialize variables to track synthesis characteristics
-    is_linear = True
-    reaction_count = 0
+    # Add depth information to the route
+    def add_depth(node, current_depth=0):
+        node["depth"] = current_depth
+        for child in node.get("children", []):
+            add_depth(child, current_depth + 1)
 
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear, reaction_count
+    add_depth(route)
+
+    def dfs_traverse(node):
+        nonlocal has_late_allylation
 
         if node["type"] == "reaction":
-            reaction_count += 1
+            # Consider reactions in the late stage (depth <= 2)
+            if node.get("depth", 0) <= 2:
+                print(f"Examining reaction at depth {node.get('depth', 0)}")
 
-            # Extract reactants and product from atom-mapped reaction SMILES
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
-                reactants = reactants_part.split(".")
+                # Extract reactants and products
+                try:
+                    rsmi = node["metadata"]["rsmi"]
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
 
-                # Convert product to molecule
-                product_mol = Chem.MolFromSmiles(product_part)
-                if not product_mol:
-                    print(f"Warning: Could not parse product SMILES: {product_part}")
-                    return
+                    print(f"Reactants: {reactants_smiles}")
+                    print(f"Product: {product_smiles}")
 
-                # Filter out common reagents and small molecules
-                significant_reactants = []
-                for r in reactants:
-                    if not r:
-                        continue
+                    # Check if this is a reaction that could involve allylation
+                    allylation_reaction = (
+                        checker.check_reaction("Williamson Ether Synthesis", rsmi)
+                        or checker.check_reaction("S-alkylation of thiols", rsmi)
+                        or checker.check_reaction("Mitsunobu aryl ether", rsmi)
+                        or checker.check_reaction(
+                            "Williamson Ether Synthesis (intra to epoxy)", rsmi
+                        )
+                    )
 
-                    # Skip common reagents
-                    is_common_reagent = False
-                    for common in common_reagents:
-                        if Chem.MolToSmiles(Chem.MolFromSmiles(r)) == Chem.MolToSmiles(
-                            Chem.MolFromSmiles(common)
-                        ):
-                            is_common_reagent = True
-                            break
+                    # First check: Is the product an allyl ether/thioether?
+                    if checker.check_fg("Allyl", product_smiles) and (
+                        checker.check_fg("Ether", product_smiles)
+                        or checker.check_fg("Monosulfide", product_smiles)
+                    ):
 
-                    if is_common_reagent:
-                        continue
+                        print("Product contains allyl ether/thioether")
 
-                    # Parse reactant molecule
-                    reactant_mol = Chem.MolFromSmiles(r)
-                    if not reactant_mol:
-                        continue
+                        # Second check: Is this a known allylation reaction or does it follow the pattern?
+                        if allylation_reaction:
+                            print("Detected known allylation reaction")
+                            has_late_allylation = True
+                        else:
+                            # Check if any reactant has OH/SH group (potential allylation substrate)
+                            has_oh_sh_reactant = False
+                            has_allyl_reactant = False
 
-                    # Skip very small molecules (likely reagents)
-                    if reactant_mol.GetNumHeavyAtoms() <= 2:
-                        continue
+                            for reactant in reactants_smiles:
+                                # Check for OH/SH containing reactant
+                                if (
+                                    checker.check_fg("Phenol", reactant)
+                                    or checker.check_fg("Primary alcohol", reactant)
+                                    or checker.check_fg("Secondary alcohol", reactant)
+                                    or checker.check_fg("Tertiary alcohol", reactant)
+                                    or checker.check_fg("Aliphatic thiol", reactant)
+                                    or checker.check_fg("Aromatic thiol", reactant)
+                                ):
+                                    has_oh_sh_reactant = True
+                                    print(f"Found reactant with OH/SH group: {reactant}")
 
-                    significant_reactants.append(r)
+                                # Check for allyl-containing reactant
+                                if checker.check_fg("Allyl", reactant):
+                                    has_allyl_reactant = True
+                                    print(f"Found allyl group in reactant: {reactant}")
 
-                # Check for convergent synthesis (multiple significant reactants)
-                if len(significant_reactants) > 1:
-                    # Count mapped atoms from each reactant to the product
-                    atom_contributions = {}
+                            # If we have both an OH/SH reactant and an allyl reactant, this is likely allylation
+                            if has_oh_sh_reactant and has_allyl_reactant:
+                                print(
+                                    f"Detected pattern-based late-stage allylation at depth {node.get('depth', 0)}"
+                                )
+                                has_late_allylation = True
 
-                    for idx, reactant in enumerate(significant_reactants):
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if not reactant_mol:
-                            continue
+                            # Special case: If the allyl group is already present in an OH/SH reactant,
+                            # and preserved in the product, this could be a rearrangement or protection
+                            elif not has_late_allylation:
+                                for reactant in reactants_smiles:
+                                    if checker.check_fg("Allyl", reactant) and (
+                                        checker.check_fg("Ether", reactant)
+                                        or checker.check_fg("Monosulfide", reactant)
+                                    ):
+                                        print(
+                                            f"Found allyl ether/thioether in reactant: {reactant}"
+                                        )
+                                        # This is a reaction involving an allyl ether/thioether, which counts as late-stage allylation
+                                        has_late_allylation = True
+                                        print(
+                                            f"Detected late-stage allyl ether/thioether transformation at depth {node.get('depth', 0)}"
+                                        )
+                                        break
 
-                        # Count mapped atoms
-                        mapped_atom_count = 0
-                        for atom in reactant_mol.GetAtoms():
-                            if (
-                                atom.GetProp("molAtomMapNumber")
-                                if atom.HasProp("molAtomMapNumber")
-                                else None
-                            ):
-                                mapped_atom_count += 1
+                except Exception as e:
+                    print(f"Error processing reaction: {e}")
 
-                        atom_contributions[idx] = mapped_atom_count
-
-                    # If multiple reactants contribute significantly, it's convergent
-                    significant_contributors = 0
-                    for idx, count in atom_contributions.items():
-                        if count >= 3:  # At least 3 atoms contributed
-                            significant_contributors += 1
-
-                    if significant_contributors > 1:
-                        print(f"Convergent step detected in reaction: {rsmi}")
-                        print(f"Multiple significant reactants: {significant_reactants}")
-                        is_linear = False
-
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # A linear synthesis should have at least 2 reactions
-    strategy_present = is_linear and reaction_count >= 2
-
-    if strategy_present:
-        print(f"Linear synthesis strategy detected with {reaction_count} reactions")
-    else:
-        if not is_linear:
-            print("Convergent steps detected, not a linear synthesis")
-        else:
-            print(f"Not enough reactions ({reaction_count}) to confirm linear synthesis strategy")
-
-    return strategy_present
+    print(f"Late-stage allylation strategy detected: {has_late_allylation}")
+    return has_late_allylation

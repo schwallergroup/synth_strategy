@@ -2,60 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the route contains a fragment coupling strategy
-    where two or more complex fragments are combined.
+    This function detects biaryl formation via coupling reactions.
     """
-    found = False
+    biaryl_formation_found = False
 
     def dfs_traverse(node):
-        nonlocal found
+        nonlocal biaryl_formation_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Count number of fragments in reactants
-            reactant_fragments = reactants_part.split(".")
+                # Check for biaryl formation
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    # SMARTS pattern for biaryl
+                    biaryl_pattern = Chem.MolFromSmarts("c1ccccc1-c1ccccc1")
+                    if product_mol.HasSubstructMatch(biaryl_pattern):
+                        # Check if reactants don't have biaryl
+                        reactants_have_biaryl = False
+                        for reactant in reactants:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol and reactant_mol.HasSubstructMatch(biaryl_pattern):
+                                reactants_have_biaryl = True
+                                break
 
-            # Only consider reactions with multiple reactant fragments
-            if len(reactant_fragments) >= 2:
-                # Check complexity of fragments (simplified: count atoms)
-                complex_fragments = 0
-                for frag in reactant_fragments:
-                    # Count non-hydrogen atoms as a simple complexity measure
-                    atom_count = sum(1 for c in frag if c.isupper())
-                    if atom_count >= 5:  # Consider fragments with 5+ atoms as complex
-                        complex_fragments += 1
+                        if not reactants_have_biaryl:
+                            # Check for boronic acid or halide in reactants (typical for Suzuki coupling)
+                            boronic_acid_pattern = Chem.MolFromSmarts("[#6]-[#5](-[#8])-[#8]")
+                            halide_pattern = Chem.MolFromSmarts("c-[#17,#35,#53]")
 
-                if complex_fragments >= 2:
-                    print(f"Found fragment coupling with {complex_fragments} complex fragments")
-                    found = True
+                            has_boronic_acid = False
+                            has_halide = False
 
+                            for reactant in reactants:
+                                reactant_mol = Chem.MolFromSmiles(reactant)
+                                if not reactant_mol:
+                                    continue
+
+                                if reactant_mol.HasSubstructMatch(boronic_acid_pattern):
+                                    has_boronic_acid = True
+                                if reactant_mol.HasSubstructMatch(halide_pattern):
+                                    has_halide = True
+
+                            if has_boronic_acid and has_halide:
+                                print("Biaryl formation via coupling detected")
+                                biaryl_formation_found = True
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    return found
+    return biaryl_formation_found

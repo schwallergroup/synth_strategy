@@ -2,86 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a late-stage alpha-bromination of a ketone.
+    Detects if the synthesis includes the conversion of a nitrile to a lactam through
+    reduction and cyclization.
     """
-    # Track if alpha-bromination is found
-    alpha_bromination_found = False
-    # Track the depth at which alpha-bromination occurs
-    alpha_bromination_depth = None
-    # Maximum depth in the route
-    max_depth = [0]
-
-    # Alpha-bromo ketone pattern
-    alpha_bromo_ketone_pattern = Chem.MolFromSmarts("[#6]-[#6](=[O])-[#6]-[Br]")
+    nitrile_to_lactam_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal alpha_bromination_found, alpha_bromination_depth
-
-        # Update max depth
-        max_depth[0] = max(max_depth[0], depth)
+        nonlocal nitrile_to_lactam_found
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check if reactants have alpha-bromo ketone
-                reactants_have_alpha_bromo = any(
-                    has_substructure(r_smi, alpha_bromo_ketone_pattern)
-                    for r_smi in reactants_smiles
-                )
+            # Check for nitrile in reactants
+            nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
 
-                # Check if product has alpha-bromo ketone
-                product_has_alpha_bromo = has_substructure(
-                    product_smiles, alpha_bromo_ketone_pattern
-                )
+            reactants_have_nitrile = False
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(nitrile_pattern):
+                        reactants_have_nitrile = True
+                        break
+                except:
+                    continue
 
-                # If alpha-bromo ketone is formed in this reaction
-                if product_has_alpha_bromo and not reactants_have_alpha_bromo:
-                    alpha_bromination_found = True
-                    alpha_bromination_depth = depth
-                    print(f"Alpha-bromination detected at depth {depth}")
+            # Check for lactam in product
+            lactam_pattern = Chem.MolFromSmarts("[C]1[C][C][N][C](=[O])[C]1")
+
+            product_has_lactam = False
+            try:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol and product_mol.HasSubstructMatch(lactam_pattern):
+                    product_has_lactam = True
+            except:
+                pass
+
+            if reactants_have_nitrile and product_has_lactam:
+                nitrile_to_lactam_found = True
+                print(f"Nitrile to lactam conversion detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    def has_substructure(smiles, pattern):
-        try:
-            mol = Chem.MolFromSmiles(smiles)
-            return mol and mol.HasSubstructMatch(pattern)
-        except:
-            return False
-
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if alpha-bromination is in the first quarter of the synthesis (very late stage)
-    if alpha_bromination_found and alpha_bromination_depth is not None:
-        is_late_stage = alpha_bromination_depth <= (max_depth[0] / 4)
-        print(f"Alpha-bromination is {'late-stage' if is_late_stage else 'early-stage'}")
-        return is_late_stage
-
-    return False
+    return nitrile_to_lactam_found

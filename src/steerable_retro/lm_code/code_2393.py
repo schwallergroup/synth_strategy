@@ -2,63 +2,48 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects Sonogashira coupling (aryl halide + terminal alkyne).
+    Detects a strategy involving preservation of stereocenters throughout the synthesis.
     """
-    sonogashira_found = False
+    stereocenters_by_depth = {}
 
     def dfs_traverse(node):
-        nonlocal sonogashira_found
+        nonlocal stereocenters_by_depth
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check for Sonogashira coupling
-            terminal_alkyne_pattern = Chem.MolFromSmarts("[C]#[CH]")
-            aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Cl,Br,I]")
-            internal_alkyne_pattern = Chem.MolFromSmarts("[c]-[C]#[C]-[c]")
+        if node["type"] == "mol":
+            smiles = node["smiles"]
+            depth = node.get("depth", 0)
 
             try:
-                # Check if product has internal alkyne
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(internal_alkyne_pattern):
-                    # Check if reactants have terminal alkyne and aryl halide
-                    terminal_alkyne_found = False
-                    aryl_halide_found = False
-
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if reactant_mol.HasSubstructMatch(terminal_alkyne_pattern):
-                                terminal_alkyne_found = True
-                            if reactant_mol.HasSubstructMatch(aryl_halide_pattern):
-                                aryl_halide_found = True
-
-                    if terminal_alkyne_found and aryl_halide_found:
-                        sonogashira_found = True
-                        print("Sonogashira coupling detected")
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    # Find chiral centers
+                    chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
+                    stereocenters_by_depth[depth] = len(chiral_centers)
             except:
                 pass
 
@@ -69,4 +54,19 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    return sonogashira_found
+    # Check if stereocenters are preserved (at least 2 stereocenters in final product and maintained throughout)
+    if not stereocenters_by_depth:
+        return False
+
+    final_stereocenters = stereocenters_by_depth.get(0, 0)
+    if final_stereocenters < 2:
+        return False
+
+    # Check if the number of stereocenters is maintained or increased throughout
+    depths = sorted(stereocenters_by_depth.keys())
+    for i in range(len(depths) - 1):
+        if stereocenters_by_depth[depths[i]] < stereocenters_by_depth[depths[i + 1]]:
+            return False
+
+    print(f"Found stereocenter preservation: {stereocenters_by_depth}")
+    return True

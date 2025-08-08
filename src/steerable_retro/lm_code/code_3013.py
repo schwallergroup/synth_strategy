@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,101 +54,162 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects late-stage mesylation (in the final step of synthesis).
-    Looks for transformation of alcohol to mesylate in the first reaction step.
+    This function detects a synthetic strategy involving late-stage amide to ester conversion.
+    Note: The route is traversed retrosynthetically, so we're looking for ester-to-amide
+    conversions in the retrosynthetic direction.
     """
-    mesylation_detected = False
+    amide_to_ester_conversion = False
+    max_depth_for_late_stage = 2  # Define what "late-stage" means in terms of depth
 
     def dfs_traverse(node, depth=0):
-        nonlocal mesylation_detected
+        nonlocal amide_to_ester_conversion
 
-        print(f"Traversing node at depth {depth}, type: {node['type']}")
-
-        # Check if this is a reaction node at the late stage (depth 0 or 1)
-        if node["type"] == "reaction" and (
-            depth == 1 or (depth == 0 and "rsmi" in node.get("metadata", {}))
-        ):
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Only consider late-stage reactions
+            if depth <= max_depth_for_late_stage:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                print(f"Examining reaction at depth {depth}: {rsmi}")
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+                # Check for specific reactions that might convert amides to esters (in forward direction)
+                # In retrosynthesis, these would be ester-to-amide conversions
+                if checker.check_reaction("Schotten-Baumann to ester", rsmi):
+                    print(f"Detected Schotten-Baumann to ester at depth {depth}")
+                    # Need to verify this is actually converting an ester to amide in retrosynthesis
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
 
-                # Check for alcohol in reactants
-                has_alcohol = False
-                alcohol_reactant = None
-                for reactant in reactants:
-                    if (
-                        checker.check_fg("Primary alcohol", reactant)
-                        or checker.check_fg("Secondary alcohol", reactant)
-                        or checker.check_fg("Tertiary alcohol", reactant)
-                        or checker.check_fg("Aromatic alcohol", reactant)
-                    ):
-                        has_alcohol = True
-                        alcohol_reactant = reactant
-                        print(f"Found alcohol in reactant: {reactant}")
-                        break
-
-                # Check for mesylate in product
-                has_mesylate = checker.check_fg("Mesylate", product)
-                if has_mesylate:
-                    print(f"Found mesylate in product: {product}")
-                else:
-                    print(f"No mesylate found in product: {product}")
-
-                # Check if this is a mesylation reaction using multiple methods
-                is_mesylation_reaction = checker.check_reaction(
-                    "Formation of Sulfonic Esters", rsmi
-                ) or checker.check_reaction(
-                    "Formation of Sulfonic Esters on TMS protected alcohol", rsmi
-                )
-
-                if is_mesylation_reaction:
-                    print("Confirmed mesylation reaction type")
-                else:
-                    print("Not a mesylation reaction according to reaction checker")
-
-                    # Manual check for mesylation reagents if reaction check fails
-                    has_mesylating_agent = False
-                    for reactant in reactants:
-                        # Check for methanesulfonyl chloride or similar reagents
-                        if (
-                            "S(=O)(=O)Cl" in reactant
-                            or "ClS(=O)(=O)" in reactant
-                            or "S(=O)(=O)(Cl)" in reactant
-                            or "S(C)(=O)(=O)Cl" in reactant
-                            or checker.check_fg("Sulfonyl halide", reactant)
-                        ):
-                            has_mesylating_agent = True
-                            print(f"Found mesylating agent: {reactant}")
+                    # In retrosynthesis, check for ester in reactants and amide in product
+                    reactant_has_ester = False
+                    for r_smiles in reactants_smiles:
+                        if checker.check_fg("Ester", r_smiles):
+                            print(f"Found ester in reactant: {r_smiles}")
+                            reactant_has_ester = True
                             break
 
-                    # If we have alcohol, mesylate, and a mesylating agent, it's likely a mesylation
-                    if has_alcohol and has_mesylate and has_mesylating_agent:
-                        is_mesylation_reaction = True
-                        print("Manually confirmed as mesylation reaction")
+                    # Check for amide in product
+                    product_has_amide = (
+                        checker.check_fg("Primary amide", product_smiles)
+                        or checker.check_fg("Secondary amide", product_smiles)
+                        or checker.check_fg("Tertiary amide", product_smiles)
+                    )
+                    if product_has_amide:
+                        print(f"Found amide in product: {product_smiles}")
 
-                # Final determination
+                    if reactant_has_ester and product_has_amide:
+                        print(f"Confirmed amide to ester conversion strategy at depth {depth}")
+                        amide_to_ester_conversion = True
+                        return
+
+                # Check for other relevant reactions
                 if (
-                    has_alcohol
-                    and has_mesylate
-                    and (is_mesylation_reaction or "S(C)(=O)(=O)" in product)
+                    checker.check_reaction("Esterification of Carboxylic Acids", rsmi)
+                    or checker.check_reaction("Transesterification", rsmi)
+                    or checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
+                        rsmi,
+                    )
                 ):
-                    print("Detected late-stage mesylation")
-                    mesylation_detected = True
-                else:
-                    if not has_alcohol:
-                        print("No alcohol found in reactants")
-                    if not has_mesylate:
-                        print("No mesylate found in product")
-                    if not is_mesylation_reaction:
-                        print("Not a mesylation reaction")
+                    # These reactions could potentially be used for amide to ester conversion
+                    # In retrosynthesis, need to verify ester is being converted to amide
 
-        # Continue DFS traversal
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
+
+                    # In retrosynthesis, check for ester in reactants
+                    reactant_has_ester = False
+                    for r_smiles in reactants_smiles:
+                        if checker.check_fg("Ester", r_smiles):
+                            print(f"Found ester in reactant: {r_smiles}")
+                            reactant_has_ester = True
+                            break
+
+                    # Check for amide in product
+                    product_has_amide = (
+                        checker.check_fg("Primary amide", product_smiles)
+                        or checker.check_fg("Secondary amide", product_smiles)
+                        or checker.check_fg("Tertiary amide", product_smiles)
+                    )
+                    if product_has_amide:
+                        print(f"Found amide in product: {product_smiles}")
+
+                    # Check for alcohol in reactants (common reagent for esterification)
+                    reactant_has_alcohol = False
+                    for r_smiles in reactants_smiles:
+                        if (
+                            checker.check_fg("Primary alcohol", r_smiles)
+                            or checker.check_fg("Secondary alcohol", r_smiles)
+                            or checker.check_fg("Tertiary alcohol", r_smiles)
+                            or checker.check_fg("Aromatic alcohol", r_smiles)
+                        ):
+                            print(f"Found alcohol in reactant: {r_smiles}")
+                            reactant_has_alcohol = True
+                            break
+
+                    if reactant_has_ester and product_has_amide:
+                        # Additional check to ensure we're not just adding an amide group elsewhere
+                        ester_count_reactants = sum(
+                            1 for r in reactants_smiles if checker.check_fg("Ester", r)
+                        )
+
+                        ester_count_product = 1 if checker.check_fg("Ester", product_smiles) else 0
+
+                        print(
+                            f"Ester count in reactants: {ester_count_reactants}, in product: {ester_count_product}"
+                        )
+
+                        # In retrosynthesis, if ester count decreased and amide is present in product,
+                        # it's likely a conversion from ester to amide (which represents amide to ester in forward synthesis)
+                        if ester_count_reactants > ester_count_product:
+                            print(f"Detected amide to ester conversion strategy at depth {depth}")
+                            amide_to_ester_conversion = True
+                            return
+
+                # If no specific reaction matched, check for structural changes
+                if not amide_to_ester_conversion:
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
+
+                    # In retrosynthesis, check for ester in reactants
+                    reactant_has_ester = False
+                    for r_smiles in reactants_smiles:
+                        if checker.check_fg("Ester", r_smiles):
+                            print(f"Found ester in reactant: {r_smiles}")
+                            reactant_has_ester = True
+                            break
+
+                    # Check for amide in product
+                    product_has_amide = (
+                        checker.check_fg("Primary amide", product_smiles)
+                        or checker.check_fg("Secondary amide", product_smiles)
+                        or checker.check_fg("Tertiary amide", product_smiles)
+                    )
+                    if product_has_amide:
+                        print(f"Found amide in product: {product_smiles}")
+
+                    if reactant_has_ester and product_has_amide:
+                        # Additional check to ensure we're not just adding an amide group elsewhere
+                        ester_count_reactants = sum(
+                            1 for r in reactants_smiles if checker.check_fg("Ester", r)
+                        )
+
+                        ester_count_product = 1 if checker.check_fg("Ester", product_smiles) else 0
+
+                        print(
+                            f"Ester count in reactants: {ester_count_reactants}, in product: {ester_count_product}"
+                        )
+
+                        # In retrosynthesis, if ester count decreased and amide is present in product,
+                        # it's likely a conversion from ester to amide (which represents amide to ester in forward synthesis)
+                        if ester_count_reactants > ester_count_product:
+                            print(f"Detected amide to ester conversion strategy at depth {depth}")
+                            amide_to_ester_conversion = True
+                            return
+
+        # Continue traversing
         for child in node.get("children", []):
-            if not mesylation_detected:  # Stop traversal if we already found what we're looking for
-                dfs_traverse(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return mesylation_detected
+    print(f"Final result: amide_to_ester_conversion = {amide_to_ester_conversion}")
+    return amide_to_ester_conversion

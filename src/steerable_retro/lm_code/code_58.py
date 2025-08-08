@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,105 +54,121 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if heterocycles (pyrazole, pyridine, oxetane) are preserved throughout the synthesis.
+    This function detects if the synthetic route employs a ring transformation strategy.
+    It looks for reactions where rings are formed, opened, or transformed between reactants and products.
     """
-    # List of heterocycles to track
-    heterocycles = [
-        "pyrazole",
-        "pyridine",
-        "oxetane",
+    found_ring_transformation = False
+
+    # List of common ring structures to check
+    ring_types = [
         "furan",
+        "pyran",
+        "pyrrole",
+        "pyridine",
+        "benzene",
+        "cyclohexane",
+        "cyclopentane",
+        "indole",
+        "naphthalene",
         "thiophene",
         "imidazole",
-        "thiazole",
         "oxazole",
-        "isoxazole",
+        "thiazole",
         "pyrimidine",
         "piperidine",
         "morpholine",
     ]
 
-    # Track heterocycles at each depth and their atom indices
-    heterocycles_at_depth = {}
+    # List of ring-forming or ring-breaking reaction types
+    ring_reactions = [
+        "Diels-Alder",
+        "Paal-Knorr pyrrole synthesis",
+        "Fischer indole",
+        "Friedlaender chinoline",
+        "benzofuran",
+        "benzothiophene",
+        "indole",
+        "Pictet-Spengler",
+        "Niementowski_quinazoline",
+    ]
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "mol":
-            smiles = node.get("smiles", "")
-            if smiles:
-                # Check for each heterocycle
-                for heterocycle in heterocycles:
-                    # Check if molecule contains the heterocycle
-                    has_heterocycle = checker.check_ring(heterocycle, smiles)
+        nonlocal found_ring_transformation
 
-                    # If heterocycle is found, get its atom indices
-                    if has_heterocycle:
-                        # Get atom indices for the heterocycle
-                        indices = checker.get_ring_atom_indices(heterocycle, smiles)
+        if found_ring_transformation:
+            return  # Early exit if we already found a ring transformation
 
-                        # Initialize depth entry if not exists
-                        if depth not in heterocycles_at_depth:
-                            heterocycles_at_depth[depth] = {}
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                        # Initialize heterocycle entry if not exists
-                        if heterocycle not in heterocycles_at_depth[depth]:
-                            heterocycles_at_depth[depth][heterocycle] = 0
+            # Check if this is a known ring-forming or ring-breaking reaction
+            for rxn_type in ring_reactions:
+                if checker.check_reaction(rxn_type, rsmi):
+                    print(f"Found ring transformation reaction type: {rxn_type}")
+                    found_ring_transformation = True
+                    return
 
-                        # Increment count of this heterocycle at this depth
-                        heterocycles_at_depth[depth][heterocycle] += len(indices)
+            # Extract reactants and product
+            try:
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                        print(
-                            f"Depth {depth}: Found {heterocycle}, count: {heterocycles_at_depth[depth][heterocycle]}"
-                        )
+                prod_mol = Chem.MolFromSmiles(product)
+                if not prod_mol:
+                    print(f"Could not parse product SMILES: {product}")
+                    return
 
-        # Traverse children
+                # Count rings in product using a more reliable method
+                prod_ring_count = rdMolDescriptors.CalcNumRings(prod_mol)
+
+                # Check for specific ring structures in product
+                prod_ring_types = []
+                for ring in ring_types:
+                    if checker.check_ring(ring, product):
+                        prod_ring_types.append(ring)
+
+                # Process reactants
+                reactant_ring_count = 0
+                reactant_ring_types = set()
+
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            reactant_ring_count += rdMolDescriptors.CalcNumRings(mol)
+                            for ring in ring_types:
+                                if checker.check_ring(ring, reactant):
+                                    reactant_ring_types.add(ring)
+                    except Exception as e:
+                        print(f"Error processing reactant {reactant}: {e}")
+                        continue
+
+                # Check if the number of rings has changed
+                if prod_ring_count != reactant_ring_count:
+                    print(f"Found ring transformation reaction: {rsmi}")
+                    print(
+                        f"Reactant rings: {reactant_ring_count}, Product rings: {prod_ring_count}"
+                    )
+                    found_ring_transformation = True
+                    return
+
+                # Check if ring types have changed (even if count remains the same)
+                prod_ring_set = set(prod_ring_types)
+                if prod_ring_set != reactant_ring_types and (prod_ring_set or reactant_ring_types):
+                    print(f"Found ring type transformation: {rsmi}")
+                    print(
+                        f"Reactant ring types: {reactant_ring_types}, Product ring types: {prod_ring_set}"
+                    )
+                    found_ring_transformation = True
+                    return
+
+            except Exception as e:
+                print(f"Error analyzing reaction {rsmi}: {e}")
+
+        # Continue DFS traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if heterocycles are preserved throughout
-    if not heterocycles_at_depth:
-        print("No heterocycles found in the route")
-        return False
-
-    max_depth = max(heterocycles_at_depth.keys())
-    print(f"Max depth: {max_depth}")
-    print(f"Heterocycles at each depth: {heterocycles_at_depth}")
-
-    # Get all depths where molecules were found
-    depths = sorted(heterocycles_at_depth.keys())
-
-    # Check if at least two heterocycles are preserved from beginning to end
-    preserved_count = 0
-    for heterocycle in heterocycles:
-        preserved = True
-        # Check if this heterocycle exists at depth 0 (final product)
-        if (
-            0 not in heterocycles_at_depth
-            or heterocycle not in heterocycles_at_depth[0]
-            or heterocycles_at_depth[0][heterocycle] == 0
-        ):
-            preserved = False
-            continue
-
-        # Check if this heterocycle exists at all depths where molecules were found
-        for depth in depths:
-            if (
-                heterocycle not in heterocycles_at_depth[depth]
-                or heterocycles_at_depth[depth][heterocycle] == 0
-            ):
-                preserved = False
-                break
-
-        if preserved:
-            print(f"Heterocycle {heterocycle} is preserved throughout the synthesis")
-            preserved_count += 1
-
-            # Early return if we've found at least two preserved heterocycles
-            if preserved_count >= 2:
-                print(f"Found {preserved_count} preserved heterocycles, returning True")
-                return True
-
-    print(f"Preserved heterocycles count: {preserved_count}")
-    return preserved_count >= 2
+    return found_ring_transformation

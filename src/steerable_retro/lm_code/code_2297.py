@@ -2,48 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects linear synthesis strategy (vs. convergent).
+    Detects if the synthesis follows a linear strategy without convergent steps.
     """
-    is_linear = True
+    # Track the maximum branching factor
+    max_branching = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+    def dfs_traverse(node):
+        nonlocal max_branching
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
+            # Count number of reactants
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            num_reactants = len([r for r in reactants if r])
 
-                # If any reaction has more than 2 reactants, it's likely convergent
-                if len(reactants_smiles) > 2:
-                    is_linear = False
-                    print(
-                        f"Convergent synthesis detected at depth {depth} with {len(reactants_smiles)} reactants"
-                    )
+            # Update max branching
+            max_branching = max(max_branching, num_reactants)
+            print(f"Reaction has {num_reactants} reactants")
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return is_linear
+
+    # Linear synthesis has max branching factor of 1
+    return max_branching <= 2  # Allow for solvents/reagents

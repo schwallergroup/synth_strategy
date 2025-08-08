@@ -2,64 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route includes amide bond formation using an acid chloride.
+    This function detects if the synthetic route involves multiple aromatic nucleophilic
+    substitution reactions where a halogen is replaced by O or N.
     """
-    amide_formation_found = False
+    substitution_count = 0
 
     def dfs_traverse(node):
-        nonlocal amide_formation_found
+        nonlocal substitution_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check for acid chloride and amine in reactants, amide in product
-            acid_chloride_found = False
-            amine_found = False
+                try:
+                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
+                    product = Chem.MolFromSmiles(product_smiles)
 
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol:
-                    acid_chloride_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-Cl")
-                    amine_pattern = Chem.MolFromSmarts("[#6]-[#7;H2]")
+                    if all(r is not None for r in reactants) and product is not None:
+                        # Check for aryl halide in reactants
+                        aryl_halide_pattern = Chem.MolFromSmarts("[c]-[F,Cl,Br,I]")
+                        # Check for aryl ether or aryl amine in product
+                        aryl_ether_pattern = Chem.MolFromSmarts("[c]-[O]-[#6]")
+                        aryl_amine_pattern = Chem.MolFromSmarts("[c]-[N]")
 
-                    if reactant_mol.HasSubstructMatch(acid_chloride_pattern):
-                        acid_chloride_found = True
-                    if reactant_mol.HasSubstructMatch(amine_pattern):
-                        amine_found = True
+                        reactants_have_aryl_halide = any(
+                            r.HasSubstructMatch(aryl_halide_pattern) for r in reactants
+                        )
+                        product_has_aryl_ether = product.HasSubstructMatch(aryl_ether_pattern)
+                        product_has_aryl_amine = product.HasSubstructMatch(aryl_amine_pattern)
 
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol:
-                amide_pattern = Chem.MolFromSmarts("[#6]-[#7]-[#6](=[#8])-[#6]")
-                if product_mol.HasSubstructMatch(amide_pattern):
-                    if acid_chloride_found and amine_found:
-                        amide_formation_found = True
-                        print("Amide formation from acid chloride detected")
+                        if reactants_have_aryl_halide and (
+                            product_has_aryl_ether or product_has_aryl_amine
+                        ):
+                            print(f"Aromatic substitution detected in reaction: {rsmi}")
+                            substitution_count += 1
+                except:
+                    print(f"Error processing reaction SMILES: {rsmi}")
 
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return amide_formation_found
+
+    # Return True if multiple aromatic substitutions are detected
+    return substitution_count >= 2

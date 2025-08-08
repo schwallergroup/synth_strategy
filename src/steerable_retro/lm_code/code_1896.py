@@ -2,109 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the activation of an alcohol by conversion to a mesylate
-    as a leaving group preparation strategy.
+    This function detects a linear synthesis strategy where a biaryl system
+    (difluorophenyl-isoxazole) is preserved throughout the synthesis.
     """
+    # Track if we consistently see the biaryl system
+    biaryl_present_count = 0
+    total_reactions = 0
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node):
+        nonlocal biaryl_present_count, total_reactions
+
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
+            total_reactions += 1
 
-            # Check if any reactant contains an alcohol group
-            reactant_has_alcohol = any(
-                checker.check_fg("Primary alcohol", r)
-                or checker.check_fg("Secondary alcohol", r)
-                or checker.check_fg("Tertiary alcohol", r)
-                or checker.check_fg("Aromatic alcohol", r)
-                for r in reactants
-                if r
-            )
+            # Check for difluorophenyl-isoxazole biaryl system
+            difluorophenyl_pattern = Chem.MolFromSmarts("[F]c1[cH][c]([F])[cH][cH]c1")
+            isoxazole_pattern = Chem.MolFromSmarts("c1conc1")
 
-            # Check if the product contains a mesylate group
-            product_has_mesylate = checker.check_fg("Mesylate", product) if product else False
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-            # Check for methanesulfonyl chloride or similar reagent
-            has_mesylating_agent = any("S(=O)(=O)Cl" in r for r in reactants if r)
+            if (
+                product_mol
+                and product_mol.HasSubstructMatch(difluorophenyl_pattern)
+                and product_mol.HasSubstructMatch(isoxazole_pattern)
+            ):
+                biaryl_present_count += 1
+                print(f"Detected difluorophenyl-isoxazole biaryl system in: {product}")
 
-            # Check if this is a sulfonic ester formation reaction
-            is_sulfonic_ester_formation = checker.check_reaction(
-                "Formation of Sulfonic Esters", rsmi
-            ) or checker.check_reaction(
-                "Formation of Sulfonic Esters on TMS protected alcohol", rsmi
-            )
-
-            print(
-                f"Depth: {depth}, Alcohol: {reactant_has_alcohol}, Mesylate: {product_has_mesylate}, "
-                f"Mesylating agent: {has_mesylating_agent}, Sulfonic ester formation: {is_sulfonic_ester_formation}"
-            )
-
-            if reactant_has_alcohol and product_has_mesylate and is_sulfonic_ester_formation:
-                print(f"Found alcohol activation to mesylate at depth {depth}")
-                return True
-
-            # Alternative check with less strict requirements
-            if reactant_has_alcohol and product_has_mesylate:
-                print(
-                    f"Found potential alcohol activation to mesylate at depth {depth} (reaction type not confirmed)"
-                )
-                return True
-
+        # Traverse children
         for child in node.get("children", []):
-            if dfs_traverse(child, depth + 1):
-                return True
+            dfs_traverse(child)
 
-        return False
+    # Start traversal
+    dfs_traverse(route)
 
-    result = dfs_traverse(route)
+    # Check if the biaryl system is preserved throughout (in at least 80% of reactions)
+    result = total_reactions > 0 and (biaryl_present_count / total_reactions) >= 0.8
+    print(f"Linear synthesis with preserved biaryl strategy detected: {result}")
+    print(f"Biaryl present in {biaryl_present_count} out of {total_reactions} reactions")
     return result

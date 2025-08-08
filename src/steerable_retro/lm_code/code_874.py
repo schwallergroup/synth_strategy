@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,74 +54,42 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis uses a convergent approach where
-    two complex fragments are joined in the final step.
+    This function detects the use of Grignard reagents for addition to ketones,
+    forming tertiary alcohols.
     """
-    convergent_final_step = False
+    grignard_addition = False
 
     def dfs_traverse(node):
-        nonlocal convergent_final_step
+        nonlocal grignard_addition
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            depth = node.get("metadata", {}).get("depth", None)
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check if this is a late-stage step (depth 0, 1, or 2)
-            if depth is None or depth in [0, "0", 1, "1", 2, "2"]:
-                reactants = reactants_part.split(".")
+            # Direct check for Grignard reaction with ketone
+            if checker.check_reaction("Grignard from ketone to alcohol", rsmi):
+                grignard_addition = True
+                print(f"Detected Grignard addition to ketone via reaction check: {rsmi}")
+                return
 
-                # Count complex reactants (those with significant structure)
-                complex_reactants = 0
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and (
-                            mol.GetNumAtoms() > 10 or rdMolDescriptors.CalcNumRings(mol) >= 2
-                        ):
-                            complex_reactants += 1
-                            print(
-                                f"Complex reactant found: {reactant} with {mol.GetNumAtoms()} atoms and {rdMolDescriptors.CalcNumRings(mol)} rings"
-                            )
-                    except Exception as e:
-                        print(f"Error processing reactant {reactant}: {e}")
-                        continue
+            # Fallback: Check for components individually
+            has_grignard = any(
+                checker.check_fg("Magnesium halide", reactant) for reactant in reactants
+            )
+            has_ketone = any(checker.check_fg("Ketone", reactant) for reactant in reactants)
+            has_tert_alcohol = checker.check_fg("Tertiary alcohol", product)
 
-                # Check if this is a coupling reaction commonly used in convergent synthesis
-                is_coupling_reaction = False
-                if rsmi:
-                    try:
-                        is_coupling_reaction = (
-                            checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                            or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                            or checker.check_reaction("Negishi coupling", rsmi)
-                            or checker.check_reaction("Stille reaction_aryl", rsmi)
-                            or checker.check_reaction("Heck terminal vinyl", rsmi)
-                            or checker.check_reaction("Sonogashira alkyne_aryl halide", rsmi)
-                        )
-                        if is_coupling_reaction:
-                            print(f"Detected coupling reaction at depth {depth}: {rsmi}")
-                    except Exception as e:
-                        print(f"Error checking reaction type: {e}")
+            if has_grignard and has_ketone and has_tert_alcohol:
+                grignard_addition = True
+                print(f"Detected Grignard addition to ketone via component check: {rsmi}")
 
-                # Determine if this is a convergent step
-                if complex_reactants >= 2:
-                    print(
-                        f"Detected convergent synthesis with {complex_reactants} complex fragments at depth {depth}"
-                    )
-                    convergent_final_step = True
-                elif complex_reactants >= 1 and is_coupling_reaction:
-                    print(f"Detected convergent synthesis with coupling reaction at depth {depth}")
-                    convergent_final_step = True
-
-        # Continue traversing
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    if not convergent_final_step:
-        print("No convergent synthesis pattern detected")
-
-    return convergent_final_step
+    print(f"Grignard addition to ketone strategy detected: {grignard_addition}")
+    return grignard_addition

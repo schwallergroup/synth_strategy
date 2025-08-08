@@ -2,81 +2,90 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy where each reaction
-    has only one product that serves as a reactant in the next step.
+    This function detects a synthetic strategy where a thiazole ring is formed
+    in the final step from a thioamide intermediate.
     """
-    is_linear = True
-    reaction_count = 0
-
-    # Track the synthesis path
-    reaction_nodes = []
+    # Track if we found the pattern
+    found_thiazole_formation = False
+    found_thioamide_intermediate = False
 
     def dfs_traverse(node):
-        nonlocal is_linear, reaction_count
+        nonlocal found_thiazole_formation, found_thioamide_intermediate
 
         if node["type"] == "reaction":
-            reaction_count += 1
-            reaction_nodes.append(node)
-
-            # Check if this reaction has multiple products
-            try:
+            # Check if this is a thiazole formation reaction (depth 0)
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                products_part = rsmi.split(">")[-1]
-                products = [p for p in products_part.split(".") if p.strip()]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                if len(products) > 1:
-                    # If a reaction produces multiple significant products, it's not strictly linear
-                    print(f"Found non-linear step with {len(products)} products")
-                    is_linear = False
-            except Exception as e:
-                print(f"Error processing reaction SMILES: {e}")
-                is_linear = False
+                # Check if product contains thiazole
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    thiazole_pattern = Chem.MolFromSmarts("c1nc(*)sc1")
+                    if product_mol.HasSubstructMatch(thiazole_pattern):
+                        # Check if reactants contain thioamide
+                        for reactant in reactants:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol:
+                                thioamide_pattern = Chem.MolFromSmarts("[*]C(=S)[NH2]")
+                                if reactant_mol.HasSubstructMatch(thioamide_pattern):
+                                    # Check if other reactant is alpha-halo carbonyl
+                                    for other_reactant in reactants:
+                                        if other_reactant != reactant:
+                                            other_mol = Chem.MolFromSmiles(other_reactant)
+                                            if other_mol:
+                                                alpha_halo_carbonyl = Chem.MolFromSmarts(
+                                                    "[*]C(=O)C[Cl,Br,I]"
+                                                )
+                                                if other_mol.HasSubstructMatch(alpha_halo_carbonyl):
+                                                    found_thiazole_formation = True
+                                                    print("Found thiazole formation reaction")
 
-        # Continue traversal
+            # Check if this is a thioamide formation reaction (depth 1)
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                product = rsmi.split(">")[-1]
+
+                # Check if product contains thioamide
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    thioamide_pattern = Chem.MolFromSmarts("[*]C(=S)[NH2]")
+                    if product_mol.HasSubstructMatch(thioamide_pattern):
+                        found_thioamide_intermediate = True
+                        print("Found thioamide intermediate")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # A route with only one reaction is trivially linear
-    if reaction_count <= 1:
-        return True
-
-    # Check connectivity between reactions
-    # In a linear synthesis, each reaction should have exactly one child reaction
-    # except for the last reaction in the sequence
-    for node in route.get("children", []):
-        if node["type"] == "reaction":
-            reaction_children = [
-                child for child in node.get("children", []) if child["type"] == "reaction"
-            ]
-
-            # If this reaction has more than one child reaction, it's not linear
-            if len(reaction_children) > 1:
-                print(f"Found reaction with multiple child reactions: {len(reaction_children)}")
-                is_linear = False
-                break
-
-    return is_linear
+    # Return True if both conditions are met
+    return found_thiazole_formation and found_thioamide_intermediate

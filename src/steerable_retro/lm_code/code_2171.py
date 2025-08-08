@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,133 +54,73 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route includes a biaryl formation via Suzuki coupling.
-    Looks for a reaction where an aryl halide and boronic acid/ester are combined.
+    This function detects a strategy involving the use of azide as a synthetic intermediate.
     """
-    suzuki_detected = False
+    azide_formation = False
+    azide_conversion = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal suzuki_detected
+    def dfs_traverse(node):
+        nonlocal azide_formation, azide_conversion
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            print(f"Checking reaction at depth {depth}: {rsmi}")
+        if node["type"] == "reaction":
+            metadata = node.get("metadata", {})
+            rsmi = metadata.get("rsmi", "")
+            if not rsmi:
+                return
 
-            # Check if this is a Suzuki coupling reaction
-            is_suzuki = (
-                checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
-                or checker.check_reaction("Suzuki coupling with sulfonic esters", rsmi)
-                or checker.check_reaction("Suzuki", rsmi)
-            )
+            # Split reaction SMILES into reactants and products
+            parts = rsmi.split(">")
+            if len(parts) >= 3:
+                reactants_smiles = parts[0]
+                product_smiles = parts[-1]
 
-            print(f"Is Suzuki coupling: {is_suzuki}")
+                # Check for azide formation
+                if checker.check_fg("Azide", product_smiles) and not checker.check_fg(
+                    "Azide", reactants_smiles
+                ):
+                    print(f"Found azide formation in reaction: {rsmi}")
+                    azide_formation = True
 
-            # Split reactants and product
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
-            reactants = reactants_part.split(".")
+                    # Check for specific azide formation reactions
+                    if (
+                        checker.check_reaction("Formation of Azides from halogens", rsmi)
+                        or checker.check_reaction("Formation of Azides from boronic acids", rsmi)
+                        or checker.check_reaction("Alcohol to azide", rsmi)
+                        or checker.check_reaction("Amine to azide", rsmi)
+                    ):
+                        print(f"Confirmed azide formation reaction: {rsmi}")
 
-            print(f"Reactants: {reactants}")
-            print(f"Product: {product_part}")
+                # Check for azide conversion
+                if checker.check_fg("Azide", reactants_smiles) and not checker.check_fg(
+                    "Azide", product_smiles
+                ):
+                    print(f"Found azide conversion in reaction: {rsmi}")
+                    azide_conversion = True
 
-            # Check for aryl halide and boronic acid/ester in reactants
-            has_aryl_halide = any(
-                checker.check_fg("Aromatic halide", reactant) for reactant in reactants if reactant
-            )
-            has_boronic = any(
-                checker.check_fg("Boronic acid", reactant)
-                or checker.check_fg("Boronic ester", reactant)
-                for reactant in reactants
-                if reactant
-            )
-
-            print(f"Has aryl halide: {has_aryl_halide}")
-            print(f"Has boronic: {has_boronic}")
-
-            # Manual check for Suzuki-like reaction if checker fails
-            if not is_suzuki and has_aryl_halide and has_boronic:
-                print("Detected Suzuki-like reaction pattern")
-                is_suzuki = True
-
-            if is_suzuki:
-                try:
-                    # Create molecule objects
-                    product_mol = Chem.MolFromSmiles(product_part)
-
-                    # Find aryl halide and boronic acid/ester reactants
-                    aryl_halide_reactants = [
-                        r for r in reactants if r and checker.check_fg("Aromatic halide", r)
-                    ]
-                    boronic_reactants = [
-                        r
-                        for r in reactants
-                        if r
-                        and (
-                            checker.check_fg("Boronic acid", r)
-                            or checker.check_fg("Boronic ester", r)
+                    # Check for specific azide conversion reactions
+                    if (
+                        checker.check_reaction("Azide to amine reduction (Staudinger)", rsmi)
+                        or checker.check_reaction(
+                            "Huisgen alkyne-azide 1,3 dipolar cycloaddition", rsmi
                         )
-                    ]
+                        or checker.check_reaction("Huisgen 1,3 dipolar cycloaddition", rsmi)
+                        or checker.check_reaction(
+                            "Huisgen alkene-azide 1,3 dipolar cycloaddition", rsmi
+                        )
+                        or checker.check_reaction("Huisgen_Cu-catalyzed_1,4-subst", rsmi)
+                        or checker.check_reaction("Huisgen_Ru-catalyzed_1,5_subst", rsmi)
+                        or checker.check_reaction("Huisgen_disubst-alkyne", rsmi)
+                    ):
+                        print(f"Confirmed azide conversion reaction: {rsmi}")
 
-                    print(f"Aryl halide reactants: {aryl_halide_reactants}")
-                    print(f"Boronic reactants: {boronic_reactants}")
-
-                    # Check for biaryl formation
-                    if aryl_halide_reactants and boronic_reactants and product_mol:
-                        # First method: Check for biaryl bond pattern
-                        biaryl_pattern = Chem.MolFromSmarts(
-                            "c-c"
-                        )  # Simple pattern for carbon-carbon bond between aromatics
-
-                        # Create reactant molecules
-                        reactant_mols = []
-                        for r in reactants:
-                            if r:
-                                mol = Chem.MolFromSmiles(r)
-                                if mol:
-                                    reactant_mols.append(mol)
-
-                        # Count biaryl bonds in product and reactants
-                        if biaryl_pattern:
-                            product_biaryl_count = len(
-                                product_mol.GetSubstructMatches(biaryl_pattern)
-                            )
-                            reactant_biaryl_count = sum(
-                                len(m.GetSubstructMatches(biaryl_pattern)) for m in reactant_mols
-                            )
-
-                            print(f"Product biaryl count: {product_biaryl_count}")
-                            print(f"Reactant biaryl count: {reactant_biaryl_count}")
-
-                            # If product has more biaryl bonds than reactants combined, a new one was formed
-                            if product_biaryl_count > reactant_biaryl_count:
-                                print(
-                                    "Detected Suzuki coupling for biaryl formation (pattern match)"
-                                )
-                                suzuki_detected = True
-
-                        # Second method: If we have the right reactants in a Suzuki reaction, assume biaryl formation
-                        if not suzuki_detected:
-                            print("Assuming biaryl formation based on reactants in Suzuki coupling")
-                            suzuki_detected = True
-                    else:
-                        print("Missing required components for biaryl formation")
-                except Exception as e:
-                    print(f"Error processing Suzuki reaction: {e}")
-                    # If we've identified a Suzuki reaction with aryl halide and boronic components,
-                    # assume it's a biaryl formation even if analysis failed
-                    if has_aryl_halide and has_boronic:
-                        print("Assuming biaryl formation despite error")
-                        suzuki_detected = True
-            else:
-                print("Not a Suzuki coupling reaction")
-
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    print("Starting biaryl formation via Suzuki detection...")
+    # Start traversal
     dfs_traverse(route)
-    print(f"Suzuki biaryl formation detected: {suzuki_detected}")
-    return suzuki_detected
+
+    print(f"Azide formation detected: {azide_formation}")
+    print(f"Azide conversion detected: {azide_conversion}")
+
+    return azide_formation and azide_conversion

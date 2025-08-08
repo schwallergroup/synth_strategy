@@ -2,65 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route uses a late-stage Suzuki coupling (depth 0 or 1)
-    between a boronic acid/ester and an aryl halide.
+    This function detects a synthetic strategy involving selective mono-functionalization
+    of a symmetrical diol.
     """
-    suzuki_detected = False
+    has_selective_diol_functionalization = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal suzuki_detected
+    def dfs_traverse(node):
+        nonlocal has_selective_diol_functionalization
 
-        if node["type"] == "reaction" and depth <= 1:  # Only check late-stage reactions
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for boronic acid/ester pattern in reactants
-                boronic_pattern = Chem.MolFromSmarts("[#6]-[#5](-[#8])-[#8]")
-                # Check for aryl halide pattern in reactants
-                aryl_halide_pattern = Chem.MolFromSmarts("[#6]-[#17,#35,#53]")
+            # Check for diol in reactants
+            diol_pattern = Chem.MolFromSmarts("[OX2H][CX4][CX4][OX2H]")
 
-                has_boronic = False
-                has_aryl_halide = False
+            # Check for mono-protected product (one OH, one protected OH)
+            protected_pattern = Chem.MolFromSmarts("[OX2H][CX4][CX4][OX2][Si]")
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(boronic_pattern):
-                            has_boronic = True
-                        if mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
+            for r in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(r)
+                    if mol and mol.HasSubstructMatch(diol_pattern):
+                        prod_mol = Chem.MolFromSmiles(product)
+                        if prod_mol and prod_mol.HasSubstructMatch(protected_pattern):
+                            has_selective_diol_functionalization = True
+                            print("Found selective diol functionalization")
+                except:
+                    continue
 
-                if has_boronic and has_aryl_halide:
-                    print("Detected Suzuki coupling at depth", depth)
-                    suzuki_detected = True
-
-        # Traverse children
+        # Recursively traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal from the root
     dfs_traverse(route)
-    return suzuki_detected
+
+    return has_selective_diol_functionalization

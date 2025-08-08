@@ -2,62 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves conversion of an ester to an alcohol.
+    Detects if the synthetic route includes amide formation from an acid chloride and amine.
     """
-    ester_to_alcohol_detected = False
+    has_amide_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal ester_to_alcohol_detected
+    def dfs_traverse(node):
+        nonlocal has_amide_formation
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
 
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                # Split into reactants and product
+                parts = rsmi.split(">")
+                if len(parts) >= 3:
+                    reactants = parts[0].split(".")
+                    product = parts[-1]
 
-                # Check for ester in reactants
-                ester_pattern = Chem.MolFromSmarts("[#6][O][C]=[O]")
-                has_ester = any(
-                    mol.HasSubstructMatch(ester_pattern) for mol in reactant_mols if mol
-                )
+                    # Check for acid chloride in reactants
+                    acid_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
 
-                # Check for alcohol in product
-                alcohol_pattern = Chem.MolFromSmarts("[#6][OH]")
-                has_alcohol = product_mol and product_mol.HasSubstructMatch(alcohol_pattern)
+                    # Check for amine in reactants
+                    amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-                if has_ester and has_alcohol:
-                    print(f"Detected ester to alcohol conversion at depth {depth}")
-                    ester_to_alcohol_detected = True
-            except:
-                print("Error processing reaction SMILES")
+                    has_acid_chloride = False
+                    has_amine = False
 
-        # Process children
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol:
+                                if mol.HasSubstructMatch(acid_chloride_pattern):
+                                    has_acid_chloride = True
+                                if mol.HasSubstructMatch(amine_pattern):
+                                    has_amine = True
+                        except:
+                            continue
+
+                    # Check if product has an amide bond
+                    if has_acid_chloride and has_amine:
+                        try:
+                            product_mol = Chem.MolFromSmiles(product)
+                            amide_pattern = Chem.MolFromSmarts("C(=O)N")
+                            if product_mol and product_mol.HasSubstructMatch(amide_pattern):
+                                print("Found amide formation from acid chloride and amine")
+                                has_amide_formation = True
+                        except:
+                            pass
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return ester_to_alcohol_detected
+
+    return has_amide_formation

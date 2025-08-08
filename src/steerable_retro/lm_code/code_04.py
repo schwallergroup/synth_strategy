@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,121 +54,147 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route employs a protection-deprotection strategy,
-    specifically looking for Boc protection of nitrogen followed by deprotection.
+    This function detects a linear synthesis strategy involving sequential functionalization
+    of a heterocyclic core.
     """
-    protection_reactions = []
-    deprotection_reactions = []
+    # List of common heterocycles to check
+    heterocycle_rings = [
+        "pyridine",
+        "pyrrole",
+        "furan",
+        "thiophene",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrazole",
+        "triazole",
+        "tetrazole",
+        "pyrimidine",
+        "pyrazine",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+        "purine",
+    ]
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
+    # Track the synthesis path and heterocycle modifications
+    linear_path = []
+    heterocycle_modifications = []
+
+    def dfs_traverse(node, depth=0, path=None):
+        if path is None:
+            path = []
+
+        current_path = path + [node]
+
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+
+            # Check if this molecule contains a heterocycle
+            heterocycle_found = False
+            for ring_name in heterocycle_rings:
+                if checker.check_ring(ring_name, mol_smiles):
+                    heterocycle_found = True
+                    print(f"Found heterocycle {ring_name} in molecule: {mol_smiles}")
+                    break
+
+            # If this is a leaf node (starting material) with a heterocycle, record it
+            if heterocycle_found and node.get("in_stock", False):
+                heterocycle_modifications.append((depth, mol_smiles, "starting_material"))
+
+        elif node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for Boc protection reactions
-                if (
-                    checker.check_reaction("Boc amine protection", rsmi)
-                    or checker.check_reaction("Boc amine protection explicit", rsmi)
-                    or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
-                    or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
-                    or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
-                    or checker.check_reaction("Boc amine protection of primary amine", rsmi)
-                ):
-                    protection_reactions.append((rsmi, depth))
-                    print(f"Boc protection detected at depth {depth}: {rsmi}")
+                # Check if product contains a heterocycle
+                product_heterocycle = None
+                for ring_name in heterocycle_rings:
+                    if checker.check_ring(ring_name, product):
+                        product_heterocycle = ring_name
+                        break
 
-                # Check for Boc deprotection reactions
-                if (
-                    checker.check_reaction("Boc amine deprotection", rsmi)
-                    or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
-                    or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
-                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
-                ):
-                    deprotection_reactions.append((rsmi, depth))
-                    print(f"Boc deprotection detected at depth {depth}: {rsmi}")
+                # Check if any reactant contains a heterocycle
+                reactant_heterocycle = None
+                for reactant in reactants:
+                    for ring_name in heterocycle_rings:
+                        if checker.check_ring(ring_name, reactant):
+                            reactant_heterocycle = ring_name
+                            break
+                    if reactant_heterocycle:
+                        break
 
-                # Check for other protection reactions
-                if checker.check_reaction("Alcohol protection with silyl ethers", rsmi):
-                    protection_reactions.append((rsmi, depth))
-                    print(f"Silyl protection detected at depth {depth}: {rsmi}")
-
-                # Check for other deprotection reactions
-                if (
-                    checker.check_reaction("Alcohol deprotection from silyl ethers", rsmi)
-                    or checker.check_reaction(
-                        "Alcohol deprotection from silyl ethers (double)", rsmi
+                # If both reactant and product have heterocycles, this is a modification step
+                if reactant_heterocycle and product_heterocycle:
+                    print(
+                        f"Found heterocycle modification at depth {depth}: {reactant_heterocycle} -> {product_heterocycle}"
                     )
-                    or checker.check_reaction("Alcohol deprotection from silyl ethers (diol)", rsmi)
-                ):
-                    deprotection_reactions.append((rsmi, depth))
-                    print(f"Silyl deprotection detected at depth {depth}: {rsmi}")
+                    heterocycle_modifications.append((depth, rsmi, "modification"))
+                    linear_path.append((depth, current_path))
 
-                # Fallback method if reaction checkers don't catch it
-                if not (protection_reactions or deprotection_reactions):
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
-
-                    # Check for Boc protection (formation of N-Boc bond)
-                    reactant_mols_smiles = [r for r in reactants if r]
-                    product_mol_smiles = product if product else ""
-
-                    if product_mol_smiles:
-                        # Check if Boc is in product but not in reactants
-                        if (
-                            checker.check_fg("Boc", product_mol_smiles)
-                            and not any(checker.check_fg("Boc", r) for r in reactant_mols_smiles)
-                            and any(
-                                checker.check_fg("Primary amine", r)
-                                or checker.check_fg("Secondary amine", r)
-                                for r in reactant_mols_smiles
-                                if r
-                            )
-                        ):
-                            protection_reactions.append((rsmi, depth))
-                            print(f"Boc protection detected (fallback) at depth {depth}: {rsmi}")
-
-                    # Check for Boc deprotection (removal of Boc group)
-                    if product_mol_smiles:
-                        # Check if Boc is in reactants but not in product
-                        if (
-                            any(checker.check_fg("Boc", r) for r in reactant_mols_smiles)
-                            and not checker.check_fg("Boc", product_mol_smiles)
-                            and (
-                                checker.check_fg("Primary amine", product_mol_smiles)
-                                or checker.check_fg("Secondary amine", product_mol_smiles)
-                            )
-                        ):
-                            deprotection_reactions.append((rsmi, depth))
-                            print(f"Boc deprotection detected (fallback) at depth {depth}: {rsmi}")
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, depth + 1, current_path)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Protection reactions found: {len(protection_reactions)}")
-    print(f"Deprotection reactions found: {len(deprotection_reactions)}")
+    # Sort modifications by depth (retrosynthetic order)
+    heterocycle_modifications.sort(key=lambda x: x[0])
+    linear_path.sort(key=lambda x: x[0])
 
-    # Check if we have both protection and deprotection
-    if protection_reactions and deprotection_reactions:
-        # In retrosynthetic traversal, protection happens at higher depth than deprotection
-        for prot_rsmi, prot_depth in protection_reactions:
-            for deprot_rsmi, deprot_depth in deprotection_reactions:
-                # In retrosynthetic traversal, protection should be at higher depth
-                if prot_depth > deprot_depth:
-                    print(
-                        f"Valid protection-deprotection sequence found: protection at depth {prot_depth}, deprotection at depth {deprot_depth}"
-                    )
-                    return True
+    print(f"Heterocycle modifications: {heterocycle_modifications}")
+    print(f"Linear path: {[depth for depth, _ in linear_path]}")
 
-    # If we only have deprotection reactions, it's still a protection-deprotection strategy
-    # since the protection might have happened outside the route
-    if deprotection_reactions:
-        print(
-            "Only deprotection reactions found, but this still indicates a protection-deprotection strategy"
-        )
-        return True
+    # Check if we have heterocycle modifications
+    if len(heterocycle_modifications) < 2:
+        print("Not enough heterocycle modifications found")
+        return False
 
-    return False
+    # Check if the modifications form a linear sequence (increasing depths, not necessarily consecutive)
+    is_linear = True
+    if len(linear_path) > 1:
+        depths = [depth for depth, _ in linear_path]
+        for i in range(1, len(depths)):
+            if depths[i] <= depths[i - 1]:  # Check if depths are strictly increasing
+                is_linear = False
+                print(f"Non-increasing depths: {depths[i-1]} and {depths[i]}")
+                break
+    else:
+        is_linear = False
+        print("Not enough reactions in path")
+
+    # Check if the same heterocycle core is being modified throughout
+    same_core = True
+    if len(heterocycle_modifications) > 1:
+        # Extract the heterocycle types from each modification
+        heterocycle_types = []
+        for _, smiles, mod_type in heterocycle_modifications:
+            if mod_type == "starting_material":
+                for ring_name in heterocycle_rings:
+                    if checker.check_ring(ring_name, smiles):
+                        heterocycle_types.append(ring_name)
+                        print(f"Starting material heterocycle: {ring_name}")
+                        break
+            else:  # modification
+                product = smiles.split(">")[-1]
+                for ring_name in heterocycle_rings:
+                    if checker.check_ring(ring_name, product):
+                        heterocycle_types.append(ring_name)
+                        print(f"Modification product heterocycle: {ring_name}")
+                        break
+
+        # Check if all modifications involve the same heterocycle type
+        if len(set(heterocycle_types)) > 1:
+            same_core = False
+            print(f"Multiple heterocycle types found: {set(heterocycle_types)}")
+
+    print(f"Is linear: {is_linear}")
+    print(f"Same heterocycle core: {same_core}")
+
+    # Return True if it's a linear synthesis with consistent heterocycle modifications
+    return is_linear and same_core and len(heterocycle_modifications) >= 2

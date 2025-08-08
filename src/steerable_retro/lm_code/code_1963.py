@@ -2,83 +2,112 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis route involves N-alkylation with an alpha-bromoester
-    or similar activated alkylating agent.
+    This function detects if the synthesis involves a Sonogashira-type disconnection
+    (aryl/vinyl halide + terminal alkyne).
     """
+    has_sonogashira_disconnection = False
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node):
+        nonlocal has_sonogashira_disconnection
+
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
 
-                try:
-                    # Look for alpha-bromoester pattern in reactants
-                    alpha_bromoester_pattern = Chem.MolFromSmarts(
-                        "[Br,Cl,I][#6][#6](=[#8])[#8][#6]"
-                    )
-                    amine_pattern = Chem.MolFromSmarts(
-                        "[#7;!$(N~[!#6]);!$(N~[#6]=[#8])]"
-                    )  # Amine not amide
+                # Check for any Sonogashira reaction type
+                if (
+                    checker.check_reaction("Sonogashira acetylene_aryl halide", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_aryl halide", rsmi)
+                    or checker.check_reaction("Sonogashira acetylene_aryl OTf", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_aryl OTf", rsmi)
+                    or checker.check_reaction("Sonogashira acetylene_alkenyl halide", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_alkenyl halide", rsmi)
+                    or checker.check_reaction("Sonogashira acetylene_alkenyl OTf", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_alkenyl OTf", rsmi)
+                    or checker.check_reaction("Sonogashira acetylene_acyl halide", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_acyl halide", rsmi)
+                ):
 
-                    # Check if any reactant contains alpha-bromoester
-                    has_alpha_bromoester = False
-                    has_amine = False
+                    print(f"Found Sonogashira reaction: {rsmi}")
+                    has_sonogashira_disconnection = True
 
-                    for r in reactants:
-                        r_mol = Chem.MolFromSmiles(r)
-                        if r_mol is None:
-                            continue
+                # If no direct Sonogashira reaction is detected, check for the characteristic functional groups
+                if not has_sonogashira_disconnection:
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
 
-                        if r_mol.HasSubstructMatch(alpha_bromoester_pattern):
-                            has_alpha_bromoester = True
-                            print(f"Alpha-bromoester found in reactant: {r}")
+                    if len(reactants_smiles) > 1:
+                        # Check if one reactant has aryl/vinyl halide and another has terminal alkyne
+                        has_aryl_halide = any(
+                            checker.check_fg("Aromatic halide", r)
+                            or checker.check_fg("Alkenyl halide", r)
+                            for r in reactants_smiles
+                        )
+                        has_terminal_alkyne = any(
+                            checker.check_fg("Alkyne", r) for r in reactants_smiles
+                        )
+                        has_internal_alkyne = checker.check_fg("Alkyne", product_smiles)
 
-                        if r_mol.HasSubstructMatch(amine_pattern):
-                            has_amine = True
-                            print(f"Amine found in reactant: {r}")
-
-                    # Check if product has a new C-N bond
-                    if has_alpha_bromoester and has_amine:
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol is not None:
-                            # This is a simplified check - in a real implementation,
-                            # you would need to track atom mappings to confirm the specific bond formation
-                            print(f"N-alkylation with alpha-bromoester detected at depth {depth}")
-                            return True
-                except:
-                    pass
+                        if has_aryl_halide and has_terminal_alkyne and has_internal_alkyne:
+                            print(f"Found Sonogashira-like disconnection: {rsmi}")
+                            has_sonogashira_disconnection = True
 
         for child in node.get("children", []):
-            result = dfs_traverse(child, depth + 1)
-            if result:
-                return True
+            dfs_traverse(child)
 
-        return False
+    dfs_traverse(route)
 
-    result = dfs_traverse(route)
-    if not result:
-        print("No N-alkylation with alpha-bromoester detected")
-    return result
+    print(f"Sonogashira disconnection strategy detected: {has_sonogashira_disconnection}")
+    return has_sonogashira_disconnection

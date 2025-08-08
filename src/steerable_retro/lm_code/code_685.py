@@ -2,85 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving protection/deprotection steps
-    with linear fragment assembly via amide couplings.
+    This function detects a strategy involving multiple ether formation reactions
+    (C-O-C bonds) at different stages of the synthesis.
     """
-    # Initialize counters and flags
-    boc_protection_count = 0
-    boc_deprotection_count = 0
-    amide_coupling_count = 0
-    ester_hydrolysis_count = 0
-    late_stage_deprotection = False
+    ether_formation_count = 0
+    ether_formation_depths = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal boc_protection_count, boc_deprotection_count, amide_coupling_count
-        nonlocal ester_hydrolysis_count, late_stage_deprotection
+        nonlocal ether_formation_count, ether_formation_depths
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Convert to RDKit molecules
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            # Check for ether formation (C-O-C bond that wasn't present in reactants)
+            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                if product and all(r is not None for r in reactants):
-                    # Check for Boc deprotection
-                    boc_pattern = Chem.MolFromSmarts("[NH][C](=O)[O]C(C)(C)C")
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
+            if product_mol and all(r for r in reactants_mols):
+                # Look for ether pattern in product
+                ether_pattern = Chem.MolFromSmarts("[#6][#8][#6]")
+                product_ethers = product_mol.GetSubstructMatches(ether_pattern)
 
-                    if any(
-                        r.HasSubstructMatch(boc_pattern) for r in reactants
-                    ) and product.HasSubstructMatch(amine_pattern):
-                        boc_deprotection_count += 1
-                        if depth <= 1:  # Late stage (depth 0 or 1)
-                            late_stage_deprotection = True
-                            print(f"Found late-stage Boc deprotection at depth {depth}")
+                # Check each reactant for the same ether bonds
+                new_ether_formed = False
+                for ether_match in product_ethers:
+                    ether_atoms = set(ether_match)
 
-                    # Check for amide coupling
-                    carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
-                    amide_pattern = Chem.MolFromSmarts("[C](=O)[NH]")
+                    # Check if this ether bond exists in any reactant
+                    exists_in_reactants = False
+                    for r_mol in reactants_mols:
+                        if r_mol.HasSubstructMatch(ether_pattern):
+                            for r_match in r_mol.GetSubstructMatches(ether_pattern):
+                                if set(r_match) == ether_atoms:
+                                    exists_in_reactants = True
+                                    break
 
-                    if (
-                        any(r.HasSubstructMatch(carboxylic_acid_pattern) for r in reactants)
-                        and any(r.HasSubstructMatch(amine_pattern) for r in reactants)
-                        and product.HasSubstructMatch(amide_pattern)
-                    ):
-                        amide_coupling_count += 1
-                        print(f"Found amide coupling at depth {depth}")
+                    if not exists_in_reactants:
+                        new_ether_formed = True
+                        break
 
-                    # Check for tert-butyl ester hydrolysis
-                    tbutyl_ester_pattern = Chem.MolFromSmarts("[C](=O)[O]C(C)(C)C")
-
-                    if any(
-                        r.HasSubstructMatch(tbutyl_ester_pattern) for r in reactants
-                    ) and product.HasSubstructMatch(carboxylic_acid_pattern):
-                        ester_hydrolysis_count += 1
-                        print(f"Found tert-butyl ester hydrolysis at depth {depth}")
+                if new_ether_formed:
+                    ether_formation_count += 1
+                    ether_formation_depths.append(depth)
+                    print(f"Ether formation detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -89,12 +81,9 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Determine if the strategy is present
-    has_protection_deprotection = boc_deprotection_count > 0 and ester_hydrolysis_count > 0
-    has_amide_couplings = amide_coupling_count >= 2
+    # Strategy criteria: At least 2 ether formations at different depths
+    result = ether_formation_count >= 2 and len(set(ether_formation_depths)) >= 2
+    print(f"Sequential ether formations strategy detected: {result}")
+    print(f"Total ether formations: {ether_formation_count} at depths {ether_formation_depths}")
 
-    print(f"Protection/deprotection count: {boc_deprotection_count + ester_hydrolysis_count}")
-    print(f"Amide coupling count: {amide_coupling_count}")
-    print(f"Late stage deprotection: {late_stage_deprotection}")
-
-    return has_protection_deprotection and has_amide_couplings and late_stage_deprotection
+    return result

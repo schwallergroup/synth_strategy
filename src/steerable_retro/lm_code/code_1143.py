@@ -2,53 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy (as opposed to convergent).
+    Detects if the synthesis route involves a convergent approach with multiple fragment couplings.
     """
-    # In a linear synthesis, each reaction typically has only one non-commercial reactant
-    is_linear = True
+    fragment_couplings = 0
 
-    def dfs_traverse(node):
-        nonlocal is_linear
+    def dfs_traverse(node, depth=0):
+        nonlocal fragment_couplings
 
         if node["type"] == "reaction":
-            # Count non-commercial reactants (children of type "mol" that aren't in_stock)
-            non_commercial_reactants = sum(
-                1
-                for child in node.get("children", [])
-                if child["type"] == "mol" and not child.get("in_stock", False)
-            )
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # If more than one non-commercial reactant, it's likely a convergent step
-            if non_commercial_reactants > 1:
-                print(
-                    f"Found convergent step with {non_commercial_reactants} non-commercial reactants"
-                )
-                is_linear = False
+            # If there are multiple reactants, it might be a fragment coupling
+            if len(reactants_smiles) >= 2:
+                # Check if both reactants are complex (not just simple reagents)
+                complex_reactants = 0
+                for r_smiles in reactants_smiles:
+                    try:
+                        r_mol = Chem.MolFromSmiles(r_smiles)
+                        if r_mol and r_mol.GetNumAtoms() > 6:  # Arbitrary threshold for "complex"
+                            complex_reactants += 1
+                    except:
+                        pass
 
-        # Recursively process children
+                if complex_reactants >= 2:
+                    fragment_couplings += 1
+                    print(f"Fragment coupling detected at depth {depth}")
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return is_linear
+    return fragment_couplings >= 2  # Return True if at least 2 fragment couplings are detected

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,144 +54,90 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects multiple redox transformations in a synthesis route,
-    specifically looking for at least one reduction and one oxidation.
+    Detects if the synthesis uses a late-stage amide reduction strategy.
+    Specifically looks for an amide reduction in the final step (depth 0).
     """
-    reductions = 0
-    oxidations = 0
+    print("Starting late_stage_amide_reduction_strategy analysis")
 
-    # List of reduction reaction types
-    reduction_reactions = [
-        "Reduction of aldehydes and ketones to alcohols",
-        "Reduction of carboxylic acid to primary alcohol",
-        "Reduction of ester to primary alcohol",
-        "Reduction of nitrile to amine",
-        "Reduction of nitro groups to amines",
-        "Reduction of primary amides to amines",
-        "Reduction of secondary amides to amines",
-        "Reduction of tertiary amides to amines",
-        "Hydrogenation (double to single)",
-        "Hydrogenation (triple to double)",
-        "Arene hydrogenation",
-        "Grignard from aldehyde to alcohol",
-        "Grignard from ketone to alcohol",
-    ]
+    # Validate route structure
+    if not isinstance(route, dict) or "type" not in route:
+        print("Invalid route structure")
+        return False
 
-    # List of oxidation reaction types
-    oxidation_reactions = [
-        "Oxidation of aldehydes to carboxylic acids",
-        "Oxidation of alkene to carboxylic acid",
-        "Oxidation of alcohol to carboxylic acid",
-        "Oxidation of ketone to carboxylic acid",
-        "Oxidation of nitrile to carboxylic acid",
-        "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones",
-        "Oxidation of alkene to aldehyde",
-        "Oxidative esterification of primary alcohols",
-        "Oxidation of alcohol and aldehyde to ester",
-        "Quinone formation",
-    ]
+    # Ensure the root node is a molecule (the target compound)
+    if route["type"] != "mol":
+        print(f"Root node is not a molecule, but {route['type']}")
+        return False
+
+    amide_reduction_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal reductions, oxidations
+        nonlocal amide_reduction_found
 
+        print(f"Traversing node of type {node['type']} at depth {depth}")
+
+        if node["type"] == "mol":
+            print(f"Molecule node: {node.get('smiles', 'No SMILES')}")
+
+        # Check if this is a reaction node
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            print(f"Depth {depth}, Examining reaction: {rsmi}")
+            print(f"Reaction node at depth {depth}: {rsmi}")
 
-            # In retrosynthesis, the product is the starting material and reactants are the targets
-            # So we need to check if the reaction in forward direction is a redox transformation
+            # Check if this is the final step (depth 0)
+            if depth == 1:  # The reaction leading to the target molecule
+                print(f"Checking final step reaction: {rsmi}")
 
-            # Check for reduction reactions
-            for reaction_type in reduction_reactions:
-                if checker.check_reaction(reaction_type, rsmi):
-                    reductions += 1
-                    print(f"Reduction detected: {reaction_type}, total: {reductions}")
-                    break
-
-            # Check for oxidation reactions
-            for reaction_type in oxidation_reactions:
-                if checker.check_reaction(reaction_type, rsmi):
-                    oxidations += 1
-                    print(f"Oxidation detected: {reaction_type}, total: {oxidations}")
-                    break
-
-            # If no specific reaction type was found, try to detect redox transformations by functional group changes
-            if reductions == 0 or oxidations == 0:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check for reduction patterns (in forward direction)
-                if any(checker.check_fg("Aldehyde", r) for r in reactants) and checker.check_fg(
-                    "Primary alcohol", product
+                # Check if this is an amide reduction reaction using the checker functions
+                if (
+                    checker.check_reaction("Reduction of primary amides to amines", rsmi)
+                    or checker.check_reaction("Reduction of secondary amides to amines", rsmi)
+                    or checker.check_reaction("Reduction of tertiary amides to amines", rsmi)
                 ):
-                    reductions += 1
-                    print(f"Reduction detected (Aldehyde → Primary alcohol), total: {reductions}")
+                    print(f"Found amide reduction reaction in final step: {rsmi}")
+                    amide_reduction_found = True
+                else:
+                    # If specific reaction check fails, try a more general approach
+                    try:
+                        reactants = rsmi.split(">")[0].split(".")
+                        product = rsmi.split(">")[-1]
 
-                elif any(checker.check_fg("Ketone", r) for r in reactants) and checker.check_fg(
-                    "Secondary alcohol", product
-                ):
-                    reductions += 1
-                    print(f"Reduction detected (Ketone → Secondary alcohol), total: {reductions}")
+                        print(f"Reactants: {reactants}")
+                        print(f"Product: {product}")
 
-                elif any(checker.check_fg("Nitrile", r) for r in reactants) and checker.check_fg(
-                    "Primary amine", product
-                ):
-                    reductions += 1
-                    print(f"Reduction detected (Nitrile → Primary amine), total: {reductions}")
+                        # Check for amide in reactants and amine in product
+                        amide_in_reactants = False
+                        for reactant in reactants:
+                            if (
+                                checker.check_fg("Primary amide", reactant)
+                                or checker.check_fg("Secondary amide", reactant)
+                                or checker.check_fg("Tertiary amide", reactant)
+                            ):
+                                amide_in_reactants = True
+                                print(f"Found amide in reactant: {reactant}")
+                                break
 
-                elif any(
-                    checker.check_fg("Nitro group", r) for r in reactants
-                ) and checker.check_fg("Primary amine", product):
-                    reductions += 1
-                    print(f"Reduction detected (Nitro group → Primary amine), total: {reductions}")
+                        amine_in_product = (
+                            checker.check_fg("Primary amine", product)
+                            or checker.check_fg("Secondary amine", product)
+                            or checker.check_fg("Tertiary amine", product)
+                        )
 
-                # Additional check for Grignard-type reductions
-                elif any(
-                    checker.check_fg("Aldehyde", r) or checker.check_fg("Ketone", r)
-                    for r in reactants
-                ) and (
-                    checker.check_fg("Primary alcohol", product)
-                    or checker.check_fg("Secondary alcohol", product)
-                    or checker.check_fg("Tertiary alcohol", product)
-                ):
-                    reductions += 1
-                    print(f"Reduction detected (Carbonyl → Alcohol), total: {reductions}")
+                        if amine_in_product:
+                            print(f"Found amine in product: {product}")
 
-                # Check for oxidation patterns (in forward direction)
-                if any(
-                    checker.check_fg("Primary alcohol", r) for r in reactants
-                ) and checker.check_fg("Aldehyde", product):
-                    oxidations += 1
-                    print(f"Oxidation detected (Primary alcohol → Aldehyde), total: {oxidations}")
+                        # If we have both amide in reactants and amine in product, it's likely an amide reduction
+                        if amide_in_reactants and amine_in_product:
+                            print("Detected amide reduction pattern in final step")
+                            amide_reduction_found = True
+                    except Exception as e:
+                        print(f"Error analyzing reaction: {e}")
 
-                elif any(
-                    checker.check_fg("Secondary alcohol", r) for r in reactants
-                ) and checker.check_fg("Ketone", product):
-                    oxidations += 1
-                    print(f"Oxidation detected (Secondary alcohol → Ketone), total: {oxidations}")
-
-                elif any(
-                    checker.check_fg("Primary alcohol", r) for r in reactants
-                ) and checker.check_fg("Carboxylic acid", product):
-                    oxidations += 1
-                    print(
-                        f"Oxidation detected (Primary alcohol → Carboxylic acid), total: {oxidations}"
-                    )
-
-                elif any(checker.check_fg("Aldehyde", r) for r in reactants) and checker.check_fg(
-                    "Carboxylic acid", product
-                ):
-                    oxidations += 1
-                    print(f"Oxidation detected (Aldehyde → Carboxylic acid), total: {oxidations}")
-
-        # Traverse children
+        # Traverse children with increased depth
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
-    print("Starting traversal to find redox transformations...")
+    # Start traversal from the root node (target molecule)
     dfs_traverse(route)
-
-    print(f"Final count - Reductions: {reductions}, Oxidations: {oxidations}")
-    # Return True if at least one reduction and one oxidation were found
-    return reductions >= 1 and oxidations >= 1
+    print(f"Amide reduction found: {amide_reduction_found}")
+    return amide_reduction_found

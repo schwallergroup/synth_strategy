@@ -2,57 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves nitro reduction to amine.
+    Detects a strategy involving nitro-substituted aromatic compounds throughout the synthesis.
     """
-    nitro_reduction_detected = False
+    depths_with_nitro = set()
 
-    def dfs_traverse(node):
-        nonlocal nitro_reduction_detected
+    # SMARTS pattern for nitro group
+    nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(nitro_pattern):
+                depths_with_nitro.add(depth)
+                print(f"Found nitro group at depth {depth}")
+
+        elif node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants_str = rsmi.split(">")[0]
-            product_str = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if reactant has nitro group
-            reactant_mol = Chem.MolFromSmiles(reactants_str)
-            if reactant_mol:
-                nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-                has_nitro = reactant_mol.HasSubstructMatch(nitro_pattern)
+            for smiles in reactants_smiles + [product_smiles]:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol and mol.HasSubstructMatch(nitro_pattern):
+                    depths_with_nitro.add(depth)
+                    print(f"Found nitro group at depth {depth}")
 
-                # Check if product has amine group where nitro was
-                product_mol = Chem.MolFromSmiles(product_str)
-                if product_mol:
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
-                    has_amine = product_mol.HasSubstructMatch(amine_pattern)
-
-                    if has_nitro and has_amine and not product_mol.HasSubstructMatch(nitro_pattern):
-                        print("Detected nitro reduction to amine")
-                        nitro_reduction_detected = True
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return nitro_reduction_detected
+
+    # Strategy is present if nitro groups are found at multiple depths
+    strategy_present = len(depths_with_nitro) >= 2
+
+    if strategy_present:
+        print(f"Detected nitro-containing aromatic strategy across depths: {depths_with_nitro}")
+
+    return strategy_present

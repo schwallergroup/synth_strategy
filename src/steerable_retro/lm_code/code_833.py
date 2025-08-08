@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,115 +54,99 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route involves a ring opening strategy.
-    It looks for reactions where a ring is opened during the transformation.
+    This function detects a strategy involving isoxazole ring formation
+    through the coupling of two fragments, typically involving a chloro-isoxazole
+    precursor and an alkyne-containing fragment.
     """
-    ring_opening_detected = False
+    # Track if we found the strategy
+    found_strategy = False
 
-    def dfs_traverse(node):
-        nonlocal ring_opening_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal found_strategy
 
-        if ring_opening_detected:
-            return  # Early return if already detected
-
+        # Look at reaction nodes
         if node["type"] == "reaction":
-            # Check if RingBreaker flag is set in metadata
-            if node.get("metadata", {}).get("RingBreaker", False):
-                print(f"Ring opening detected via RingBreaker flag in metadata")
-                ring_opening_detected = True
-                return
-
             try:
+                # Extract reaction SMILES
                 rsmi = node["metadata"]["rsmi"]
-
-                # Check for known ring opening reactions
-                ring_opening_reactions = [
-                    "Acetal hydrolysis to diol",
-                    "Acetal hydrolysis to aldehyde",
-                    "Ketal hydrolysis to ketone",
-                    "Retro-Diels-Alder from oxazole",
-                    "Ring opening of epoxide with amine",
-                ]
-
-                for rxn_type in ring_opening_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Ring opening detected: {rxn_type} in {rsmi}")
-                        ring_opening_detected = True
-                        return
-
-                # If no specific reaction type matched, check ring counts
                 reactants_smiles = rsmi.split(">")[0].split(".")
                 product_smiles = rsmi.split(">")[-1]
 
-                # Create molecules with error handling
-                reactant_mols = []
-                for r in reactants_smiles:
-                    mol = Chem.MolFromSmiles(r)
-                    if mol:
-                        reactant_mols.append(mol)
+                # Check if we have at least 2 reactants (convergent step)
+                if len(reactants_smiles) >= 2:
+                    # Check for isoxazole in product
+                    if checker.check_ring("isoxazole", product_smiles):
+                        print(f"Found isoxazole in product at depth {depth}")
 
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if not product_mol or not reactant_mols:
-                    return
+                        # Check if isoxazole is not present in all reactants
+                        isoxazole_in_all_reactants = all(
+                            checker.check_ring("isoxazole", smi) for smi in reactants_smiles
+                        )
 
-                # Count rings in each reactant and the product
-                reactants_ring_info = [(mol, mol.GetRingInfo().NumRings()) for mol in reactant_mols]
-                product_ring_count = product_mol.GetRingInfo().NumRings()
+                        if not isoxazole_in_all_reactants:
+                            print(f"Isoxazole not present in all reactants at depth {depth}")
 
-                # Check for common ring structures that might be opened
-                ring_types = [
-                    "oxirane",
-                    "aziridine",
-                    "cyclopropane",
-                    "oxetane",
-                    "azetidine",
-                    "cyclobutane",
-                    "tetrahydrofuran",
-                    "pyrrolidine",
-                    "cyclopentane",
-                    "tetrahydropyran",
-                    "piperidine",
-                    "cyclohexane",
-                ]
+                            # Check for alkyne in reactants
+                            alkyne_found = False
+                            for smi in reactants_smiles:
+                                if checker.check_fg("Alkyne", smi):
+                                    alkyne_found = True
+                                    print(f"Found alkyne-containing fragment at depth {depth}")
+                                    break
 
-                # Check if any reactant has more rings than the product
-                for mol, ring_count in reactants_ring_info:
-                    if ring_count > 0 and product_ring_count < ring_count:
-                        # Check if any specific ring type was present in reactant but not in product
-                        for ring_type in ring_types:
-                            if checker.check_ring(
-                                ring_type, Chem.MolToSmiles(mol)
-                            ) and not checker.check_ring(ring_type, product_smiles):
-                                print(
-                                    f"Ring opening detected: {ring_type} ring in reactant but not in product: {rsmi}"
+                            # Check for chloro-containing reactant or other potential isoxazole precursors
+                            chloro_or_precursor_found = False
+                            for smi in reactants_smiles:
+                                # Check for chloro groups
+                                if (
+                                    checker.check_fg("Primary halide", smi)
+                                    or checker.check_fg("Secondary halide", smi)
+                                    or checker.check_fg("Tertiary halide", smi)
+                                    or checker.check_fg("Aromatic halide", smi)
+                                ):
+                                    chloro_or_precursor_found = True
+                                    print(f"Found halide-containing fragment at depth {depth}")
+                                    break
+                                # Check for other common isoxazole precursors like oximes, nitriles, etc.
+                                if (
+                                    checker.check_fg("Nitrile", smi)
+                                    or checker.check_fg("Oxime", smi)
+                                    or checker.check_fg("Nitro group", smi)
+                                    or checker.check_fg("Azide", smi)
+                                ):
+                                    chloro_or_precursor_found = True
+                                    print(f"Found isoxazole precursor fragment at depth {depth}")
+                                    break
+
+                            # Check if this is a cycloaddition or related reaction
+                            is_cycloaddition = (
+                                checker.check_reaction("Huisgen 1,3 dipolar cycloaddition", rsmi)
+                                or checker.check_reaction(
+                                    "Huisgen alkyne-azide 1,3 dipolar cycloaddition", rsmi
                                 )
-                                ring_opening_detected = True
-                                return
+                                or checker.check_reaction(
+                                    "Huisgen alkene-azide 1,3 dipolar cycloaddition", rsmi
+                                )
+                            )
 
-                # Check total ring count as a fallback
-                total_reactant_rings = sum(count for _, count in reactants_ring_info)
-                if product_ring_count < total_reactant_rings:
-                    # This is a potential ring opening, but we need to verify it's not just
-                    # a reactant with rings that wasn't incorporated
+                            if is_cycloaddition:
+                                print(f"Found cycloaddition reaction at depth {depth}")
 
-                    # If there's only one reactant, it's definitely ring opening
-                    if len(reactant_mols) == 1:
-                        print(f"Ring opening detected (single reactant): {rsmi}")
-                        ring_opening_detected = True
-                    else:
-                        # For multiple reactants, check if the product contains atoms from all reactants
-                        # This is a simplified check - in a real scenario, you'd want to use atom mapping
-                        # to track exactly which atoms from which reactant end up in the product
-                        print(f"Potential ring opening detected (multiple reactants): {rsmi}")
-                        ring_opening_detected = True
+                            # If we have evidence of convergent isoxazole formation
+                            if (alkyne_found and chloro_or_precursor_found) or is_cycloaddition:
+                                print(
+                                    f"Found convergent isoxazole formation strategy at depth {depth}"
+                                )
+                                found_strategy = True
 
             except Exception as e:
-                print(f"Error in ring opening detection: {e}")
+                print(f"Error processing reaction: {e}")
 
-        # Process children
+        # Continue traversing the tree
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return ring_opening_detected
+
+    return found_strategy

@@ -2,159 +2,94 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves acylation of an aromatic amine.
+    This function detects a synthetic strategy where an acyl group undergoes
+    sequential transformations: trifluoroacetyl → carboxylic acid → amide →
+    thioamide → thiazole.
     """
-    acylation_found = False
+    # Track transformations
+    found_trifluoroacetyl = False
+    found_carboxylic_acid = False
+    found_amide = False
+    found_thioamide = False
+    found_thiazole = False
 
     def dfs_traverse(node):
-        nonlocal acylation_found
+        nonlocal found_trifluoroacetyl, found_carboxylic_acid, found_amide, found_thioamide, found_thiazole
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            try:
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                print(f"Examining reaction: {rsmi}")
+                product = rsmi.split(">")[-1]
+                product_mol = Chem.MolFromSmiles(product)
 
-                # Check for acylation reaction types directly
-                acylation_reactions = [
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    "Schotten-Baumann to ester",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acylation of primary amines",
-                    "Acylation of secondary amines",
-                    "Schotten-Baumann_amide",
-                ]
+                if product_mol:
+                    # Check for thiazole (depth 0)
+                    thiazole_pattern = Chem.MolFromSmarts("c1nc(*)sc1")
+                    if product_mol.HasSubstructMatch(thiazole_pattern):
+                        found_thiazole = True
+                        print("Found thiazole in product")
 
-                for reaction_type in acylation_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Found reaction type: {reaction_type}")
+                    # Check for thioamide (depth 1)
+                    thioamide_pattern = Chem.MolFromSmarts("[*]C(=S)[NH2]")
+                    if product_mol.HasSubstructMatch(thioamide_pattern):
+                        found_thioamide = True
+                        print("Found thioamide in product")
 
-                        # Correctly split the reaction SMILES
-                        parts = rsmi.split(">")
-                        if len(parts) >= 3:
-                            reactants_smiles = parts[0]
-                            products_smiles = parts[2]
+                    # Check for amide (depth 2)
+                    amide_pattern = Chem.MolFromSmarts("[*]C(=O)[NH2]")
+                    if product_mol.HasSubstructMatch(amide_pattern):
+                        found_amide = True
+                        print("Found amide in product")
 
-                            # Check if reactants contain aromatic amine
-                            reactants = reactants_smiles.split(".")
-                            for reactant in reactants:
-                                # Check for aniline or primary amine on benzene
-                                if checker.check_fg("Aniline", reactant) or (
-                                    checker.check_fg("Primary amine", reactant)
-                                    and checker.check_ring("benzene", reactant)
-                                ):
-                                    print(f"Found aromatic amine in reactant: {reactant}")
+                    # Check for carboxylic acid (depth 3)
+                    carboxylic_acid_pattern = Chem.MolFromSmarts("[*]C(=O)[OH]")
+                    if product_mol.HasSubstructMatch(carboxylic_acid_pattern):
+                        found_carboxylic_acid = True
+                        print("Found carboxylic acid in product")
 
-                                    # Check if product contains acylated amine
-                                    products = products_smiles.split(".")
-                                    for product in products:
-                                        # Check for amide connected to aromatic ring
-                                        if (
-                                            checker.check_fg("Primary amide", product)
-                                            or checker.check_fg("Secondary amide", product)
-                                            or checker.check_fg("Tertiary amide", product)
-                                        ) and checker.check_ring("benzene", product):
-                                            print(
-                                                f"Found acylated aromatic amine in product: {product}"
-                                            )
-                                            acylation_found = True
-                                            return
+                    # Check for trifluoroacetyl (depth 4)
+                    trifluoroacetyl_pattern = Chem.MolFromSmarts("[*]C(=O)C(F)(F)F")
+                    if product_mol.HasSubstructMatch(trifluoroacetyl_pattern):
+                        found_trifluoroacetyl = True
+                        print("Found trifluoroacetyl in product")
 
-                # Additional check for specific cases where the reaction might not be directly classified
-                parts = rsmi.split(">")
-                if len(parts) >= 3:
-                    reactants_smiles = parts[0]
-                    products_smiles = parts[2]
-
-                    reactants = reactants_smiles.split(".")
-                    products = products_smiles.split(".")
-
-                    # Check for aromatic amine in reactants and amide in products
-                    aromatic_amine_in_reactants = False
-                    for reactant in reactants:
-                        if checker.check_fg("Aniline", reactant) or (
-                            checker.check_fg("Primary amine", reactant)
-                            and checker.check_ring("benzene", reactant)
-                        ):
-                            aromatic_amine_in_reactants = True
-                            print(
-                                f"Found aromatic amine in reactant (additional check): {reactant}"
-                            )
-                            break
-
-                    if aromatic_amine_in_reactants:
-                        for product in products:
-                            if (
-                                (
-                                    checker.check_fg("Primary amide", product)
-                                    or checker.check_fg("Secondary amide", product)
-                                    or checker.check_fg("Tertiary amide", product)
-                                )
-                                and checker.check_ring("benzene", product)
-                                and not checker.check_fg("Aniline", product)
-                            ):
-                                print(
-                                    f"Found acylated aromatic amine in product (additional check): {product}"
-                                )
-                                acylation_found = True
-                                return
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    print(f"Acylation found: {acylation_found}")
-    return acylation_found
+
+    # Check if we found the complete transformation sequence
+    return (
+        found_trifluoroacetyl
+        and found_carboxylic_acid
+        and found_amide
+        and found_thioamide
+        and found_thiazole
+    )

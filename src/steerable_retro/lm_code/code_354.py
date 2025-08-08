@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,236 +54,118 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthesis strategy involving the coupling of a pyrazole-containing
-    fragment with a difluoromethylbenzene-containing fragment.
+    This function detects if the route includes a reductive amination step.
     """
-    has_pyrazole_reactant = False
-    has_difluoro_reactant = False
-    has_coupling = False
-
-    # More general patterns for difluorinated benzenes
-    difluoromethyl_pattern = Chem.MolFromSmarts("c-C(F)(F)")  # Difluoromethyl directly on benzene
-    difluorobenzene_pattern = Chem.MolFromSmarts("c1c(F)cc(F)cc1")  # 1,3-difluorobenzene
-    difluorobenzene_pattern2 = Chem.MolFromSmarts("c1cc(F)c(F)cc1")  # 1,2-difluorobenzene
-    difluorobenzene_pattern3 = Chem.MolFromSmarts("c1cc(F)cc(F)c1")  # 1,4-difluorobenzene
+    reductive_amination_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_pyrazole_reactant, has_difluoro_reactant, has_coupling
+        nonlocal reductive_amination_found
 
+        # Debug information about current node
+        indent = "  " * depth
         if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            # Check for pyrazole
-            if checker.check_ring("pyrazole", mol_smiles):
-                print(f"Found pyrazole in molecule: {mol_smiles}")
-                has_pyrazole_reactant = True
+            print(f"{indent}Examining molecule node: {node.get('smiles', 'No SMILES')[:30]}...")
+        else:
+            print(f"{indent}Examining reaction node")
 
-            # Check for difluorinated benzene structures
-            mol = Chem.MolFromSmiles(mol_smiles)
-            if mol:
-                if (
-                    mol.HasSubstructMatch(difluoromethyl_pattern)
-                    or mol.HasSubstructMatch(difluorobenzene_pattern)
-                    or mol.HasSubstructMatch(difluorobenzene_pattern2)
-                    or mol.HasSubstructMatch(difluorobenzene_pattern3)
-                ):
-                    print(f"Found difluorinated benzene in molecule: {mol_smiles}")
-                    has_difluoro_reactant = True
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Extract reaction SMILES
+            rsmi = node["metadata"]["rsmi"]
+            print(f"{indent}Analyzing reaction: {rsmi[:50]}...")
 
-                # Additional check for any benzene with two fluorines
-                fluorine_count = 0
-                for atom in mol.GetAtoms():
-                    if atom.GetSymbol() == "F":
-                        fluorine_count += 1
+            # Check for reductive amination reactions using the checker function
+            if (
+                checker.check_reaction("reductive amination with aldehyde", rsmi)
+                or checker.check_reaction("reductive amination with ketone", rsmi)
+                or checker.check_reaction("reductive amination with alcohol", rsmi)
+                or checker.check_reaction("Mignonac reaction", rsmi)
+            ):
 
-                if (
-                    fluorine_count >= 2 and mol_smiles.find("c") >= 0
-                ):  # Has at least 2 fluorines and aromatic carbon
-                    print(
-                        f"Found molecule with multiple fluorines and aromatic system: {mol_smiles}"
-                    )
-                    has_difluoro_reactant = True
-
-        elif node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
-
-                # Check if reactants contain the fragments separately
-                has_pyrazole_in_reactants = False
-                has_difluoro_in_reactants = False
-
-                for reactant_smiles in reactants_smiles:
-                    if checker.check_ring("pyrazole", reactant_smiles):
-                        has_pyrazole_in_reactants = True
-
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                    if reactant_mol:
-                        if (
-                            reactant_mol.HasSubstructMatch(difluoromethyl_pattern)
-                            or reactant_mol.HasSubstructMatch(difluorobenzene_pattern)
-                            or reactant_mol.HasSubstructMatch(difluorobenzene_pattern2)
-                            or reactant_mol.HasSubstructMatch(difluorobenzene_pattern3)
-                        ):
-                            has_difluoro_in_reactants = True
-
-                        # Count fluorines
-                        fluorine_count = 0
-                        for atom in reactant_mol.GetAtoms():
-                            if atom.GetSymbol() == "F":
-                                fluorine_count += 1
-
-                        if fluorine_count >= 2 and reactant_smiles.find("c") >= 0:
-                            has_difluoro_in_reactants = True
-
-                # Check if product contains both fragments
-                product_has_pyrazole = checker.check_ring("pyrazole", product_smiles)
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                product_has_difluoro = False
-
-                if product_mol:
-                    if (
-                        product_mol.HasSubstructMatch(difluoromethyl_pattern)
-                        or product_mol.HasSubstructMatch(difluorobenzene_pattern)
-                        or product_mol.HasSubstructMatch(difluorobenzene_pattern2)
-                        or product_mol.HasSubstructMatch(difluorobenzene_pattern3)
-                    ):
-                        product_has_difluoro = True
-
-                    # Count fluorines
-                    fluorine_count = 0
-                    for atom in product_mol.GetAtoms():
-                        if atom.GetSymbol() == "F":
-                            fluorine_count += 1
-
-                    if fluorine_count >= 2 and product_smiles.find("c") >= 0:
-                        product_has_difluoro = True
-
-                # Check for coupling reactions
-                is_coupling_reaction = (
-                    checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                    or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                    or checker.check_reaction("Stille reaction_aryl", rsmi)
-                    or checker.check_reaction("Negishi coupling", rsmi)
-                    or checker.check_reaction("Heck_terminal_vinyl", rsmi)
-                    or checker.check_reaction("Buchwald-Hartwig", rsmi)
-                    or checker.check_reaction(
-                        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
-                    )
+                print(
+                    f"{indent}✓ Detected reductive amination step via direct reaction check: {rsmi}"
                 )
+                reductive_amination_found = True
+                return
 
-                # Verify coupling: either explicit coupling reaction or fragments joined
-                if is_coupling_reaction:
-                    print(f"Found explicit coupling reaction at depth {depth}: {rsmi}")
-                    has_coupling = True
-                elif (
-                    has_pyrazole_in_reactants
-                    and has_difluoro_in_reactants
-                    and product_has_pyrazole
-                    and product_has_difluoro
-                ):
-                    print(
-                        f"Found reaction joining pyrazole and difluoro fragments at depth {depth}: {rsmi}"
+            # Alternative check if the specific reaction types are not detected
+            if not reductive_amination_found:
+                try:
+                    # Extract reactants and product
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
+
+                    print(f"{indent}Checking functional groups in reactants and products")
+
+                    # Check for carbonyl compounds in reactants
+                    has_aldehyde = any(checker.check_fg("Aldehyde", r) for r in reactants)
+                    has_ketone = any(checker.check_fg("Ketone", r) for r in reactants)
+                    has_formaldehyde = any(checker.check_fg("Formaldehyde", r) for r in reactants)
+
+                    # Check for amines in reactants
+                    has_primary_amine = any(checker.check_fg("Primary amine", r) for r in reactants)
+                    has_secondary_amine = any(
+                        checker.check_fg("Secondary amine", r) for r in reactants
                     )
-                    has_coupling = True
-                elif len(reactants_smiles) >= 2 and product_has_pyrazole and product_has_difluoro:
-                    # Check if one reactant has pyrazole and another has difluoro
-                    pyrazole_reactant = None
-                    difluoro_reactant = None
+                    has_ammonia = any(
+                        "N" in r and len(r) <= 3 for r in reactants
+                    )  # Simple check for ammonia
 
-                    for reactant_smiles in reactants_smiles:
-                        if checker.check_ring("pyrazole", reactant_smiles):
-                            pyrazole_reactant = reactant_smiles
+                    # Check for amine products
+                    has_secondary_amine_product = checker.check_fg("Secondary amine", product)
+                    has_tertiary_amine_product = checker.check_fg("Tertiary amine", product)
 
-                        reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                        if reactant_mol:
-                            has_difluoro = False
-                            if (
-                                reactant_mol.HasSubstructMatch(difluoromethyl_pattern)
-                                or reactant_mol.HasSubstructMatch(difluorobenzene_pattern)
-                                or reactant_mol.HasSubstructMatch(difluorobenzene_pattern2)
-                                or reactant_mol.HasSubstructMatch(difluorobenzene_pattern3)
-                            ):
-                                has_difluoro = True
+                    # Print debug info about functional groups
+                    print(
+                        f"{indent}Reactants - Aldehyde: {has_aldehyde}, Ketone: {has_ketone}, Formaldehyde: {has_formaldehyde}"
+                    )
+                    print(
+                        f"{indent}Reactants - Primary amine: {has_primary_amine}, Secondary amine: {has_secondary_amine}, Ammonia: {has_ammonia}"
+                    )
+                    print(
+                        f"{indent}Product - Secondary amine: {has_secondary_amine_product}, Tertiary amine: {has_tertiary_amine_product}"
+                    )
 
-                            # Count fluorines
-                            fluorine_count = 0
-                            for atom in reactant_mol.GetAtoms():
-                                if atom.GetSymbol() == "F":
-                                    fluorine_count += 1
-
-                            if fluorine_count >= 2 and reactant_smiles.find("c") >= 0:
-                                has_difluoro = True
-
-                            if has_difluoro:
-                                difluoro_reactant = reactant_smiles
-
+                    # If we have the right reactants and products, it's likely a reductive amination
                     if (
-                        pyrazole_reactant
-                        and difluoro_reactant
-                        and pyrazole_reactant != difluoro_reactant
+                        (has_aldehyde or has_ketone or has_formaldehyde)
+                        and (has_primary_amine or has_secondary_amine or has_ammonia)
+                        and (has_secondary_amine_product or has_tertiary_amine_product)
                     ):
+
                         print(
-                            f"Found reaction combining separate pyrazole and difluoro fragments at depth {depth}: {rsmi}"
+                            f"{indent}✓ Detected reductive amination based on functional groups: {rsmi}"
                         )
-                        has_coupling = True
+                        reductive_amination_found = True
+                        return
 
-                # Also check for amide coupling specifically
-                if "C(=O)" in rsmi and "N" in rsmi and len(reactants_smiles) >= 2:
-                    # One reactant has pyrazole, another has difluoro, product has both
-                    has_pyrazole_only = False
-                    has_difluoro_only = False
-
-                    for reactant_smiles in reactants_smiles:
-                        has_pyrazole = checker.check_ring("pyrazole", reactant_smiles)
-
-                        reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                        has_difluoro = False
-                        if reactant_mol:
-                            if (
-                                reactant_mol.HasSubstructMatch(difluoromethyl_pattern)
-                                or reactant_mol.HasSubstructMatch(difluorobenzene_pattern)
-                                or reactant_mol.HasSubstructMatch(difluorobenzene_pattern2)
-                                or reactant_mol.HasSubstructMatch(difluorobenzene_pattern3)
-                            ):
-                                has_difluoro = True
-
-                            # Count fluorines
-                            fluorine_count = 0
-                            for atom in reactant_mol.GetAtoms():
-                                if atom.GetSymbol() == "F":
-                                    fluorine_count += 1
-
-                            if fluorine_count >= 2 and reactant_smiles.find("c") >= 0:
-                                has_difluoro = True
-
-                        if has_pyrazole and not has_difluoro:
-                            has_pyrazole_only = True
-                        elif has_difluoro and not has_pyrazole:
-                            has_difluoro_only = True
-
-                    if (
-                        has_pyrazole_only
-                        and has_difluoro_only
-                        and product_has_pyrazole
-                        and product_has_difluoro
-                    ):
-                        print(
-                            f"Found amide coupling joining pyrazole and difluoro fragments at depth {depth}: {rsmi}"
+                    # Check for imine intermediates that might indicate reductive amination
+                    if not reductive_amination_found:
+                        has_imine_reactant = any(
+                            checker.check_fg("Substituted imine", r)
+                            or checker.check_fg("Unsubstituted imine", r)
+                            for r in reactants
                         )
-                        has_coupling = True
 
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                        if has_imine_reactant and (
+                            has_secondary_amine_product or has_tertiary_amine_product
+                        ):
+                            print(
+                                f"{indent}✓ Detected reductive amination via imine reduction: {rsmi}"
+                            )
+                            reductive_amination_found = True
+                            return
 
-        # Traverse children
+                except Exception as e:
+                    print(f"{indent}Error analyzing reaction: {e}")
+                    print(f"{indent}Reaction SMILES: {rsmi}")
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
+    print("Starting route traversal to find reductive amination steps...")
     dfs_traverse(route)
 
-    print(
-        f"Results: pyrazole={has_pyrazole_reactant}, difluoro={has_difluoro_reactant}, coupling={has_coupling}"
-    )
-    return has_pyrazole_reactant and has_difluoro_reactant and has_coupling
+    print(f"Reductive amination found in route: {reductive_amination_found}")
+    return reductive_amination_found

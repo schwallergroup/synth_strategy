@@ -2,56 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy
-    rather than a convergent one. Linear synthesis is characterized by
-    each reaction having only one non-commercial reactant.
+    This function detects a synthetic strategy involving O-alkylation of an aromatic hydroxyl
+    group, typically used as a protection/modification strategy.
     """
-    is_linear = True
+    found_o_alkylation = False
+    found_hydroxyl_aromatic = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+    def dfs_traverse(node):
+        nonlocal found_o_alkylation, found_hydroxyl_aromatic
 
         if node["type"] == "reaction":
-            # Count non-commercial reactants
-            non_commercial_count = 0
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    non_commercial_count += 1
+                # Check for aromatic hydroxyl pattern
+                hydroxyl_aromatic_pattern = Chem.MolFromSmarts("[c][OH]")
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(hydroxyl_aromatic_pattern):
+                        found_hydroxyl_aromatic = True
+                        print("Found aromatic hydroxyl:", reactant)
 
-            # If more than one non-commercial reactant, it's not linear
-            if non_commercial_count > 1:
-                print(
-                    f"Found convergent step at depth {depth} with {non_commercial_count} non-commercial reactants"
-                )
-                is_linear = False
+                # Check for O-alkylation pattern
+                if found_hydroxyl_aromatic:
+                    alkylated_pattern = Chem.MolFromSmarts("[c][O][C]")
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol and product_mol.HasSubstructMatch(alkylated_pattern):
+                        found_o_alkylation = True
+                        print("Found O-alkylation")
 
-        # Process children
+                # Also check for dealkylation (reverse direction)
+                if not found_o_alkylation:
+                    alkylated_pattern = Chem.MolFromSmarts("[c][O][C]")
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(alkylated_pattern):
+                            product_mol = Chem.MolFromSmiles(product)
+                            if product_mol and product_mol.HasSubstructMatch(
+                                hydroxyl_aromatic_pattern
+                            ):
+                                found_o_alkylation = True
+                                print("Found O-dealkylation (protection removal)")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    return is_linear
+    strategy_detected = found_o_alkylation and found_hydroxyl_aromatic
+
+    if strategy_detected:
+        print("Detected O-alkylation protection strategy")
+
+    return strategy_detected

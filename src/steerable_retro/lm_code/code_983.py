@@ -2,145 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route includes a late-stage amide to nitrile conversion.
-    Late stage means in the first half of the synthesis (low depth in retrosynthetic tree).
+    This function detects if the synthetic route involves esterification
+    of a carboxylic acid to form a methyl ester.
     """
-    # First pass: calculate the maximum depth
-    max_depth = 0
+    esterification_detected = False
 
-    def calculate_max_depth(node, depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, depth)
-        for child in node.get("children", []):
-            calculate_max_depth(child, depth + 1)
+    def dfs_traverse(node):
+        nonlocal esterification_detected
 
-    calculate_max_depth(route)
-    print(f"Maximum depth of synthesis route: {max_depth}")
-
-    # Second pass: detect amide to nitrile conversion
-    amide_to_nitrile_detected = False
-
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_to_nitrile_detected
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if any reactant contains amide and product contains nitrile
-            has_amide = False
-            for reactant in reactants:
-                if (
-                    checker.check_fg("Primary amide", reactant)
-                    or checker.check_fg("Secondary amide", reactant)
-                    or checker.check_fg("Tertiary amide", reactant)
-                ):
-                    has_amide = True
-                    print(f"Found amide in reactant: {reactant}")
-                    break
+            carboxylic_acid_pattern = Chem.MolFromSmarts("C(=O)[OH]")
+            methyl_ester_pattern = Chem.MolFromSmarts("C(=O)OC")
 
-            has_nitrile = checker.check_fg("Nitrile", product)
-            if has_nitrile:
-                print(f"Found nitrile in product: {product}")
+            try:
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-            # Check if this is an amide to nitrile conversion
-            if has_amide and has_nitrile:
-                print(f"Potential amide to nitrile conversion at depth {depth}")
+                # Check if product has methyl ester
+                if product_mol and product_mol.HasSubstructMatch(methyl_ester_pattern):
+                    # Check if any reactant has carboxylic acid
+                    for reactant_smiles in reactants_smiles:
+                        try:
+                            reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                            if reactant_mol and reactant_mol.HasSubstructMatch(
+                                carboxylic_acid_pattern
+                            ):
+                                esterification_detected = True
+                                print("Detected esterification of carboxylic acid to methyl ester")
+                                break
+                        except:
+                            continue
+            except:
+                pass
 
-                # Check for dehydration reactions that could convert amide to nitrile
-                is_dehydration = False
-
-                # Try to check if this is a dehydration reaction (amide to nitrile)
-                # This is typically done with dehydrating agents like POCl3, SOCl2, P2O5, etc.
-                if checker.check_reaction("Dehydration", rsmi):
-                    is_dehydration = True
-                    print("Confirmed dehydration reaction")
-
-                # If we can't identify the specific reaction type, check if the reaction
-                # involves removal of water/oxygen which is characteristic of amide to nitrile conversion
-                if not is_dehydration:
-                    # Count O atoms in reactants and products to check for oxygen loss
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-                    product_mol = Chem.MolFromSmiles(product)
-
-                    if all(reactant_mols) and product_mol:
-                        reactant_o_count = sum(
-                            atom.GetSymbol() == "O"
-                            for mol in reactant_mols
-                            for atom in mol.GetAtoms()
-                        )
-                        product_o_count = sum(
-                            atom.GetSymbol() == "O" for atom in product_mol.GetAtoms()
-                        )
-
-                        if reactant_o_count > product_o_count:
-                            is_dehydration = True
-                            print(
-                                f"Oxygen loss detected: {reactant_o_count} in reactants, {product_o_count} in product"
-                            )
-
-                if is_dehydration:
-                    # Only consider it late-stage if in first half of synthesis
-                    if depth < max_depth / 2:
-                        print(
-                            f"Late-stage amide to nitrile conversion detected at depth {depth} (max depth: {max_depth})"
-                        )
-                        amide_to_nitrile_detected = True
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: {amide_to_nitrile_detected}")
-
-    return amide_to_nitrile_detected
+    return esterification_detected

@@ -2,70 +2,111 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis employs multiple different protecting groups
-    (e.g., TBDMS for phenol and THP for heterocycles).
+    Detects late-stage sulfonamide formation in the synthetic route.
     """
-    protecting_groups = {"TBDMS": False, "THP": False}
+    sulfonamide_found = False
+    late_stage = False
+    max_depth_found = 0
+    sulfonamide_depth = float("inf")
 
-    def dfs_traverse(node, depth=0):
-        nonlocal protecting_groups
+    def dfs(node, depth=0):
+        nonlocal sulfonamide_found, late_stage, max_depth_found, sulfonamide_depth
 
-        if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
+        # Update max depth to determine late vs early stage
+        max_depth_found = max(max_depth_found, depth)
+
+        if node["type"] == "mol":
+            # Check if molecule contains sulfonamide group
+            if checker.check_fg("Sulfonamide", node["smiles"]):
+                print(f"Found sulfonamide group in molecule at depth {depth}: {node['smiles']}")
+                sulfonamide_found = True
+                sulfonamide_depth = min(sulfonamide_depth, depth)
+
+        elif node["type"] == "reaction":
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
 
-                try:
-                    prod_mol = Chem.MolFromSmiles(product)
+                # Check for sulfonamide formation reactions
+                if checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+                ) or checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
+                ):
+                    print(f"Found sulfonamide formation reaction at depth {depth}: {rsmi}")
+                    sulfonamide_found = True
+                    sulfonamide_depth = min(sulfonamide_depth, depth)
+            except Exception as e:
+                print(f"Error in sulfonamide check: {e}")
 
-                    # Check for TBDMS protection
-                    tbdms_patt = Chem.MolFromSmarts("[Si]([C])([C])[C]")
-                    if prod_mol.HasSubstructMatch(tbdms_patt):
-                        print(f"TBDMS protecting group detected at depth {depth}")
-                        protecting_groups["TBDMS"] = True
-
-                    # Check for THP protection
-                    thp_patt = Chem.MolFromSmarts("[CH]1[CH2][CH2][CH2][CH2]O1")
-                    if prod_mol.HasSubstructMatch(thp_patt):
-                        print(f"THP protecting group detected at depth {depth}")
-                        protecting_groups["THP"] = True
-                except Exception as e:
-                    print(f"Error in SMILES processing: {e}")
-
-        # Traverse children
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs(child, depth + 1)
 
-    # Start traversal from root
-    dfs_traverse(route)
+    dfs(route)
 
-    # Check if multiple protecting groups were used
-    multiple_pg = sum(protecting_groups.values()) >= 2
-    if multiple_pg:
-        print(
-            f"Multiple protecting groups detected: {[pg for pg, used in protecting_groups.items() if used]}"
-        )
+    # Determine if sulfonamide formation is late-stage
+    # Late stage is typically in the first third of the synthesis depth
+    if max_depth_found > 0 and sulfonamide_found:
+        if sulfonamide_depth <= 2:  # Absolute measure: depth <= 2 is late stage
+            late_stage = True
+        elif max_depth_found > 6:  # Relative measure for deeper trees
+            late_stage = sulfonamide_depth <= max_depth_found // 3
+        else:
+            late_stage = sulfonamide_depth <= 2  # Default for medium-sized trees
 
-    return multiple_pg
+    print(
+        f"Late-stage sulfonamide formation detected: {late_stage} (sulfonamide found: {sulfonamide_found}, depth: {sulfonamide_depth}, max depth: {max_depth_found})"
+    )
+    return late_stage

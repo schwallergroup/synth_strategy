@@ -2,114 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a late-stage nitro reduction.
-    Late stage means it occurs at a low depth in the retrosynthetic tree.
-
-    In retrosynthesis, nitro reduction appears as:
-    Product (with amine) -> Reactant (with nitro)
+    This function detects borylation reactions that prepare coupling partners.
+    It looks for reactions converting aryl halides to boronic esters.
     """
-    nitro_reduction_found = False
-    nitro_reduction_depth = float("inf")
+    borylation_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal nitro_reduction_found, nitro_reduction_depth
+    def dfs_traverse(node):
+        nonlocal borylation_found
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Check for aryl halide pattern in reactants
+            aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
+
+            # Check for boronic ester pattern in product
+            boronic_ester_pattern = Chem.MolFromSmarts("[c][B]1[O][C]([C])([C])[C]([C])([C])[O]1")
+
+            has_aryl_halide = False
+
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(aryl_halide_pattern):
+                        has_aryl_halide = True
+                        break
+                except:
+                    continue
+
             try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                product_mol = Chem.MolFromSmiles(product)
+                has_boronic_ester = product_mol and product_mol.HasSubstructMatch(
+                    boronic_ester_pattern
+                )
+            except:
+                has_boronic_ester = False
 
-                # Check if this is a nitro reduction reaction
-                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
-                    print(f"Nitro reduction reaction detected at depth {depth}")
-                    nitro_reduction_found = True
-                    nitro_reduction_depth = min(nitro_reduction_depth, depth)
-                else:
-                    # Alternative check: look for amine in product and nitro in reactants
-                    product_has_amine = (
-                        checker.check_fg("Primary amine", product_smiles)
-                        or checker.check_fg("Secondary amine", product_smiles)
-                        or checker.check_fg("Tertiary amine", product_smiles)
-                        or checker.check_fg("Aniline", product_smiles)
-                    )
+            if has_aryl_halide and has_boronic_ester:
+                print(f"Found borylation reaction: {rsmi}")
+                borylation_found = True
 
-                    if product_has_amine:
-                        for reactant_smiles in reactants_smiles:
-                            if checker.check_fg("Nitro group", reactant_smiles):
-                                # Verify this is likely a nitro reduction by checking atom mapping
-                                product_mol = Chem.MolFromSmiles(product_smiles)
-                                reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-
-                                if product_mol and reactant_mol:
-                                    print(f"Potential nitro reduction found at depth {depth}")
-                                    print(f"Product: {product_smiles}")
-                                    print(f"Reactant with nitro: {reactant_smiles}")
-                                    nitro_reduction_found = True
-                                    nitro_reduction_depth = min(nitro_reduction_depth, depth)
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Consider it late stage if it's in the first few steps of the synthesis (depth < 3)
-    is_late_stage = nitro_reduction_found and nitro_reduction_depth < 3
-    print(f"Nitro reduction found: {nitro_reduction_found}, at depth: {nitro_reduction_depth}")
-    print(f"Is late stage: {is_late_stage}")
-
-    return is_late_stage
+    print(f"Borylation preparation found: {borylation_found}")
+    return borylation_found

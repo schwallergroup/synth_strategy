@@ -2,71 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if an ester is converted to an amide during the synthesis.
+    This function detects the coupling of two aromatic fragments via an amine linkage.
     """
-    ester_to_amide_detected = False
+    aromatic_coupling_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal ester_to_amide_detected
+    def dfs_traverse(node):
+        nonlocal aromatic_coupling_detected
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for ester in reactants
-                ester_pattern = Chem.MolFromSmarts("C(=O)OC")
-                ester_found = False
-                for reactant in reactants:
-                    if (
-                        reactant
-                        and Chem.MolFromSmiles(reactant)
-                        and Chem.MolFromSmiles(reactant).HasSubstructMatch(ester_pattern)
-                    ):
-                        ester_found = True
-                        break
+            # Check if we have at least 2 reactants
+            if len(reactants_smiles) >= 2:
+                # Check if both reactants have aromatic rings
+                aromatic_reactants = 0
+                for reactant_smiles in reactants_smiles:
+                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                    if reactant_mol:
+                        aromatic_pattern = Chem.MolFromSmarts("c1ccccc1")
+                        if reactant_mol.HasSubstructMatch(aromatic_pattern):
+                            aromatic_reactants += 1
 
-                # Check for amide in product
-                amide_pattern = Chem.MolFromSmarts("C(=O)N")
-                amide_found = False
-                if (
-                    product
-                    and Chem.MolFromSmiles(product)
-                    and Chem.MolFromSmiles(product).HasSubstructMatch(amide_pattern)
-                ):
-                    amide_found = True
-
-                if ester_found and amide_found:
-                    print("Ester to amide conversion detected at depth", depth)
-                    ester_to_amide_detected = True
+                # If we have at least 2 aromatic reactants and the product has an aromatic amine
+                if aromatic_reactants >= 2:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol:
+                        aromatic_amine_pattern = Chem.MolFromSmarts("c[NH]c")
+                        if product_mol.HasSubstructMatch(aromatic_amine_pattern):
+                            print(f"Aromatic amine coupling detected in reaction: {rsmi}")
+                            aromatic_coupling_detected = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Call dfs_traverse on the root node
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return ester_to_amide_detected
+    return aromatic_coupling_detected

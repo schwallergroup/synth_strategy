@@ -2,62 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthesis route that includes nitrile hydrolysis to form a carboxylic acid
-    in the final step.
+    Detects if the synthetic route involves a convergent step where two complex fragments
+    are joined via ester formation.
     """
-    has_nitrile_hydrolysis = False
+    convergent_ester_found = False
 
-    # Define SMARTS patterns
-    nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
-    carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
+    def dfs_traverse(node, depth=0):
+        nonlocal convergent_ester_found
 
-    def dfs_traverse(node):
-        nonlocal has_nitrile_hydrolysis
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and node.get("children", []):
-            # Check if this is the first reaction (depth 0)
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check for nitrile hydrolysis
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(carboxylic_acid_pattern):
+            # Check if this is an ester formation reaction
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                ester_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#8]-[#6]")
+                if product_mol.HasSubstructMatch(ester_pattern):
+                    # Check if we have at least two complex reactants
+                    complex_reactants = 0
                     for reactant in reactants:
                         reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(nitrile_pattern):
-                            has_nitrile_hydrolysis = True
-                            break
+                        if (
+                            reactant_mol and reactant_mol.GetNumAtoms() > 6
+                        ):  # Arbitrary threshold for "complex"
+                            complex_reactants += 1
 
-        # Traverse children
+                    if complex_reactants >= 2:
+                        convergent_ester_found = True
+                        print(f"Convergent ester formation detected at depth {depth}")
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(f"Nitrile to acid via hydrolysis: {has_nitrile_hydrolysis}")
-
-    return has_nitrile_hydrolysis
+    return convergent_ester_found

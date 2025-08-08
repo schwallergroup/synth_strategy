@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,89 +54,49 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects ring formation in the early stages of synthesis (high depth).
+    Detects a strategy involving ketone reduction to alcohol.
     """
-    found_ring_formation = False
-
-    # List of common ring types to check
-    ring_types = [
-        "furan",
-        "pyran",
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "cyclopropane",
-        "cyclobutane",
-        "cyclopentane",
-        "cyclohexane",
-        "benzene",
-        "indole",
-        "quinoline",
-    ]
-
-    # List of common ring-forming reaction types
-    ring_forming_reactions = [
-        "Diels-Alder",
-        "Paal-Knorr pyrrole synthesis",
-        "Pictet-Spengler",
-        "Fischer indole",
-        "Friedlaender chinoline",
-        "benzofuran",
-        "benzothiophene",
-        "indole",
-        "oxadiazole",
-    ]
+    has_ketone_reduction = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_ring_formation
+        nonlocal has_ketone_reduction
 
-        if node["type"] == "reaction" and depth >= 4:  # Early in synthesis
+        if node["type"] == "reaction":
             try:
-                # Extract reactants and product
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants_part = rsmi.split(">")[0]
+                products_part = rsmi.split(">")[-1]
 
-                # Convert to RDKit molecules
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+                # Check if this is a ketone reduction reaction
+                if checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi):
+                    print(f"Detected ketone reduction reaction at depth {depth}")
+                    has_ketone_reduction = True
+                else:
+                    # Alternative check using functional groups
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
+                    product_mol = Chem.MolFromSmiles(products_part)
 
-                if not product or not all(reactants):
-                    return
-
-                # Check if this is a known ring-forming reaction
-                for rxn_type in ring_forming_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Detected early ring-forming reaction: {rxn_type} at depth {depth}")
-                        found_ring_formation = True
-                        return
-
-                # Count rings in reactants and product
-                reactant_rings = sum([r.GetRingInfo().NumRings() for r in reactants])
-                product_rings = product.GetRingInfo().NumRings()
-
-                if product_rings > reactant_rings:
-                    print(f"Detected early ring formation at depth {depth}")
-                    print(
-                        f"Rings in reactants: {reactant_rings}, Rings in product: {product_rings}"
-                    )
-
-                    # Check which specific rings are formed
-                    for ring_type in ring_types:
-                        # Check if ring exists in product but not in any reactant
-                        ring_in_product = checker.check_ring(ring_type, product_smiles)
-                        ring_in_reactants = any(
-                            checker.check_ring(ring_type, r) for r in reactants_smiles
+                    if all(reactant_mols) and product_mol:
+                        # Check for ketone in reactants
+                        has_ketone_in_reactants = any(
+                            checker.check_fg("Ketone", Chem.MolToSmiles(mol))
+                            for mol in reactant_mols
                         )
 
-                        if ring_in_product and not ring_in_reactants:
-                            print(f"Formed {ring_type} ring at depth {depth}")
-                            found_ring_formation = True
+                        # Check for alcohol in product
+                        has_alcohol_in_product = checker.check_fg(
+                            "Secondary alcohol", products_part
+                        )
+
+                        if has_ketone_in_reactants and has_alcohol_in_product:
+                            # Additional check to ensure it's not a false positive
+                            # This is a reduction reaction converting ketone to alcohol
+                            print(
+                                f"Detected ketone reduction via functional group analysis at depth {depth}"
+                            )
+                            has_ketone_reduction = True
             except Exception as e:
-                print(f"Error analyzing reaction at depth {depth}: {e}")
+                print(f"Error analyzing ketone reduction: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -142,5 +105,5 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Early ring formation detected: {found_ring_formation}")
-    return found_ring_formation
+    print(f"Ketone reduction strategy detected: {has_ketone_reduction}")
+    return has_ketone_reduction

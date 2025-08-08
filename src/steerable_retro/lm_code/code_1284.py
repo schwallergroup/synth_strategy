@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,90 +54,127 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects N-alkylation as a key bond-forming step in the synthesis.
+    This function detects a convergent synthesis strategy where multiple complex fragments
+    are joined in the late stages of synthesis.
     """
-    # Track if we found N-alkylation
-    found_n_alkylation = False
-    target_mol = route["smiles"]
-    print(f"Target molecule: {target_mol}")
+    has_convergent_synthesis = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_n_alkylation
+        nonlocal has_convergent_synthesis
 
-        if node["type"] == "reaction" and depth <= 3:  # Focus on late-stage reactions
-            try:
-                rsmi = node["metadata"].get("rsmi", "")
-                if not rsmi:
-                    print(f"No reaction SMILES at depth {depth}")
-                    return
+        if node["type"] == "reaction" and depth <= 3:  # Late stage (expanded depth threshold)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
                 print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                # Check for N-alkylation reaction types directly
-                n_alkylation_reactions = [
-                    "N-alkylation of primary amines with alkyl halides",
-                    "N-alkylation of secondary amines with alkyl halides",
-                    "Reductive amination with aldehyde",
-                    "Reductive amination with ketone",
-                    "Reductive amination with alcohol",
-                    "Methylation",
-                    "N-methylation",
-                    "Eschweiler-Clarke Primary Amine Methylation",
-                    "Eschweiler-Clarke Secondary Amine Methylation",
-                    "Reductive methylation of primary amine with formaldehyde",
-                ]
+                # Check if we have multiple reactants
+                if len(reactants) >= 2:
+                    complex_reactants = 0
+                    complex_reactant_smiles = []
 
-                for rxn_type in n_alkylation_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Found N-alkylation reaction ({rxn_type}) at depth {depth}: {rsmi}")
-                        found_n_alkylation = True
-                        return
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            # Consider a reactant complex if it has many atoms OR is a key reactive fragment
+                            if (
+                                mol.GetNumHeavyAtoms() >= 8
+                                or checker.check_fg("Formaldehyde", reactant)
+                                or checker.check_fg("Aldehyde", reactant)
+                            ):
+                                complex_reactants += 1
+                                complex_reactant_smiles.append(reactant)
+                                print(
+                                    f"Found complex reactant: {reactant} with {mol.GetNumHeavyAtoms()} heavy atoms"
+                                )
 
-                # If specific reaction check fails, try checking reactants and products
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+                    # Check for coupling reaction types
+                    is_coupling = False
+                    coupling_reactions = [
+                        "Suzuki",
+                        "Negishi",
+                        "Stille",
+                        "Heck",
+                        "Sonogashira",
+                        "Buchwald-Hartwig",
+                        "N-arylation",
+                        "Schotten-Baumann to ester",
+                        "Williamson Ether Synthesis",
+                        "Acylation of Nitrogen Nucleophiles",
+                        "Ugi reaction",
+                        "Mitsunobu",
+                        "Chan-Lam",
+                        "reductive amination",
+                        "Eschweiler-Clarke Primary Amine Methylation",
+                        "Reductive methylation of primary amine with formaldehyde",
+                    ]
 
-                # Check if any reactant is an amine (primary or secondary)
-                has_amine = False
-                for reactant in reactants_str.split("."):
-                    if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                        "Secondary amine", reactant
+                    for rxn_type in coupling_reactions:
+                        if checker.check_reaction(rxn_type, rsmi):
+                            print(f"Confirmed {rxn_type} coupling reaction")
+                            is_coupling = True
+                            break
+
+                    # Check for N-methylation reactions specifically
+                    is_n_methylation = False
+                    if not is_coupling:
+                        methylation_reactions = [
+                            "N-methylation",
+                            "Methylation with MeI_primary",
+                            "Methylation with MeI_secondary",
+                            "Methylation with DMS",
+                        ]
+                        for rxn_type in methylation_reactions:
+                            if checker.check_reaction(rxn_type, rsmi):
+                                print(f"Confirmed {rxn_type} reaction")
+                                is_n_methylation = True
+                                break
+
+                    # Check for convergent synthesis pattern
+                    # Either multiple complex reactants OR one complex reactant with a coupling/methylation reaction
+                    if complex_reactants >= 2 or (
+                        complex_reactants >= 1 and (is_coupling or is_n_methylation)
                     ):
-                        has_amine = True
-                        print(f"Found amine in reactant: {reactant}")
-                        break
+                        # Verify that fragments are actually joined in the product
+                        product_mol = Chem.MolFromSmiles(product)
 
-                # Check if any reactant is an alkyl halide or carbonyl (for reductive amination)
-                has_alkylating_agent = False
-                for reactant in reactants_str.split("."):
-                    if (
-                        checker.check_fg("Primary halide", reactant)
-                        or checker.check_fg("Secondary halide", reactant)
-                        or checker.check_fg("Tertiary halide", reactant)
-                        or checker.check_fg("Aldehyde", reactant)
-                        or checker.check_fg("Ketone", reactant)
-                    ):
-                        has_alkylating_agent = True
-                        print(f"Found alkylating agent in reactant: {reactant}")
-                        break
+                        if product_mol and product_mol.GetNumHeavyAtoms() > 10:
+                            print(
+                                f"Found convergent synthesis at depth {depth} with {complex_reactants} complex reactants"
+                            )
+                            print(f"Product has {product_mol.GetNumHeavyAtoms()} heavy atoms")
 
-                # Check if product has a more substituted amine
-                has_more_substituted_amine = False
-                if checker.check_fg("Secondary amine", product_str) or checker.check_fg(
-                    "Tertiary amine", product_str
-                ):
-                    has_more_substituted_amine = True
-                    print(f"Found more substituted amine in product: {product_str}")
+                            # Check if this is a simple protection/deprotection
+                            simple_transformations = ["Protection", "Deprotection"]
+                            is_simple = False
 
-                # If we have an amine, an alkylating agent, and the product has a more substituted amine,
-                # it's likely an N-alkylation
-                if has_amine and has_alkylating_agent and has_more_substituted_amine:
-                    print(
-                        f"Found N-alkylation by functional group analysis at depth {depth}: {rsmi}"
-                    )
-                    found_n_alkylation = True
-            except Exception as e:
-                print(f"Error analyzing reaction at depth {depth}: {e}")
+                            for rxn_type in simple_transformations:
+                                if checker.check_reaction(rxn_type, rsmi):
+                                    print(
+                                        f"This is a simple {rxn_type} reaction, not convergent synthesis"
+                                    )
+                                    is_simple = True
+                                    break
+
+                            if not is_simple:
+                                # Check if there's a significant change in the molecule
+                                # For methylation reactions, check if an amine is being methylated
+                                if is_n_methylation:
+                                    for reactant in reactants:
+                                        if checker.check_fg(
+                                            "Primary amine", reactant
+                                        ) or checker.check_fg("Secondary amine", reactant):
+                                            print(
+                                                "Confirmed amine methylation in convergent synthesis"
+                                            )
+                                            has_convergent_synthesis = True
+                                            break
+                                else:
+                                    # Mark as convergent synthesis if it meets our criteria
+                                    has_convergent_synthesis = True
+                                    print("Confirmed convergent synthesis strategy")
 
         # Continue traversing
         for child in node.get("children", []):
@@ -142,6 +182,5 @@ def main(route):
 
     # Start traversal
     dfs_traverse(route)
-    print(f"N-alkylation found: {found_n_alkylation}")
-
-    return found_n_alkylation
+    print(f"Final result: {has_convergent_synthesis}")
+    return has_convergent_synthesis

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,120 +54,118 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy involving formation of a new heterocyclic ring
-    (specifically looking for ring count increase between reactants and products).
+    Detects a synthetic strategy involving ketone to amine conversion via oxime intermediate
+    in the early stages of synthesis.
     """
-    ring_formation_detected = False
 
-    def has_heterocyclic_ring(product_mol, reactants_mols):
-        """Check if product has heterocyclic rings not present in reactants"""
-        # Get all rings in product
-        product_rings = []
-        ri = product_mol.GetRingInfo()
-        for ring in ri.AtomRings():
-            ring_atoms = [product_mol.GetAtomWithIdx(idx) for idx in ring]
-            # Check if ring contains heteroatom (not C or H)
-            if any(atom.GetSymbol() not in ["C", "H"] for atom in ring_atoms):
-                product_rings.append(ring)
-
-        if not product_rings:
-            return False
-
-        # Check if any heterocyclic ring in product is not in reactants
-        for reactant in reactants_mols:
-            reactant_rings = []
-            ri = reactant.GetRingInfo()
-            for ring in ri.AtomRings():
-                ring_atoms = [reactant.GetAtomWithIdx(idx) for idx in ring]
-                if any(atom.GetSymbol() not in ["C", "H"] for atom in ring_atoms):
-                    reactant_rings.append(ring)
-
-            # If reactant has no heterocyclic rings, continue to next reactant
-            if not reactant_rings:
-                continue
-
-            # Check if all product rings are in reactants
-            all_rings_in_reactants = True
-            for p_ring in product_rings:
-                p_ring_smiles = Chem.MolFragmentToSmiles(product_mol, p_ring)
-                ring_in_reactant = False
-                for r_ring in reactant_rings:
-                    r_ring_smiles = Chem.MolFragmentToSmiles(reactant, r_ring)
-                    if p_ring_smiles == r_ring_smiles:
-                        ring_in_reactant = True
-                        break
-                if not ring_in_reactant:
-                    all_rings_in_reactants = False
-                    break
-
-            if all_rings_in_reactants:
+    # Helper function to compare molecules ignoring atom mapping
+    def compare_molecules_ignoring_mapping(smiles1, smiles2):
+        try:
+            # Remove atom mapping and convert to canonical SMILES
+            mol1 = Chem.MolFromSmiles(smiles1)
+            mol2 = Chem.MolFromSmiles(smiles2)
+            if mol1 is None or mol2 is None:
                 return False
 
-        # If we get here, product has heterocyclic rings not in reactants
-        return True
+            # Clear atom mapping
+            for atom in mol1.GetAtoms():
+                atom.SetAtomMapNum(0)
+            for atom in mol2.GetAtoms():
+                atom.SetAtomMapNum(0)
 
-    def dfs_traverse(node):
-        nonlocal ring_formation_detected
+            # Get canonical SMILES without atom mapping
+            canon_smiles1 = Chem.MolToSmiles(mol1, isomericSmiles=True)
+            canon_smiles2 = Chem.MolToSmiles(mol2, isomericSmiles=True)
 
-        if node["type"] == "reaction":
+            print(f"Comparing canonical SMILES: {canon_smiles1} vs {canon_smiles2}")
+            # Compare the canonical SMILES
+            return canon_smiles1 == canon_smiles2
+        except Exception as e:
+            print(f"Error comparing molecules: {e}")
+            return False
+
+    # Track oxime formation and reduction with their depths
+    oxime_formation = {"found": False, "depth": 0, "product_smiles": ""}
+    oxime_reduction = {"found": False, "depth": 0, "reactant_smiles": ""}
+
+    def dfs_traverse(node, depth=0):
+        if node.get("type") == "reaction":
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Convert to RDKit molecules
-                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for oxime formation
+                if any(checker.check_fg("Ketone", r) for r in reactants) and checker.check_fg(
+                    "Oxime", product
+                ):
+                    print(f"Found oxime formation at depth {depth}")
+                    print(f"Reactants: {reactants}")
+                    print(f"Product: {product}")
+                    oxime_formation["found"] = True
+                    oxime_formation["depth"] = depth
+                    oxime_formation["product_smiles"] = product
 
-                if all(reactants_mols) and product_mol:
-                    # Count rings in reactants and product
-                    reactants_ring_count = sum(
-                        [mol.GetRingInfo().NumRings() for mol in reactants_mols]
-                    )
-                    product_ring_count = product_mol.GetRingInfo().NumRings()
+                # Check for oxime reduction
+                if any(checker.check_fg("Oxime", r) for r in reactants) and checker.check_fg(
+                    "Primary amine", product
+                ):
+                    print(f"Found oxime reduction at depth {depth}")
+                    print(f"Reactants: {reactants}")
+                    print(f"Product: {product}")
+                    oxime_reduction["found"] = True
+                    oxime_reduction["depth"] = depth
+                    for r in reactants:
+                        if checker.check_fg("Oxime", r):
+                            oxime_reduction["reactant_smiles"] = r
+                            break
 
-                    # Check if product has more rings than reactants and if new rings are heterocyclic
-                    if product_ring_count > reactants_ring_count:
-                        # Check if any of the common heterocyclic rings are formed
-                        heterocyclic_rings = [
-                            "furan",
-                            "pyran",
-                            "pyrrole",
-                            "pyridine",
-                            "pyrazole",
-                            "imidazole",
-                            "oxazole",
-                            "thiazole",
-                            "pyrimidine",
-                            "piperidine",
-                            "morpholine",
-                            "thiophene",
-                            "indole",
-                            "quinoline",
-                            "isoquinoline",
-                        ]
-
-                        for ring_name in heterocyclic_rings:
-                            # Check if ring is in product but not in any reactant
-                            if checker.check_ring(ring_name, product_smiles):
-                                ring_in_reactants = False
-                                for reactant_smiles in reactants_smiles:
-                                    if checker.check_ring(ring_name, reactant_smiles):
-                                        ring_in_reactants = True
-                                        break
-
-                                if not ring_in_reactants:
-                                    print(f"Heterocyclic ring formation detected: {ring_name}")
-                                    print(
-                                        f"Ring count: {reactants_ring_count} → {product_ring_count}"
-                                    )
-                                    ring_formation_detected = True
-                                    break
-
-        # Traverse children
+        # Traverse children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return ring_formation_detected
+
+    # Check if both reactions were found and in early stages (depth >= 3)
+    early_stage_threshold = 3
+    sequence_found = (
+        oxime_formation["found"]
+        and oxime_reduction["found"]
+        and oxime_formation["depth"] >= early_stage_threshold
+        and oxime_reduction["depth"] >= early_stage_threshold
+    )
+
+    # Verify the oxime from formation is the same one used in reduction
+    # Compare molecules ignoring atom mapping differences
+    if sequence_found:
+        oximes_match = compare_molecules_ignoring_mapping(
+            oxime_formation["product_smiles"], oxime_reduction["reactant_smiles"]
+        )
+
+        if not oximes_match:
+            print("Oxime formation and reduction are not connected - different molecules")
+            # Try to print canonical SMILES for debugging
+            try:
+                form_mol = Chem.MolFromSmiles(oxime_formation["product_smiles"])
+                red_mol = Chem.MolFromSmiles(oxime_reduction["reactant_smiles"])
+                if form_mol and red_mol:
+                    # Clear atom mapping
+                    for atom in form_mol.GetAtoms():
+                        atom.SetAtomMapNum(0)
+                    for atom in red_mol.GetAtoms():
+                        atom.SetAtomMapNum(0)
+                    print(f"Formation oxime canonical: {Chem.MolToSmiles(form_mol)}")
+                    print(f"Reduction oxime canonical: {Chem.MolToSmiles(red_mol)}")
+            except Exception as e:
+                print(f"Error generating canonical SMILES: {e}")
+
+            sequence_found = False
+        else:
+            print("Oxime formation and reduction are connected - same molecule")
+
+    print(f"Oxime formation: {oxime_formation}")
+    print(f"Oxime reduction: {oxime_reduction}")
+    print(f"Sequence found: {sequence_found}")
+
+    return sequence_found

@@ -2,55 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects cyano group introduction via aromatic substitution.
+    This function detects a synthetic strategy involving addition of a
+    trifluoromethyl group to a carbonyl.
     """
-    cyano_introduction_detected = False
+    trifluoromethyl_addition_found = False
 
     def dfs_traverse(node):
-        nonlocal cyano_introduction_detected
+        nonlocal trifluoromethyl_addition_found
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for aryl bromide to aryl cyano conversion
-                aryl_bromide_pattern = Chem.MolFromSmarts("c-[Br]")
-                aryl_cyano_pattern = Chem.MolFromSmarts("c-[C]#[N]")
+            # Check for ketone in reactants
+            ketone_pattern = Chem.MolFromSmarts("[C](=[O])[#6]")
 
-                p_mol = Chem.MolFromSmiles(product)
+            for r_smi in reactants_smiles:
+                r_mol = Chem.MolFromSmiles(r_smi)
+                if r_mol and r_mol.HasSubstructMatch(ketone_pattern):
+                    # Check for CF3-containing alcohol in product
+                    cf3_alcohol_pattern = Chem.MolFromSmarts("[C]([OH])([#6])[C]([F])([F])[F]")
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol and product_mol.HasSubstructMatch(cf3_alcohol_pattern):
+                        print("Found trifluoromethyl addition to carbonyl")
+                        trifluoromethyl_addition_found = True
 
-                if p_mol and p_mol.HasSubstructMatch(aryl_cyano_pattern):
-                    for reactant in reactants:
-                        r_mol = Chem.MolFromSmiles(reactant)
-                        if r_mol and r_mol.HasSubstructMatch(aryl_bromide_pattern):
-                            print(f"Cyano introduction detected: {rsmi}")
-                            cyano_introduction_detected = True
-
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return cyano_introduction_detected
+
+    return trifluoromethyl_addition_found

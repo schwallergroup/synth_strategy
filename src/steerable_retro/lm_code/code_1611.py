@@ -2,60 +2,148 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthetic route follows a linear synthesis strategy
-    (no convergent steps with multiple fragments combining).
+    This function detects a linear synthesis strategy focused on fluorinated
+    heterocycles without convergent steps.
     """
-    is_linear = True
+    # Track synthesis characteristics
+    step_count = 0
+    fluorinated_heterocycle_count = 0
+    max_reactants_per_step = 0
+
+    # List of common heterocycles to check
+    heterocycles = [
+        "pyridine",
+        "pyrrole",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "triazole",
+        "tetrazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "furan",
+        "thiophene",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "pyrrolidine",
+    ]
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        nonlocal step_count, fluorinated_heterocycle_count, max_reactants_per_step
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            step_count += 1
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # If there are multiple reactants (excluding reagents), it's potentially convergent
-                if len(reactants) > 1:
-                    # Check if these are actual fragments or just reagents
-                    significant_reactants = 0
-                    for reactant in reactants:
-                        # Simple heuristic: reactants with more than 10 atoms are considered significant
-                        # This could be refined based on your specific needs
-                        try:
-                            mol = Chem.MolFromSmiles(reactant)
-                            if mol and mol.GetNumAtoms() > 10:
-                                significant_reactants += 1
-                        except:
-                            print(f"Error processing reactant SMILES: {reactant}")
+            # Count reactants in this step
+            reactant_count = len(reactants)
+            max_reactants_per_step = max(max_reactants_per_step, reactant_count)
 
-                    if significant_reactants > 1:
-                        print(f"Found convergent step with multiple significant reactants: {rsmi}")
-                        is_linear = False
+            # Check for fluorinated heterocycles in the product
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                # Check if product contains a heterocycle
+                contains_heterocycle = False
+                for ring in heterocycles:
+                    if checker.check_ring(ring, product):
+                        contains_heterocycle = True
+                        print(f"Found heterocycle: {ring} in product: {product}")
+                        break
 
+                # Check if product contains fluorine
+                contains_fluorine = (
+                    checker.check_fg("Trifluoro group", product)
+                    or checker.check_fg("Aromatic halide", product)
+                    and "[F]" in product
+                    or checker.check_fg("Primary halide", product)
+                    and "[F]" in product
+                    or checker.check_fg("Secondary halide", product)
+                    and "[F]" in product
+                    or checker.check_fg("Tertiary halide", product)
+                    and "[F]" in product
+                    or checker.check_fg("Alkenyl halide", product)
+                    and "[F]" in product
+                    or checker.check_fg("Triflate", product)
+                )
+
+                if contains_heterocycle and contains_fluorine:
+                    fluorinated_heterocycle_count += 1
+                    print(f"Found fluorinated heterocycle (count: {fluorinated_heterocycle_count})")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return is_linear
+
+    # Linear synthesis typically has few reactants per step and no convergent steps
+    is_linear = max_reactants_per_step <= 2
+
+    print(f"Step count: {step_count}, Max reactants per step: {max_reactants_per_step}")
+    print(f"Fluorinated heterocycle count: {fluorinated_heterocycle_count}")
+    print(f"Is linear synthesis: {is_linear}")
+
+    # Return true if it's a linear synthesis with at least one fluorinated heterocycle
+    return is_linear and fluorinated_heterocycle_count > 0

@@ -2,56 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves sequential functionalization
-    of a pyridine core scaffold.
+    Detects a linear synthesis strategy with multiple protection steps.
     """
-    pyridine_modifications = 0
+    # Track protection steps and their depths
+    protection_depths = []
 
-    def dfs_traverse(node):
-        nonlocal pyridine_modifications
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                # Check if product contains pyridine
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("c1ccncc1")):
-                    # Check if this is a modification of the pyridine ring
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(
-                            Chem.MolFromSmarts("c1ccncc1")
-                        ):
-                            pyridine_modifications += 1
-                            print(f"Pyridine modification detected: {rsmi}")
-                            break
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+
+            if not product or not all(reactants):
+                return
+
+            # Check for protection reactions
+            alcohol_pattern = Chem.MolFromSmarts("[#6]-[OH]")
+            protected_pattern = Chem.MolFromSmarts(
+                "[#6]-[#8]-[!#1;!#6;!#8]"
+            )  # O connected to non-H, non-C, non-O
+
+            for reactant in reactants:
+                if reactant.HasSubstructMatch(alcohol_pattern):
+                    if product and product.HasSubstructMatch(protected_pattern):
+                        print(f"Found protection at depth {depth}")
+                        protection_depths.append(depth)
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return pyridine_modifications >= 2  # At least 2 modifications to consider it a strategy
+
+    # Return True if we found multiple protection steps at different depths
+    # indicating a linear protection strategy
+    return len(protection_depths) >= 2 and len(set(protection_depths)) >= 2

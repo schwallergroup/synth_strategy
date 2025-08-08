@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,60 +54,33 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthetic route involves building complexity on a
-    pyridine-containing scaffold.
+    Detects if the synthesis route uses an indole-containing building block.
     """
-    # Track if we found a reaction that builds a heterocycle on a pyridine scaffold
-    heterocycle_elaboration_found = False
+    has_indole = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal heterocycle_elaboration_found
+    def dfs_traverse(node):
+        nonlocal has_indole
 
-        # Check reaction nodes
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            is_leaf = not node.get("children", [])
+            print(
+                f"Checking molecule: {node['smiles']}, in_stock: {node.get('in_stock', False)}, is_leaf: {is_leaf}"
+            )
 
-            # Check if reactants contain pyridine
-            reactant_has_pyridine = False
-            for reactant in reactants_part.split("."):
-                if checker.check_ring("pyridine", reactant):
-                    reactant_has_pyridine = True
-                    break
+            # Consider a molecule as a building block if it's marked as in-stock OR if it's a leaf node
+            if (node.get("in_stock", False) or is_leaf) and checker.check_ring(
+                "indole", node["smiles"]
+            ):
+                has_indole = True
+                print(f"Found building block with indole: {node['smiles']}")
 
-            # Check if product has a more complex heterocycle structure
-            product_has_complex_heterocycle = False
-            product_has_pyridine = checker.check_ring("pyridine", product_part)
+            # Also check non-building-block molecules for debugging
+            elif checker.check_ring("indole", node["smiles"]):
+                print(f"Found non-building-block molecule with indole: {node['smiles']}")
 
-            # Check for various heterocycles that could be built on pyridine
-            if product_has_pyridine:
-                # Check for imidazopyridine-like structures (pyridine fused with other heterocycles)
-                if (
-                    checker.check_ring("imidazole", product_part)
-                    or checker.check_ring("oxazole", product_part)
-                    or checker.check_ring("thiazole", product_part)
-                    or checker.check_ring("pyrazole", product_part)
-                    or checker.check_ring("triazole", product_part)
-                ):
-                    product_has_complex_heterocycle = True
-
-                # Check for quinoline or isoquinoline (pyridine fused with benzene)
-                if checker.check_ring("quinoline", product_part) or checker.check_ring(
-                    "isoquinoline", product_part
-                ):
-                    product_has_complex_heterocycle = True
-
-            # If the reaction builds a complex heterocycle on a pyridine scaffold
-            if reactant_has_pyridine and product_has_complex_heterocycle:
-                print(f"Found heterocycle elaboration reaction: {rsmi}")
-                heterocycle_elaboration_found = True
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    return heterocycle_elaboration_found
+    return has_indole

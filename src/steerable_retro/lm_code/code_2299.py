@@ -2,75 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route contains a convergent ether formation step where
-    a phenol and an alcohol are combined to form an ether.
+    This function detects nitro reduction to amine in the synthetic route.
     """
-    found_ether_formation = False
+    nitro_reduction_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_ether_formation
+    def dfs_traverse(node):
+        nonlocal nitro_reduction_found
 
-        if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for phenol and alcohol in reactants
-                phenol_pattern = Chem.MolFromSmarts("c[OH]")
-                alcohol_pattern = Chem.MolFromSmarts("C[OH]")
-                ether_pattern = Chem.MolFromSmarts("c[O]C")
+            # Check for nitro group in reactants
+            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
+            nitro_in_reactants = False
 
-                has_phenol = False
-                has_alcohol = False
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
+                    nitro_in_reactants = True
+                    break
 
-                for r in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(r)
-                        if mol:
-                            if mol.HasSubstructMatch(phenol_pattern):
-                                has_phenol = True
-                            if mol.HasSubstructMatch(alcohol_pattern):
-                                has_alcohol = True
-                    except:
-                        continue
+            # Check for amine group in product where nitro was
+            if nitro_in_reactants:
+                product_mol = Chem.MolFromSmiles(product)
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if (
-                        has_phenol
-                        and has_alcohol
-                        and product_mol
-                        and product_mol.HasSubstructMatch(ether_pattern)
-                    ):
-                        found_ether_formation = True
-                        print(f"Found convergent ether formation at depth {depth}")
-                except:
-                    pass
+                if product_mol and product_mol.HasSubstructMatch(amine_pattern):
+                    # This is a simplification - ideally we would check that the NH2 is at the same position
+                    # where the nitro group was, but that requires atom mapping
+                    nitro_reduction_found = True
+                    print("Detected nitro reduction to amine")
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return found_ether_formation
+
+    return nitro_reduction_found

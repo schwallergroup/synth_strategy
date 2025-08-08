@@ -2,89 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthesis involving a fluoroalkoxy substituent
-    (O-CH2-CH2-CH2-F) that remains unchanged throughout the synthesis
+    Detects convergent synthesis with late-stage C-N bond formation between
+    a halogenated heterocycle and an amine-containing fragment.
     """
-    # Track if we've found a fluoroalkoxy group that persists through the synthesis
-    fluoroalkoxy_preserved = False
+    found_late_stage_cn_coupling = False
 
-    # Define a custom function to check for the fluoroalkoxy group
-    # since it's not in the standard functional groups list
-    def has_fluoroalkoxy(smiles):
-        mol = Chem.MolFromSmiles(smiles)
-        if not mol:
-            return False
-        pattern = Chem.MolFromSmarts("[O][CH2][CH2][CH2][F]")
-        return mol.HasSubstructMatch(pattern)
+    def dfs_traverse(node):
+        nonlocal found_late_stage_cn_coupling
 
-    # Find the final product (root node)
-    if route["type"] == "mol" and has_fluoroalkoxy(route["smiles"]):
-        print(f"Final product contains fluoroalkoxy group: {route['smiles']}")
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            depth = node.get("metadata", {}).get("depth", -1)
 
-        # Now check if this group is preserved throughout the synthesis
-        def trace_fluoroalkoxy(node, depth=0):
-            nonlocal fluoroalkoxy_preserved
+            # Check if this is a late-stage reaction (depth 0 or 1)
+            if depth <= 1:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            if node["type"] == "mol":
-                mol_has_group = has_fluoroalkoxy(node["smiles"])
-                indent = "  " * depth
-                print(
-                    f"{indent}Checking molecule: {node['smiles']} - Has fluoroalkoxy: {mol_has_group}"
-                )
+                if len(reactants_smiles) >= 2:  # At least two reactants (convergent)
+                    try:
+                        reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                        product = Chem.MolFromSmiles(product_smiles)
 
-                # If we reach a starting material with the group, it's preserved
-                if mol_has_group and node.get("in_stock", False):
-                    print(f"{indent}Found starting material with fluoroalkoxy group")
-                    fluoroalkoxy_preserved = True
-                    return True
+                        # Check if any reactant has a halogen
+                        has_halogen = any(
+                            mol.GetSubstructMatches(Chem.MolFromSmarts("[F,Cl,Br,I]"))
+                            for mol in reactants
+                            if mol
+                        )
 
-                # If molecule doesn't have the group but isn't a starting material,
-                # check its precursors
-                if not mol_has_group and not node.get("in_stock", False):
-                    return False
+                        # Check if any reactant has an amine
+                        has_amine = any(
+                            mol.GetSubstructMatches(Chem.MolFromSmarts("[NH2,NH]"))
+                            for mol in reactants
+                            if mol
+                        )
 
-            # For reaction nodes or molecules with the group that aren't starting materials
-            if "children" in node:
-                all_children_have_group = True
-                for child in node["children"]:
-                    # For reaction nodes, we need at least one child to have the group
-                    # For molecule nodes, all children must preserve the group
-                    child_result = trace_fluoroalkoxy(child, depth + 1)
-                    if node["type"] == "reaction":
-                        if child_result:
-                            return True
-                    else:  # molecule node
-                        all_children_have_group = all_children_have_group and child_result
+                        # Check if product has a new C-N bond
+                        if has_halogen and has_amine and product:
+                            print(f"Found potential late-stage C-N coupling at depth {depth}")
+                            found_late_stage_cn_coupling = True
+                    except:
+                        print("Error processing reaction SMILES")
 
-                if node["type"] == "mol":
-                    return all_children_have_group
+        # Process children
+        for child in node.get("children", []):
+            dfs_traverse(child)
 
-            return False
-
-        # Start tracing from the root
-        trace_fluoroalkoxy(route)
-    else:
-        print(f"Final product does not contain fluoroalkoxy group")
-
-    return fluoroalkoxy_preserved
+    # Start traversal
+    dfs_traverse(route)
+    return found_late_stage_cn_coupling

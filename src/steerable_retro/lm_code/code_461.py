@@ -2,59 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves multiple C-N bond formations (at least 3).
+    This function detects N-benzylation of a heterocycle nitrogen.
     """
-    c_n_bond_formations = 0
+    benzyl_pattern = Chem.MolFromSmarts("[#6]c1ccccc1")
+    n_benzyl_heterocycle_pattern = Chem.MolFromSmarts("[#7;R]([#6]c1ccccc1)[#6;R]")
+
+    found_n_benzylation = False
 
     def dfs_traverse(node):
-        nonlocal c_n_bond_formations
+        nonlocal found_n_benzylation
 
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Create molecules from SMILES
-                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-                product_mol = Chem.MolFromSmiles(product_smiles)
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-                if reactants_mol and product_mol:
-                    # Check for C-N bond formation
-                    c_n_pattern = Chem.MolFromSmarts("[#6]-[#7]")
-                    reactants_c_n_count = len(reactants_mol.GetSubstructMatches(c_n_pattern))
-                    product_c_n_count = len(product_mol.GetSubstructMatches(c_n_pattern))
+                if product_mol and reactant_mols:
+                    # Check if product has N-benzyl heterocycle pattern
+                    if product_mol.HasSubstructMatch(n_benzyl_heterocycle_pattern):
+                        # Check if any reactant has benzyl group
+                        has_benzyl = any(
+                            reactant_mol.HasSubstructMatch(benzyl_pattern)
+                            for reactant_mol in reactant_mols
+                            if reactant_mol
+                        )
 
-                    if product_c_n_count > reactants_c_n_count:
-                        c_n_bond_formations += 1
-                        print(f"Found C-N bond formation in reaction: {rsmi}")
+                        if has_benzyl:
+                            print("Found N-benzylation of heterocycle")
+                            found_n_benzylation = True
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    return c_n_bond_formations >= 3
+    return found_n_benzylation

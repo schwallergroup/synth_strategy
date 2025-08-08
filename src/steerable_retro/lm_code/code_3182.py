@@ -2,60 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves amine protection/deprotection strategies.
+    This function detects a synthetic strategy involving functionalization of aromatic systems.
     """
-    has_protection = False
+    aromatic_functionalization_found = False
 
     def dfs_traverse(node):
-        nonlocal has_protection
+        nonlocal aromatic_functionalization_found
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for Boc protection
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if product_mol is not None:
-                # Boc protected amine pattern
-                boc_pattern = Chem.MolFromSmarts("[#7]C(=O)OC(C)(C)C")
-                if product_mol.HasSubstructMatch(boc_pattern):
-                    # Check if reactants had primary/secondary amine
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
-                    if any(
-                        mol is not None and mol.HasSubstructMatch(amine_pattern)
-                        for mol in reactant_mols
-                    ):
-                        has_protection = True
-                        print("Detected Boc protection of amine")
+                # Check if this reaction involves modification of an aromatic system
+                product_mol = Chem.MolFromSmiles(product.split(".")[0])  # Take first product
+
+                if product_mol:
+                    # Look for aromatic rings
+                    aromatic_ring_patt = Chem.MolFromSmarts("c1ccccc1")
+
+                    if product_mol.HasSubstructMatch(aromatic_ring_patt):
+                        # Check if any functional group is attached to the aromatic ring
+                        # Common functional groups attached to aromatic rings
+                        functional_groups = [
+                            "[c]-[#7]",  # Aromatic amine
+                            "[c]-[#16]",  # Aromatic sulfur
+                            "[c]-[#8]",  # Aromatic oxygen
+                            "[c]-[#6](=[#8])",  # Aromatic carbonyl
+                        ]
+
+                        for fg in functional_groups:
+                            fg_patt = Chem.MolFromSmarts(fg)
+                            if product_mol.HasSubstructMatch(fg_patt):
+                                print(f"Found aromatic functionalization with pattern {fg}")
+                                aromatic_functionalization_found = True
+                                break
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_protection
+
+    return aromatic_functionalization_found

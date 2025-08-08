@@ -2,71 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving conversion of aryl halides
-    to boronic acid/ester derivatives.
+    This function detects a synthetic strategy where a methylsulfonyl group
+    is present throughout the synthesis as a directing/activating group.
     """
-    found_halogen_to_boryl = False
+    # Initialize tracking variables
+    methylsulfonyl_count = 0
+    total_reactions = 0
 
     def dfs_traverse(node):
-        nonlocal found_halogen_to_boryl
+        nonlocal methylsulfonyl_count, total_reactions
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            total_reactions += 1
 
-            # Check for aryl halide in reactants
-            aryl_halide_pattern = Chem.MolFromSmarts("[#6]:[#6]-[#9,#17,#35,#53]")
+            # Extract product from reaction SMILES
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-            # Check for boronic acid/ester in product
-            boronic_pattern = Chem.MolFromSmarts("[#6]-[#5](-[#8])-[#8]")
+            parts = rsmi.split(">")
+            if len(parts) < 3:
+                return
 
-            try:
-                # Check if any reactant has aryl halide
-                has_aryl_halide = False
-                for reactant in reactants:
-                    react_mol = Chem.MolFromSmiles(reactant)
-                    if react_mol and react_mol.HasSubstructMatch(aryl_halide_pattern):
-                        has_aryl_halide = True
-                        break
+            product = parts[-1]
 
-                # Check if product has boronic acid/ester
-                prod_mol = Chem.MolFromSmiles(product)
-                has_boronic = prod_mol and prod_mol.HasSubstructMatch(boronic_pattern)
-
-                if has_aryl_halide and has_boronic:
-                    found_halogen_to_boryl = True
-                    print(f"Detected halogen to boryl transformation: {rsmi}")
-            except:
-                pass
+            # Check if product contains methylsulfonyl group
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                methylsulfonyl_pattern = Chem.MolFromSmarts("[CH3][S](=[O])(=[O])[#6]")
+                if product_mol.HasSubstructMatch(methylsulfonyl_pattern):
+                    methylsulfonyl_count += 1
+                    print(f"Detected methylsulfonyl group in reaction product")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return found_halogen_to_boryl
+    # Return True if methylsulfonyl group is present in all or most reactions
+    return (
+        total_reactions > 0 and methylsulfonyl_count >= total_reactions * 0.75
+    )  # Present in at least 75% of reactions

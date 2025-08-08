@@ -2,67 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves the formation of ether linkages,
-    particularly aryl ethers (Ar-O-C).
+    Detects a strategy involving aromatic halogenation (specifically iodination).
     """
-    ether_formation_found = False
+    found_aromatic_halogenation = False
 
-    def dfs_traverse(node):
-        nonlocal ether_formation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal found_aromatic_halogenation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if product contains aryl ether
-            if product:
+                # Check for aromatic halogenation
                 product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    # Check for aryl ether pattern
-                    aryl_ether_pattern = Chem.MolFromSmarts("[c]-[O]-[C]")
-                    has_aryl_ether_product = product_mol.HasSubstructMatch(aryl_ether_pattern)
+                aryl_iodide_pattern = Chem.MolFromSmarts("c-[I]")
 
-                    # Check if reactants contain the same pattern
-                    has_aryl_ether_reactant = False
-
+                if product_mol and product_mol.HasSubstructMatch(aryl_iodide_pattern):
+                    # Check if reactants don't have the iodide
+                    has_iodide_in_reactants = False
                     for reactant in reactants:
-                        if reactant:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(aryl_ether_pattern):
-                                has_aryl_ether_reactant = True
-                                break
+                        if "I" in reactant:  # Simple check for iodine
+                            r_mol = Chem.MolFromSmiles(reactant)
+                            if r_mol and r_mol.HasSubstructMatch(aryl_iodide_pattern):
+                                has_iodide_in_reactants = True
 
-                    # If product has aryl ether that's not in reactants, it's formed in this reaction
-                    if has_aryl_ether_product and not has_aryl_ether_reactant:
-                        print("Aryl ether linkage formation detected")
-                        ether_formation_found = True
+                    if not has_iodide_in_reactants:
+                        found_aromatic_halogenation = True
+                        print(f"Found aromatic iodination at depth {depth}")
 
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return ether_formation_found
+
+    return found_aromatic_halogenation

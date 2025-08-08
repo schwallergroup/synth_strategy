@@ -2,68 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving the formation of multiple heterocycles
-    (specifically thiazole and isoxazoline rings).
+    This function detects if the synthetic route employs a strategy of forming
+    a heterocyclic ring (specifically pyrazole) in the early stages of synthesis.
     """
-    thiazole_formation = False
-    isoxazoline_formation = False
+    # Track if we found a heterocycle formation
+    heterocycle_formation_found = False
+    heterocycle_formation_depth = None
 
-    def dfs_traverse(node):
-        nonlocal thiazole_formation, isoxazoline_formation
+    def dfs_traverse(node, depth=0):
+        nonlocal heterocycle_formation_found, heterocycle_formation_depth
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            product_mol = Chem.MolFromSmiles(product) if product else None
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            if product_mol:
-                # Check for thiazole formation
-                thiazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#6][#16][#6]1")
-                if product_mol.HasSubstructMatch(thiazole_pattern):
-                    # Check if thiazole wasn't in reactants
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                    if not any(
-                        mol and mol.HasSubstructMatch(thiazole_pattern) for mol in reactant_mols
-                    ):
-                        print("Detected thiazole ring formation")
-                        thiazole_formation = True
+            if product and any(reactants):
+                # Check for hydrazine in reactants
+                hydrazine_pattern = Chem.MolFromSmarts("[NH2][NH]")
+                reactants_with_hydrazine = any(
+                    mol.HasSubstructMatch(hydrazine_pattern) for mol in reactants if mol
+                )
 
-                # Check for isoxazoline formation
-                isoxazoline_pattern = Chem.MolFromSmarts("[#6]1[#6][#8][#7]=[#6]1")
-                if product_mol.HasSubstructMatch(isoxazoline_pattern):
-                    # Check if isoxazoline wasn't in reactants
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                    if not any(
-                        mol and mol.HasSubstructMatch(isoxazoline_pattern) for mol in reactant_mols
-                    ):
-                        print("Detected isoxazoline ring formation")
-                        isoxazoline_formation = True
+                # Check for pyrazole in product
+                pyrazole_pattern = Chem.MolFromSmarts("c1nn[c]c1")  # Basic pyrazole pattern
+                product_has_pyrazole = (
+                    product.HasSubstructMatch(pyrazole_pattern) if product else False
+                )
 
+                # Check if this reaction forms a pyrazole
+                if (
+                    reactants_with_hydrazine and product_has_pyrazole and depth >= 3
+                ):  # Depth >= 3 means early stage
+                    print(f"Found pyrazole formation at depth {depth}")
+                    heterocycle_formation_found = True
+                    heterocycle_formation_depth = depth
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return thiazole_formation and isoxazoline_formation
+
+    # Strategy is present if we found a heterocycle formation at early stage
+    strategy_present = heterocycle_formation_found
+
+    print(f"Heterocycle formation strategy detected: {strategy_present}")
+    if strategy_present:
+        print(f"Heterocycle formation occurred at depth {heterocycle_formation_depth}")
+
+    return strategy_present

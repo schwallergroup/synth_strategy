@@ -2,68 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a carboxylic acid protection-deprotection strategy
+    This function detects a sequence of aromatic functionalization steps,
+    specifically looking for O-alkylation and halogenation on aromatic rings.
     """
-    has_protection = False
-    has_deprotection = False
+    # Track functionalization steps
+    o_alkylation_detected = False
+    halogenation_detected = False
 
-    def dfs_traverse(node):
-        nonlocal has_protection, has_deprotection
+    def dfs_traverse(node, depth=0):
+        nonlocal o_alkylation_detected, halogenation_detected
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-            if product and reactants:
-                # Check for carboxylic acid protection (acid to ester)
-                acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
-                ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]")
+                if all(m is not None for m in reactant_mols) and product_mol is not None:
+                    # Check for O-alkylation (phenol to methoxy)
+                    phenol_pattern = Chem.MolFromSmarts("[#8H][#6]:[#6]")
+                    methoxy_pattern = Chem.MolFromSmarts("[#8][#6][#6]:[#6]")
 
-                if any(
-                    r and r.HasSubstructMatch(acid_pattern) for r in reactants
-                ) and product.HasSubstructMatch(ester_pattern):
-                    print("Detected carboxylic acid protection")
-                    has_protection = True
+                    if any(
+                        mol.HasSubstructMatch(phenol_pattern) for mol in reactant_mols
+                    ) and product_mol.HasSubstructMatch(methoxy_pattern):
+                        o_alkylation_detected = True
+                        print(f"O-alkylation detected at depth {depth}")
 
-                # Check for carboxylic acid deprotection (ester to acid)
-                if any(
-                    r and r.HasSubstructMatch(ester_pattern) for r in reactants
-                ) and product.HasSubstructMatch(acid_pattern):
-                    print("Detected carboxylic acid deprotection")
-                    has_deprotection = True
+                    # Check for aromatic halogenation
+                    reactant_bromo_count = sum(
+                        len(mol.GetSubstructMatches(Chem.MolFromSmarts("c[Br]")))
+                        for mol in reactant_mols
+                    )
+                    product_bromo_count = len(
+                        product_mol.GetSubstructMatches(Chem.MolFromSmarts("c[Br]"))
+                    )
+
+                    if product_bromo_count > reactant_bromo_count:
+                        halogenation_detected = True
+                        print(f"Aromatic halogenation detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Strategy is present if we have both protection and deprotection
-    return has_protection and has_deprotection
+    # Check if both functionalization types were detected
+    if o_alkylation_detected and halogenation_detected:
+        print("Sequential aromatic functionalization strategy detected")
+        return True
+    return False

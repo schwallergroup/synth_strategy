@@ -2,116 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthesis strategy where both trifluoromethyl group and
-    oxazole heterocycle are preserved throughout the synthesis.
+    This function detects a strategy involving sulfonamide formation.
     """
-    # Check if target molecule contains the groups
-    target_has_cf3 = checker.check_fg("Trifluoro group", route["smiles"])
-    target_has_oxazole = checker.check_ring("oxazole", route["smiles"])
+    sulfonamide_pattern = Chem.MolFromSmarts("[#8][S](=[O])(=[O])[#6]")
+    has_sulfonamide_formation = False
 
-    # If target doesn't have both groups, return False
-    if not (target_has_cf3 and target_has_oxazole):
-        print(f"Target molecule doesn't contain both trifluoromethyl and oxazole groups")
-        return False
+    def dfs_traverse(node):
+        nonlocal has_sulfonamide_formation
 
-    # Track if each reaction preserves these groups
-    all_steps_preserve_cf3 = True
-    all_steps_preserve_oxazole = True
-
-    def dfs_traverse(node, depth=0):
-        nonlocal all_steps_preserve_cf3, all_steps_preserve_oxazole
-
-        if node["type"] == "mol":
-            # Check if molecule contains the groups
-            mol_has_cf3 = checker.check_fg("Trifluoro group", node["smiles"])
-            mol_has_oxazole = checker.check_ring("oxazole", node["smiles"])
-
-            # Print for debugging
-            if mol_has_cf3:
-                print(f"Molecule at depth {depth} has trifluoromethyl group")
-            if mol_has_oxazole:
-                print(f"Molecule at depth {depth} has oxazole ring")
-
-        elif node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction":
+            # Extract product and reactants
             rsmi = node["metadata"]["rsmi"]
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Check if product contains the groups
-            product_has_cf3 = checker.check_fg("Trifluoro group", product_smiles)
-            product_has_oxazole = checker.check_ring("oxazole", product_smiles)
+            # Check if sulfonamide is formed in this step
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if product_mol and product_mol.HasSubstructMatch(sulfonamide_pattern):
+                # Check if reactants don't all have sulfonamide
+                sulfonamide_in_all_reactants = True
+                for reactant in reactants_smiles:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and not reactant_mol.HasSubstructMatch(sulfonamide_pattern):
+                        sulfonamide_in_all_reactants = False
+                        break
 
-            # Check if any reactant contains the groups
-            reactants_have_cf3 = any(
-                checker.check_fg("Trifluoro group", r) for r in reactants_smiles
-            )
-            reactants_have_oxazole = any(checker.check_ring("oxazole", r) for r in reactants_smiles)
+                if not sulfonamide_in_all_reactants:
+                    has_sulfonamide_formation = True
+                    print("Detected sulfonamide formation")
 
-            # In retrosynthesis, we check if a group in the product is preserved in at least one reactant
-            if product_has_cf3 and not reactants_have_cf3:
-                all_steps_preserve_cf3 = False
-                print(f"Trifluoromethyl group not preserved at depth {depth}")
-
-            if product_has_oxazole and not reactants_have_oxazole:
-                all_steps_preserve_oxazole = False
-                print(f"Oxazole heterocycle not preserved at depth {depth}")
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Return True if both groups are preserved throughout
-    return all_steps_preserve_cf3 and all_steps_preserve_oxazole
+    return has_sulfonamide_formation

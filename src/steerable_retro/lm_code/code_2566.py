@@ -2,138 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if an ester group is preserved throughout the entire synthesis.
-    It checks if at least one ester group is maintained without modification through all reaction steps.
+    This function detects if the synthetic route involves olefination chemistry
+    to form a C=C bond adjacent to a nitrile group.
     """
-    # Track if we've found at least one ester that's preserved throughout
-    ester_preserved = False
+    nitrile_olefination_found = False
 
-    def check_ester_preservation(node, depth=0):
-        nonlocal ester_preserved
+    def dfs_traverse(node, depth=0):
+        nonlocal nitrile_olefination_found
 
-        if node["type"] == "mol":
-            # Check if this molecule has an ester
-            current_has_ester = checker.check_fg("Ester", node["smiles"])
-            print(f"Depth {depth}, Molecule: {node['smiles']}, Has ester: {current_has_ester}")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0]
+                products = rsmi.split(">")[-1]
 
-            # If this is a starting material and has an ester, we've found a preserved path
-            if node.get("in_stock", False) and current_has_ester:
-                print(f"Found starting material with ester: {node['smiles']}")
-                return True
+                # Check for ketone/aldehyde in reactants
+                reactant_mol = Chem.MolFromSmiles(reactants)
+                carbonyl_pattern = Chem.MolFromSmarts("[#6][#6](=[O])[#6]")
 
-            # If no children or no ester, this path doesn't preserve an ester
-            if not current_has_ester or not node.get("children"):
-                return False
+                # Check for α,β-unsaturated nitrile in products
+                product_mol = Chem.MolFromSmiles(products)
+                unsaturated_nitrile_pattern = Chem.MolFromSmarts("[#6]=[#6][#6]#[N]")
 
-            # Check if any child path preserves the ester
-            for child in node.get("children", []):
-                if check_ester_preservation(child, depth + 1):
-                    return True
+                if (
+                    reactant_mol
+                    and carbonyl_pattern
+                    and reactant_mol.HasSubstructMatch(carbonyl_pattern)
+                    and product_mol
+                    and unsaturated_nitrile_pattern
+                    and product_mol.HasSubstructMatch(unsaturated_nitrile_pattern)
+                ):
+                    print(f"Found nitrile olefination strategy at depth {depth}")
+                    nitrile_olefination_found = True
 
-            # If we get here, no child path preserved the ester
-            return False
+        # Continue traversal
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
 
-        elif node["type"] == "reaction":
-            # For reaction nodes, check if ester is preserved through the reaction
-            try:
-                if "rsmi" in node.get("metadata", {}):
-                    rsmi = node["metadata"]["rsmi"]
-                    # In retrosynthesis, the product in rsmi is our current molecule
-                    # and the reactants are what we're breaking down into
-                    product = rsmi.split(">")[-1]
-                    reactants = rsmi.split(">")[0].split(".")
-
-                    # Check if ester is in both product and at least one reactant
-                    product_has_ester = checker.check_fg("Ester", product)
-                    reactants_with_ester = [r for r in reactants if checker.check_fg("Ester", r)]
-
-                    print(f"Depth {depth}, Reaction: {rsmi}")
-                    print(f"  Product has ester: {product_has_ester}")
-                    print(f"  Reactants with ester: {len(reactants_with_ester)}")
-
-                    # If product doesn't have ester or no reactant has ester, this path doesn't preserve
-                    if not product_has_ester or not reactants_with_ester:
-                        return False
-
-                    # Check if any child path preserves the ester
-                    for child in node.get("children", []):
-                        if check_ester_preservation(child, depth + 1):
-                            return True
-
-                    # If we get here, no child path preserved the ester
-                    return False
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-                return False
-
-            # Process children if we haven't returned yet
-            for child in node.get("children", []):
-                if check_ester_preservation(child, depth + 1):
-                    return True
-
-            return False
-
-    # Start traversal from the root (final product)
-    if route["type"] == "mol":
-        # Check if final product has an ester
-        if checker.check_fg("Ester", route["smiles"]):
-            print(f"Final product has ester: {route['smiles']}")
-            # Check if this ester can be traced back to a starting material
-            ester_preserved = check_ester_preservation(route)
-        else:
-            print(f"Final product has no ester: {route['smiles']}")
-    else:
-        # If root is a reaction node, process it normally
-        ester_preserved = check_ester_preservation(route)
-
-    return ester_preserved
+    dfs_traverse(route)
+    return nitrile_olefination_found

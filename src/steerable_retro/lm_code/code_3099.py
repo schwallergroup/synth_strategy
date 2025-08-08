@@ -2,71 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves late-stage functionalization,
-    specifically chlorination and/or alkoxy group installation in the last steps.
+    This function detects if the synthetic route uses late-stage amide bond formation
+    as a key strategy (in the last 1-2 steps).
     """
-    # Track late-stage functionalizations
-    late_functionalizations = []
+    amide_formation_depths = []
 
     def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            # Extract reactants and product
+            # Extract reactants and products
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            # Check for amide formation
+            # In retrosynthesis, amide bond breaking: product has amine and carboxylic acid
+            # that were connected in the reactant
 
-            if product_mol and any(reactant_mols):
-                # Find the main reactant (usually the most complex one)
-                main_reactant = max(reactant_mols, key=lambda m: m.GetNumAtoms() if m else 0)
+            # Patterns for amine, carboxylic acid, and amide
+            amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
+            carboxylic_pattern = Chem.MolFromSmarts("[#6](=[O])[O]")
+            amide_pattern = Chem.MolFromSmarts("[#6](=[O])[#7]")
 
-                # Check for chlorination
-                chlorine_pattern = Chem.MolFromSmarts("[#6]-[Cl]")
-                reactant_has_chlorine = (
-                    main_reactant.HasSubstructMatch(chlorine_pattern) if main_reactant else False
-                )
-                product_has_chlorine = product_mol.HasSubstructMatch(chlorine_pattern)
+            # Check if reactant has amide but products have amine and carboxylic acid
+            reactant_mol = Chem.MolFromSmiles(
+                product
+            )  # Note: in retrosynthesis, product is the reactant
 
-                if product_has_chlorine and not reactant_has_chlorine:
-                    late_functionalizations.append(("chlorination", depth))
-                    print(f"Chlorination at depth {depth}")
+            if reactant_mol and reactant_mol.HasSubstructMatch(amide_pattern):
+                # Check if any product has amine or carboxylic acid
+                has_amine = False
+                has_carboxylic = False
 
-                # Check for alkoxy group installation
-                alkoxy_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6]")
+                for reactant in reactants:  # In retrosynthesis, reactants are the products
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(amine_pattern):
+                            has_amine = True
+                        if mol.HasSubstructMatch(carboxylic_pattern):
+                            has_carboxylic = True
 
-                # Count alkoxy groups in reactant and product
-                reactant_alkoxy_count = (
-                    len(main_reactant.GetSubstructMatches(alkoxy_pattern)) if main_reactant else 0
-                )
-                product_alkoxy_count = len(product_mol.GetSubstructMatches(alkoxy_pattern))
-
-                if product_alkoxy_count > reactant_alkoxy_count:
-                    late_functionalizations.append(("alkoxy_installation", depth))
-                    print(f"Alkoxy group installation at depth {depth}")
+                if has_amine and has_carboxylic:
+                    print(f"Detected amide bond formation at depth {depth}")
+                    amide_formation_depths.append(depth)
 
         # Traverse children
         for child in node.get("children", []):
@@ -75,5 +77,8 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Late-stage functionalization is defined as occurring at depth <= 1
-    return any(depth <= 1 for _, depth in late_functionalizations)
+    # Check if amide formation occurs in the late stage (depth 0-1)
+    late_stage_amide = any(depth <= 1 for depth in amide_formation_depths)
+    if late_stage_amide:
+        print("Late-stage amide formation strategy detected")
+    return late_stage_amide

@@ -2,63 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a carbamate formation strategy in the synthesis route.
+    This function detects if the synthetic route follows a linear synthesis pattern
+    rather than a convergent one.
     """
-    # Track if we found the strategy
-    found_strategy = False
+    # Track the maximum branching factor in the synthesis tree
+    max_branching = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_strategy
+    def dfs_traverse(node):
+        nonlocal max_branching
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+            # Count the number of reactants in this reaction
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                num_reactants = len([r for r in reactants if r])
+                max_branching = max(max_branching, num_reactants)
 
-            # Check if product contains a carbamate group
-            product_mol = Chem.MolFromSmiles(product_part)
-            if product_mol:
-                carbamate_pattern = Chem.MolFromSmarts("[NH][C](=[O])[O]")
-                if product_mol.HasSubstructMatch(carbamate_pattern):
-                    # Check if reactants don't have the carbamate pattern
-                    reactants_have_carbamate = False
-                    for reactant in reactants_part.split("."):
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(carbamate_pattern):
-                            reactants_have_carbamate = True
-                            break
-
-                    if not reactants_have_carbamate:
-                        print(f"Found carbamate formation at depth {depth}")
-                        found_strategy = True
-
-        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return found_strategy
+    # If max branching is <= 2, it's likely a linear synthesis
+    # (allowing for one main reactant and one reagent)
+    is_linear = max_branching <= 2
+    print(f"Maximum branching factor: {max_branching}, Linear synthesis: {is_linear}")
+    return is_linear

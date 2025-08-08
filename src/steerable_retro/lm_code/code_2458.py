@@ -2,71 +2,88 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the esterification of a carboxylic acid in the synthesis route.
+    This function detects a strategy involving benzyl protection and deprotection of a phenolic OH.
     """
-    esterification_found = False
+    benzylation_depths = []
+    debenzylation_depths = []
 
     def dfs_traverse(node):
-        nonlocal esterification_found
-
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for carboxylic acid in reactants
-                carboxylic_acid_pattern = Chem.MolFromSmarts("[#6]-C(=O)[OH]")
-                alcohol_pattern = Chem.MolFromSmarts("[#6]-[OH]")
-                ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-C(=O)-[#6]")
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+            product_mol = Chem.MolFromSmiles(product)
 
-                has_acid = False
-                has_alcohol = False
+            # Check for benzylation (phenol + benzyl halide -> benzyl ether)
+            phenol_pattern = Chem.MolFromSmarts("[OH]c")
+            benzyl_halide_pattern = Chem.MolFromSmarts("[Br,Cl,I][CH2]c1ccccc1")
+            benzyl_ether_pattern = Chem.MolFromSmarts("O[CH2]c1ccccc1")
 
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            if mol.HasSubstructMatch(carboxylic_acid_pattern):
-                                has_acid = True
-                            if mol.HasSubstructMatch(alcohol_pattern):
-                                has_alcohol = True
-                    except:
-                        continue
+            has_phenol = any(
+                mol is not None and mol.HasSubstructMatch(phenol_pattern) for mol in reactant_mols
+            )
+            has_benzyl_halide = any(
+                mol is not None and mol.HasSubstructMatch(benzyl_halide_pattern)
+                for mol in reactant_mols
+            )
+            has_benzyl_ether_product = product_mol is not None and product_mol.HasSubstructMatch(
+                benzyl_ether_pattern
+            )
 
-                # Check if product has ester
-                if has_acid and has_alcohol:
-                    try:
-                        prod_mol = Chem.MolFromSmiles(product)
-                        if prod_mol and prod_mol.HasSubstructMatch(ester_pattern):
-                            esterification_found = True
-                            print("Found esterification reaction")
-                    except:
-                        pass
+            if has_phenol and has_benzyl_halide and has_benzyl_ether_product:
+                depth = node.get("depth", 0)
+                benzylation_depths.append(depth)
+                print(f"Found benzylation at depth {depth}")
 
+            # Check for debenzylation or benzyl exchange
+            has_benzyl_ether_reactant = any(
+                mol is not None and mol.HasSubstructMatch(benzyl_ether_pattern)
+                for mol in reactant_mols
+            )
+
+            if has_benzyl_ether_reactant and (has_phenol or has_benzyl_ether_product):
+                depth = node.get("depth", 0)
+                debenzylation_depths.append(depth)
+                print(f"Found debenzylation or benzyl exchange at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return esterification_found
+
+    # Check if we have both benzylation and debenzylation/exchange
+    if benzylation_depths and debenzylation_depths:
+        print("Found benzyl protection-deprotection strategy")
+        return True
+
+    return False

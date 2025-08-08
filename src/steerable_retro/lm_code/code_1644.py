@@ -2,142 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects aromatic bromination, typically using NBS or similar reagents.
+    This function detects a linear synthesis strategy focused on heterocycle modification.
     """
-    from rdkit import Chem
-
-    has_aromatic_bromination = False
+    # Track modifications to heterocycle
+    modifications = []
+    has_heterocycle = False
 
     def dfs_traverse(node):
-        nonlocal has_aromatic_bromination
+        nonlocal modifications, has_heterocycle
 
-        if has_aromatic_bromination:
-            return  # Early return if we already found what we're looking for
+        # Check for heterocycle presence
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for heterocyclic structures
+                heterocycle_pattern = Chem.MolFromSmarts("c1[nH]cc*1")  # Simplified pattern
+                if mol.HasSubstructMatch(heterocycle_pattern):
+                    has_heterocycle = True
 
+        # Check for reactions modifying the heterocycle
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
+            depth = node["metadata"].get("depth", 0)
 
-            # Direct check for aromatic bromination reaction types
-            if checker.check_reaction("Aromatic bromination", rsmi):
-                print(f"Detected aromatic bromination reaction: {rsmi}")
-                has_aromatic_bromination = True
-                return
-
-            # Check for other specific bromination reactions that might be relevant
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check if product has aromatic halide specifically bromine
-            if checker.check_fg("Aromatic halide", product):
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    # Check if the aromatic halide is specifically bromine
-                    aryl_bromide_pattern = Chem.MolFromSmarts("c[Br]")
-                    if product_mol.HasSubstructMatch(aryl_bromide_pattern):
-                        # Check if any reactant has a brominating agent
-                        has_brominating_agent = False
-                        for reactant in reactants:
-                            # Check for common brominating agents
-                            if (
-                                (
-                                    "Br" in reactant
-                                    and not checker.check_fg("Aromatic halide", reactant)
-                                )
-                                or "NBS" in reactant.upper()
-                                or "N-BROMOSUCCINIMIDE" in reactant.upper()
-                            ):
-                                has_brominating_agent = True
-                                print(f"Found brominating agent: {reactant}")
-                                break
-
-                        if has_brominating_agent:
-                            # Count aromatic bromines in reactants and product
-                            product_aryl_br_count = len(
-                                product_mol.GetSubstructMatches(aryl_bromide_pattern)
-                            )
-
-                            reactant_aryl_br_count = 0
-                            for r in reactants:
-                                # Check if reactant has aromatic structure
-                                is_aromatic = False
-                                for ring in [
-                                    "benzene",
-                                    "naphthalene",
-                                    "anthracene",
-                                    "pyridine",
-                                    "furan",
-                                    "thiophene",
-                                    "pyrrole",
-                                ]:
-                                    if checker.check_ring(ring, r):
-                                        is_aromatic = True
-                                        break
-
-                                if is_aromatic or checker.check_fg("Aromatic halide", r):
-                                    r_mol = Chem.MolFromSmiles(r)
-                                    if r_mol:
-                                        reactant_aryl_br_count += len(
-                                            r_mol.GetSubstructMatches(aryl_bromide_pattern)
-                                        )
-
-                            if product_aryl_br_count > reactant_aryl_br_count:
-                                print(f"Detected aromatic bromination by bromine count: {rsmi}")
-                                has_aromatic_bromination = True
-                                return
+            # Track the modification with its depth
+            modifications.append((rsmi, depth))
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return has_aromatic_bromination
+
+    # Sort modifications by depth to check if they're sequential
+    modifications.sort(key=lambda x: x[1], reverse=True)
+
+    # Check if we have at least 3 modifications and they're sequential
+    is_linear = len(modifications) >= 3 and has_heterocycle
+
+    if is_linear:
+        print(f"Detected linear heterocycle modification with {len(modifications)} steps")
+
+    return is_linear

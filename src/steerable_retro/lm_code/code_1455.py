@@ -2,49 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a methylthio group is conserved throughout the synthesis.
+    This function detects a strategy involving borylation of an aryl halide to prepare for coupling.
     """
-    methylthio_pattern = Chem.MolFromSmarts("[c][S][CH3]")
-    all_mols_have_methylthio = True
+    borylation_found = False
 
     def dfs_traverse(node):
-        nonlocal all_mols_have_methylthio
+        nonlocal borylation_found
 
-        if node["type"] == "mol" and node.get("in_stock", False) == False:
-            # Check if this molecule has a methylthio group
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                if not mol.HasSubstructMatch(methylthio_pattern):
-                    all_mols_have_methylthio = False
-                    print(f"Molecule without methylthio group found: {node['smiles']}")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        # Traverse children
+                # Check if product contains boronic acid/ester
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    boronic_pattern = Chem.MolFromSmarts("[#6]-[B]([O][#6])[O][#6]")
+                    if product_mol.HasSubstructMatch(boronic_pattern):
+                        # Check if reactants contain aryl halide
+                        for reactant in reactants:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol:
+                                aryl_halide_pattern = Chem.MolFromSmarts("c-[Br,I,Cl]")
+                                if reactant_mol.HasSubstructMatch(aryl_halide_pattern):
+                                    borylation_found = True
+                                    print("Found borylation of aryl halide")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    print(f"Conserved methylthio group strategy detected: {all_mols_have_methylthio}")
-    return all_mols_have_methylthio
+    return borylation_found

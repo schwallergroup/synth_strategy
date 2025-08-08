@@ -2,60 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route includes a dibenzylation step.
+    Detects if the synthesis route uses cross-coupling reactions (like Suzuki coupling)
+    for scaffold construction, particularly for C-C bond formation between aromatic systems.
     """
-    dibenzylation_found = False
+    cross_coupling_detected = False
 
     def dfs_traverse(node):
-        nonlocal dibenzylation_found
+        nonlocal cross_coupling_detected
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if reactants contain a primary amine
-            reactants = reactants_smiles.split(".")
-            primary_amine_pattern = Chem.MolFromSmarts("[#7;H2]")
-            has_primary_amine = any(
-                Chem.MolFromSmiles(r)
-                and Chem.MolFromSmiles(r).HasSubstructMatch(primary_amine_pattern)
-                for r in reactants
-                if r
-            )
+                # Check for boronic acid pattern in reactants
+                boronic_acid_pattern = Chem.MolFromSmarts("[#6]-[B]([O])([O])")
 
-            # Check if product contains a dibenzylated amine
-            dibenzyl_pattern = Chem.MolFromSmarts("[#7]([#6][c])([#6][c])")
-            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
-            has_dibenzyl = product_mol and product_mol.HasSubstructMatch(dibenzyl_pattern)
+                # Check for halogen pattern in reactants
+                halogen_pattern = Chem.MolFromSmarts("[#6]-[#53,#35,#17]")  # C-I, C-Br, C-Cl
 
-            if has_primary_amine and has_dibenzyl:
-                print("Found dibenzylation step")
-                dibenzylation_found = True
+                # Convert SMILES to molecules
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+
+                    # Check if one reactant has boronic acid and another has halogen
+                    has_boronic_acid = any(
+                        mol and mol.HasSubstructMatch(boronic_acid_pattern) for mol in reactant_mols
+                    )
+                    has_halogen = any(
+                        mol and mol.HasSubstructMatch(halogen_pattern) for mol in reactant_mols
+                    )
+
+                    if has_boronic_acid and has_halogen:
+                        print(
+                            "Cross-coupling reaction detected: Boronic acid and halogen reactants found"
+                        )
+                        cross_coupling_detected = True
+                except:
+                    pass
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return dibenzylation_found
+    return cross_coupling_detected

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,186 +54,161 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects late-stage N-alkylation,
-    specifically N-methylation of a heterocyclic nitrogen.
+    This function detects if the synthesis route involves the transformation of a nitrile group
+    to a lactone structure, which is a key functional group interconversion.
     """
-    n_alkylation_detected = False
+    nitrile_to_lactone = False
 
-    # List of common heterocyclic rings to check
-    heterocyclic_rings = [
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "purine",
-        "benzimidazole",
-        "piperidine",
-        "piperazine",
-        "morpholine",
-        "thiomorpholine",
-        "pyrrolidine",
-    ]
+    # Helper function to detect lactone structures
+    def has_lactone_structure(mol_smiles):
+        mol = Chem.MolFromSmiles(mol_smiles)
+        if not mol:
+            return False
 
-    # List of N-alkylation reaction types
-    methylation_reactions = [
-        "N-methylation",
-        "Methylation with MeI_primary",
-        "Methylation with MeI_secondary",
-        "Methylation with MeI_tertiary",
-        "Eschweiler-Clarke Primary Amine Methylation",
-        "Eschweiler-Clarke Secondary Amine Methylation",
-        "Reductive methylation of primary amine with formaldehyde",
-        "DMS Amine methylation",
-    ]
+        # Look for carbonyl carbon that's in a ring and connected to ring oxygen
+        for atom in mol.GetAtoms():
+            if atom.GetSymbol() == "C" and atom.IsInRing():
+                has_carbonyl = False
+                has_ring_ether = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal n_alkylation_detected
-
-        if node["type"] == "reaction" and depth <= 3:  # Late stage (low depth)
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                print(f"Checking reaction at depth {depth}: {rsmi}")
-
-                # Check if this is an N-alkylation reaction
-                is_methylation = False
-                for rxn_type in methylation_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Detected methylation reaction: {rxn_type}")
-                        is_methylation = True
-                        break
-
-                # Check for general N-alkylation if specific methylation not found
-                if not is_methylation:
-                    is_alkylation = checker.check_reaction("N-alkylation", rsmi)
-                    if is_alkylation:
-                        print(f"Detected general N-alkylation reaction")
-                        is_methylation = True
-
-                # If we still haven't found a match, check for Buchwald-Hartwig/N-arylation
-                if not is_methylation:
+                for bond in atom.GetBonds():
+                    other_atom = bond.GetOtherAtom(atom)
+                    # Check for carbonyl
+                    if bond.GetBondType() == Chem.BondType.DOUBLE and other_atom.GetSymbol() == "O":
+                        has_carbonyl = True
+                    # Check for ether oxygen in ring
                     if (
-                        checker.check_reaction(
-                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
-                        )
-                        or checker.check_reaction(
-                            "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
-                        )
+                        bond.GetBondType() == Chem.BondType.SINGLE
+                        and other_atom.GetSymbol() == "O"
+                        and other_atom.IsInRing()
                     ):
-                        print(f"Detected N-arylation reaction")
-                        is_methylation = True
+                        has_ring_ether = True
 
-                if is_methylation or "N-alkylation" in rsmi:
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                if has_carbonyl and has_ring_ether:
+                    return True
+        return False
 
-                    # Check if the product contains a heterocyclic ring
-                    product_heterocycles = []
-                    for ring in heterocyclic_rings:
-                        if checker.check_ring(ring, product):
-                            product_heterocycles.append(ring)
+    def dfs_traverse(node):
+        nonlocal nitrile_to_lactone
 
-                    if product_heterocycles:
-                        print(f"Product contains heterocycles: {', '.join(product_heterocycles)}")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                        # Check if any reactant has a heterocyclic ring with N-H
-                        for reactant in reactants:
-                            reactant_heterocycles = []
-                            for ring in heterocyclic_rings:
-                                if checker.check_ring(ring, reactant):
-                                    reactant_heterocycles.append(ring)
+                try:
+                    # Check for nitrile in reactants
+                    nitrile_found = False
+                    nitrile_atom_maps = set()
 
-                            if reactant_heterocycles:
-                                print(
-                                    f"Reactant contains heterocycles: {', '.join(reactant_heterocycles)}"
-                                )
+                    for reactant in reactants:
+                        if checker.check_fg("Nitrile", reactant):
+                            print(f"Nitrile found in reactant: {reactant}")
+                            nitrile_found = True
 
-                                # Check for N-H in heterocyclic rings
-                                try:
-                                    reactant_mol = Chem.MolFromSmiles(reactant)
-                                    if reactant_mol:
-                                        # Check for heterocyclic N-H
-                                        has_heterocyclic_nh = False
-                                        for atom in reactant_mol.GetAtoms():
-                                            if (
-                                                atom.GetSymbol() == "N"
-                                                and atom.IsInRing()
-                                                and atom.GetTotalNumHs() > 0
-                                            ):
-                                                print(f"Found heterocyclic N-H in reactant")
-                                                has_heterocyclic_nh = True
-                                                break
-
-                                        # Also check using functional group detection
+                            # Get atom mapping numbers for the nitrile carbon
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            for atom in reactant_mol.GetAtoms():
+                                # Nitrile carbon is connected to nitrogen with triple bond
+                                if atom.GetSymbol() == "C" and atom.GetIsAromatic() == False:
+                                    for bond in atom.GetBonds():
+                                        other_atom = bond.GetOtherAtom(atom)
                                         if (
-                                            has_heterocyclic_nh
-                                            or "[nH]" in reactant
-                                            or checker.check_fg("Secondary amine", reactant)
-                                            or checker.check_fg("Primary amine", reactant)
-                                            or checker.check_fg("Tertiary amine", reactant)
+                                            other_atom.GetSymbol() == "N"
+                                            and bond.GetBondType() == Chem.BondType.TRIPLE
                                         ):
-                                            print(
-                                                f"Late-stage N-alkylation detected at depth {depth}"
+                                            map_num = (
+                                                atom.GetProp("molAtomMapNumber")
+                                                if atom.HasProp("molAtomMapNumber")
+                                                else None
                                             )
-                                            print(f"Reaction SMILES: {rsmi}")
-                                            n_alkylation_detected = True
-                                            return
-                                except Exception as e:
-                                    print(f"Error processing reactant: {e}")
+                                            if map_num:
+                                                nitrile_atom_maps.add(map_num)
+                                                print(f"Nitrile carbon atom map: {map_num}")
 
-                # Direct check for N-alkylation by examining the reaction
-                if not n_alkylation_detected and depth <= 3:
-                    try:
-                        reactants = rsmi.split(">")[0].split(".")
-                        product = rsmi.split(">")[-1]
-
-                        # Check if product has N-CH3 that wasn't in reactants
+                    # Check for lactone in product
+                    if nitrile_found:
                         product_mol = Chem.MolFromSmiles(product)
-                        if product_mol:
+
+                        # Direct check for lactone structure
+                        is_lactone = has_lactone_structure(product)
+                        print(f"Product has lactone structure: {is_lactone}")
+
+                        # Check for various ring structures that could form lactones
+                        ring_types = ["oxolane", "oxane", "dioxane", "dioxolane", "oxetane"]
+                        has_ring = any(checker.check_ring(ring, product) for ring in ring_types)
+                        has_ester = checker.check_fg("Ester", product)
+
+                        print(f"Product has relevant ring: {has_ring}, ester: {has_ester}")
+
+                        if is_lactone:
+                            print(f"Lactone found in product: {product}")
+
+                            # Verify the nitrile carbon is part of the ring structure
+                            ring_carbon_maps = set()
+
+                            # Find ring carbons in the product
                             for atom in product_mol.GetAtoms():
-                                if atom.GetSymbol() == "N" and atom.IsInRing():
-                                    # Check if this N has a methyl group attached
-                                    for neighbor in atom.GetNeighbors():
-                                        if (
-                                            neighbor.GetSymbol() == "C"
-                                            and neighbor.GetDegree() == 1
-                                        ):
-                                            # This might be a methyl group - check if it was added in this reaction
-                                            print(
-                                                f"Found potential N-CH3 in product at depth {depth}"
-                                            )
+                                if atom.GetSymbol() == "C" and atom.HasProp("molAtomMapNumber"):
+                                    if atom.IsInRing():
+                                        map_num = atom.GetProp("molAtomMapNumber")
+                                        ring_carbon_maps.add(map_num)
 
-                                            # Check if this N-CH3 was already present in reactants
-                                            n_ch3_in_reactants = False
-                                            for reactant in reactants:
-                                                if "[N:10]" in reactant and "[CH3]" in reactant:
-                                                    n_ch3_in_reactants = True
-                                                    break
+                            print(f"Ring carbon maps: {ring_carbon_maps}")
+                            print(f"Nitrile carbon maps: {nitrile_atom_maps}")
 
-                                            if not n_ch3_in_reactants:
-                                                print(
-                                                    f"Late-stage N-alkylation detected at depth {depth} (direct check)"
-                                                )
-                                                print(f"Reaction SMILES: {rsmi}")
-                                                n_alkylation_detected = True
-                                                return
-                    except Exception as e:
-                        print(f"Error in direct N-alkylation check: {e}")
+                            # Check if any nitrile carbon maps are in the ring
+                            if (
+                                nitrile_atom_maps
+                                and ring_carbon_maps
+                                and nitrile_atom_maps.intersection(ring_carbon_maps)
+                            ):
+                                print(
+                                    f"Nitrile carbon incorporated into ring structure. Maps: {nitrile_atom_maps.intersection(ring_carbon_maps)}"
+                                )
+                                nitrile_to_lactone = True
+
+                        # Check for relevant reactions even if we don't find a lactone structure yet
+                        if not nitrile_to_lactone:
+                            # Check reaction types that could be part of nitrile to lactone pathway
+                            relevant_reactions = [
+                                "Oxidation of nitrile to carboxylic acid",
+                                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
+                                "Intramolecular transesterification/Lactone formation",
+                                "Esterification of Carboxylic Acids",
+                            ]
+
+                            for reaction_type in relevant_reactions:
+                                if checker.check_reaction(reaction_type, rsmi):
+                                    print(f"Found relevant reaction: {reaction_type}")
+                                    nitrile_to_lactone = True
+                                    break
+
+                            # If we have a nitrile in reactant and an ester in product, this could be a step
+                            # in the nitrile to lactone transformation
+                            if not nitrile_to_lactone and nitrile_found and has_ester:
+                                print(
+                                    "Found nitrile to ester transformation - potential intermediate step"
+                                )
+                                nitrile_to_lactone = True
+
+                            # Additional check for carboxylic acid formation from nitrile
+                            if (
+                                not nitrile_to_lactone
+                                and nitrile_found
+                                and checker.check_fg("Carboxylic acid", product)
+                            ):
+                                print(
+                                    "Found nitrile to carboxylic acid transformation - potential intermediate step"
+                                )
+                                nitrile_to_lactone = True
+
+                except Exception as e:
+                    print(f"Error processing reaction SMILES: {e}")
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return n_alkylation_detected
+    return nitrile_to_lactone

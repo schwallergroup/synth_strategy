@@ -2,54 +2,53 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
-def main(route, threshold=3):
+def main(route):
     """
-    Detects if the final product in the synthesis route has multiple aromatic rings
+    Detects the presence of fluorinated aromatic rings in the synthetic route.
     """
-    aromatic_ring_count = 0
+    fluorinated_aromatics_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal aromatic_ring_count
+    def dfs_traverse(node):
+        nonlocal fluorinated_aromatics_count
 
-        if node["type"] == "mol" and depth == 0:  # Final product
-            print(f"Analyzing final product: {node['smiles']}")
+        if node["type"] == "mol" and "smiles" in node:
             mol = Chem.MolFromSmiles(node["smiles"])
             if mol:
-                # Count aromatic rings
-                aromatic_rings = 0
-                ring_info = mol.GetRingInfo()
-                for ring in ring_info.AtomRings():
-                    # Check if all atoms in the ring are aromatic
-                    if all(mol.GetAtomWithIdx(idx).GetIsAromatic() for idx in ring):
-                        aromatic_rings += 1
-                        print(f"Found aromatic ring: {[idx for idx in ring]}")
-
-                aromatic_ring_count = aromatic_rings
-                print(f"Found {aromatic_ring_count} aromatic rings in final product")
-            else:
-                print(f"Failed to parse molecule SMILES: {node['smiles']}")
+                # Check for fluorinated aromatic pattern
+                pattern = Chem.MolFromSmarts("c-[F]")
+                matches = mol.GetSubstructMatches(pattern)
+                if matches:
+                    fluorinated_aromatics_count += 1
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return aromatic_ring_count >= threshold
+
+    if fluorinated_aromatics_count > 0:
+        print(f"Fluorinated aromatics detected ({fluorinated_aromatics_count} instances)")
+        return True
+    return False

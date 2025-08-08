@@ -2,64 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the final product contains a nitrile functional group.
+    This function detects if N-alkylation is used as a fragment coupling strategy.
     """
-    # The final product is the root node of the synthesis route
-    if route["type"] == "mol":
-        smiles = route["smiles"]
-        has_nitrile = checker.check_fg("Nitrile", smiles)
-        print(f"Checking final product: {smiles}")
-        print(f"Nitrile in final product: {has_nitrile}")
-        return has_nitrile
-    else:
-        print("Root node is not a molecule node")
-        return False
+    n_alkylation_detected = False
+
+    def dfs_traverse(node):
+        nonlocal n_alkylation_detected
+
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
+
+            # Check for N-alkylation pattern: typically involves a halide (Cl, Br) and an amine
+            if (
+                ("Cl" in reactants_part or "Br" in reactants_part)
+                and "N" in reactants_part
+                and "N" in product_part
+            ):
+
+                # More specific check: look for C-N bond formation
+                reactants = reactants_part.split(".")
+                if len(reactants) >= 2:  # Need at least two fragments for coupling
+                    # One fragment should have halide, one should have nitrogen
+                    halide_fragment = False
+                    amine_fragment = False
+
+                    for reactant in reactants:
+                        if "Cl" in reactant or "Br" in reactant:
+                            halide_fragment = True
+                        if "N" in reactant:
+                            amine_fragment = True
+
+                    if halide_fragment and amine_fragment:
+                        n_alkylation_detected = True
+
+        for child in node.get("children", []):
+            dfs_traverse(child)
+
+    dfs_traverse(route)
+
+    print(f"N-alkylation fragment coupling: {n_alkylation_detected}")
+    return n_alkylation_detected

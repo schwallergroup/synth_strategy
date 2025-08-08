@@ -2,69 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a convergent approach
-    with fragment coupling via C-N bond formation.
+    Detects if the synthesis involves attaching a small fragment (like bromoacetic acid ester)
+    to a larger fragment.
     """
-    # Track if we found the pattern
-    found_fragment_coupling = False
+    small_fragment_attachment_found = False
 
-    def dfs_traverse(node):
-        nonlocal found_fragment_coupling
+    def dfs_traverse(node, depth=0):
+        nonlocal small_fragment_attachment_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if we have multiple reactants (fragments)
-            if len(reactants) >= 2:
-                # Check if one fragment has a nitrogen heterocycle
-                nitrogen_heterocycle_pattern = "[#7;R]"
+            if len(reactants_smiles) >= 2:
+                # Check sizes of reactants
+                reactant_sizes = []
+                for reactant in reactants_smiles:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            reactant_sizes.append(mol.GetNumAtoms())
+                    except:
+                        continue
 
-                fragment_count = 0
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(
-                        Chem.MolFromSmarts(nitrogen_heterocycle_pattern)
-                    ):
-                        fragment_count += 1
+                # Check if we have at least one small fragment (< 10 atoms) and one larger fragment (> 15 atoms)
+                if reactant_sizes and min(reactant_sizes) < 10 and max(reactant_sizes) > 15:
+                    # Check if product is larger than the largest reactant
+                    try:
+                        product_mol = Chem.MolFromSmiles(product_smiles)
+                        if product_mol and product_mol.GetNumAtoms() > max(reactant_sizes):
+                            small_fragment_attachment_found = True
+                            print(f"Small fragment attachment detected at depth {depth}")
+                    except:
+                        pass
 
-                # If we have at least two fragments with nitrogen heterocycles
-                if fragment_count >= 2:
-                    # Check if product has both fragments connected
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        # Count the number of fragments in the product
-                        frags = Chem.GetMolFrags(product_mol)
-                        if len(frags) == 1:  # Single connected product
-                            print("Found convergent fragment coupling via C-N bond formation")
-                            found_fragment_coupling = True
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return found_fragment_coupling
+    return small_fragment_attachment_found

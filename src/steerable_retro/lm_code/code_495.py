@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,147 +54,73 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects α-alkylation of an ester as a key C-C bond forming step.
+    Detects if heterocyclic structures (pyridine and pyrazole) are preserved throughout the synthesis.
     """
-    alpha_alkylation_found = False
+    # Track molecules at each depth
+    molecules_by_depth = {}
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal alpha_alkylation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal max_depth
 
-        if node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if depth > max_depth:
+            max_depth = depth
 
-                # Check if the product contains an ester group
-                if checker.check_fg("Ester", product):
-                    print(f"Product contains ester: {product}")
+        if node["type"] == "mol" and "smiles" in node:
+            if depth not in molecules_by_depth:
+                molecules_by_depth[depth] = []
+            molecules_by_depth[depth].append(node["smiles"])
 
-                    # Check for ester in reactants
-                    ester_reactant = None
-                    for reactant in reactants:
-                        if checker.check_fg("Ester", reactant):
-                            ester_reactant = reactant
-                            print(f"Found ester reactant: {ester_reactant}")
-                            break
-
-                    if ester_reactant:
-                        # Convert to RDKit molecules
-                        product_mol = Chem.MolFromSmiles(product)
-                        ester_mol = Chem.MolFromSmiles(ester_reactant)
-
-                        if product_mol and ester_mol:
-                            # First check: Direct pattern matching for the test case
-                            # Looking for CH2 in reactant becoming CH(CH3) in product
-                            if "[CH2:5]" in ester_reactant and "[CH:5]([CH3:6])" in product:
-                                alpha_alkylation_found = True
-                                print("α-alkylation of ester detected - methyl group added")
-                                return
-
-                            # Second check: More general alpha carbon pattern
-                            alpha_pattern = Chem.MolFromSmarts("[C:1]([H])([#6,#1,*])(C(=O)O[#6])")
-                            if ester_mol.HasSubstructMatch(alpha_pattern):
-                                ester_matches = ester_mol.GetSubstructMatches(alpha_pattern)
-                                print(f"Found alpha carbon in ester reactant: {ester_matches}")
-
-                                # Extract atom mapping from ester reactant
-                                atom_map_dict = {}
-                                for atom in ester_mol.GetAtoms():
-                                    if atom.GetAtomMapNum() > 0:
-                                        atom_map_dict[atom.GetAtomMapNum()] = atom.GetIdx()
-
-                                # Find alpha carbon atom map number
-                                for match in ester_matches:
-                                    alpha_idx = match[
-                                        0
-                                    ]  # First atom in the pattern is the alpha carbon
-                                    alpha_atom = ester_mol.GetAtomWithIdx(alpha_idx)
-                                    if alpha_atom.GetAtomMapNum() > 0:
-                                        alpha_carbon_map_num = alpha_atom.GetAtomMapNum()
-                                        print(f"Alpha carbon map number: {alpha_carbon_map_num}")
-
-                                        # Find the same atom in the product by map number
-                                        alpha_carbon_in_product = None
-                                        for atom in product_mol.GetAtoms():
-                                            if atom.GetAtomMapNum() == alpha_carbon_map_num:
-                                                alpha_carbon_in_product = atom
-                                                break
-
-                                        if alpha_carbon_in_product:
-                                            # Check if alpha carbon is CH2 in reactant but CH in product
-                                            reactant_alpha = ester_mol.GetAtomWithIdx(
-                                                atom_map_dict[alpha_carbon_map_num]
-                                            )
-
-                                            # Count explicit neighbors (excluding hydrogens)
-                                            reactant_heavy_neighbors = sum(
-                                                1
-                                                for n in reactant_alpha.GetNeighbors()
-                                                if n.GetAtomicNum() != 1
-                                            )
-                                            product_heavy_neighbors = sum(
-                                                1
-                                                for n in alpha_carbon_in_product.GetNeighbors()
-                                                if n.GetAtomicNum() != 1
-                                            )
-
-                                            print(
-                                                f"Alpha carbon heavy neighbors in reactant: {reactant_heavy_neighbors}"
-                                            )
-                                            print(
-                                                f"Alpha carbon heavy neighbors in product: {product_heavy_neighbors}"
-                                            )
-
-                                            # If product has more heavy neighbors, a new bond was formed
-                                            if product_heavy_neighbors > reactant_heavy_neighbors:
-                                                alpha_alkylation_found = True
-                                                print(
-                                                    "α-alkylation of ester detected - new bond at alpha position"
-                                                )
-                                                return
-
-                                            # Check if hydrogen count decreased (indicating substitution)
-                                            reactant_h_count = reactant_alpha.GetTotalNumHs(
-                                                includeNeighbors=True
-                                            )
-                                            product_h_count = alpha_carbon_in_product.GetTotalNumHs(
-                                                includeNeighbors=True
-                                            )
-
-                                            print(
-                                                f"Alpha carbon H count in reactant: {reactant_h_count}"
-                                            )
-                                            print(
-                                                f"Alpha carbon H count in product: {product_h_count}"
-                                            )
-
-                                            if reactant_h_count > product_h_count:
-                                                alpha_alkylation_found = True
-                                                print(
-                                                    "α-alkylation of ester detected - hydrogen replaced"
-                                                )
-                                                return
-
-                            # Third check: Look for specific alkylation patterns
-                            # Check if we have a CH2 alpha to ester in reactant and a more substituted carbon in product
-                            alpha_ch2_pattern = Chem.MolFromSmarts("[CH2](C(=O)O[#6])")
-                            alpha_subst_pattern = Chem.MolFromSmarts("[CH]([#6])(C(=O)O[#6])")
-
-                            if ester_mol.HasSubstructMatch(
-                                alpha_ch2_pattern
-                            ) and product_mol.HasSubstructMatch(alpha_subst_pattern):
-                                alpha_alkylation_found = True
-                                print("α-alkylation of ester detected - CH2 to CH-R pattern")
-                                return
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Traverse children
+        # Traverse children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return alpha_alkylation_found
+    # Check if at least one heterocycle (pyridine or pyrazole) is present at each depth
+    all_depths_preserve_heterocycles = True
+
+    # Find the target molecule (depth 0) and check which heterocycles it contains
+    target_has_pyridine = False
+    target_has_pyrazole = False
+
+    if 0 in molecules_by_depth:
+        for smiles in molecules_by_depth[0]:
+            if checker.check_ring("pyridine", smiles):
+                target_has_pyridine = True
+                print(f"Target molecule contains pyridine")
+            if checker.check_ring("pyrazole", smiles):
+                target_has_pyrazole = True
+                print(f"Target molecule contains pyrazole")
+
+    # If target doesn't have either heterocycle, no need to check preservation
+    if not (target_has_pyridine or target_has_pyrazole):
+        print("Target molecule doesn't contain pyridine or pyrazole")
+        return False
+
+    # Check preservation at each depth
+    for depth in range(max_depth + 1):
+        if depth not in molecules_by_depth:
+            continue
+
+        depth_has_pyridine = False
+        depth_has_pyrazole = False
+
+        for smiles in molecules_by_depth[depth]:
+            if target_has_pyridine and checker.check_ring("pyridine", smiles):
+                depth_has_pyridine = True
+            if target_has_pyrazole and checker.check_ring("pyrazole", smiles):
+                depth_has_pyrazole = True
+
+        # Check if the heterocycles present in the target are preserved at this depth
+        preserved = (not target_has_pyridine or depth_has_pyridine) and (
+            not target_has_pyrazole or depth_has_pyrazole
+        )
+
+        if not preserved:
+            print(f"Depth {depth} does not preserve the heterocycles from the target molecule")
+            all_depths_preserve_heterocycles = False
+            break
+
+    return all_depths_preserve_heterocycles

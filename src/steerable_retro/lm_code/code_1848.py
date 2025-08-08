@@ -2,71 +2,53 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects thioether formation via nucleophilic substitution.
+    This function detects if the synthesis involves a mesityl (2,4,6-trimethylphenyl) group.
     """
-    thioether_formation_found = False
+    mesityl_found = False
 
     def dfs_traverse(node):
-        nonlocal thioether_formation_found
+        nonlocal mesityl_found
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node:
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                # Mesityl group SMARTS pattern
+                mesityl_pattern = Chem.MolFromSmarts("[c]1[c]([CH3])[c][c]([CH3])[c][c]1[CH3]")
+                if mol and mol.HasSubstructMatch(mesityl_pattern):
+                    mesityl_found = True
+                    print("Mesityl group found in molecule")
+            except:
+                pass
 
-                # Check for thioether formation
-                thiol_pattern = Chem.MolFromSmarts("[SH]C")
-                alkyl_halide_pattern = Chem.MolFromSmarts("*CCC[Br,Cl,I,F]")
-                thioether_pattern = Chem.MolFromSmarts("*CCCS(C)")
-
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol and thiol_pattern and alkyl_halide_pattern and thioether_pattern:
-                        thiol_found = False
-                        alkyl_halide_found = False
-
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                if reactant_mol.HasSubstructMatch(thiol_pattern):
-                                    thiol_found = True
-                                if reactant_mol.HasSubstructMatch(alkyl_halide_pattern):
-                                    alkyl_halide_found = True
-
-                        if (
-                            thiol_found
-                            and alkyl_halide_found
-                            and product_mol.HasSubstructMatch(thioether_pattern)
-                        ):
-                            print("Found thioether formation via nucleophilic substitution")
-                            thioether_formation_found = True
-                except:
-                    print("Error in SMILES processing for thioether formation detection")
-
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return thioether_formation_found
+    return mesityl_found

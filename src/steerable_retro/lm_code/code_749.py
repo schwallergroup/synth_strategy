@@ -2,70 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving tosylation of an alcohol (leaving group installation).
+    This function detects if the synthesis follows a linear rather than convergent approach.
     """
-    has_alcohol_tosylation = False
+    # Track the maximum branching factor in the synthesis tree
+    max_branching = 0
 
     def dfs_traverse(node):
-        nonlocal has_alcohol_tosylation
+        nonlocal max_branching
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if rsmi:
                 reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                num_reactants = len(reactants)
+                max_branching = max(max_branching, num_reactants)
 
-                if reactants and product:
-                    # Check for alcohol and tosyl chloride patterns in reactants
-                    alcohol_pattern = Chem.MolFromSmarts("[OH][CH2]")
-                    tosyl_chloride_pattern = Chem.MolFromSmarts("Cl[S](=[O])(=[O])[c]")
-
-                    has_alcohol = False
-                    has_tosyl_chloride = False
-
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if reactant_mol.HasSubstructMatch(alcohol_pattern):
-                                has_alcohol = True
-                            if reactant_mol.HasSubstructMatch(tosyl_chloride_pattern):
-                                has_tosyl_chloride = True
-
-                    # Check for tosylate pattern in product
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        tosylate_pattern = Chem.MolFromSmarts("[O][S](=[O])(=[O])[c]")
-                        if product_mol.HasSubstructMatch(tosylate_pattern):
-                            if has_alcohol and has_tosyl_chloride:
-                                has_alcohol_tosylation = True
-
-        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(f"Alcohol tosylation strategy: {has_alcohol_tosylation}")
-    return has_alcohol_tosylation
+    # If max branching is 2 or less, consider it a linear synthesis
+    is_linear = max_branching <= 2
+    if is_linear:
+        print("Linear synthesis strategy detected (max branching ≤ 2)")
+    else:
+        print(f"Convergent synthesis detected with max branching of {max_branching}")
+
+    return is_linear

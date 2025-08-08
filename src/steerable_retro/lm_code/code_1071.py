@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,226 +54,85 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving a late-stage cyclization
-    (final step involves ring formation).
+    Detects if the synthesis route has a late-stage fragment coupling.
+    Specifically looks for a reaction in the first two steps that combines two complex fragments.
     """
-    # Track if the final step involves ring formation
-    final_step_is_cyclization = False
+    fragment_coupling_detected = False
+
+    # List of common coupling reaction types
+    coupling_reaction_types = [
+        "Suzuki",
+        "Negishi",
+        "Stille",
+        "Heck",
+        "Sonogashira",
+        "Buchwald-Hartwig",
+        "Kumada",
+        "Hiyama-Denmark",
+        "Ullmann",
+        "Chan-Lam",
+        "decarboxylative_coupling",
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal final_step_is_cyclization
+        nonlocal fragment_coupling_detected
 
-        if node["type"] == "reaction" and depth <= 1:  # Final or penultimate step
-            try:
-                # Extract reactants and product
+        if (
+            node["type"] == "reaction" and depth <= 2
+        ):  # Focus on late-stage reactions (depth 0, 1, or 2)
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
 
-                print(f"Analyzing reaction step at depth {depth}: {rsmi}")
+                # Check if we have at least 2 complex reactants (more than 12 atoms each)
+                complex_reactants = []
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.GetNumAtoms() > 12:
+                        complex_reactants.append(reactant)
 
-                # Check if metadata explicitly marks this as a ring-forming reaction
-                if node.get("metadata", {}).get("RingBreaker", False):
-                    print(f"Detected RingBreaker flag in metadata")
-                    final_step_is_cyclization = True
-                    return
+                # Check if this is a coupling reaction
+                is_coupling_reaction = False
+                for reaction_type in coupling_reaction_types:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        is_coupling_reaction = True
+                        print(f"Found {reaction_type} coupling reaction at depth {depth}")
+                        break
 
-                # Check if this is a known cyclization reaction
-                cyclization_reaction_types = [
-                    "Formation of NOS Heterocycles",
-                    "Intramolecular transesterification/Lactone formation",
-                    "Paal-Knorr pyrrole synthesis",
-                    "Intramolecular amination (heterocycle formation)",
-                    "Intramolecular amination of azidobiphenyls (heterocycle formation)",
-                    "Benzothiazole formation from aldehyde",
-                    "Benzothiazole formation from acyl halide",
-                    "Benzothiazole formation from ester/carboxylic acid",
-                    "Benzoxazole formation from aldehyde",
-                    "Benzoxazole formation from acyl halide",
-                    "Benzoxazole formation from ester/carboxylic acid",
-                    "Benzoxazole formation (intramolecular)",
-                    "Benzimidazole formation from aldehyde",
-                    "Benzimidazole formation from acyl halide",
-                    "Benzimidazole formation from ester/carboxylic acid",
-                    "Mitsunobu aryl ether (intramolecular)",
-                    "Pictet-Spengler",
-                    "Fischer indole",
-                    "Diels-Alder",
-                    "Diels-Alder (ON bond)",
-                    "Pauson-Khand reaction",
-                    "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-                    "Huisgen 1,3 dipolar cycloaddition",
-                    "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-                    "Pyrazole formation",
-                    "Michael-induced ring closure from hydrazone",
-                    "Michael-induced ring closure from diazoalkane",
-                    "[3+2]-cycloaddition of hydrazone and alkyne",
-                    "[3+2]-cycloaddition of hydrazone and alkene",
-                    "[3+2]-cycloaddition of diazoalkane and alkyne",
-                    "[3+2]-cycloaddition of diazoalkane and alkene",
-                    "[3+2]-cycloaddition of diazoalkane and alpha-alkyne",
-                    "[3+2]-cycloaddition of diazoalkane and alpha-alkene",
-                    "Azide-nitrile click cycloaddition to tetrazole",
-                    "Azide-nitrile click cycloaddition to triazole",
-                    "Huisgen 1,3,4-oxadiazoles from COOH and tetrazole",
-                ]
+                # If we have at least 2 complex reactants and it's a coupling reaction
+                if len(complex_reactants) >= 2 and is_coupling_reaction:
+                    print(f"Found late-stage fragment coupling at depth {depth}")
+                    print(f"Reaction SMILES: {rsmi}")
+                    print(f"Complex reactants: {len(complex_reactants)}")
+                    fragment_coupling_detected = True
+                # If we have at least 2 complex reactants but couldn't identify the reaction type
+                elif len(complex_reactants) >= 2:
+                    # Check for C-C bond formation between the reactants
+                    product = rsmi.split(">")[-1]
+                    product_mol = Chem.MolFromSmiles(product)
 
-                for rxn_type in cyclization_reaction_types:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Detected cyclization reaction: {rxn_type}")
-                        final_step_is_cyclization = True
-                        return
+                    # Look for other indicators of coupling reactions
+                    has_metal_catalyst = any(
+                        checker.check_fg(fg, rsmi.split(">")[1])
+                        for fg in ["Magnesium halide", "Zinc halide", "Tin"]
+                    )
 
-                # Convert to RDKit molecules for further analysis
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product = Chem.MolFromSmiles(product_smiles)
+                    has_coupling_substrates = any(
+                        checker.check_fg(fg, reactant)
+                        for reactant in reactants
+                        for fg in ["Boronic acid", "Boronic ester", "Aromatic halide", "Triflate"]
+                    )
 
-                if product and all(reactants):
-                    # Check for ring formation by comparing ring counts
-                    product_rings = Chem.GetSSSR(product)
-                    reactant_rings_total = sum(Chem.GetSSSR(r) for r in reactants)
-
-                    if len(product_rings) > reactant_rings_total:
+                    if has_metal_catalyst or has_coupling_substrates:
                         print(
-                            f"Detected ring formation: Product has {len(product_rings)} rings, reactants have {reactant_rings_total} rings"
+                            f"Found potential fragment coupling at depth {depth} based on reactants"
                         )
-                        final_step_is_cyclization = True
-                        return
+                        print(f"Reaction SMILES: {rsmi}")
+                        print(f"Complex reactants: {len(complex_reactants)}")
+                        fragment_coupling_detected = True
 
-                    # Check for specific ring types in the product that might not be in reactants
-                    ring_types = [
-                        "furan",
-                        "pyran",
-                        "dioxane",
-                        "tetrahydrofuran",
-                        "tetrahydropyran",
-                        "oxirane",
-                        "oxetane",
-                        "oxolane",
-                        "oxane",
-                        "dioxolane",
-                        "dioxolene",
-                        "trioxane",
-                        "dioxepane",
-                        "pyrrole",
-                        "pyridine",
-                        "pyrazole",
-                        "imidazole",
-                        "oxazole",
-                        "thiazole",
-                        "pyrimidine",
-                        "pyrazine",
-                        "pyridazine",
-                        "triazole",
-                        "tetrazole",
-                        "pyrrolidine",
-                        "piperidine",
-                        "piperazine",
-                        "morpholine",
-                        "thiomorpholine",
-                        "aziridine",
-                        "azetidine",
-                        "azepane",
-                        "diazepane",
-                        "indole",
-                        "quinoline",
-                        "isoquinoline",
-                        "purine",
-                        "carbazole",
-                        "acridine",
-                        "thiophene",
-                        "thiopyran",
-                        "thiirane",
-                        "thietane",
-                        "thiolane",
-                        "thiane",
-                        "dithiane",
-                        "dithiolane",
-                        "benzothiophene",
-                        "oxathiolane",
-                        "dioxathiolane",
-                        "thiazolidine",
-                        "oxazolidine",
-                        "isoxazole",
-                        "isothiazole",
-                        "oxadiazole",
-                        "thiadiazole",
-                        "benzoxazole",
-                        "benzothiazole",
-                        "benzimidazole",
-                        "pteridin",
-                        "phenothiazine",
-                        "phenoxazine",
-                        "dibenzofuran",
-                        "dibenzothiophene",
-                        "xanthene",
-                        "thioxanthene",
-                        "pyrroline",
-                        "pyrrolidone",
-                        "imidazolidine",
-                        "porphyrin",
-                        "indazole",
-                        "benzotriazole",
-                    ]
-
-                    for ring_type in ring_types:
-                        # Check if ring exists in product but not in all reactants
-                        if checker.check_ring(ring_type, product_smiles):
-                            print(f"Found {ring_type} in product")
-                            ring_in_all_reactants = all(
-                                checker.check_ring(ring_type, r) for r in reactants_smiles
-                            )
-                            if not ring_in_all_reactants:
-                                print(f"Detected {ring_type} formation in step at depth {depth}")
-                                final_step_is_cyclization = True
-                                return
-
-                    # Check for intramolecular reactions (often cyclizations)
-                    if len(reactants_smiles) == 1 and "." not in reactants_smiles[0]:
-                        # One reactant becoming one product often indicates intramolecular reaction
-                        reactant_mol = reactants[0]
-
-                        # Check if any functional groups that often participate in cyclization are present
-                        cyclization_prone_fgs = [
-                            "Carboxylic acid",
-                            "Ester",
-                            "Amide",
-                            "Amine",
-                            "Alcohol",
-                            "Alkyne",
-                            "Alkene",
-                            "Azide",
-                            "Nitrile",
-                            "Isocyanate",
-                        ]
-
-                        fg_count_reactant = sum(
-                            1
-                            for fg in cyclization_prone_fgs
-                            if checker.check_fg(fg, reactants_smiles[0])
-                        )
-                        fg_count_product = sum(
-                            1
-                            for fg in cyclization_prone_fgs
-                            if checker.check_fg(fg, product_smiles)
-                        )
-
-                        if fg_count_reactant > fg_count_product:
-                            print(
-                                f"Detected potential intramolecular cyclization: functional group count decreased"
-                            )
-                            final_step_is_cyclization = True
-                            return
-
-            except Exception as e:
-                print(f"Error analyzing reaction step: {e}")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Final result: late_stage_cyclization = {final_step_is_cyclization}")
-    return final_step_is_cyclization
+    return fragment_coupling_detected

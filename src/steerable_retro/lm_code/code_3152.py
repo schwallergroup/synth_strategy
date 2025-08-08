@@ -2,83 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a sequence of different nitrogen acylation reactions
-    (amide, carbamate, urea) in the synthesis route.
+    Detects if brominated aromatic core is preserved throughout the synthesis.
     """
-    acylation_types = []
+    brominated_aromatic_count = 0
+    total_reactions = 0
 
     def dfs_traverse(node):
-        nonlocal acylation_types
+        nonlocal brominated_aromatic_count, total_reactions
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            total_reactions += 1
 
-            # Create RDKit mol objects
-            product_mol = Chem.MolFromSmiles(product) if product else None
+            # Extract product
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-            if product_mol:
-                # Check for newly formed acylation products
-                amide_pattern = Chem.MolFromSmarts("[#6](=O)[#7]")
-                urea_pattern = Chem.MolFromSmarts("[#7][#6](=O)[#7]")
-                carbamate_pattern = Chem.MolFromSmarts("[#7][#6](=O)[#8][#6]")
+            parts = rsmi.split(">")
+            if len(parts) < 3:
+                return
 
-                # Check reactants to see if they already had these patterns
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                reactants_with_amide = any(
-                    mol and mol.HasSubstructMatch(amide_pattern) for mol in reactant_mols
-                )
-                reactants_with_urea = any(
-                    mol and mol.HasSubstructMatch(urea_pattern) for mol in reactant_mols
-                )
-                reactants_with_carbamate = any(
-                    mol and mol.HasSubstructMatch(carbamate_pattern) for mol in reactant_mols
-                )
+            product_smiles = parts[2]
 
-                # Check for new formations
-                if product_mol.HasSubstructMatch(amide_pattern) and not reactants_with_amide:
-                    print("Detected amide formation")
-                    acylation_types.append("amide")
-                if product_mol.HasSubstructMatch(urea_pattern) and not reactants_with_urea:
-                    print("Detected urea formation")
-                    acylation_types.append("urea")
-                if (
-                    product_mol.HasSubstructMatch(carbamate_pattern)
-                    and not reactants_with_carbamate
-                ):
-                    print("Detected carbamate formation")
-                    acylation_types.append("carbamate")
+            # Check if product contains brominated aromatic
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            if product:
+                brominated_aromatic_pattern = Chem.MolFromSmarts("c[Br]")
+                if product.HasSubstructMatch(brominated_aromatic_pattern):
+                    brominated_aromatic_count += 1
+                    print(f"Found brominated aromatic in product")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have at least 2 different types of acylations
-    unique_acylations = set(acylation_types)
-    print(f"Found acylation types: {unique_acylations}")
-    return len(unique_acylations) >= 2
+    # Check if brominated aromatic is preserved in all reactions
+    is_preserved = brominated_aromatic_count == total_reactions and total_reactions > 0
+    print(f"Brominated aromatic preservation detected: {is_preserved}")
+    return is_preserved

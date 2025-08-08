@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,88 +54,220 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves connecting a fluorinated aromatic
-    compound with a sulfonamide containing a cyclic amine.
+    This function detects a late-stage fragment coupling strategy.
+    It looks for the joining of two complex fragments in the second half of the synthesis.
     """
-    has_fluorinated_aromatic = False
-    has_cyclic_amine = False
-    has_connected_structure = False
+    late_coupling_found = False
 
-    # List of cyclic amines to check
-    cyclic_amine_rings = [
-        "aziridine",
-        "azetidine",
-        "pyrrolidine",
-        "piperidine",
-        "azepane",
-        "diazepane",
-        "morpholine",
-        "piperazine",
-        "thiomorpholine",
+    # List of common coupling reaction types
+    coupling_reactions = [
+        "Suzuki coupling with boronic acids",
+        "Suzuki coupling with boronic esters",
+        "Suzuki coupling with boronic acids OTf",
+        "Suzuki coupling with boronic esters OTf",
+        "Negishi coupling",
+        "Stille reaction_aryl",
+        "Stille reaction_vinyl",
+        "Stille reaction_benzyl",
+        "Stille reaction_allyl",
+        "Buchwald-Hartwig",
+        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
+        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
+        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
+        "Heck terminal vinyl",
+        "Heck_non-terminal_vinyl",
+        "Sonogashira acetylene_aryl halide",
+        "Sonogashira alkyne_aryl halide",
+        "Ullmann condensation",
+        "Hiyama-Denmark Coupling",
+        "Kumada cross-coupling",
+        "Aryllithium cross-coupling",
+    ]
+
+    # Functional groups that indicate complexity
+    complexity_fgs = [
+        "Aromatic halide",
+        "Boronic acid",
+        "Boronic ester",
+        "Nitrile",
+        "Carboxylic acid",
+        "Ester",
+        "Amide",
+        "Primary amine",
+        "Secondary amine",
+        "Tertiary amine",
+        "Primary alcohol",
+        "Secondary alcohol",
+        "Tertiary alcohol",
+        "Ketone",
+        "Aldehyde",
+        "Phenol",
+        "Ether",
+        "Sulfonamide",
+        "Sulfone",
+        "Nitro group",
+        "Triflate",
+        "Tosylate",
+        "Mesylate",
+        "Guanidine",
+        "Urea",
+        "Thiourea",
+    ]
+
+    # Common rings that indicate complexity
+    complexity_rings = [
+        "pyridine",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrole",
+        "furan",
+        "thiophene",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "indole",
+        "benzofuran",
+        "benzothiophene",
+        "quinoline",
+        "isoquinoline",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+        "purine",
     ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_fluorinated_aromatic, has_cyclic_amine, has_connected_structure
+        nonlocal late_coupling_found
 
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
 
-            # Check for fluorinated aromatic
-            if checker.check_fg("Aromatic halide", mol_smiles) and "F" in mol_smiles:
-                has_fluorinated_aromatic = True
-                print(f"Detected fluorinated aromatic compound: {mol_smiles}")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Examining reaction SMILES: {rsmi}")
 
-            # Check for cyclic amine
-            for ring in cyclic_amine_rings:
-                if checker.check_ring(ring, mol_smiles):
-                    has_cyclic_amine = True
-                    print(f"Detected cyclic amine ({ring}): {mol_smiles}")
-                    break
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check if this molecule already has both components connected via sulfonamide
-            if (
-                checker.check_fg("Aromatic halide", mol_smiles)
-                and "F" in mol_smiles
-                and checker.check_fg("Sulfonamide", mol_smiles)
-                and any(checker.check_ring(ring, mol_smiles) for ring in cyclic_amine_rings)
-            ):
-                has_connected_structure = True
+            # Check if this is a late-stage reaction (depth <= 3)
+            if len(reactants) > 1 and depth <= 3:
                 print(
-                    f"Detected molecule with fluorinated aromatic and cyclic amine connected via sulfonamide: {mol_smiles}"
+                    f"Potential late-stage reaction found at depth {depth} with {len(reactants)} reactants"
                 )
 
-        elif node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                # Check if this is a known coupling reaction
+                is_coupling = False
+                for rxn in coupling_reactions:
+                    if checker.check_reaction(rxn, rsmi):
+                        print(f"Detected coupling reaction: {rxn}")
+                        is_coupling = True
+                        break
 
-                # Check if product contains both fluorinated aromatic, sulfonamide, and cyclic amine
-                product_has_fluoro = checker.check_fg("Aromatic halide", product) and "F" in product
-                product_has_sulfonamide = checker.check_fg("Sulfonamide", product)
-                product_has_cyclic_amine = any(
-                    checker.check_ring(ring, product) for ring in cyclic_amine_rings
-                )
+                if not is_coupling:
+                    # If not a known coupling, check for characteristic patterns
+                    if any(checker.check_fg("Aromatic halide", r) for r in reactants) and any(
+                        checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
+                        for r in reactants
+                    ):
+                        print("Detected potential Suzuki-like coupling pattern")
+                        is_coupling = True
+                    elif any(checker.check_fg("Aromatic halide", r) for r in reactants) and any(
+                        checker.check_fg("Primary amine", r)
+                        or checker.check_fg("Secondary amine", r)
+                        for r in reactants
+                    ):
+                        print("Detected potential Buchwald-Hartwig-like coupling pattern")
+                        is_coupling = True
+                    # Check for guanidine-like coupling patterns
+                    elif any("C(=N)" in r for r in reactants) and any("NH" in r for r in reactants):
+                        print("Detected potential guanidine coupling pattern")
+                        is_coupling = True
 
-                if product_has_fluoro and product_has_sulfonamide and product_has_cyclic_amine:
-                    # Check if the product has all three components
-                    has_connected_structure = True
-                    print(
-                        f"Detected product with fluorinated aromatic and cyclic amine connected via sulfonamide: {product}"
-                    )
+                # Even if not a typical coupling reaction, check if it's joining complex fragments
+                complex_reactants = []
+                reactant_mols = []
 
-        # Traverse children
+                for i, r in enumerate(reactants):
+                    mol = Chem.MolFromSmiles(r)
+                    if mol:
+                        reactant_mols.append(mol)
+
+                        # Count rings
+                        ring_info = mol.GetRingInfo()
+                        ring_count = ring_info.NumRings()
+
+                        # Count functional groups
+                        fg_count = sum(1 for fg in complexity_fgs if checker.check_fg(fg, r))
+
+                        # Count complex rings
+                        complex_ring_count = sum(
+                            1 for ring in complexity_rings if checker.check_ring(ring, r)
+                        )
+
+                        complexity_score = ring_count + fg_count + complex_ring_count
+
+                        print(
+                            f"Reactant {i} complexity: rings={ring_count}, FGs={fg_count}, complex rings={complex_ring_count}, total score={complexity_score}"
+                        )
+
+                        # Lower complexity threshold
+                        if (ring_count >= 1 and fg_count >= 1) or complexity_score >= 2:
+                            print(f"Reactant {i} is complex: {r}")
+                            complex_reactants.append((i, r, mol))
+
+                if len(complex_reactants) >= 2:
+                    print(f"Found {len(complex_reactants)} complex reactants")
+
+                    # Verify that the product contains significant portions of both reactants
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        product_atom_count = product_mol.GetNumAtoms()
+                        reactant_atom_counts = [m.GetNumAtoms() for m in reactant_mols]
+
+                        print(f"Product atom count: {product_atom_count}")
+                        print(f"Reactant atom counts: {reactant_atom_counts}")
+
+                        # Check if product is larger than any single reactant
+                        if (
+                            product_atom_count > max(reactant_atom_counts) * 0.8
+                        ):  # Allow some atom loss
+                            # Try to find MCS between reactants and product to verify coupling
+                            for i, (idx1, r1, mol1) in enumerate(complex_reactants):
+                                for idx2, r2, mol2 in complex_reactants[i + 1 :]:
+                                    print(f"Checking coupling between reactants {idx1} and {idx2}")
+
+                                    # Verify that both fragments are present in the product
+                                    mcs1 = rdFMCS.FindMCS(
+                                        [mol1, product_mol], completeRingsOnly=True
+                                    )
+                                    mcs2 = rdFMCS.FindMCS(
+                                        [mol2, product_mol], completeRingsOnly=True
+                                    )
+
+                                    if mcs1.numAtoms > 0 and mcs2.numAtoms > 0:
+                                        mcs1_ratio = mcs1.numAtoms / mol1.GetNumAtoms()
+                                        mcs2_ratio = mcs2.numAtoms / mol2.GetNumAtoms()
+
+                                        print(f"MCS ratios: {mcs1_ratio:.2f}, {mcs2_ratio:.2f}")
+
+                                        # Lower MCS ratio threshold to 0.5
+                                        if mcs1_ratio > 0.5 and mcs2_ratio > 0.5:
+                                            print(
+                                                f"Late-stage fragment coupling confirmed at depth {depth}"
+                                            )
+                                            late_coupling_found = True
+                                            return  # Exit early once found
+
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
+            if late_coupling_found:
+                return  # Exit early once found
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
+    print(f"Final result: {late_coupling_found}")
 
-    # Return True if all conditions are met
-    result = has_fluorinated_aromatic and has_cyclic_amine and has_connected_structure
-    print(f"Final result: {result}")
-    print(f"- Has fluorinated aromatic: {has_fluorinated_aromatic}")
-    print(f"- Has cyclic amine: {has_cyclic_amine}")
-    print(f"- Has connected structure: {has_connected_structure}")
-
-    return result
+    return late_coupling_found

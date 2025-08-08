@@ -2,63 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving diarylamine formation through SNAr.
+    Detects if the synthesis follows a linear strategy (as opposed to convergent).
     """
-    diarylamine_formed = False
+    # In a linear synthesis, each reaction typically has only one non-commercial reactant
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal diarylamine_formed
+        nonlocal is_linear
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Count non-commercial reactants (children of type "mol" that aren't in_stock)
+            non_commercial_reactants = sum(
+                1
+                for child in node.get("children", [])
+                if child["type"] == "mol" and not child.get("in_stock", False)
+            )
 
-                # Check for diarylamine formation
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    diarylamine_pattern = Chem.MolFromSmarts("c-[NH]-c")
-                    if product_mol.HasSubstructMatch(diarylamine_pattern):
-                        # Verify it's a new formation by checking reactants
-                        has_pattern_in_reactants = False
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(diarylamine_pattern):
-                                has_pattern_in_reactants = True
-                                break
+            # If more than one non-commercial reactant, it's likely a convergent step
+            if non_commercial_reactants > 1:
+                print(
+                    f"Found convergent step with {non_commercial_reactants} non-commercial reactants"
+                )
+                is_linear = False
 
-                        if not has_pattern_in_reactants:
-                            diarylamine_formed = True
-                            print("Diarylamine formation detected")
-
-        # Traverse children
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Diarylamine formation strategy detected: {diarylamine_formed}")
-    return diarylamine_formed
+    return is_linear

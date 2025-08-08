@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,121 +54,104 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis uses a protection-deprotection strategy,
-    looking for various protection and deprotection reactions.
+    Detects an alcohol-to-bromide activation strategy for nucleophilic substitution.
     """
-    # Initialize tracking variables
-    protection_events = []
-    deprotection_events = []
+    # Track if we found alcohol to bromide conversion
+    alcohol_to_bromide_found = False
 
-    # Define protection and deprotection reaction types to check
-    protection_reactions = [
-        "Boc amine protection",
-        "Boc amine protection explicit",
-        "Boc amine protection with Boc anhydride",
-        "Boc amine protection (ethyl Boc)",
-        "Boc amine protection of secondary amine",
-        "Boc amine protection of primary amine",
-        "Alcohol protection with silyl ethers",
-    ]
+    def dfs_traverse(node):
+        nonlocal alcohol_to_bromide_found
 
-    deprotection_reactions = [
-        "Phthalimide deprotection",
-        "Boc amine deprotection",
-        "Boc amine deprotection of guanidine",
-        "Boc amine deprotection to NH-NH2",
-        "Tert-butyl deprotection of amine",
-        "Alcohol deprotection from silyl ethers",
-        "Alcohol deprotection from silyl ethers (double)",
-        "Alcohol deprotection from silyl ethers (diol)",
-        "N-glutarimide deprotection",
-        "Hydroxyl benzyl deprotection",
-        "Carboxyl benzyl deprotection",
-    ]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-    # Define protection and deprotection functional group pairs
-    protection_fg_pairs = [
-        ("Primary amine", "Phthalimide"),
-        ("Primary amine", "Secondary amide"),
-        ("Primary amine", "Tertiary amide"),
-        ("Secondary amine", "Tertiary amide"),
-        ("Primary alcohol", "Ether"),
-        ("Secondary alcohol", "Ether"),
-        ("Tertiary alcohol", "Ether"),
-        ("Carboxylic acid", "Ester"),
-    ]
+                # Check for specific alcohol to bromide reactions directly
+                specific_reactions = [
+                    "PBr3 and alcohol to alkyl bromide",
+                    "Appel reaction",
+                    "Wohl-Ziegler bromination benzyl primary",
+                    "Wohl-Ziegler bromination benzyl secondary",
+                    "Wohl-Ziegler bromination benzyl tertiary",
+                    "Wohl-Ziegler bromination allyl primary",
+                    "Wohl-Ziegler bromination allyl secondary",
+                    "Wohl-Ziegler bromination allyl tertiary",
+                    "Alcohol to bromide_Other",
+                ]
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                for rxn_type in specific_reactions:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        print(f"Found specific reaction {rxn_type}: {rsmi}")
+                        alcohol_to_bromide_found = True
+                        return
 
-            # Check for protection reactions
-            for reaction in protection_reactions:
-                if checker.check_reaction(reaction, rsmi):
-                    print(f"Detected {reaction} at depth {depth}")
-                    protection_events.append((reaction, depth))
+                # Check for forward direction (alcohol → bromide)
+                alcohol_in_reactants = False
+                alcohol_reactant = None
+                for reactant in reactants:
+                    if (
+                        checker.check_fg("Primary alcohol", reactant)
+                        or checker.check_fg("Secondary alcohol", reactant)
+                        or checker.check_fg("Tertiary alcohol", reactant)
+                    ):
+                        alcohol_in_reactants = True
+                        alcohol_reactant = reactant
+                        print(f"Found alcohol in reactant: {reactant}")
+                        break
 
-            # Check for deprotection reactions
-            for reaction in deprotection_reactions:
-                if checker.check_reaction(reaction, rsmi):
-                    print(f"Detected {reaction} at depth {depth}")
-                    deprotection_events.append((reaction, depth))
+                bromide_in_product = False
+                if (
+                    checker.check_fg("Primary halide", product)
+                    or checker.check_fg("Secondary halide", product)
+                    or checker.check_fg("Tertiary halide", product)
+                ):
+                    # Verify it's specifically a bromide
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        for atom in product_mol.GetAtoms():
+                            if atom.GetSymbol() == "Br":
+                                bromide_in_product = True
+                                print(f"Found bromide in product: {product}")
+                                break
 
-            # If no specific reaction detected, check for functional group changes
-            if not any(
-                checker.check_reaction(r, rsmi)
-                for r in protection_reactions + deprotection_reactions
-            ):
-                try:
-                    product_mol = product
-                    reactant_mols = reactants
+                # Check for retrosynthetic direction (bromide → alcohol)
+                bromide_in_reactants = False
+                bromide_reactant = None
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        for atom in reactant_mol.GetAtoms():
+                            if atom.GetSymbol() == "Br":
+                                bromide_in_reactants = True
+                                bromide_reactant = reactant
+                                print(f"Found bromide in reactant: {reactant}")
+                                break
+                        if bromide_in_reactants:
+                            break
 
-                    # Check for protection by functional group changes
-                    for fg_start, fg_end in protection_fg_pairs:
-                        if any(
-                            checker.check_fg(fg_start, r) for r in reactant_mols
-                        ) and checker.check_fg(fg_end, product_mol):
-                            print(
-                                f"Detected potential protection: {fg_start} -> {fg_end} at depth {depth}"
-                            )
-                            protection_events.append((f"{fg_start} -> {fg_end}", depth))
+                alcohol_in_product = False
+                if (
+                    checker.check_fg("Primary alcohol", product)
+                    or checker.check_fg("Secondary alcohol", product)
+                    or checker.check_fg("Tertiary alcohol", product)
+                ):
+                    alcohol_in_product = True
+                    print(f"Found alcohol in product: {product}")
 
-                    # Check for deprotection by functional group changes (reverse of protection)
-                    for fg_start, fg_end in protection_fg_pairs:
-                        if checker.check_fg(fg_start, product_mol) and any(
-                            checker.check_fg(fg_end, r) for r in reactant_mols
-                        ):
-                            print(
-                                f"Detected potential deprotection: {fg_end} -> {fg_start} at depth {depth}"
-                            )
-                            deprotection_events.append((f"{fg_end} -> {fg_start}", depth))
-
-                except Exception as e:
-                    print(f"Error processing reaction SMILES: {e}")
+                # Confirm transformation in either direction
+                if (alcohol_in_reactants and bromide_in_product) or (
+                    bromide_in_reactants and alcohol_in_product
+                ):
+                    print(f"Confirmed alcohol-bromide interconversion: {rsmi}")
+                    alcohol_to_bromide_found = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have both protection and deprotection events
-    if protection_events and deprotection_events:
-        # Find the earliest protection and latest deprotection
-        min_protection_depth = min(depth for _, depth in protection_events)
-        max_deprotection_depth = max(depth for _, depth in deprotection_events)
-
-        # In retrosynthetic traversal, protection should be at a lower depth than deprotection
-        # (protection happens earlier in forward synthesis)
-        valid_strategy = min_protection_depth < max_deprotection_depth
-        print(
-            f"Protection depth: {min_protection_depth}, Deprotection depth: {max_deprotection_depth}"
-        )
-        print(f"Protection-deprotection strategy detected: {valid_strategy}")
-        return valid_strategy
-    else:
-        print(f"Protection-deprotection strategy detected: False (missing events)")
-        return False
+    return alcohol_to_bromide_found

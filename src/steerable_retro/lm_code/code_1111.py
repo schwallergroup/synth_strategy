@@ -2,60 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy without convergent steps.
+    This function detects if the synthetic route involves late-stage chlorination of a primary alcohol.
     """
-    is_linear = True
+    primary_alcohol_pattern = Chem.MolFromSmarts("[CH2][OH]")
+    chloride_pattern = Chem.MolFromSmarts("[CH2][Cl]")
+    late_stage_chlorination_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+        nonlocal late_stage_chlorination_detected
 
         if node["type"] == "reaction":
-            # Extract reactants
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # If more than 2 reactants, it's potentially a convergent step
-            if len(reactants_smiles) > 2:
-                # Check if they are actual distinct fragments (not just reagents)
-                significant_fragments = 0
-                for reactant in reactants_smiles:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if (
-                        mol and mol.GetNumHeavyAtoms() > 3
-                    ):  # Arbitrary threshold to exclude small reagents
-                        significant_fragments += 1
+            # Check if any reactant contains primary alcohol
+            reactant_has_alcohol = False
+            for r_smiles in reactants_smiles:
+                try:
+                    r_mol = Chem.MolFromSmiles(r_smiles)
+                    if r_mol and r_mol.HasSubstructMatch(primary_alcohol_pattern):
+                        reactant_has_alcohol = True
+                        break
+                except:
+                    continue
 
-                if significant_fragments > 2:
-                    print(
-                        f"Convergent step detected at depth {depth} with {significant_fragments} significant fragments"
-                    )
-                    is_linear = False
+            # Check if product contains chloride
+            try:
+                p_mol = Chem.MolFromSmiles(product_smiles)
+                product_has_chloride = p_mol and p_mol.HasSubstructMatch(chloride_pattern)
+            except:
+                product_has_chloride = False
 
-        # Continue traversal
+            # If reactant has primary alcohol and product has chloride, and it's at depth 0-1, it's a late-stage chlorination
+            if reactant_has_alcohol and product_has_chloride and depth <= 1:
+                print(f"Late-stage chlorination detected in reaction at depth {depth}: {rsmi}")
+                late_stage_chlorination_detected = True
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    return is_linear
+    return late_stage_chlorination_detected

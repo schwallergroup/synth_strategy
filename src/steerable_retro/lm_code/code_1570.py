@@ -2,110 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving thiazole heterocycle formation
-    from fragment coupling.
+    Detects a synthetic strategy involving multiple nucleophilic aromatic
+    substitution (SNAr) reactions.
     """
-    found_thiazole_formation = False
+    snar_count = 0
 
     def dfs_traverse(node):
-        nonlocal found_thiazole_formation
+        nonlocal snar_count
 
         if node["type"] == "reaction":
-            metadata = node.get("metadata", {})
-            rsmi = metadata.get("rsmi", "")
-            if not rsmi:
-                return
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            parts = rsmi.split(">")
-            if len(parts) < 3:
-                return
+                # Check for SNAr (nucleophilic aromatic substitution)
+                aryl_halide_pattern = Chem.MolFromSmarts("[#6]:[#6]-[F,Cl,Br,I]")
+                amine_pattern = Chem.MolFromSmarts("[N;H0,H1,H2]")
+                aryl_amine_pattern = Chem.MolFromSmarts("[#6]:[#6]-[N;H0,H1,H2]")
 
-            reactants_smiles = parts[0].split(".")
-            product_smiles = parts[2]
+                has_aryl_halide = False
+                has_amine = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(aryl_halide_pattern):
+                            has_aryl_halide = True
+                        if mol.HasSubstructMatch(amine_pattern):
+                            has_amine = True
 
-            # Check if this is a thiazole formation reaction
-            if checker.check_reaction("thiazole", rsmi):
-                print(f"Found thiazole formation reaction: {rsmi}")
-                found_thiazole_formation = True
-                return
+                product_mol = Chem.MolFromSmiles(product)
+                if (
+                    has_aryl_halide
+                    and has_amine
+                    and product_mol
+                    and product_mol.HasSubstructMatch(aryl_amine_pattern)
+                ):
+                    snar_count += 1
+                    print(f"Found SNAr reaction (count: {snar_count})")
 
-            # Alternative check: look for thiazole ring formation
-            product_has_thiazole = checker.check_ring("thiazole", product_smiles)
-
-            if product_has_thiazole:
-                # Check if any reactant already has a thiazole ring
-                reactants_have_thiazole = any(
-                    checker.check_ring("thiazole", r) for r in reactants_smiles if r
-                )
-
-                if not reactants_have_thiazole:
-                    print(f"Found thiazole formation from fragment coupling")
-                    print(f"Reactants: {reactants_smiles}")
-                    print(f"Product: {product_smiles}")
-                    found_thiazole_formation = True
-
-                    # Additional check for specific reaction patterns
-                    # Check for common thiazole formation reactions if not already detected
-                    if (
-                        checker.check_reaction("benzothiazole", rsmi)
-                        or checker.check_reaction(
-                            "benzothiazole_derivatives_carboxylic-acid/ester", rsmi
-                        )
-                        or checker.check_reaction("benzothiazole_derivatives_aldehyde", rsmi)
-                    ):
-                        print(f"Confirmed specific thiazole formation reaction type")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return found_thiazole_formation
+
+    # Check if multiple SNAr reactions are present
+    return snar_count >= 2

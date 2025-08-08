@@ -2,72 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects an ester to acid to amide functional group transformation sequence.
+    This function detects if the synthetic route contains a late-stage nitro reduction
+    (nitro group reduced to amine in the final or penultimate step).
     """
-    # Track if we've found each step in the sequence
-    found_ester_hydrolysis = False
-    found_amide_formation = False
+    found_nitro_reduction = False
 
-    def dfs_traverse(node):
-        nonlocal found_ester_hydrolysis, found_amide_formation
+    def dfs_traverse(node, depth=0):
+        nonlocal found_nitro_reduction
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Final or penultimate step (depth 0 or 1)
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0]
+                product = rsmi.split(">")[-1]
 
-            # Check for ester hydrolysis
-            ester_hydrolysis_smarts = "[C:1](=[O:2])[O:3][C:4]>>[C:1](=[O:2])[O:3]"
-            rxn_ester = AllChem.ReactionFromSmarts(ester_hydrolysis_smarts)
+                # Check if reactant contains nitro group and product contains amine
+                reactant_mol = Chem.MolFromSmiles(reactants)
+                product_mol = Chem.MolFromSmiles(product)
 
-            # Check for amide formation
-            amide_formation_smarts = "[C:1](=[O:2])[O,OH].[N:3]>>[C:1](=[O:2])[N:3]"
-            rxn_amide = AllChem.ReactionFromSmarts(amide_formation_smarts)
+                if reactant_mol and product_mol:
+                    nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
+                    amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-            product_mol = Chem.MolFromSmiles(product)
+                    if reactant_mol.HasSubstructMatch(
+                        nitro_pattern
+                    ) and product_mol.HasSubstructMatch(amine_pattern):
+                        print(f"Found nitro reduction at depth {depth}")
+                        found_nitro_reduction = True
 
-            if product_mol and all(r for r in reactant_mols):
-                # Check for ester hydrolysis
-                if len(reactant_mols) == 1 and rxn_ester.RunReactants((reactant_mols[0],)):
-                    found_ester_hydrolysis = True
-                    print("Found ester hydrolysis step")
-
-                # Check for amide formation
-                if len(reactant_mols) >= 2 and rxn_amide.RunReactants(
-                    (reactant_mols[0], reactant_mols[1])
-                ):
-                    found_amide_formation = True
-                    print("Found amide formation step")
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal from root
     dfs_traverse(route)
-
-    # Return True if both steps were found
-    return found_ester_hydrolysis and found_amide_formation
+    return found_nitro_reduction

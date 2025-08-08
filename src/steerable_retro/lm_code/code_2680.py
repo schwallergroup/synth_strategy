@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,72 +54,87 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects Sonogashira coupling (aryl/vinyl halide/triflate + terminal alkyne) in the synthesis.
+    Detects if the synthesis involves a dichlorophenyl group throughout.
+    This means the final product contains a dichlorophenyl group, and this group
+    is preserved throughout the synthesis route.
     """
-    sonogashira_found = False
+    # Track if the final product has a dichlorophenyl group
+    final_product_has_dichlorophenyl = False
+    # Track if all reactions preserve the dichlorophenyl group
+    dichlorophenyl_preserved = True
 
-    def dfs_traverse(node):
-        nonlocal sonogashira_found
+    def has_dichlorophenyl(smiles):
+        """Helper function to check if a molecule has a dichlorophenyl group"""
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return False
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        # Check if the molecule contains a benzene ring
+        if not checker.check_ring("benzene", smiles):
+            return False
+
+        # Count chlorines attached to aromatic carbons
+        aromatic_chlorine_count = 0
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 17:  # Chlorine
+                for neighbor in atom.GetNeighbors():
+                    if neighbor.GetIsAromatic():
+                        aromatic_chlorine_count += 1
+
+        # Return True if there are at least 2 chlorines attached to aromatic carbons
+        return aromatic_chlorine_count >= 2
+
+    def dfs_traverse(node, depth=0, path=None):
+        nonlocal final_product_has_dichlorophenyl, dichlorophenyl_preserved
+
+        if path is None:
+            path = []
+
+        # Check molecule nodes
+        if node["type"] == "mol" and node.get("smiles"):
+            smiles = node["smiles"]
+            has_group = has_dichlorophenyl(smiles)
+
+            # If this is the final product (depth 0), check if it has a dichlorophenyl group
+            if depth == 0:
+                final_product_has_dichlorophenyl = has_group
+                if has_group:
+                    print(f"Final product has dichlorophenyl group: {smiles}")
+                else:
+                    print(f"Final product does NOT have dichlorophenyl group: {smiles}")
+
+            # Add to path for tracking
+            path.append((node["type"], smiles, has_group))
+
+        # Check reaction nodes
+        elif node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
             rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for Sonogashira coupling using the checker function
-            sonogashira_reaction_types = [
-                "Sonogashira acetylene_aryl halide",
-                "Sonogashira alkyne_aryl halide",
-                "Sonogashira acetylene_aryl OTf",
-                "Sonogashira alkyne_aryl OTf",
-                "Sonogashira acetylene_alkenyl halide",
-                "Sonogashira alkyne_alkenyl halide",
-                "Sonogashira acetylene_alkenyl OTf",
-                "Sonogashira alkyne_alkenyl OTf",
-                "Sonogashira acetylene_acyl halide",
-                "Sonogashira alkyne_acyl halide",
-            ]
+            # Check if product has dichlorophenyl
+            product_has_group = has_dichlorophenyl(product)
 
-            for reaction_type in sonogashira_reaction_types:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Sonogashira coupling detected: {reaction_type}")
-                    sonogashira_found = True
-                    break
+            # Check if any reactant has dichlorophenyl
+            reactant_has_group = any(has_dichlorophenyl(r) for r in reactants)
 
-            # If no direct reaction match, check for the characteristic pattern
-            if not sonogashira_found:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # If a reactant has dichlorophenyl but the product doesn't, the group wasn't preserved
+            if reactant_has_group and not product_has_group:
+                dichlorophenyl_preserved = False
+                print(f"Dichlorophenyl group not preserved in reaction: {rsmi}")
 
-                if len(reactants) >= 2:
-                    product_mol = Chem.MolFromSmiles(product)
-
-                    # Check for aryl-alkyne bond in product
-                    if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("c-C#C")):
-                        # Check for aryl/vinyl halide/triflate and terminal alkyne in reactants
-                        electrophile_found = False
-                        alkyne_found = False
-
-                        for reactant in reactants:
-                            if (
-                                checker.check_fg("Aromatic halide", reactant)
-                                or checker.check_fg("Alkenyl halide", reactant)
-                                or checker.check_fg("Triflate", reactant)
-                            ):
-                                electrophile_found = True
-                                print(f"Electrophile found in reactant: {reactant}")
-
-                            if checker.check_fg("Alkyne", reactant):
-                                alkyne_found = True
-                                print(f"Alkyne found in reactant: {reactant}")
-
-                        if electrophile_found and alkyne_found:
-                            sonogashira_found = True
-                            print("Sonogashira coupling pattern detected")
+            # Add to path for tracking
+            path.append((node["type"], rsmi, product_has_group))
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1, path.copy())
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    return sonogashira_found
+    # The strategy is valid if the final product has a dichlorophenyl group
+    # and this group is preserved throughout the synthesis
+    result = final_product_has_dichlorophenyl and dichlorophenyl_preserved
+    print(f"Strategy result: {result}")
+    return result

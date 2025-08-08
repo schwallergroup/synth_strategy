@@ -2,89 +2,98 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a sequence of functional group
-    interconversions: ester -> acid -> amide or similar patterns.
+    This function detects if the synthesis route involves a benzyl halide intermediate.
+    A benzyl halide intermediate is a compound that contains both a benzene ring and a primary halide,
+    and is used as a reactant in a reaction step.
     """
-    # Track functional group transformations
-    transformations = []
-    result = False
+    benzyl_halide_nodes = []
+    benzyl_halide_as_reactant = False
 
-    def dfs_traverse(node):
-        nonlocal transformations, result
+    def dfs_traverse(node, depth=0):
+        nonlocal benzyl_halide_as_reactant
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "mol":
+            # Check if the molecule is a benzyl halide (has benzene ring and primary halide)
+            if checker.check_ring("benzene", node["smiles"]) and checker.check_fg(
+                "Primary halide", node["smiles"]
+            ):
+                print(f"Found benzyl halide at depth {depth}: {node['smiles']}")
+                benzyl_halide_nodes.append((node["smiles"], depth))
+
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Check if any benzyl halide is used as a reactant in this reaction
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
 
-            try:
-                # Define patterns for functional groups
-                ester_pattern = Chem.MolFromSmarts("[C$(C=O)][O][C]")
-                acid_pattern = Chem.MolFromSmarts("[C$(C=O)][OH]")
-                amide_pattern = Chem.MolFromSmarts("[C$(C=O)][N]")
+            for reactant in reactants:
+                if checker.check_ring("benzene", reactant) and checker.check_fg(
+                    "Primary halide", reactant
+                ):
+                    print(f"Benzyl halide used as reactant in reaction: {rsmi}")
+                    benzyl_halide_as_reactant = True
 
-                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-                product_mol = Chem.MolFromSmiles(product_smiles)
-
-                if reactants_mol and product_mol:
-                    # Check for ester hydrolysis
-                    if reactants_mol.HasSubstructMatch(
-                        ester_pattern
-                    ) and product_mol.HasSubstructMatch(acid_pattern):
-                        transformations.append("ester_to_acid")
-                        print("Ester to acid transformation detected")
-
-                    # Check for esterification
-                    if reactants_mol.HasSubstructMatch(
-                        acid_pattern
-                    ) and product_mol.HasSubstructMatch(ester_pattern):
-                        transformations.append("acid_to_ester")
-                        print("Acid to ester transformation detected")
-
-                    # Check for amide formation
-                    if reactants_mol.HasSubstructMatch(
-                        acid_pattern
-                    ) and product_mol.HasSubstructMatch(amide_pattern):
-                        transformations.append("acid_to_amide")
-                        print("Acid to amide transformation detected")
-            except Exception as e:
-                print(f"Error in functional group detection: {e}")
-
-        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check for specific sequences
-    if "ester_to_acid" in transformations and "acid_to_amide" in transformations:
-        print("Detected ester -> acid -> amide sequence")
-        result = True
-    if "acid_to_ester" in transformations and "ester_to_acid" in transformations:
-        print("Detected acid -> ester -> acid sequence")
-        result = True
+    # Check if we found benzyl halides at different depths AND at least one is used as a reactant
+    has_benzyl_halide_intermediate = (
+        len(set([depth for _, depth in benzyl_halide_nodes])) >= 1 and benzyl_halide_as_reactant
+    )
 
-    return result
+    print(f"Benzyl halide intermediate strategy detected: {has_benzyl_halide_intermediate}")
+    print(f"Benzyl halide nodes found: {benzyl_halide_nodes}")
+    return has_benzyl_halide_intermediate

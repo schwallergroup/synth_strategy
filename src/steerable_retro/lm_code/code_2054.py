@@ -2,77 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves formation of C-N or C-O bonds.
+    This function detects a strategy involving late-stage functional group modifications,
+    particularly focusing on ester hydrolysis in the final steps.
     """
-    heteroatom_bond_formation_found = False
+    late_stage_hydrolysis = False
 
-    def dfs_traverse(node):
-        nonlocal heteroatom_bond_formation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_hydrolysis
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product = rsmi.split(">")[-1]
+        if (
+            node["type"] == "reaction" and depth <= 1
+        ):  # Only consider reactions at depth 0 or 1 (late stage)
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check if we can detect C-N or C-O bond formation
-            if product:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    # Look for C-N and C-O bonds in product
-                    c_n_pattern = Chem.MolFromSmarts("[#6]-[#7]")
-                    c_o_pattern = Chem.MolFromSmarts("[#6]-[#8]")
+                try:
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                    product_mol = Chem.MolFromSmiles(product_smiles)
 
-                    c_n_matches_product = product_mol.GetSubstructMatches(c_n_pattern)
-                    c_o_matches_product = product_mol.GetSubstructMatches(c_o_pattern)
+                    if all(reactant_mols) and product_mol:
+                        # Check for ester pattern in reactants
+                        ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])-[#6]")
+                        has_ester = any(
+                            mol.HasSubstructMatch(ester_pattern) for mol in reactant_mols
+                        )
 
-                    # Check if these bonds exist in reactants
-                    reactants = reactants_part.split(".")
-                    c_n_matches_reactants = []
-                    c_o_matches_reactants = []
+                        # Check for carboxylic acid pattern in product
+                        acid_pattern = Chem.MolFromSmarts("[#8]-[#6](=[#8])-[#6]")
+                        has_acid = product_mol.HasSubstructMatch(acid_pattern)
 
-                    for reactant in reactants:
-                        if reactant:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                c_n_matches_reactants.extend(
-                                    reactant_mol.GetSubstructMatches(c_n_pattern)
-                                )
-                                c_o_matches_reactants.extend(
-                                    reactant_mol.GetSubstructMatches(c_o_pattern)
-                                )
+                        if has_ester and has_acid:
+                            print(f"Detected late-stage ester hydrolysis at depth {depth}")
+                            late_stage_hydrolysis = True
+                except Exception as e:
+                    print(f"Error processing reaction: {e}")
 
-                    # If there are more C-N or C-O bonds in product than in reactants, bonds were formed
-                    if len(c_n_matches_product) > len(c_n_matches_reactants) or len(
-                        c_o_matches_product
-                    ) > len(c_o_matches_reactants):
-                        print("Heteroatom bond formation detected")
-                        heteroatom_bond_formation_found = True
-
-        # Continue traversing
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-    return heteroatom_bond_formation_found
+    return late_stage_hydrolysis

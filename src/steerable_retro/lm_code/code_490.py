@@ -2,65 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a C-C bond formation between
-    two heterocyclic systems.
+    This function detects a synthetic strategy that incorporates and preserves
+    a morpholine-containing aromatic system throughout the synthesis.
     """
-    heterocycle_coupling_found = False
+    morpholine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#8][#6][#6]1")
+    morpholine_aromatic_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#8][#6][#6]1-[c]")
 
-    def dfs_traverse(node):
-        nonlocal heterocycle_coupling_found
+    final_product_has_morpholine = False
+    intermediates_with_morpholine = 0
 
-        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal final_product_has_morpholine, intermediates_with_morpholine
 
-            # Check for heterocycles in reactants and a larger heterocyclic system in product
-            heterocycle_pattern = Chem.MolFromSmarts("[a;!c]")  # Aromatic atom that's not carbon
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(morpholine_pattern):
+                if depth == 0:  # Final product
+                    final_product_has_morpholine = True
+                    print(f"Final product contains morpholine: {node['smiles']}")
+                else:  # Intermediate
+                    intermediates_with_morpholine += 1
+                    print(f"Intermediate contains morpholine: {node['smiles']}")
 
-            if heterocycle_pattern:
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".") if r]
-
-                if product_mol and len(reactants_mols) >= 2:
-                    # Count heterocycles in reactants and product
-                    heterocycle_count_reactants = sum(
-                        len(r.GetSubstructMatches(heterocycle_pattern)) for r in reactants_mols if r
-                    )
-                    heterocycle_count_product = (
-                        len(product_mol.GetSubstructMatches(heterocycle_pattern))
-                        if product_mol
-                        else 0
-                    )
-
-                    # If product has heterocycles from both reactants, it's likely a coupling
-                    if heterocycle_count_product > 0 and heterocycle_count_reactants >= 2:
-                        heterocycle_coupling_found = True
-                        print("Heterocycle coupling detected")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from root
     dfs_traverse(route)
-    return heterocycle_coupling_found
+
+    # Strategy is present if morpholine is in final product and at least one intermediate
+    strategy_present = final_product_has_morpholine and intermediates_with_morpholine > 0
+    print(f"Morpholine-containing synthesis strategy detected: {strategy_present}")
+    return strategy_present

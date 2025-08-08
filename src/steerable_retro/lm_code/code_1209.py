@@ -2,63 +2,103 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects nitro reduction to amine in the synthesis.
+    Detects if the synthetic route involves reductive amination (aldehyde/ketone + amine → amine).
     """
-    nitro_reduction_found = False
+    reductive_amination_detected = False
 
     def dfs_traverse(node):
-        nonlocal nitro_reduction_found
+        nonlocal reductive_amination_detected
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
 
-            # Check for nitro group in reactants
-            nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
+            # Check if this is a reductive amination reaction
+            if (
+                checker.check_reaction("reductive amination with aldehyde", rsmi)
+                or checker.check_reaction("reductive amination with ketone", rsmi)
+                or checker.check_reaction("reductive amination with alcohol", rsmi)
+            ):
+                print(f"Detected reductive amination: {rsmi}")
+                reductive_amination_detected = True
 
-            # Check for amine group in product
-            amine_pattern = Chem.MolFromSmarts("[#6]-[NH2]")
+            # If direct reaction check fails, check for components
+            if not reductive_amination_detected:
+                reactants_str = rsmi.split(">")[0]
+                product_str = rsmi.split(">")[-1]
+                reactants = reactants_str.split(".")
 
-            # Check if reactants have nitro but product has amine instead
-            reactants_have_nitro = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(nitro_pattern) for r in reactants if r
-            )
-            product_has_amine = (
-                Chem.MolFromSmiles(product).HasSubstructMatch(amine_pattern) if product else False
-            )
+                # Check for aldehyde/ketone and amine in reactants
+                has_aldehyde = any(checker.check_fg("Aldehyde", r) for r in reactants)
+                has_ketone = any(checker.check_fg("Ketone", r) for r in reactants)
+                has_amine = any(
+                    checker.check_fg("Primary amine", r) or checker.check_fg("Secondary amine", r)
+                    for r in reactants
+                )
 
-            if reactants_have_nitro and product_has_amine:
-                nitro_reduction_found = True
-                print("Nitro reduction to amine detected")
+                # Check if product has amine but not imine (completed reduction)
+                if (
+                    has_amine
+                    and (has_aldehyde or has_ketone)
+                    and checker.check_fg("Secondary amine", product_str)
+                    or checker.check_fg("Tertiary amine", product_str)
+                ):
+                    print(f"Detected possible reductive amination components: {rsmi}")
+                    reductive_amination_detected = True
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Nitro reduction to amine detected: {nitro_reduction_found}")
-    return nitro_reduction_found
+    return reductive_amination_detected

@@ -2,81 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the route contains at least 3 distinct functional group interconversions.
+    This function detects if the synthetic route employs a mesylation strategy.
+    It looks for reactions forming mesylates from alcohols.
     """
-    transformations = set()
+    found_mesylation = False
 
     def dfs_traverse(node):
-        nonlocal transformations
+        nonlocal found_mesylation
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Define patterns for functional groups
-            patterns = {
-                "nitrile": "[#6]C#N",
-                "amine": "[#6][NH2]",
-                "alcohol": "[#6][OH]",
-                "ester": "[#6]C(=O)O[#6]",
-                "aldehyde": "[#6][CH]=O",
-                "carboxylic_acid": "[#6]C(=O)[OH]",
-                "amide": "[#6]C(=O)N[#6]",
-                "phthalimide": "[#6]N1C(=O)c2ccccc2C1=O",
-            }
+            # Check for alcohol pattern in reactants
+            alcohol_pattern = Chem.MolFromSmarts("[C]-[OH]")
+            # Check for mesylate pattern in product
+            mesylate_pattern = Chem.MolFromSmarts("[C]-[O]-[S](=[O])(=[O])-[C]")
 
-            # Check reactants and products for functional groups
-            reactant_groups = set()
+            has_alcohol = False
             for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol:
-                    for group_name, pattern in patterns.items():
-                        if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts(pattern)):
-                            reactant_groups.add(group_name)
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(alcohol_pattern):
+                        has_alcohol = True
+                        break
+                except:
+                    continue
 
-            product_mol = Chem.MolFromSmiles(product)
-            product_groups = set()
-            if product_mol:
-                for group_name, pattern in patterns.items():
-                    if product_mol.HasSubstructMatch(Chem.MolFromSmarts(pattern)):
-                        product_groups.add(group_name)
+            try:
+                prod_mol = Chem.MolFromSmiles(product)
+                if has_alcohol and prod_mol and prod_mol.HasSubstructMatch(mesylate_pattern):
+                    print("Found mesylation reaction:", rsmi)
+                    found_mesylation = True
+            except:
+                pass
 
-            # Identify transformations
-            for r_group in reactant_groups:
-                for p_group in product_groups:
-                    if r_group != p_group:
-                        transformation = f"{r_group}_to_{p_group}"
-                        transformations.add(transformation)
-                        print(f"Detected transformation: {transformation}")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return True if at least 3 distinct transformations were found
-    return len(transformations) >= 3
+    return found_mesylation

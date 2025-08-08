@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,66 +54,118 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if cyano and chloro functional groups are preserved throughout the synthesis.
-    This indicates a strategy that builds around these sensitive functional groups.
+    This function detects a synthesis strategy involving a heterocycle-rich scaffold
+    with multiple nitrogen-containing rings (pyrazole, pyridine, piperazinone, etc.).
     """
-    final_product_has_cyano = False
-    final_product_has_chloro = False
-    starting_material_has_cyano = False
-    starting_material_has_chloro = False
+    # Track heterocycle information across the route
+    heterocycle_info = {
+        "final_product_heterocycles": 0,
+        "heterocycle_forming_reactions": 0,
+        "intermediate_heterocycles": 0,
+    }
 
-    def dfs_traverse(node, depth=0):
-        nonlocal final_product_has_cyano, final_product_has_chloro
-        nonlocal starting_material_has_cyano, starting_material_has_chloro
+    # List of nitrogen-containing heterocycles to check
+    n_heterocycles = [
+        "pyrazole",
+        "pyridine",
+        "piperazine",
+        "piperidine",
+        "imidazole",
+        "triazole",
+        "tetrazole",
+        "morpholine",
+        "thiomorpholine",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "aziridine",
+        "azetidine",
+        "pyrrolidine",
+        "azepane",
+        "diazepane",
+        "benzimidazole",
+        "benzotriazole",
+        "indazole",
+    ]
 
+    def dfs_traverse(node, depth=0, is_root=False):
         if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+            smiles = node["smiles"]
 
-            # Check for cyano and chloro groups using checker functions
-            has_cyano = checker.check_fg("Nitrile", mol_smiles)
-            has_chloro = (
-                checker.check_fg("Primary halide", mol_smiles)
-                or checker.check_fg("Secondary halide", mol_smiles)
-                or checker.check_fg("Tertiary halide", mol_smiles)
-                or checker.check_fg("Aromatic halide", mol_smiles)
-            )
+            # Count heterocycles in this molecule
+            heterocycle_count = sum([checker.check_ring(ring, smiles) for ring in n_heterocycles])
 
-            if depth == 0:  # Final product
-                final_product_has_cyano = has_cyano
-                final_product_has_chloro = has_chloro
-                if has_cyano:
-                    print(f"Final product has cyano group: {mol_smiles}")
-                if has_chloro:
-                    print(f"Final product has chloro group: {mol_smiles}")
+            # Store information based on position in synthesis
+            if is_root:
+                heterocycle_info["final_product_heterocycles"] = heterocycle_count
+                if heterocycle_count >= 2:
+                    print(f"Final product contains {heterocycle_count} different N-heterocycles")
+            elif not node.get("in_stock", False):
+                heterocycle_info["intermediate_heterocycles"] = max(
+                    heterocycle_info["intermediate_heterocycles"], heterocycle_count
+                )
+                if heterocycle_count >= 2:
+                    print(
+                        f"Intermediate compound contains {heterocycle_count} different N-heterocycles"
+                    )
 
-            if node.get("in_stock", False):  # Starting material
-                if has_cyano:
-                    starting_material_has_cyano = True
-                    print(f"Starting material has cyano group: {mol_smiles}")
-                if has_chloro:
-                    starting_material_has_chloro = True
-                    print(f"Starting material has chloro group: {mol_smiles}")
+        elif node["type"] == "reaction":
+            # Check if this reaction forms or modifies heterocycles
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
+
+                # Count heterocycles in reactants and product
+                reactants_heterocycles = sum(
+                    [
+                        sum([checker.check_ring(ring, reactant) for ring in n_heterocycles])
+                        for reactant in reactants_smiles
+                    ]
+                )
+
+                product_heterocycles = sum(
+                    [checker.check_ring(ring, product_smiles) for ring in n_heterocycles]
+                )
+
+                # Check if heterocycles are formed or modified
+                if product_heterocycles > reactants_heterocycles:
+                    heterocycle_info["heterocycle_forming_reactions"] += 1
+                    print(f"Found reaction forming N-heterocycle: {rsmi}")
+                elif product_heterocycles > 0 and product_heterocycles >= reactants_heterocycles:
+                    # Reaction preserves or modifies heterocycles
+                    print(f"Found reaction preserving/modifying N-heterocycles: {rsmi}")
+            except Exception as e:
+                print(f"Error analyzing reaction: {e}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    dfs_traverse(route)
+    # Start traversal from root
+    dfs_traverse(route, is_root=True)
 
-    # Strategy is present if both functional groups are preserved from starting materials to final product
-    result = (
-        final_product_has_cyano
-        and starting_material_has_cyano
-        and final_product_has_chloro
-        and starting_material_has_chloro
+    # Determine if this is a heterocycle-rich scaffold strategy
+    is_heterocycle_rich = (
+        heterocycle_info["final_product_heterocycles"] >= 2
+        or (
+            heterocycle_info["final_product_heterocycles"] >= 1
+            and heterocycle_info["heterocycle_forming_reactions"] >= 1
+        )
+        or (
+            heterocycle_info["intermediate_heterocycles"] >= 2
+            and heterocycle_info["final_product_heterocycles"] >= 1
+        )
     )
 
-    print(f"Final result: {result}")
-    print(
-        f"Final product has cyano: {final_product_has_cyano}, Starting material has cyano: {starting_material_has_cyano}"
-    )
-    print(
-        f"Final product has chloro: {final_product_has_chloro}, Starting material has chloro: {starting_material_has_chloro}"
-    )
+    if is_heterocycle_rich:
+        print("Detected heterocycle-rich scaffold strategy")
+        print(f"Final product heterocycles: {heterocycle_info['final_product_heterocycles']}")
+        print(f"Heterocycle-forming reactions: {heterocycle_info['heterocycle_forming_reactions']}")
+        print(f"Max intermediate heterocycles: {heterocycle_info['intermediate_heterocycles']}")
 
-    return result
+    return is_heterocycle_rich

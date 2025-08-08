@@ -2,114 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves a product with multiple rings.
+    This function detects if the synthesis follows a linear strategy (as opposed to convergent).
     """
-    has_multiple_rings = False
-    ring_types_found = set()
+    max_fragments_per_reaction = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_multiple_rings, ring_types_found
+    def dfs_traverse(node):
+        nonlocal max_fragments_per_reaction
 
-        if node["type"] == "mol":
-            # Check if this is a non-stock molecule (potential product)
-            if "in_stock" not in node or not node["in_stock"]:
-                smiles = node["smiles"]
-                mol = Chem.MolFromSmiles(smiles)
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
 
-                if mol:
-                    # Get ring information
-                    ring_info = mol.GetRingInfo()
-                    num_rings = ring_info.NumRings()
+            # Count the number of reactant fragments
+            reactants = reactants_part.split(".")
+            num_fragments = len(reactants)
 
-                    # Check for specific ring types
-                    ring_types = []
-                    for ring_name in [
-                        "benzene",
-                        "pyridine",
-                        "pyrrole",
-                        "furan",
-                        "thiophene",
-                        "pyrimidine",
-                        "imidazole",
-                        "oxazole",
-                        "thiazole",
-                        "piperidine",
-                        "tetrahydrofuran",
-                        "cyclohexane",
-                        "cyclopentane",
-                    ]:
-                        if checker.check_ring(ring_name, smiles):
-                            ring_types.append(ring_name)
-                            ring_types_found.add(ring_name)
+            # Count only "complex" fragments (more than 10 atoms)
+            complex_fragments = 0
+            for reactant in reactants:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol and mol.GetNumAtoms() > 10:
+                    complex_fragments += 1
 
-                    # If we have multiple rings, set the flag
-                    if num_rings >= 2:
-                        has_multiple_rings = True
-                        print(
-                            f"Molecule at depth {depth} contains {num_rings} rings: {', '.join(ring_types)}"
-                        )
+            max_fragments_per_reaction = max(max_fragments_per_reaction, complex_fragments)
 
-        # Traverse children (in retrosynthetic direction)
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    if has_multiple_rings:
-        print(
-            f"Multi-cyclic structure strategy: True. Ring types found: {', '.join(ring_types_found)}"
-        )
-    else:
-        print(f"Multi-cyclic structure strategy: False. No multi-cyclic structures detected.")
+    # Linear synthesis typically has at most one complex fragment per reaction
+    result = max_fragments_per_reaction <= 1
 
-    return has_multiple_rings
+    print(
+        f"Linear synthesis strategy: {result} (max complex fragments: {max_fragments_per_reaction})"
+    )
+    return result

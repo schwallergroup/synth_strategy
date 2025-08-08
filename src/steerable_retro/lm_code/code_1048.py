@@ -2,70 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes a Williamson ether synthesis
-    (formation of an aryl-alkyl ether bond from a phenol and an alkyl halide).
+    This function detects a sequential functional group interconversion pathway:
+    nitrile → carboxylic acid → ester
     """
-    williamson_found = False
+    # Track reactions in sequence
+    nitrile_to_acid_found = False
+    acid_to_ester_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal williamson_found
+    def dfs_traverse(node):
+        nonlocal nitrile_to_acid_found, acid_to_ester_found
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for Williamson ether synthesis
+                # Check for nitrile to acid conversion
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
                 product_mol = Chem.MolFromSmiles(product)
-                aryl_alkyl_ether_pattern = Chem.MolFromSmarts("[#6;a]-[#8]-[#6;!a]")
 
-                if product_mol and product_mol.HasSubstructMatch(aryl_alkyl_ether_pattern):
-                    # Check if reactants include phenol and alkyl halide
-                    phenol_pattern = Chem.MolFromSmarts("[#6;a]-[#8H]")
-                    alkyl_halide_pattern = Chem.MolFromSmarts("[#6]-[Br,Cl,I,F]")
+                if product_mol:
+                    nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
+                    acid_pattern = Chem.MolFromSmarts("[C](=[O])[O;H1]")
+                    ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]")
 
-                    has_phenol = False
-                    has_alkyl_halide = False
+                    # Check for nitrile to acid conversion
+                    if any(
+                        r and r.HasSubstructMatch(nitrile_pattern) for r in reactant_mols
+                    ) and product_mol.HasSubstructMatch(acid_pattern):
+                        nitrile_to_acid_found = True
+                        print("Found nitrile to carboxylic acid conversion")
 
-                    for reactant in reactants:
-                        r_mol = Chem.MolFromSmiles(reactant)
-                        if r_mol:
-                            if r_mol.HasSubstructMatch(phenol_pattern):
-                                has_phenol = True
-                            if r_mol.HasSubstructMatch(alkyl_halide_pattern):
-                                has_alkyl_halide = True
+                    # Check for acid to ester conversion
+                    if any(
+                        r and r.HasSubstructMatch(acid_pattern) for r in reactant_mols
+                    ) and product_mol.HasSubstructMatch(ester_pattern):
+                        acid_to_ester_found = True
+                        print("Found carboxylic acid to ester conversion")
 
-                    if has_phenol and has_alkyl_halide:
-                        williamson_found = True
-                        print(f"Williamson ether synthesis detected at depth {depth}")
-
-        # Continue traversing the tree
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    return williamson_found
+    return nitrile_to_acid_found and acid_to_ester_found

@@ -2,63 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects an ester hydrolysis in the final step of the synthesis.
+    This function detects the use of a Boc-protected amine as a nucleophile in the synthesis.
     """
-    final_step_is_hydrolysis = False
+    boc_protected_amine = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal final_step_is_hydrolysis
+        nonlocal boc_protected_amine
 
-        if node["type"] == "reaction" and depth == 0:  # Final step (depth 0)
+        if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
 
-                try:
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for Boc-protected amine in reactants
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        boc_pattern = Chem.MolFromSmarts("[CH3]C([CH3])([CH3])[O]C(=O)[NH]")
+                        if reactant_mol.HasSubstructMatch(boc_pattern):
+                            boc_protected_amine = True
+                            print(f"Detected Boc-protected amine at depth {depth}")
 
-                    if all(mol is not None for mol in reactant_mols) and product_mol is not None:
-                        # Check for ester hydrolysis
-                        ester_pattern = Chem.MolFromSmarts("[C](=O)[O][C]")
-                        acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
-
-                        has_ester = any(
-                            mol.HasSubstructMatch(ester_pattern) for mol in reactant_mols
-                        )
-                        has_acid = product_mol.HasSubstructMatch(acid_pattern)
-
-                        if has_ester and has_acid:
-                            final_step_is_hydrolysis = True
-                            print("Ester hydrolysis detected in final step")
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    return final_step_is_hydrolysis
+    return boc_protected_amine

@@ -2,65 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy using a propyl linker
-    to connect fragments.
+    This function detects if the synthetic route involves formation of an acid chloride
+    from a carboxylic acid.
     """
-    propyl_linker = False
-    linear_synthesis = True  # Assume linear until proven otherwise
-    reaction_count = 0
+    acid_pattern = Chem.MolFromSmarts("C(=O)O")
+    acid_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
+
+    acid_to_acid_chloride = False
 
     def dfs_traverse(node):
-        nonlocal propyl_linker, linear_synthesis, reaction_count
+        nonlocal acid_to_acid_chloride
 
         if node["type"] == "reaction":
-            reaction_count += 1
-
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for propyl linker between nitrogens
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    propyl_linker_pattern = Chem.MolFromSmarts("[N][C][C][C][N]")
-                    if product_mol.HasSubstructMatch(propyl_linker_pattern):
-                        propyl_linker = True
-                        print("Detected propyl linker between nitrogens")
+                try:
+                    # Check for acid in reactants
+                    reactants_have_acid = any(
+                        Chem.MolFromSmiles(r)
+                        and Chem.MolFromSmiles(r).HasSubstructMatch(acid_pattern)
+                        for r in reactants_smiles
+                        if Chem.MolFromSmiles(r)
+                    )
 
-            # Check if this is a convergent step (more than one non-trivial reactant)
-            if "children" in node:
-                non_trivial_children = 0
-                for child in node["children"]:
-                    if child["type"] == "mol" and not child.get("in_stock", False):
-                        non_trivial_children += 1
-
-                if non_trivial_children > 1:
-                    linear_synthesis = False
-                    print("Detected convergent synthesis step")
+                    # Check for acid chloride in product
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if (
+                        reactants_have_acid
+                        and product_mol
+                        and product_mol.HasSubstructMatch(acid_chloride_pattern)
+                    ):
+                        acid_to_acid_chloride = True
+                        print("Detected carboxylic acid to acid chloride transformation")
+                except:
+                    pass
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return propyl_linker and linear_synthesis and reaction_count >= 3
+    return acid_to_acid_chloride

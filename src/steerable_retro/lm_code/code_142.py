@@ -2,72 +2,155 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis route includes a Williamson ether synthesis
-    (formation of ether from phenol and alkyl halide)
+    This function detects late-stage Sonogashira coupling to introduce an aryl group.
     """
-    found_williamson = False
+    sonogashira_found = False
 
-    def dfs_traverse(node):
-        nonlocal found_williamson
+    def dfs_traverse(node, depth=0):
+        nonlocal sonogashira_found
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and depth <= 2:  # Consider depths 0, 1, and 2 as late-stage
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                print(f"Examining reaction at depth {depth}: {rsmi}")
 
-                # Create RDKit mol objects
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                # Check for Sonogashira coupling using the checker function
+                sonogashira_reaction_types = [
+                    "Sonogashira acetylene_aryl halide",
+                    "Sonogashira alkyne_aryl halide",
+                    "Sonogashira acetylene_aryl OTf",
+                    "Sonogashira alkyne_aryl OTf",
+                    "Sonogashira acetylene_alkenyl halide",
+                    "Sonogashira alkyne_alkenyl halide",
+                    "Sonogashira acetylene_alkenyl OTf",
+                    "Sonogashira alkyne_alkenyl OTf",
+                    "Sonogashira acetylene_acyl halide",
+                    "Sonogashira alkyne_acyl halide",
+                ]
 
-                if product_mol and all(reactant_mols):
-                    # SMARTS for phenol
-                    phenol_pattern = Chem.MolFromSmarts("[c][OH]")
+                for reaction_type in sonogashira_reaction_types:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(f"Found late-stage Sonogashira coupling: {reaction_type}")
 
-                    # SMARTS for alkyl halide
-                    alkyl_halide_pattern = Chem.MolFromSmarts("[#6][CH2][Br,Cl,I]")
+                        # Verify that an aryl group is introduced via Sonogashira coupling
+                        try:
+                            reactants = rsmi.split(">")[0].split(".")
+                            product = rsmi.split(">")[-1]
 
-                    # SMARTS for aryl-alkyl ether
-                    ether_pattern = Chem.MolFromSmarts("[c][O][CH2][#6]")
+                            # Look for both aryl halide/triflate and alkyne components
+                            aryl_reactant = None
+                            alkyne_reactant = None
 
-                    # Check if reactants contain phenol and alkyl halide
-                    has_phenol = any(r.HasSubstructMatch(phenol_pattern) for r in reactant_mols)
-                    has_alkyl_halide = any(
-                        r.HasSubstructMatch(alkyl_halide_pattern) for r in reactant_mols
-                    )
+                            for reactant in reactants:
+                                if checker.check_fg("Aromatic halide", reactant):
+                                    print(f"Found aromatic halide reactant: {reactant}")
+                                    aryl_reactant = reactant
+                                elif checker.check_fg("Triflate", reactant):
+                                    print(f"Found triflate reactant: {reactant}")
+                                    aryl_reactant = reactant
 
-                    # Check if product has ether
-                    has_ether = product_mol.HasSubstructMatch(ether_pattern)
+                                if checker.check_fg("Alkyne", reactant):
+                                    print(f"Found alkyne reactant: {reactant}")
+                                    alkyne_reactant = reactant
 
-                    if has_phenol and has_alkyl_halide and has_ether:
-                        print("Found Williamson ether synthesis")
-                        found_williamson = True
+                            # Verify both components are present
+                            if aryl_reactant is not None and alkyne_reactant is not None:
+                                print("Confirmed aryl group introduction in Sonogashira coupling")
+                                sonogashira_found = True
+                            else:
+                                print("Sonogashira coupling found but missing required components")
+                        except Exception as e:
+                            print(f"Error analyzing reactants and products: {e}")
 
-        # Continue traversal
+                # If no reaction type matched, try to analyze the reaction manually
+                if not sonogashira_found:
+                    try:
+                        reactants = rsmi.split(">")[0].split(".")
+                        product = rsmi.split(">")[-1]
+
+                        # Check for iodoarene or bromoarene in reactants
+                        aryl_halide_present = False
+                        alkyne_present = False
+
+                        for reactant in reactants:
+                            # Check for aromatic halide
+                            if "I" in reactant and checker.check_fg("Aromatic halide", reactant):
+                                print(f"Found iodoarene reactant: {reactant}")
+                                aryl_halide_present = True
+                            elif "Br" in reactant and checker.check_fg("Aromatic halide", reactant):
+                                print(f"Found bromoarene reactant: {reactant}")
+                                aryl_halide_present = True
+
+                            # Check for terminal alkyne
+                            if checker.check_fg("Alkyne", reactant):
+                                print(f"Found alkyne reactant: {reactant}")
+                                alkyne_present = True
+
+                        # Check if product has C≡C-Ar structure (no longer terminal)
+                        if (
+                            aryl_halide_present
+                            and alkyne_present
+                            and checker.check_fg("Alkyne", product)
+                        ):
+                            print("Manual analysis: Found Sonogashira coupling pattern")
+                            sonogashira_found = True
+                    except Exception as e:
+                        print(f"Error in manual analysis: {e}")
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-    return found_williamson
+    return sonogashira_found

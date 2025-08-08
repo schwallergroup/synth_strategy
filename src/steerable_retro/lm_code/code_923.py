@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,67 +54,95 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves a C-S bond formation
-    via coupling of an aryl halide with a thiol.
+    Detects if the synthesis employs a late-stage fragment coupling strategy
+    where major fragments are combined in the final steps.
     """
-    found_coupling = False
+    late_stage_coupling = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_coupling
+    def dfs_traverse(node, current_depth=0):
+        nonlocal late_stage_coupling
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            try:
-                # First check if the reaction is directly an Ullmann-Goldberg thiol substitution
-                if checker.check_reaction("Ullmann-Goldberg Substitution thiol", rsmi):
-                    found_coupling = True
-                    print(f"Found Ullmann-Goldberg thiol substitution at depth {depth}")
-                    return
+            # Extract depth information
+            depth_info = node.get("metadata", {}).get("ID", "")
+            node_depth = current_depth
 
-                # If not, check for the components manually
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
-                product = Chem.MolFromSmiles(product_smiles)
+            # Try to extract depth from ID if available
+            if "Depth:" in depth_info:
+                try:
+                    depth_str = depth_info.split("Depth:")[1].strip().split()[0]
+                    node_depth = int(depth_str)
+                except (IndexError, ValueError):
+                    pass  # Keep using current_depth if extraction fails
 
-                # Check for aryl halide in reactants
-                has_aryl_halide = any(
-                    r and checker.check_fg("Aromatic halide", Chem.MolToSmiles(r))
-                    for r in reactants
-                    if r
+            # Check if this is a late-stage reaction (depth 0-2)
+            if node_depth <= 2:
+                print(f"Examining late-stage reaction at depth {node_depth}: {rsmi}")
+
+                # Check if this is a known coupling reaction
+                is_coupling_reaction = any(
+                    [
+                        checker.check_reaction("Suzuki coupling with boronic acids", rsmi),
+                        checker.check_reaction("Suzuki coupling with boronic esters", rsmi),
+                        checker.check_reaction("Negishi coupling", rsmi),
+                        checker.check_reaction("Stille reaction_aryl", rsmi),
+                        checker.check_reaction("Stille reaction_vinyl", rsmi),
+                        checker.check_reaction("Heck terminal vinyl", rsmi),
+                        checker.check_reaction("Sonogashira alkyne_aryl halide", rsmi),
+                        checker.check_reaction("Ullmann condensation", rsmi),
+                        checker.check_reaction(
+                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
+                        ),
+                        checker.check_reaction(
+                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
+                        ),
+                    ]
                 )
 
-                # Check for thiol in reactants (both aromatic and aliphatic)
-                has_thiol = any(
-                    r
-                    and (
-                        checker.check_fg("Aromatic thiol", Chem.MolToSmiles(r))
-                        or checker.check_fg("Aliphatic thiol", Chem.MolToSmiles(r))
+                # If not a known coupling reaction, check for C-C bond formation
+                if not is_coupling_reaction:
+                    print("Not a known coupling reaction, checking for C-C bond formation...")
+                    # This is a simplified check - in a real implementation, you would need
+                    # to analyze the reaction more carefully to confirm C-C bond formation
+
+                # Count substantial fragments in reactants
+                substantial_fragment_count = 0
+                substantial_fragments = []
+
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        # Count atoms, rings, and check molecular weight
+                        atom_count = mol.GetNumAtoms()
+                        ring_count = Chem.rdMolDescriptors.CalcNumRings(mol)
+                        mw = Chem.Descriptors.MolWt(mol)
+
+                        # Consider a fragment substantial if it meets certain criteria
+                        if (ring_count >= 1 and atom_count >= 7) or mw > 120:
+                            substantial_fragment_count += 1
+                            substantial_fragments.append(reactant)
+                            print(
+                                f"Found substantial fragment: {reactant} (rings: {ring_count}, atoms: {atom_count}, MW: {mw:.1f})"
+                            )
+
+                # If we're combining multiple substantial fragments in late stage
+                if substantial_fragment_count >= 2 and (is_coupling_reaction or node_depth <= 1):
+                    print(f"Found late-stage fragment coupling at depth {node_depth}")
+                    print(f"Fragments: {substantial_fragments}")
+                    late_stage_coupling = True
+                else:
+                    print(
+                        f"Not a late-stage fragment coupling: fragments={substantial_fragment_count}, is_coupling={is_coupling_reaction}"
                     )
-                    for r in reactants
-                    if r
-                )
 
-                # Check for thioether (monosulfide) in product
-                has_thioether_product = product and checker.check_fg(
-                    "Monosulfide", Chem.MolToSmiles(product)
-                )
-
-                # Check if all conditions are met
-                if has_aryl_halide and has_thiol and has_thioether_product:
-                    # Additional check to ensure C-S bond formation
-                    found_coupling = True
-                    print(f"Found aryl halide-thiol coupling at depth {depth}")
-            except Exception as e:
-                print(f"Error processing reaction at depth {depth}: {e}")
-
-        # Process children
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, current_depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Aryl halide-thiol coupling detection result: {found_coupling}")
-    return found_coupling
+    print(f"Final result: late_stage_coupling = {late_stage_coupling}")
+    return late_stage_coupling

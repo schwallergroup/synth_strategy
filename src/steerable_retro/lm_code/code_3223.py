@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,121 +54,128 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy involving isothiocyanate intermediate,
-    thiourea formation, and heterocycle construction with late-stage ring formation.
+    This function detects a synthetic strategy involving late-stage sulfonamide formation
+    with an isoxazole fragment.
     """
-    # Initialize tracking variables
-    isothiocyanate_reactions = []
-    thiourea_reactions = []
-    heterocycle_formations = []
-
-    # Track the sequence of transformations
-    reaction_sequence = []
+    found_pattern = False
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            try:
-                rsmi = node.get("metadata", {}).get("rsmi", "")
-                if not rsmi:
-                    return
+        nonlocal found_pattern
 
-                parts = rsmi.split(">")
-                if len(parts) < 3:
-                    return
+        if found_pattern:
+            return
 
-                reactants_smiles = parts[0].split(".")
-                product_smiles = parts[2]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Store reaction with depth for sequence analysis
-                reaction_data = {
-                    "rsmi": rsmi,
-                    "depth": depth,
-                    "reactants": reactants_smiles,
-                    "product": product_smiles,
-                }
-                reaction_sequence.append(reaction_data)
+            # Check if this is a late-stage reaction (depth 0 or 1)
+            if depth <= 1:
+                print(f"Checking late-stage reaction at depth {depth}: {rsmi}")
 
-                # Check for isothiocyanate in reactants
-                for reactant in reactants_smiles:
-                    if checker.check_fg("Isothiocyanate", reactant):
-                        print(f"Found isothiocyanate in reactant: {reactant}")
-                        isothiocyanate_reactions.append(reaction_data)
+                # Check if this is a sulfonamide formation reaction
+                is_sulfonamide_reaction = checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+                ) or checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
+                )
 
-                # Check for thiourea in product
-                if checker.check_fg("Thiourea", product_smiles):
-                    print(f"Found thiourea in product: {product_smiles}")
-                    thiourea_reactions.append(reaction_data)
+                # If not detected by reaction checker, try manual detection
+                if not is_sulfonamide_reaction:
+                    print("Reaction not detected by reaction checker, trying manual detection...")
 
-                # Check for heterocycle formation
-                heterocycle_formed = False
-                heterocycle_types = [
-                    "benzothiazole",
-                    "thiazole",
-                    "benzimidazole",
-                    "imidazole",
-                    "oxazole",
-                    "benzoxazole",
-                    "triazole",
-                    "tetrazole",
-                ]
-
-                # Check if product contains a heterocycle that reactants don't have
-                for ring_type in heterocycle_types:
-                    if checker.check_ring(ring_type, product_smiles):
-                        # Check if any reactant already has this heterocycle
-                        reactant_has_ring = any(
-                            checker.check_ring(ring_type, r) for r in reactants_smiles
-                        )
-                        if not reactant_has_ring:
-                            print(f"Found heterocycle formation ({ring_type}) at depth {depth}")
-                            heterocycle_formed = True
-                            heterocycle_formations.append(reaction_data)
+                    # Check for sulfonyl halide in reactants
+                    sulfonyl_halide_present = False
+                    for reactant in reactants:
+                        if checker.check_fg("Sulfonyl halide", reactant):
+                            sulfonyl_halide_present = True
+                            print(f"Found sulfonyl halide in reactant: {reactant}")
                             break
 
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                    # Check for amine in reactants
+                    amine_present = False
+                    for reactant in reactants:
+                        if checker.check_fg("Primary amine", reactant) or checker.check_fg(
+                            "Secondary amine", reactant
+                        ):
+                            amine_present = True
+                            print(f"Found amine in reactant: {reactant}")
+                            break
 
-        # Process children with increased depth
+                    # Check for sulfonamide in product but not in reactants
+                    sulfonamide_in_product = checker.check_fg("Sulfonamide", product)
+                    sulfonamide_in_reactants = any(
+                        checker.check_fg("Sulfonamide", r) for r in reactants
+                    )
+
+                    if (
+                        sulfonyl_halide_present
+                        and amine_present
+                        and sulfonamide_in_product
+                        and not sulfonamide_in_reactants
+                    ):
+                        print("Manually detected sulfonamide formation reaction")
+                        is_sulfonamide_reaction = True
+
+                if is_sulfonamide_reaction:
+                    print("Found sulfonamide formation reaction")
+
+                    # Check if isoxazole is present in the product
+                    if checker.check_ring("isoxazole", product):
+                        print("Found isoxazole in product")
+
+                        # Verify isoxazole is present in at least one reactant
+                        isoxazole_in_reactants = False
+                        for reactant in reactants:
+                            if checker.check_ring("isoxazole", reactant):
+                                isoxazole_in_reactants = True
+                                print(f"Found isoxazole in reactant: {reactant}")
+                                break
+
+                        if not isoxazole_in_reactants:
+                            print("No isoxazole found in reactants, skipping")
+                            return
+
+                        # Check for sulfonyl chloride in reactants
+                        sulfonyl_chloride_present = False
+                        for reactant in reactants:
+                            if checker.check_fg("Sulfonyl halide", reactant):
+                                sulfonyl_chloride_present = True
+                                print(f"Found sulfonyl chloride in reactant: {reactant}")
+                                break
+
+                        if not sulfonyl_chloride_present:
+                            print("No sulfonyl chloride found in reactants, skipping")
+                            return
+
+                        # Verify sulfonamide was actually formed (not present in reactants)
+                        sulfonamide_in_reactants = False
+                        for reactant in reactants:
+                            if checker.check_fg("Sulfonamide", reactant):
+                                sulfonamide_in_reactants = True
+                                print(f"Found sulfonamide already in reactant: {reactant}")
+                                break
+
+                        if sulfonamide_in_reactants:
+                            print("Sulfonamide already present in reactants, skipping")
+                            return
+
+                        if checker.check_fg("Sulfonamide", product):
+                            print("Confirmed sulfonamide formation with isoxazole")
+                            found_pattern = True
+                        else:
+                            print("No sulfonamide found in product, skipping")
+                    else:
+                        print("No isoxazole found in product, skipping")
+                else:
+                    print("Not a sulfonamide formation reaction, skipping")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Sort reactions by depth to analyze the sequence
-    reaction_sequence.sort(key=lambda x: x["depth"])
-
-    # Check if we have the complete strategy
-    has_isothiocyanate = len(isothiocyanate_reactions) > 0
-    has_thiourea = len(thiourea_reactions) > 0
-    has_heterocycle_formation = len(heterocycle_formations) > 0
-
-    # Check if the sequence is correct (isothiocyanate -> thiourea -> heterocycle)
-    correct_sequence = False
-    if has_isothiocyanate and has_thiourea and has_heterocycle_formation:
-        # Get the minimum depths for each step
-        isothiocyanate_depth = min(r["depth"] for r in isothiocyanate_reactions)
-        thiourea_depth = min(r["depth"] for r in thiourea_reactions)
-        heterocycle_depth = min(r["depth"] for r in heterocycle_formations)
-
-        # Check if the sequence is in the correct order
-        # In retrosynthetic direction: heterocycle (lowest depth) -> thiourea -> isothiocyanate (highest depth)
-        if heterocycle_depth <= thiourea_depth <= isothiocyanate_depth:
-            print(
-                f"Correct sequence detected: heterocycle ({heterocycle_depth}) -> thiourea ({thiourea_depth}) -> isothiocyanate ({isothiocyanate_depth})"
-            )
-            correct_sequence = True
-
-    # Strategy is present if we have all components in the correct sequence
-    strategy_present = (
-        has_isothiocyanate and has_thiourea and has_heterocycle_formation and correct_sequence
-    )
-
-    print(f"Has isothiocyanate: {has_isothiocyanate}")
-    print(f"Has thiourea: {has_thiourea}")
-    print(f"Has heterocycle formation: {has_heterocycle_formation}")
-    print(f"Correct sequence: {correct_sequence}")
-    print(f"Isothiocyanate-thiourea heterocycle strategy detected: {strategy_present}")
-
-    return strategy_present
+    return found_pattern

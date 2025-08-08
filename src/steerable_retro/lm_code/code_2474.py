@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,101 +54,310 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves a ring opening transformation of a cyclic amide
+    This function detects a convergent synthesis with late-stage amide coupling
+    between two complex fragments.
     """
-    # Flag to track if we found the transformation
-    found_ring_opening = False
+    # Track if we found the pattern
+    found_late_stage_amide = False
 
-    # List of cyclic structures that could contain amides
-    cyclic_amide_rings = ["pyrrolidone", "piperidine", "morpholine", "azepane", "diazepane"]
+    # Track synthesis branches to identify convergent synthesis
+    synthesis_branches = {}
+    branch_counter = 0
 
-    # List of reactions that could involve ring opening
-    ring_opening_reactions = [
-        "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
-        "Hydrolysis of amides/imides/carbamates",
-        "Hydrogenolysis of amides/imides/carbamates",
-    ]
+    def assign_branches(node, current_branch=None):
+        nonlocal branch_counter
 
-    def dfs_traverse(node):
-        nonlocal found_ring_opening
+        if node["type"] == "mol":
+            # If this is a starting material, assign a new branch
+            if node.get("in_stock", False):
+                branch_counter += 1
+                synthesis_branches[node["smiles"]] = branch_counter
+                return branch_counter
+            # Otherwise, inherit branch from children
+            elif "children" in node and node["children"]:
+                child_branches = []
+                for child in node["children"]:
+                    branch = assign_branches(child, current_branch)
+                    if branch:
+                        child_branches.append(branch)
 
-        if node["type"] == "reaction":
-            try:
-                # Extract reactants and product
+                # If multiple branches converge, keep track of all of them
+                if child_branches:
+                    synthesis_branches[node["smiles"]] = child_branches
+                    return child_branches[0]  # Return first branch for parent inheritance
+
+            # Inherit branch from parent if not determined yet
+            if current_branch and node["smiles"] not in synthesis_branches:
+                synthesis_branches[node["smiles"]] = current_branch
+                return current_branch
+
+        elif node["type"] == "reaction":
+            # For reaction nodes, process all children
+            for child in node.get("children", []):
+                assign_branches(child, current_branch)
+
+        return current_branch
+
+    def dfs_traverse(node, depth=0):
+        nonlocal found_late_stage_amide
+
+        # Check reaction nodes at late stage (low depth)
+        if (
+            node["type"] == "reaction" and depth <= 3
+        ):  # Increased depth limit to catch more potential late-stage reactions
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                print(f"\nAnalyzing reaction at depth {depth}: {rsmi}")
+                reactants_str = rsmi.split(">")[0]
+                product_str = rsmi.split(">")[-1]
 
-                print(f"Analyzing reaction: {rsmi}")
+                # Check if this is an amide coupling reaction using the checker
+                is_amide_coupling = (
+                    checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                    )
+                    or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
+                    or checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                        rsmi,
+                    )
+                    or checker.check_reaction(
+                        "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+                    )
+                    or checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi)
+                    or checker.check_reaction("Ester with primary amine to amide", rsmi)
+                    or checker.check_reaction("Ester with secondary amine to amide", rsmi)
+                    or checker.check_reaction(
+                        "Schotten-Baumann_amide", rsmi
+                    )  # Added additional reaction check
+                )
 
-                # Check for cyclic amide opening
-                for reactant in reactants:
-                    # Check if reactant contains a cyclic amide structure
-                    has_cyclic_amide = False
+                print(f"Is amide coupling reaction: {is_amide_coupling}")
 
-                    # Check for pyrrolidone and other cyclic amides
-                    for ring in cyclic_amide_rings:
-                        if checker.check_ring(ring, reactant):
-                            print(f"Found cyclic amide ring ({ring}) in reactant: {reactant}")
-                            has_cyclic_amide = True
-                            break
+                # If not detected as amide coupling, try to check manually
+                if not is_amide_coupling:
+                    # Split reactants
+                    reactants = reactants_str.split(".")
 
-                    # Check for lactams (cyclic amides)
-                    if checker.check_fg("Secondary amide", reactant) and not has_cyclic_amide:
-                        # Check if it's a cyclic amide by looking at the molecule structure
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            ring_info = mol.GetRingInfo()
-                            if ring_info.NumRings() > 0 and checker.check_fg(
-                                "Secondary amide", reactant
-                            ):
-                                print(f"Found potential cyclic amide in reactant: {reactant}")
-                                has_cyclic_amide = True
+                    # Check for acid/amine reactants and amide product
+                    acid_found = any(
+                        checker.check_fg("Carboxylic acid", r)
+                        or checker.check_fg("Acyl halide", r)
+                        or checker.check_fg("Ester", r)
+                        for r in reactants
+                    )
 
-                    # Check for imides (cyclic diamides)
-                    if checker.check_fg(
-                        "Unsubstituted dicarboximide", reactant
-                    ) or checker.check_fg("Substituted dicarboximide", reactant):
-                        print(f"Found cyclic imide in reactant: {reactant}")
-                        has_cyclic_amide = True
+                    amine_found = any(
+                        checker.check_fg("Primary amine", r)
+                        or checker.check_fg("Secondary amine", r)
+                        or checker.check_fg("Aniline", r)
+                        for r in reactants
+                    )
 
-                    if has_cyclic_amide:
-                        # Check if product contains both amine and carboxylic acid groups
-                        has_amine = (
-                            checker.check_fg("Primary amine", product)
-                            or checker.check_fg("Secondary amine", product)
-                            or checker.check_fg("Tertiary amine", product)
-                        )
+                    amide_in_product = (
+                        checker.check_fg("Primary amide", product_str)
+                        or checker.check_fg("Secondary amide", product_str)
+                        or checker.check_fg("Tertiary amide", product_str)
+                    )
 
-                        has_carboxylic_acid = checker.check_fg("Carboxylic acid", product)
+                    print(
+                        f"Manual check - Acid: {acid_found}, Amine: {amine_found}, Amide in product: {amide_in_product}"
+                    )
 
-                        if has_amine and has_carboxylic_acid:
-                            print(f"Found amine and carboxylic acid in product: {product}")
+                    # If we have acid, amine, and amide, it's likely an amide coupling
+                    if acid_found and amine_found and amide_in_product:
+                        is_amide_coupling = True
+                        print("Manually identified as amide coupling")
 
-                            # Verify this is a hydrolysis or hydrogenolysis reaction
-                            for reaction_type in ring_opening_reactions:
-                                if checker.check_reaction(reaction_type, rsmi):
-                                    print(
-                                        f"Confirmed cyclic amide ring opening reaction: {reaction_type}"
-                                    )
-                                    found_ring_opening = True
-                                    return  # Early return once we find a match
+                if is_amide_coupling:
+                    print(f"Found amide coupling reaction at depth {depth}")
+                    # Split reactants
+                    reactants = reactants_str.split(".")
 
-                            # If no specific reaction type matched but we have the right pattern
-                            # This is a fallback for reactions not covered by the predefined types
-                            print(
-                                "Detected potential ring opening pattern without specific reaction match"
+                    # Need at least two reactants for convergent synthesis
+                    if len(reactants) >= 2:
+                        # Verify acid/acyl and amine in reactants, amide in product
+                        acid_found = False
+                        amine_found = False
+                        acid_reactant = None
+                        amine_reactant = None
+
+                        # Check each reactant for acid/acyl or amine
+                        for reactant in reactants:
+                            try:
+                                if (
+                                    checker.check_fg("Carboxylic acid", reactant)
+                                    or checker.check_fg("Acyl halide", reactant)
+                                    or checker.check_fg("Ester", reactant)
+                                ):
+                                    acid_found = True
+                                    acid_reactant = reactant
+                                    print(f"Found acid/acyl reactant: {reactant}")
+                                if (
+                                    checker.check_fg("Primary amine", reactant)
+                                    or checker.check_fg("Secondary amine", reactant)
+                                    or checker.check_fg("Aniline", reactant)
+                                ):
+                                    amine_found = True
+                                    amine_reactant = reactant
+                                    print(f"Found amine reactant: {reactant}")
+                            except Exception as e:
+                                print(f"Error checking functional groups: {e}")
+                                continue
+
+                        # Check product for amide
+                        try:
+                            amide_in_product = (
+                                checker.check_fg("Primary amide", product_str)
+                                or checker.check_fg("Secondary amide", product_str)
+                                or checker.check_fg("Tertiary amide", product_str)
                             )
-                            found_ring_opening = True
-                            return
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                            print(f"Amide in product: {amide_in_product}")
+                        except Exception as e:
+                            print(f"Error checking product for amide: {e}")
+                            amide_in_product = False
 
-        # Traverse children
+                        # If we have acid/acyl, amine, and amide formation, confirm it's an amide coupling
+                        if acid_found and amine_found and amide_in_product:
+                            print("Confirmed acid/acyl and amine reactants with amide product")
+
+                            # Check if both reactants are complex
+                            complex_reactants = []
+                            for reactant in [acid_reactant, amine_reactant]:
+                                if not reactant:
+                                    continue
+                                try:
+                                    mol = Chem.MolFromSmiles(reactant)
+                                    if mol:
+                                        # Define complexity as having rings or being large
+                                        num_rings = mol.GetRingInfo().NumRings()
+                                        num_atoms = mol.GetNumAtoms()
+                                        num_hetero = sum(
+                                            1
+                                            for atom in mol.GetAtoms()
+                                            if atom.GetAtomicNum() not in [1, 6]
+                                        )
+
+                                        print(
+                                            f"Reactant complexity: {reactant} (rings: {num_rings}, atoms: {num_atoms}, heteroatoms: {num_hetero})"
+                                        )
+
+                                        # More flexible complexity check
+                                        if (
+                                            (num_rings >= 1 and num_atoms >= 7)
+                                            or (num_atoms >= 10)
+                                            or (num_rings >= 1 and num_hetero >= 1)
+                                            or (num_hetero >= 3)
+                                        ):
+                                            complex_reactants.append(reactant)
+                                            print(f"Complex reactant found: {reactant}")
+                                except Exception as e:
+                                    print(f"Error checking reactant complexity: {e}")
+                                    continue
+
+                            # Check if we have at least 2 complex reactants
+                            if len(complex_reactants) >= 2:
+                                print("Found at least 2 complex reactants")
+
+                                # Check if reactants come from different branches (convergent synthesis)
+                                if (
+                                    acid_reactant in synthesis_branches
+                                    and amine_reactant in synthesis_branches
+                                ):
+
+                                    acid_branch = synthesis_branches[acid_reactant]
+                                    amine_branch = synthesis_branches[amine_reactant]
+
+                                    print(
+                                        f"Acid branch: {acid_branch}, Amine branch: {amine_branch}"
+                                    )
+
+                                    # Check if branches are different
+                                    if isinstance(acid_branch, list) or isinstance(
+                                        amine_branch, list
+                                    ):
+                                        # If either is a list, check for non-overlapping branches
+                                        acid_branches = (
+                                            acid_branch
+                                            if isinstance(acid_branch, list)
+                                            else [acid_branch]
+                                        )
+                                        amine_branches = (
+                                            amine_branch
+                                            if isinstance(amine_branch, list)
+                                            else [amine_branch]
+                                        )
+
+                                        # Check if there's at least one branch that's different
+                                        if set(acid_branches) != set(amine_branches) and not (
+                                            set(acid_branches).issubset(set(amine_branches))
+                                            or set(amine_branches).issubset(set(acid_branches))
+                                        ):
+                                            print(
+                                                f"Found convergent synthesis: acid branch {acid_branches}, amine branch {amine_branches}"
+                                            )
+                                            found_late_stage_amide = True
+                                    elif acid_branch != amine_branch:
+                                        print(
+                                            f"Found convergent synthesis: acid branch {acid_branch}, amine branch {amine_branch}"
+                                        )
+                                        found_late_stage_amide = True
+                                else:
+                                    print(
+                                        f"Reactants not found in synthesis branches: acid_reactant in branches: {acid_reactant in synthesis_branches}, amine_reactant in branches: {amine_reactant in synthesis_branches}"
+                                    )
+                            else:
+                                print(
+                                    f"Not enough complex reactants: found {len(complex_reactants)}"
+                                )
+                        else:
+                            print(
+                                f"Missing required functional groups: acid_found={acid_found}, amine_found={amine_found}, amide_in_product={amide_in_product}"
+                            )
+                    else:
+                        print(f"Not enough reactants: found {len(reactants)}")
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # First assign branches to track convergent synthesis
+    assign_branches(route)
+    print(f"Synthesis branches: {synthesis_branches}")
+
+    # Then start traversal to find late-stage amide coupling
     dfs_traverse(route)
 
-    return found_ring_opening
+    # If we didn't find a late-stage amide coupling, try a more lenient approach
+    if not found_late_stage_amide:
+        print("\nTrying more lenient approach...")
+        # Check if we have the right starting materials for a potential convergent synthesis
+        starting_materials = [
+            smiles for smiles, branch in synthesis_branches.items() if isinstance(branch, int)
+        ]
+
+        # Check if we have at least one carboxylic acid and one amine in starting materials
+        acid_starting = any(checker.check_fg("Carboxylic acid", sm) for sm in starting_materials)
+        amine_starting = any(
+            checker.check_fg("Primary amine", sm)
+            or checker.check_fg("Secondary amine", sm)
+            or checker.check_fg("Aniline", sm)
+            for sm in starting_materials
+        )
+
+        print(f"Starting materials contain acid: {acid_starting}, amine: {amine_starting}")
+
+        # If we have both acid and amine starting materials from different branches, and the target molecule has an amide
+        if acid_starting and amine_starting and len(set(synthesis_branches.values())) >= 2:
+            # Check if the final product has an amide
+            if route["type"] == "mol" and (
+                checker.check_fg("Primary amide", route["smiles"])
+                or checker.check_fg("Secondary amide", route["smiles"])
+                or checker.check_fg("Tertiary amide", route["smiles"])
+            ):
+                print(
+                    "Found amide in final product with acid and amine starting materials from different branches"
+                )
+                found_late_stage_amide = True
+
+    return found_late_stage_amide

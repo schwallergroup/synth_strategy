@@ -2,76 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves N-alkylation of a
-    spirocyclic lactam using a benzyl halide.
+    Detects if the synthesis route involves urea formation in the late stage (low depth).
     """
-    spirocyclic_alkylation_found = False
+    urea_formation_detected = False
+    max_depth_for_late_stage = 1  # Define what "late stage" means
 
-    def dfs_traverse(node):
-        nonlocal spirocyclic_alkylation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal urea_formation_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= max_depth_for_late_stage:
+            # Extract reaction SMILES
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check for spirocyclic lactam
-            spirocyclic_lactam_pattern = Chem.MolFromSmarts(
-                "[N]1[C](=[O])[C]2([CH2][CH2]1)[CH2][CH2][CH2][CH2][CH2]2"
-            )
+                # Check if product contains urea
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                urea_pattern = Chem.MolFromSmarts("[#7]-[#6](=[#8])-[#7]")
 
-            # Check for benzyl halide
-            benzyl_halide_pattern = Chem.MolFromSmarts("[c][CH2][Br,Cl,I,F]")
+                # Check if reactants contain isocyanate
+                reactants = reactants_smiles.split(".")
+                isocyanate_pattern = Chem.MolFromSmarts("[#8]=[#6]=[#7]")
+                has_isocyanate = any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(isocyanate_pattern)
+                    for r in reactants
+                    if r
+                )
 
-            # Check for N-alkylated product
-            n_alkylated_pattern = Chem.MolFromSmarts("[N]([C](=[O]))[CH2][c]")
-
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
-
-            if product_mol and product_mol.HasSubstructMatch(n_alkylated_pattern):
-                # Check if reactants include spirocyclic lactam and benzyl halide
-                has_spirocyclic = False
-                has_benzyl_halide = False
-
-                for r_mol in reactant_mols:
-                    if r_mol:
-                        if r_mol.HasSubstructMatch(spirocyclic_lactam_pattern):
-                            has_spirocyclic = True
-                        if r_mol.HasSubstructMatch(benzyl_halide_pattern):
-                            has_benzyl_halide = True
-
-                if has_spirocyclic and has_benzyl_halide:
-                    spirocyclic_alkylation_found = True
-                    print(f"Found spirocyclic lactam alkylation: {rsmi}")
+                if product_mol and product_mol.HasSubstructMatch(urea_pattern) and has_isocyanate:
+                    print(f"Late-stage urea formation detected at depth {depth}")
+                    urea_formation_detected = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-
-    print(f"Spirocyclic lactam alkylation strategy detected: {spirocyclic_alkylation_found}")
-    return spirocyclic_alkylation_found
+    return urea_formation_detected

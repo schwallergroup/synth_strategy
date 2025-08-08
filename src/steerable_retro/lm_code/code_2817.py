@@ -2,96 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis route contains a sequence of
-    transformations from alcohol to chloride to amine.
+    This function detects a synthetic strategy involving a carbazole moiety
+    in the final product.
     """
-    # Track reactions in sequence
-    reactions_sequence = []
+    has_carbazole = False
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        nonlocal has_carbazole
 
-            # Store reaction info with depth
-            reactions_sequence.append(
-                {"depth": depth, "reactants": reactants, "product": product, "rsmi": rsmi}
-            )
+        if node["type"] == "mol" and depth == 0:  # Final product
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and checker.check_ring("carbazole", node["smiles"]):
+                print(f"Detected carbazole moiety in final product: {node['smiles']}")
+                has_carbazole = True
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-
-    # Sort reactions by depth (ascending order - from late to early in synthesis)
-    reactions_sequence.sort(key=lambda x: x["depth"])
-
-    # Check for the sequence: alcohol → chloride → amine
-    has_alcohol_to_chloride = False
-    has_chloride_to_amine = False
-
-    for i in range(len(reactions_sequence) - 1):
-        current_rxn = reactions_sequence[i]
-        next_rxn = reactions_sequence[i + 1]
-
-        # Check alcohol to chloride
-        current_product_mol = Chem.MolFromSmiles(current_rxn["product"])
-        next_reactants_mols = [Chem.MolFromSmiles(r) for r in next_rxn["reactants"] if r]
-
-        if current_product_mol:
-            chloride_pattern = Chem.MolFromSmarts("[#6][Cl]")
-            if current_product_mol.HasSubstructMatch(chloride_pattern):
-                # Check if previous step had alcohol
-                alcohol_pattern = Chem.MolFromSmarts("[#6][OH]")
-                if any(
-                    mol and mol.HasSubstructMatch(alcohol_pattern)
-                    for mol in [Chem.MolFromSmiles(r) for r in current_rxn["reactants"] if r]
-                ):
-                    has_alcohol_to_chloride = True
-                    print(
-                        f"Alcohol to chloride conversion detected at depth {current_rxn['depth']}"
-                    )
-
-            # Check chloride to amine
-            if has_alcohol_to_chloride:
-                amine_pattern = Chem.MolFromSmarts("[#6][N]")
-                if next_rxn["product"] and Chem.MolFromSmiles(
-                    next_rxn["product"]
-                ).HasSubstructMatch(amine_pattern):
-                    # Check if current product has chloride that's used in next reaction
-                    if any(
-                        mol and mol.HasSubstructMatch(chloride_pattern)
-                        for mol in next_reactants_mols
-                    ):
-                        has_chloride_to_amine = True
-                        print(f"Chloride to amine conversion detected at depth {next_rxn['depth']}")
-
-    sequence_found = has_alcohol_to_chloride and has_chloride_to_amine
-    if sequence_found:
-        print("Alcohol → Chloride → Amine sequence detected")
-
-    return sequence_found
+    return has_carbazole

@@ -2,125 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route maintains an adamantane scaffold throughout the synthesis.
+    This function detects a strategy involving esterification using an acyl chloride.
     """
-    all_molecules_have_adamantane = True
-    molecule_count = 0
+    found_acyl_chloride_esterification = False
 
     def dfs_traverse(node):
-        nonlocal all_molecules_have_adamantane, molecule_count
+        nonlocal found_acyl_chloride_esterification
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol_smiles = node["smiles"]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0]
+                product = rsmi.split(">")[-1]
 
-            # Skip starting materials (in_stock)
-            if node.get("in_stock", False):
-                print(f"Skipping starting material: {mol_smiles}")
-                return
+                reactant_mol = Chem.MolFromSmiles(reactants)
+                product_mol = Chem.MolFromSmiles(product)
 
-            molecule_count += 1
+                if reactant_mol and product_mol:
+                    # Acyl chloride pattern
+                    acyl_chloride_pattern = Chem.MolFromSmarts("[C](=[O])[Cl]")
+                    # Phenol pattern
+                    phenol_pattern = Chem.MolFromSmarts("[OH]-[c]")
+                    # Ester pattern
+                    ester_pattern = Chem.MolFromSmarts("[c]-[O]-[C](=[O])-[#6]")
 
-            # Try to use the checker function first
-            has_adamantane = False
-            try:
-                has_adamantane = checker.check_ring("adamantane", mol_smiles)
-            except Exception as e:
-                print(f"Checker error: {e}")
-
-            # If checker doesn't work, use our own patterns
-            if not has_adamantane:
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if mol:
-                    # Basic adamantane pattern
-                    adamantane_pattern = "C12CC3CC(CC(C3)C1)C2"
-                    adamantane_query = Chem.MolFromSmarts(adamantane_pattern)
-
-                    # More flexible pattern for substituted adamantanes
-                    # This pattern looks for the core tricyclic structure of adamantane
-                    # allowing for substitutions at any position
-                    subst_adamantane_pattern = "C12CC3CC(CC(C3)C1)C2"
-                    subst_adamantane_query = Chem.MolFromSmarts(subst_adamantane_pattern)
-
-                    # Check for the specific pattern in the test case
-                    # This pattern matches the adamantane core in the test molecules
-                    test_case_pattern = "C12CCC(CC1)(CC2)"
-                    test_case_query = Chem.MolFromSmarts(test_case_pattern)
-
-                    has_adamantane = (
-                        mol.HasSubstructMatch(adamantane_query)
-                        or mol.HasSubstructMatch(subst_adamantane_query)
-                        or mol.HasSubstructMatch(test_case_query)
-                    )
-
-            if has_adamantane:
-                print(f"Molecule with adamantane scaffold found: {mol_smiles}")
-            else:
-                all_molecules_have_adamantane = False
-                print(f"Molecule without adamantane scaffold found: {mol_smiles}")
+                    # Check for acyl chloride and phenol in reactants, and ester in product
+                    if (
+                        reactant_mol.HasSubstructMatch(acyl_chloride_pattern)
+                        and reactant_mol.HasSubstructMatch(phenol_pattern)
+                        and product_mol.HasSubstructMatch(ester_pattern)
+                    ):
+                        found_acyl_chloride_esterification = True
+                        print(f"Found acyl chloride esterification: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Only return true if we've checked at least 3 molecules and all have adamantane
-    if molecule_count >= 3 and all_molecules_have_adamantane:
-        print(
-            f"Adamantane scaffold maintained throughout synthesis across {molecule_count} molecules"
-        )
-        return True
-    else:
-        print(
-            f"Adamantane scaffold NOT maintained throughout synthesis. Checked {molecule_count} molecules."
-        )
-        return False
+    print(f"Acyl chloride esterification detected: {found_acyl_chloride_esterification}")
+    return found_acyl_chloride_esterification

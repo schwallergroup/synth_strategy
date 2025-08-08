@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,39 +54,68 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects ester reduction to alcohol as part of the synthetic strategy.
+    This function detects if the synthesis route involves oxazole formation
+    from acyclic precursors.
     """
-    ester_reduction = False
+    oxazole_found = False
 
-    def dfs_traverse(node):
-        nonlocal ester_reduction
+    def dfs_traverse(node, depth=0):
+        nonlocal oxazole_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if this is an ester reduction reaction directly
-            if checker.check_reaction(
-                "Reduction of ester to primary alcohol", rsmi
-            ) or checker.check_reaction("Reduction of carboxylic acid to primary alcohol", rsmi):
-                print(f"Found ester/acid reduction reaction: {rsmi}")
-                ester_reduction = True
-            else:
-                # In retrosynthesis, primary alcohol is in reactants, ester is in product
-                has_primary_alcohol = any(checker.check_fg("Primary alcohol", r) for r in reactants)
-                has_ester = checker.check_fg("Ester", product)
+            print(f"Depth {depth} - Analyzing reaction: {rsmi}")
 
-                if has_primary_alcohol and has_ester:
+            # Check if this is a known oxazole-forming reaction
+            oxazole_forming_reactions = [
+                "benzoxazole formation from aldehyde",
+                "benzoxazole formation from acyl halide",
+                "benzoxazole formation from ester/carboxylic acid",
+                "benzoxazole formation (intramolecular)",
+                "{benzoxazole_arom-aldehyde}",
+                "{benzoxazole_carboxylic-acid}",
+            ]
+
+            for rxn_type in oxazole_forming_reactions:
+                if checker.check_reaction(rxn_type, rsmi):
+                    print(f"Detected {rxn_type} reaction")
+                    oxazole_found = True
+                    return
+
+            # Check if oxazole is formed in this reaction
+            product_mol = Chem.MolFromSmiles(product_smiles)
+
+            if product_mol and checker.check_ring("oxazole", product_smiles):
+                print(f"Oxazole ring found in product: {product_smiles}")
+
+                # Check if oxazole was not present in reactants
+                oxazole_in_reactants = False
+                for reactant in reactants_smiles:
+                    if checker.check_ring("oxazole", reactant):
+                        print(f"Oxazole ring already present in reactant: {reactant}")
+                        oxazole_in_reactants = True
+                        break
+
+                if not oxazole_in_reactants:
                     print(
-                        f"Found potential ester reduction (retrosynthetic): primary alcohol in reactants, ester in product: {rsmi}"
+                        "Oxazole formation confirmed - ring present in product but not in reactants"
                     )
-                    ester_reduction = True
+                    oxazole_found = True
 
+                    # Also check for benzoxazole which is a specific type of oxazole
+                    if checker.check_ring("benzoxazole", product_smiles):
+                        print("Product contains benzoxazole ring")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
+    print("Starting traversal of synthesis route")
     dfs_traverse(route)
-    print(f"Ester reduction strategy detected: {ester_reduction}")
-
-    return ester_reduction
+    print(f"Oxazole formation strategy result: {oxazole_found}")
+    return oxazole_found

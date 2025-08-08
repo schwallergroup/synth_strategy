@@ -2,69 +2,128 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a biaryl coupling strategy.
-    It looks for a C-C bond formation between two aromatic rings.
+    This function detects if the final step in the synthesis is an amide coupling.
     """
-    biaryl_coupling_found = False
+    final_step_is_amide_coupling = False
 
-    def dfs_traverse(node):
-        nonlocal biaryl_coupling_found
+    def dfs_traverse(node, depth=0):
+        nonlocal final_step_is_amide_coupling
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            products_part = rsmi.split(">")[-1]
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
 
-            # Check if this is a biaryl coupling reaction
-            reactants = reactants_part.split(".")
-
-            # Look for reactions where we have aromatic rings in the reactants
-            # and a new biaryl bond in the product
-            if len(reactants) >= 2:
+        # The final reaction step is at depth 1 (one step before the final product)
+        if node["type"] == "reaction" and depth == 1:
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 try:
-                    product_mol = Chem.MolFromSmiles(products_part)
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+                    rsmi = node["metadata"]["rsmi"]
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-                    # Check if product has a biaryl bond that's not in any reactant
-                    if product_mol and all(reactant_mols):
-                        # Simple heuristic: if we have two aromatic reactants and
-                        # the product contains both aromatic systems connected
-                        aromatic_reactants = 0
-                        for r_mol in reactant_mols:
-                            if any(atom.GetIsAromatic() for atom in r_mol.GetAtoms()):
-                                aromatic_reactants += 1
+                    print(f"Analyzing potential final step reaction: {rsmi}")
+                    print(f"Reactants: {reactants}")
+                    print(f"Product: {product}")
 
-                        if aromatic_reactants >= 2 and any(
-                            atom.GetIsAromatic() for atom in product_mol.GetAtoms()
-                        ):
-                            print("Potential biaryl coupling detected")
-                            biaryl_coupling_found = True
-                except:
-                    pass
+                    # Check for amide coupling reaction types
+                    amide_reaction_types = [
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                        "Carboxylic acid with primary amine to amide",
+                        "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                        "Acyl chloride with secondary amine to amide",
+                        "Schotten-Baumann_amide",
+                        "Ester with primary amine to amide",
+                        "Ester with secondary amine to amide",
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                        "Acylation of primary amines",
+                        "Acylation of secondary amines",
+                    ]
+
+                    for reaction_type in amide_reaction_types:
+                        if checker.check_reaction(reaction_type, rsmi):
+                            print(f"Found amide coupling reaction in final step: {reaction_type}")
+                            final_step_is_amide_coupling = True
+                            return
+
+                    # Fallback to functional group checking if reaction type check fails
+                    acyl_sources = ["Carboxylic acid", "Acyl halide", "Ester", "Anhydride"]
+                    amine_sources = ["Primary amine", "Secondary amine"]
+                    amide_products = ["Primary amide", "Secondary amide", "Tertiary amide"]
+
+                    has_acyl_source = any(
+                        any(checker.check_fg(fg, r) for r in reactants) for fg in acyl_sources
+                    )
+                    has_amine_source = any(
+                        any(checker.check_fg(fg, r) for r in reactants) for fg in amine_sources
+                    )
+                    has_amide_product = any(checker.check_fg(fg, product) for fg in amide_products)
+
+                    print(
+                        f"FG analysis - Acyl source: {has_acyl_source}, Amine source: {has_amine_source}, Amide product: {has_amide_product}"
+                    )
+
+                    if has_acyl_source and has_amine_source and has_amide_product:
+                        print(
+                            "Found amide coupling based on functional group analysis in final step"
+                        )
+                        final_step_is_amide_coupling = True
+
+                except Exception as e:
+                    print(f"Error analyzing reaction: {e}")
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return biaryl_coupling_found
+    print(f"Final result: {final_step_is_amide_coupling}")
+    return final_step_is_amide_coupling

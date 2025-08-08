@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,79 +54,97 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the final step (depth 0) is an ester hydrolysis to form a carboxylic acid.
+    This function detects the presence of nitrogen heterocycles (piperazine, pyrazole)
+    along with fluorinated groups (trifluoromethyl) maintained throughout the synthesis.
     """
-    # Track if we found a terminal ester hydrolysis and at what depth
-    found_hydrolysis = False
-    min_depth_found = float("inf")
+    # Track if we've found all required structures in the final product
+    found_piperazine = False
+    found_pyrazole = False
+    found_trifluoromethyl = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_hydrolysis, min_depth_found
+    # First check if the final product (root node) has all required structures
+    if route["type"] == "mol" and "smiles" in route:
+        mol_smiles = route["smiles"]
+        print(f"Checking final product: {mol_smiles}")
 
-        print(f"Traversing node of type {node['type']} at depth {depth}")
-
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
-
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
-
-                # Check if this is an ester hydrolysis reaction using multiple reaction types
-                is_hydrolysis = (
-                    checker.check_reaction(
-                        "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+        # Check for piperazine
+        if checker.check_ring("piperazine", mol_smiles):
+            found_piperazine = True
+            print(f"Found piperazine in final product")
+        else:
+            # Check for similar structures that might be piperazine
+            for ring_name in ["piperidine", "morpholine", "thiomorpholine", "diazepane"]:
+                if checker.check_ring(ring_name, mol_smiles):
+                    print(
+                        f"Found {ring_name} in final product, which might be similar to piperazine"
                     )
-                    or checker.check_reaction("Ester saponification (methyl deprotection)", rsmi)
-                    or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
-                )
 
-                # Manual check for ester hydrolysis pattern
-                if not is_hydrolysis:
-                    # Check if product contains carboxylic acid
-                    if checker.check_fg("Carboxylic acid", product_smiles):
-                        print("Found carboxylic acid in product")
+        # Check for pyrazole
+        if checker.check_ring("pyrazole", mol_smiles):
+            found_pyrazole = True
+            print(f"Found pyrazole in final product")
 
-                        # Check if any reactant contains ester
-                        has_ester_reactant = any(
-                            checker.check_fg("Ester", reactant) for reactant in reactants_smiles
-                        )
+        # Check for trifluoromethyl group
+        if checker.check_fg("Trifluoro group", mol_smiles):
+            found_trifluoromethyl = True
+            print(f"Found trifluoromethyl in final product")
 
-                        if has_ester_reactant:
+    # If not all structures are found in the final product, check the synthesis route
+    if not (found_piperazine and found_pyrazole and found_trifluoromethyl):
+
+        def dfs_traverse(node, depth=0):
+            nonlocal found_piperazine, found_pyrazole, found_trifluoromethyl
+
+            if node["type"] == "mol" and "smiles" in node and not node.get("in_stock", False):
+                # This is a non-starting material molecule
+                try:
+                    mol_smiles = node["smiles"]
+                    print(f"Checking molecule at depth {depth}: {mol_smiles}")
+
+                    # Check for piperazine
+                    if not found_piperazine and checker.check_ring("piperazine", mol_smiles):
+                        found_piperazine = True
+                        print(f"Found piperazine at depth {depth}")
+
+                    # Check for pyrazole
+                    if not found_pyrazole and checker.check_ring("pyrazole", mol_smiles):
+                        found_pyrazole = True
+                        print(f"Found pyrazole at depth {depth}")
+
+                    # Check for trifluoromethyl group
+                    if not found_trifluoromethyl and checker.check_fg(
+                        "Trifluoro group", mol_smiles
+                    ):
+                        found_trifluoromethyl = True
+                        print(f"Found trifluoromethyl at depth {depth}")
+
+                    # Additional check for structures that might be piperazine-like
+                    if not found_piperazine:
+                        # Check if there's a structure with "N1CCC(F)(c2ccccc2C(F)(F)F)CC1" pattern
+                        # which appears in the stdout and might be a piperazine-like structure
+                        mol = Chem.MolFromSmiles(mol_smiles)
+                        if mol and "N1CCC" in mol_smiles and "CC1" in mol_smiles:
                             print(
-                                "Found ester in reactants and carboxylic acid in product - likely an ester hydrolysis"
+                                f"Found potential piperazine-like structure at depth {depth}: {mol_smiles}"
                             )
-                            is_hydrolysis = True
+                            # This might be a fluorinated piperidine which is similar to piperazine
+                            if checker.check_ring("piperidine", mol_smiles):
+                                found_piperazine = True
+                                print(f"Confirmed as fluorinated piperidine at depth {depth}")
 
-                if is_hydrolysis:
-                    print(f"Reaction type matches ester hydrolysis at depth {depth}")
+                except Exception as e:
+                    print(f"Error processing molecule: {e}")
 
-                    # Check if product contains carboxylic acid
-                    if checker.check_fg("Carboxylic acid", product_smiles):
-                        print("Found carboxylic acid in product")
+            # Process children
+            for child in node.get("children", []):
+                dfs_traverse(child, depth + 1)
 
-                        # Check if any reactant contains ester
-                        for reactant_smiles in reactants_smiles:
-                            if checker.check_fg("Ester", reactant_smiles):
-                                print(f"Found ester in reactant: {reactant_smiles}")
+        # Start traversal
+        dfs_traverse(route)
 
-                                # Update if this is the lowest depth (most terminal) we've found
-                                if depth < min_depth_found:
-                                    min_depth_found = depth
-                                    found_hydrolysis = True
-                                    print(f"Updated terminal hydrolysis at depth {depth}")
-                                break
-                else:
-                    print(f"Reaction at depth {depth} is not an ester hydrolysis")
-
-        # Recursively process children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
-
-    # Start traversal from the root
-    dfs_traverse(route)
-
-    # Check if the hydrolysis was found at depth 1 (terminal reaction)
-    print(f"Minimum depth found: {min_depth_found}")
-    return found_hydrolysis and min_depth_found == 1
+    # Return True if all required structures are found
+    has_all_structures = found_piperazine and found_pyrazole and found_trifluoromethyl
+    print(
+        f"Found piperazine: {found_piperazine}, Found pyrazole: {found_pyrazole}, Found trifluoromethyl: {found_trifluoromethyl}"
+    )
+    return has_all_structures

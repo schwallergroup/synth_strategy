@@ -2,68 +2,156 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects the reduction of a nitro group to an amine
-    in the synthetic route.
-    """
-    has_nitro_reduction = False
+    Detects the use of Boc protection in a synthetic route.
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_nitro_reduction
+    A true Boc protection strategy involves:
+    1. Protecting an amine with a Boc group
+    2. Performing other chemistry while the amine is protected
+    3. Deprotecting the Boc group later in the synthesis
+    """
+    # Track molecules with Boc protection
+    boc_protected_molecules = set()
+    # Track if we've found a complete protection-deprotection sequence
+    found_complete_strategy = False
+    # Track if we've found any Boc-related reactions
+    found_any_boc_reaction = False
+
+    def dfs_traverse(node, depth=0, path=None):
+        nonlocal found_complete_strategy, found_any_boc_reaction
+
+        if path is None:
+            path = []
+
+        current_path = path + [node]
 
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reaction SMILES
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for nitro reduction
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check for Boc protection reactions
+            is_protection = any(
+                checker.check_reaction(rxn, rsmi)
+                for rxn in [
+                    "Boc amine protection",
+                    "Boc amine protection explicit",
+                    "Boc amine protection with Boc anhydride",
+                    "Boc amine protection (ethyl Boc)",
+                    "Boc amine protection of secondary amine",
+                    "Boc amine protection of primary amine",
+                ]
+            )
 
-                if product_mol:
-                    # Nitro pattern and amine pattern
-                    nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
+            # Check for Boc deprotection reactions
+            is_deprotection = any(
+                checker.check_reaction(rxn, rsmi)
+                for rxn in [
+                    "Boc amine deprotection",
+                    "Boc amine deprotection of guanidine",
+                    "Boc amine deprotection to NH-NH2",
+                    "Tert-butyl deprotection of amine",
+                ]
+            )
 
-                    # Check if any reactant has nitro group
-                    reactant_has_nitro = any(
-                        mol and mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols
-                    )
+            if is_protection:
+                found_any_boc_reaction = True
+                # Add the product to our set of Boc-protected molecules
+                boc_protected_molecules.add(product)
+                print(f"Found Boc protection reaction at depth {depth}")
 
-                    # Check if product has amine group
-                    product_has_amine = product_mol.HasSubstructMatch(amine_pattern)
+            if is_deprotection:
+                found_any_boc_reaction = True
+                # Check if any of the reactants were previously protected
+                for reactant in reactants:
+                    if reactant in boc_protected_molecules:
+                        found_complete_strategy = True
+                        print(
+                            f"Found complete Boc protection strategy: protected molecule was later deprotected"
+                        )
+                print(f"Found Boc deprotection reaction at depth {depth}")
 
-                    # If reactant has nitro and product has amine, nitro reduction occurred
-                    if reactant_has_nitro and product_has_amine:
-                        print(f"Found nitro to amine reduction at depth {depth}")
-                        has_nitro_reduction = True
+            # Even if we don't have a direct protection-deprotection sequence,
+            # check if the molecule contains a Boc group
+            if not is_protection and not is_deprotection:
+                for mol_smiles in reactants + [product]:
+                    # Check if the molecule contains a Boc group
+                    if checker.check_fg("Boc", mol_smiles):
+                        found_any_boc_reaction = True
+                        print(f"Found molecule with Boc group at depth {depth}")
 
-        # Continue traversal
+        # For molecule nodes, check if they contain a Boc group
+        elif node["type"] == "mol" and node["smiles"]:
+            if checker.check_fg("Boc", node["smiles"]):
+                found_any_boc_reaction = True
+                print(f"Found molecule with Boc group at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, depth + 1, current_path)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    return has_nitro_reduction
+    # Return True if we found a complete protection-deprotection strategy
+    # or if we found any Boc-related reactions or molecules
+    if found_complete_strategy:
+        print("Detected complete Boc protection-deprotection strategy")
+        return True
+    elif found_any_boc_reaction:
+        print("Detected Boc protection/deprotection reactions or Boc groups")
+        return True
+
+    return False

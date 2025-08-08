@@ -2,83 +2,121 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route follows a linear fragment assembly strategy
-    with sequential heteroatom substitutions.
+    This function detects if the synthetic route includes early aromatic functionalization
+    (nitration, halogenation) in the first half of the synthesis.
     """
-    # Track the number of sequential heteroatom substitutions
-    heteroatom_substitutions = 0
-    # Track if the route is linear (each reaction has only one product)
-    is_linear = True
+    functionalization_depths = []
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal heteroatom_substitutions, is_linear
+    def dfs_traverse(node, depth=0):
+        nonlocal functionalization_depths, max_depth
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+        # Track maximum depth to determine early vs late
+        max_depth = max(max_depth, depth)
 
-                # Check if there's only one product (linear synthesis)
-                if "." in product_part:
-                    is_linear = False
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                try:
-                    reactants = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
-                    product = Chem.MolFromSmiles(product_part)
+            # Patterns for nitration and halogenation
+            nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
+            bromo_pattern = Chem.MolFromSmarts("c[Br]")
+            fluoro_pattern = Chem.MolFromSmarts("c[F]")
 
-                    if all(r is not None for r in reactants) and product is not None:
-                        # Check for C-O or C-N bond formation
-                        c_o_pattern = Chem.MolFromSmarts("[#6]-[#8]")
-                        c_n_pattern = Chem.MolFromSmarts("[#6]-[#7]")
+            # Check if product has new functional group that reactants don't
+            product_mol = None
+            try:
+                product_mol = Chem.MolFromSmiles(product)
+            except:
+                pass
 
-                        # Count C-O and C-N bonds in reactants and product
-                        reactants_c_o_count = sum(
-                            len(r.GetSubstructMatches(c_o_pattern)) for r in reactants
-                        )
-                        reactants_c_n_count = sum(
-                            len(r.GetSubstructMatches(c_n_pattern)) for r in reactants
-                        )
+            if product_mol:
+                # Check for nitration
+                if product_mol.HasSubstructMatch(nitro_pattern):
+                    reactant_has_nitro = False
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.HasSubstructMatch(nitro_pattern):
+                                reactant_has_nitro = True
+                                break
+                        except:
+                            continue
 
-                        product_c_o_count = len(product.GetSubstructMatches(c_o_pattern))
-                        product_c_n_count = len(product.GetSubstructMatches(c_n_pattern))
+                    if not reactant_has_nitro:
+                        print(f"Detected nitration at depth {depth}")
+                        functionalization_depths.append(depth)
 
-                        # Check if C-O or C-N bonds increased
-                        if (
-                            product_c_o_count > reactants_c_o_count
-                            or product_c_n_count > reactants_c_n_count
-                        ):
-                            heteroatom_substitutions += 1
-                except:
-                    print(f"Error processing reaction SMILES: {rsmi}")
+                # Check for bromination
+                if product_mol.HasSubstructMatch(bromo_pattern):
+                    reactant_has_bromo = False
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.HasSubstructMatch(bromo_pattern):
+                                reactant_has_bromo = True
+                                break
+                        except:
+                            continue
 
-        # Process children
+                    if not reactant_has_bromo:
+                        print(f"Detected bromination at depth {depth}")
+                        functionalization_depths.append(depth)
+
+                # Check for fluorination
+                if product_mol.HasSubstructMatch(fluoro_pattern):
+                    reactant_has_fluoro = False
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.HasSubstructMatch(fluoro_pattern):
+                                reactant_has_fluoro = True
+                                break
+                        except:
+                            continue
+
+                    if not reactant_has_fluoro:
+                        print(f"Detected fluorination at depth {depth}")
+                        functionalization_depths.append(depth)
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Return True if the route is linear and has multiple heteroatom substitutions
-    return is_linear and heteroatom_substitutions >= 2
+    # Check if functionalization occurs in the second half of the synthesis (higher depth)
+    # Since we're traversing retrosynthetically, higher depth means earlier in the actual synthesis
+    if functionalization_depths and max_depth > 0:
+        # Consider it early if the average depth is in the second half
+        avg_depth = sum(functionalization_depths) / len(functionalization_depths)
+        return avg_depth > (max_depth / 2)
+
+    return False

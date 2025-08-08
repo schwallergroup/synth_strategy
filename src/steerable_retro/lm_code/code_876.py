@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,96 +54,93 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects mid-synthesis olefination reaction (Wittig or Julia)
-    that forms a C=C bond from an aldehyde.
+    Detects if the synthesis involves late-stage sulfonamide formation as the final step.
+
+    This function checks if the final reaction step (depth 1) is a sulfonamide formation
+    reaction where a sulfonyl chloride reacts with an amine to form a sulfonamide.
     """
-    found_pattern = False
+    found_sulfonamide_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
+        nonlocal found_sulfonamide_formation
 
-        # Check if this is a reaction node with reaction SMILES
+        # Skip if we've already found what we're looking for
+        if found_sulfonamide_formation:
+            return
+
+        print(f"Traversing node type: {node['type']} at depth: {depth}")
+
+        # Check if this is a reaction node
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+            print(f"Checking reaction at depth {depth}: {node['metadata'].get('rsmi', 'No RSMI')}")
 
-            # Consider mid-synthesis as depth 1-4 (not too early, not too late)
-            if 1 <= depth <= 4:
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+            # The final reaction step in retrosynthesis is at depth 1
+            if depth == 1:
+                try:
+                    rsmi = node["metadata"]["rsmi"]
+                    print(f"Checking final reaction step (depth 1): {rsmi}")
 
-                # Extract reactants and product
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
-                reactants = reactants_part.split(".")
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-                # Check if this is an olefination reaction using checker functions
-                is_wittig = (
-                    checker.check_reaction("Wittig", rsmi)
-                    or checker.check_reaction("Wittig reaction with triphenylphosphorane", rsmi)
-                    or checker.check_reaction("Wittig with Phosphonium", rsmi)
-                )
+                    # Check if this is a sulfonamide synthesis reaction using predefined reactions
+                    is_sulfonamide_reaction = False
 
-                is_julia = checker.check_reaction("Julia Olefination", rsmi)
+                    # Check for known sulfonamide formation reactions
+                    sulfonamide_reactions = [
+                        "Sulfonamide synthesis (Schotten-Baumann) primary amine",
+                        "Sulfonamide synthesis (Schotten-Baumann) secondary amine",
+                        "Schotten-Baumann to ester",  # This might include some sulfonamide formations
+                    ]
 
-                print(f"Direct reaction checks - Wittig: {is_wittig}, Julia: {is_julia}")
+                    for reaction_name in sulfonamide_reactions:
+                        if checker.check_reaction(reaction_name, rsmi):
+                            print(f"Detected sulfonamide formation via {reaction_name}")
+                            is_sulfonamide_reaction = True
+                            break
 
-                # If direct reaction check fails, look for characteristic patterns
-                if not (is_wittig or is_julia):
-                    print("Direct reaction check failed, trying pattern matching")
-
-                    # Check for aldehyde in reactants
-                    has_aldehyde = any(
-                        checker.check_fg("Aldehyde", reactant) for reactant in reactants
-                    )
-                    print(f"Has aldehyde in reactants: {has_aldehyde}")
-
-                    # Check for phosphorus reagents in reactants (for Wittig or HWE)
-                    has_phosphorus_reagent = False
-                    for reactant in reactants:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            # Look for phosphorus atom in molecule
-                            for atom in mol.GetAtoms():
-                                if atom.GetSymbol() == "P":
-                                    has_phosphorus_reagent = True
-                                    break
-
-                    print(f"Has phosphorus reagent: {has_phosphorus_reagent}")
-
-                    # If we have aldehyde + phosphorus reagent, it's likely an olefination
-                    if has_aldehyde and has_phosphorus_reagent:
-                        # Check for stereochemical alkene in product (common in olefination products)
-                        if "/C=" in product_part or "\\C=" in product_part:
-                            print(f"Found stereochemical alkene in product")
-                            found_pattern = True
-                        # For the specific test case, we know it's an olefination reaction
-                        elif (
-                            depth == 3
-                            and "CCOP(=O)(OCC)" in reactants_part
-                            and "O=[CH" in reactants_part
-                        ):
-                            print(f"Found Horner-Wadsworth-Emmons olefination pattern")
-                            found_pattern = True
-
-                        if found_pattern:
-                            print(
-                                f"Found mid-synthesis olefination reaction at depth {depth} through pattern matching"
-                            )
-                else:
-                    # Direct reaction check succeeded
-                    # Verify aldehyde is consumed
-                    has_aldehyde_in_reactants = any(
-                        checker.check_fg("Aldehyde", reactant) for reactant in reactants
-                    )
-
-                    if has_aldehyde_in_reactants:
-                        found_pattern = True
-                        print(
-                            f"Found mid-synthesis olefination reaction at depth {depth}: {'Wittig' if is_wittig else 'Julia'}"
+                    # Fallback: Check reactants and products manually
+                    if not is_sulfonamide_reaction:
+                        print("Checking reactants and product manually")
+                        has_sulfonyl_chloride = any(
+                            checker.check_fg("Sulfonyl halide", r) for r in reactants
                         )
 
-        # Continue traversing with incremented depth
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+                        # Check for various amine types
+                        has_amine = any(
+                            checker.check_fg(amine_type, r)
+                            for r in reactants
+                            for amine_type in [
+                                "Primary amine",
+                                "Secondary amine",
+                                "Aniline",
+                                "Tertiary amine",
+                            ]
+                        )
 
+                        # Check for sulfonamide in product
+                        has_sulfonamide = checker.check_fg("Sulfonamide", product)
+
+                        print(f"Has sulfonyl halide: {has_sulfonyl_chloride}")
+                        print(f"Has amine: {has_amine}")
+                        print(f"Has sulfonamide in product: {has_sulfonamide}")
+
+                        if has_sulfonyl_chloride and has_amine and has_sulfonamide:
+                            print("Detected sulfonamide formation from reactants and product")
+                            is_sulfonamide_reaction = True
+
+                    if is_sulfonamide_reaction:
+                        print("Found late-stage sulfonamide formation")
+                        found_sulfonamide_formation = True
+                except Exception as e:
+                    print(f"Error processing reaction node: {e}")
+
+        # Continue DFS traversal
+        for child in node.get("children", []):
+            # In retrosynthesis, depth increases as we move from products to reactants
+            next_depth = depth + 1
+            dfs_traverse(child, next_depth)
+
+    # Start traversal from the root
     dfs_traverse(route)
-    return found_pattern
+    return found_sulfonamide_formation

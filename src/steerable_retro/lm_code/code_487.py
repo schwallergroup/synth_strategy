@@ -2,63 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves amide bond formation using an acid chloride.
+    Detects if the synthesis incorporates an N-methylpiperazine fragment
+    in a late-stage nucleophilic substitution.
     """
-    amide_formation_found = False
+    has_n_methylpiperazine = False
+    has_late_stage_incorporation = False
 
-    # SMARTS patterns
-    acid_chloride_pattern = Chem.MolFromSmarts("[C](=[O])-[Cl]")
-    amine_pattern = Chem.MolFromSmarts("[N;!$(N=*);!$(NC=O)]")
-    amide_pattern = Chem.MolFromSmarts("[C](=[O])-[N]")
-
-    def dfs_traverse(node):
-        nonlocal amide_formation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal has_n_methylpiperazine, has_late_stage_incorporation
 
         if node["type"] == "reaction":
-            # Extract reactants and products
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            products_part = rsmi.split(">")[-1]
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
-            product = Chem.MolFromSmiles(products_part)
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # Check for amide formation from acid chloride and amine
-            if (
-                any(r is not None and r.HasSubstructMatch(acid_chloride_pattern) for r in reactants)
-                and any(r is not None and r.HasSubstructMatch(amine_pattern) for r in reactants)
-                and product is not None
-                and product.HasSubstructMatch(amide_pattern)
-            ):
-                amide_formation_found = True
-                print("Found amide formation from acid chloride")
+            # Check for N-methylpiperazine
+            n_methylpiperazine_pattern = Chem.MolFromSmarts("[CH3][N]1[CH2][CH2][N][CH2][CH2]1")
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(n_methylpiperazine_pattern):
+                        has_n_methylpiperazine = True
+                        # If depth is 0 or 1, it's considered late-stage
+                        if depth <= 1:
+                            has_late_stage_incorporation = True
+                            print(f"Found N-methylpiperazine at depth {depth} (late-stage)")
+                        else:
+                            print(f"Found N-methylpiperazine at depth {depth}")
+                except:
+                    continue
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return amide_formation_found
+    # Strategy is present if N-methylpiperazine is incorporated in a late stage
+    return has_n_methylpiperazine and has_late_stage_incorporation

@@ -2,56 +2,92 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy (vs convergent).
-    Linear synthesis typically has 1-2 reactants per step.
+    Detects if the synthesis follows a linear strategy (each reaction has only one
+    non-starting material reactant) rather than a convergent strategy.
+
+    A linear synthesis builds complexity by sequentially adding starting materials to a growing molecule.
+    A convergent synthesis combines complex intermediates in later stages.
+
+    Args:
+        route: A dictionary representing the synthesis route following the SynthesisRoute schema
+
+    Returns:
+        bool: True if the synthesis is linear, False if it's convergent
     """
     is_linear = True
-    reaction_count = 0
 
-    def dfs_traverse(node):
-        nonlocal is_linear, reaction_count
+    def dfs_traverse(node, depth=0):
+        nonlocal is_linear
 
+        # Process reaction nodes to check for convergent steps
         if node["type"] == "reaction":
-            reaction_count += 1
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            # In retrosynthetic traversal, we're looking at reactants that form the product
+            # For a linear synthesis, at most one of these reactants should be a complex intermediate
+            complex_intermediates = []
 
-                # If more than 2 reactants, likely not linear
-                if len(reactants) > 2:
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    complex_intermediates.append(child)
+
+            # If more than one complex intermediate is used in this reaction, it's convergent
+            if len(complex_intermediates) > 1:
+                # Check if these are truly separate synthetic pathways
+                # Sometimes multiple "non-starting materials" are actually part of the same pathway
+                # and don't represent a convergent synthesis
+
+                # For this implementation, we'll consider it convergent if there are multiple
+                # complex intermediates that each have their own reaction nodes as children
+                separate_pathways = 0
+                for intermediate in complex_intermediates:
+                    has_reaction_children = False
+                    for child in intermediate.get("children", []):
+                        if child["type"] == "reaction":
+                            has_reaction_children = True
+                            break
+                    if has_reaction_children:
+                        separate_pathways += 1
+
+                if separate_pathways > 1:
+                    print(
+                        f"Depth {depth}: Found convergent step with {separate_pathways} separate synthetic pathways"
+                    )
+                    intermediate_smiles = [
+                        inter.get("smiles", "unknown") for inter in complex_intermediates
+                    ]
+                    print(f"Complex intermediates: {intermediate_smiles}")
                     is_linear = False
-                    print(f"Non-linear step detected with {len(reactants)} reactants")
 
-        # Traverse children
+        # Continue traversing the synthesis tree
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal from the root node
     dfs_traverse(route)
 
-    # Ensure we have at least 3 reactions to make a meaningful assessment
-    if reaction_count >= 3 and is_linear:
-        print(f"Linear synthesis strategy detected with {reaction_count} reactions")
-        return True
-    return False
+    print(f"Synthesis strategy: {'Linear' if is_linear else 'Convergent'}")
+    return is_linear

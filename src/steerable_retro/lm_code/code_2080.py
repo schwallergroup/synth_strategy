@@ -2,47 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes that utilize a dihalogenated aryl fragment (containing both Cl and Br).
+    This function detects if the synthetic route involves an ester to amide transformation.
     """
-    dihalogenated_fragment_used = False
+    ester_pattern = Chem.MolFromSmarts("[#6][C](=[O])[O][#6]")
+    amide_pattern = Chem.MolFromSmarts("[#6][C](=[O])[N]")
+    transformation_detected = False
 
     def dfs_traverse(node):
-        nonlocal dihalogenated_fragment_used
+        nonlocal transformation_detected
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for both Cl and Br on aromatic rings
-                cl_pattern = Chem.MolFromSmarts("[c][Cl]")
-                br_pattern = Chem.MolFromSmarts("[c][Br]")
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-                if mol.HasSubstructMatch(cl_pattern) and mol.HasSubstructMatch(br_pattern):
-                    dihalogenated_fragment_used = True
-                    print("Detected dihalogenated aryl fragment (Cl and Br)")
+                # Check if reactants contain ester and product contains amide
+                reactant_list = reactants_smiles.split(".")
+                ester_in_reactants = False
 
+                for r in reactant_list:
+                    r_mol = Chem.MolFromSmiles(r)
+                    if r_mol and r_mol.HasSubstructMatch(ester_pattern):
+                        ester_in_reactants = True
+                        break
+
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if (
+                    ester_in_reactants
+                    and product_mol
+                    and product_mol.HasSubstructMatch(amide_pattern)
+                ):
+                    # Check if the amide is new (not present in all reactants)
+                    all_reactants_have_amide = True
+                    for r in reactant_list:
+                        r_mol = Chem.MolFromSmiles(r)
+                        if r_mol and not r_mol.HasSubstructMatch(amide_pattern):
+                            all_reactants_have_amide = False
+                            break
+
+                    if not all_reactants_have_amide:
+                        print("Ester to amide transformation detected")
+                        transformation_detected = True
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return dihalogenated_fragment_used
+    return transformation_detected

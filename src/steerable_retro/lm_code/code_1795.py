@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,114 +54,109 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy involving multiple amide bond disconnections
-    in the retrosynthetic route.
+    Detects a synthesis that utilizes halogens (Cl, Br, I) as synthetic handles
+    throughout multiple steps of the route.
     """
-    # Count amide disconnections
-    amide_disconnection_count = 0
+    # Track halogen presence and transformations at different depths
+    halogen_depths = set()
+    halogen_reaction_depths = set()
 
     def dfs_traverse(node, depth=0):
-        nonlocal amide_disconnection_count
+        # For molecule nodes, check for halogen presence
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Extract reaction information
-            rsmi = node["metadata"]["rsmi"]
-            reaction_id = node.get("metadata", {}).get("ID", "unknown")
+            # Check for various halogen functional groups
+            halogen_present = (
+                checker.check_fg("Aromatic halide", mol_smiles)
+                or checker.check_fg("Primary halide", mol_smiles)
+                or checker.check_fg("Secondary halide", mol_smiles)
+                or checker.check_fg("Tertiary halide", mol_smiles)
+                or checker.check_fg("Alkenyl halide", mol_smiles)
+                or checker.check_fg("Haloalkyne", mol_smiles)
+            )
 
-            # Check for amide formation/disconnection reactions using the checker function
-            is_amide_reaction = False
-            matched_reaction_type = None
+            if halogen_present:
+                halogen_depths.add(depth)
+                print(f"Found halogen in molecule at depth {depth}: {mol_smiles}")
 
-            # Check for specific amide formation/disconnection reaction types
-            amide_reaction_types = [
-                # Amide formation reactions (appear as disconnections in retrosynthesis)
-                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
-                "Carboxylic acid with primary amine to amide",
-                "Ester with primary amine to amide",
-                "Ester with secondary amine to amide",
-                "Ester with ammonia to amide",
-                "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                "Acyl chloride with secondary amine to amide",
-                "Acyl chloride with ammonia to amide",
-                "Schotten-Baumann_amide",
-                "Acylation of primary amines",
-                "Acylation of secondary amines",
-                "Acylation of secondary amines with anhydrides",
-                "Carboxylic acid to amide conversion",
-                # Amide hydrolysis/cleavage reactions (direct disconnections)
-                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
-                "Hydrogenolysis of amides/imides/carbamates",
-                "Hydrolysis of amides/imides/carbamates",
-            ]
+        # For reaction nodes, check if the reaction involves halogen transformation
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rxn_smiles = node["metadata"]["rsmi"]
 
-            for reaction_type in amide_reaction_types:
-                if checker.check_reaction(reaction_type, rsmi):
-                    is_amide_reaction = True
-                    matched_reaction_type = reaction_type
-                    break
-
-            # If no specific reaction type matched, check for functional group patterns
-            if not is_amide_reaction:
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
-
-                reactants = reactants_part.split(".")
-                product = product_part
-
-                # Check for amide formation (in retrosynthesis: product has acid/amine, reactants have amide)
-                has_amide_in_reactants = any(
-                    checker.check_fg("Primary amide", reactant)
-                    or checker.check_fg("Secondary amide", reactant)
-                    or checker.check_fg("Tertiary amide", reactant)
-                    for reactant in reactants
+            # Check for reactions involving halogens
+            halogen_reaction = (
+                checker.check_reaction("Aromatic fluorination", rxn_smiles)
+                or checker.check_reaction("Aromatic chlorination", rxn_smiles)
+                or checker.check_reaction("Aromatic bromination", rxn_smiles)
+                or checker.check_reaction("Aromatic iodination", rxn_smiles)
+                or checker.check_reaction("Chlorination", rxn_smiles)
+                or checker.check_reaction("Fluorination", rxn_smiles)
+                or checker.check_reaction("Iodination", rxn_smiles)
+                or checker.check_reaction("Bromination", rxn_smiles)
+                or checker.check_reaction(
+                    "Aromatic substitution of bromine by chlorine", rxn_smiles
                 )
+                or checker.check_reaction("Aromatic dehalogenation", rxn_smiles)
+                or checker.check_reaction("Dehalogenation", rxn_smiles)
+                or checker.check_reaction("Finkelstein reaction", rxn_smiles)
+                or checker.check_reaction("Halodeboronation of boronic acids", rxn_smiles)
+                or checker.check_reaction("Halodeboronation of boronic esters", rxn_smiles)
+            )
 
-                has_acid_in_product = checker.check_fg("Carboxylic acid", product)
-                has_amine_in_product = (
-                    checker.check_fg("Primary amine", product)
-                    or checker.check_fg("Secondary amine", product)
-                    or checker.check_fg("Tertiary amine", product)
+            if halogen_reaction:
+                halogen_reaction_depths.add(depth)
+                print(f"Found halogen-involving reaction at depth {depth}: {rxn_smiles}")
+
+            # Check for reactions that commonly use halogens as leaving groups
+            nucleophilic_reactions = (
+                checker.check_reaction("Suzuki coupling with boronic acids", rxn_smiles)
+                or checker.check_reaction("Suzuki coupling with boronic esters", rxn_smiles)
+                or checker.check_reaction("Negishi coupling", rxn_smiles)
+                or checker.check_reaction("Heck terminal vinyl", rxn_smiles)
+                or checker.check_reaction("Sonogashira acetylene_aryl halide", rxn_smiles)
+                or checker.check_reaction("Sonogashira alkyne_aryl halide", rxn_smiles)
+                or checker.check_reaction(
+                    "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rxn_smiles
                 )
-
-                # Check for amide formation (in forward direction: reactants have acid/amine, product has amide)
-                has_amide_in_product = (
-                    checker.check_fg("Primary amide", product)
-                    or checker.check_fg("Secondary amide", product)
-                    or checker.check_fg("Tertiary amide", product)
+                or checker.check_reaction(
+                    "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rxn_smiles
                 )
+            )
 
-                has_acid_in_reactants = any(
-                    checker.check_fg("Carboxylic acid", reactant) for reactant in reactants
-                )
-                has_amine_in_reactants = any(
-                    checker.check_fg("Primary amine", reactant)
-                    or checker.check_fg("Secondary amine", reactant)
-                    or checker.check_fg("Tertiary amine", reactant)
-                    for reactant in reactants
-                )
+            if nucleophilic_reactions:
+                # Check if reactants contain halogens
+                try:
+                    reactants = rxn_smiles.split(">")[0].split(".")
+                    for reactant in reactants:
+                        if (
+                            checker.check_fg("Aromatic halide", reactant)
+                            or checker.check_fg("Primary halide", reactant)
+                            or checker.check_fg("Secondary halide", reactant)
+                            or checker.check_fg("Tertiary halide", reactant)
+                        ):
+                            halogen_reaction_depths.add(depth)
+                            print(
+                                f"Found coupling reaction using halogen at depth {depth}: {rxn_smiles}"
+                            )
+                            break
+                except Exception as e:
+                    print(f"Error checking reactants: {e}")
 
-                # Either direction could indicate an amide disconnection in retrosynthesis
-                if (has_amide_in_reactants and (has_acid_in_product or has_amine_in_product)) or (
-                    has_amide_in_product and has_acid_in_reactants and has_amine_in_reactants
-                ):
-                    is_amide_reaction = True
-                    matched_reaction_type = "Custom amide pattern"
-
-            if is_amide_reaction:
-                amide_disconnection_count += 1
-                print(
-                    f"Found amide disconnection at ID {reaction_id} - Reaction type: {matched_reaction_type}"
-                )
-                print(f"Reaction SMILES: {rsmi}")
-
-        # Continue traversing
+        # Traverse children with incremented depth
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    print(f"Total amide disconnections found: {amide_disconnection_count}")
 
-    # Strategy requires at least 2 amide disconnections
-    return amide_disconnection_count >= 2
+    # Check if halogens are used in at least 2 different depths
+    # Consider both molecule presence and reaction involvement
+    all_halogen_depths = halogen_depths.union(halogen_reaction_depths)
+    result = len(all_halogen_depths) >= 2
+
+    print(f"Halogen depths: {halogen_depths}")
+    print(f"Halogen reaction depths: {halogen_reaction_depths}")
+    print(f"Halogen-mediated synthesis across multiple steps: {result}")
+
+    return result

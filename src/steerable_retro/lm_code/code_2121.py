@@ -2,61 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function specifically detects imidazole ring formation in the synthetic route.
+    This function detects if the synthetic route uses N-arylation to form
+    C-N bonds between aryl halides and nitrogen heterocycles.
     """
-    imidazole_formation_detected = False
+    has_n_arylation = False
 
     def dfs_traverse(node):
-        nonlocal imidazole_formation_detected
+        nonlocal has_n_arylation
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for imidazole pattern in product
-            imidazole_pattern = Chem.MolFromSmarts("c1ncnc1")
+                # Check for aryl halide and nitrogen heterocycle in reactants
+                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[#9,#17,#35,#53]")
+                n_heterocycle_pattern = Chem.MolFromSmarts("[#7;R]")
 
-            # Check if product has an imidazole ring
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if product_mol and product_mol.HasSubstructMatch(imidazole_pattern):
-                # Check if reactants don't have imidazole
-                imidazole_in_reactants = False
-                for reactant_smiles in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(imidazole_pattern):
-                        imidazole_in_reactants = True
-                        break
+                has_aryl_halide = False
+                has_n_heterocycle = False
 
-                if not imidazole_in_reactants:
-                    imidazole_formation_detected = True
-                    print(f"Detected imidazole ring formation: {rsmi}")
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(aryl_halide_pattern):
+                            has_aryl_halide = True
+                        if mol and mol.HasSubstructMatch(n_heterocycle_pattern):
+                            has_n_heterocycle = True
+                    except:
+                        continue
+
+                # Check for aryl-N bond in product
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        aryl_n_bond_pattern = Chem.MolFromSmarts("[c]-[#7;R]")
+                        if product_mol.HasSubstructMatch(aryl_n_bond_pattern):
+                            if has_aryl_halide and has_n_heterocycle:
+                                has_n_arylation = True
+                                print(f"Detected N-arylation: {rsmi}")
+                except:
+                    pass
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    print(f"Imidazole ring formation detected: {imidazole_formation_detected}")
-    return imidazole_formation_detected
+    return has_n_arylation

@@ -2,71 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis incorporates a piperazine moiety in the late stage
-    (second half) of the synthesis via SNAr or similar reaction.
+    This function detects if the synthesis preserves a benzothiazole core throughout.
     """
-    piperazine_incorporation_depth = None
-    max_depth = 0
+    benzothiazole_count = 0
+    total_reactions = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal piperazine_incorporation_depth, max_depth
-
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal benzothiazole_count, total_reactions
 
         if node["type"] == "reaction":
-            # Check if this reaction incorporates a piperazine
+            total_reactions += 1
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check if any reactant contains piperazine
-                piperazine_pattern = Chem.MolFromSmarts("[N]1CCN([*])CC1")
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(piperazine_pattern):
-                            # Check if product also has piperazine (indicating incorporation)
-                            product_mol = Chem.MolFromSmiles(product)
-                            if product_mol and product_mol.HasSubstructMatch(piperazine_pattern):
-                                piperazine_incorporation_depth = depth
-                                print(f"Piperazine incorporation detected at depth {depth}")
-                    except:
-                        continue
+                # Check if product contains benzothiazole
+                benzothiazole_pattern = Chem.MolFromSmarts(
+                    "[#6]1[#6][#6][#6][#6]2[#6]1[#7][#6][#16]2"
+                )
+
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol is not None and product_mol.HasSubstructMatch(benzothiazole_pattern):
+                    benzothiazole_count += 1
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
 
-    # Late stage is defined as occurring in the second half of the synthesis
-    if piperazine_incorporation_depth is not None:
-        is_late_stage = piperazine_incorporation_depth <= (max_depth / 2)
+    # Check if benzothiazole is present in all or most reactions
+    preserved = (benzothiazole_count > 0) and (benzothiazole_count >= total_reactions * 0.8)
+    if preserved:
         print(
-            f"Piperazine incorporation at depth {piperazine_incorporation_depth}, max depth {max_depth}"
+            f"Detected benzothiazole preservation throughout synthesis ({benzothiazole_count}/{total_reactions} reactions)"
         )
-        print(f"Is late stage: {is_late_stage}")
-        return is_late_stage
 
-    return False
+    return preserved

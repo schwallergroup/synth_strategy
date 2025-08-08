@@ -2,115 +2,93 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves formation of an organotin reagent from an aryl halide.
+    Detects if the route contains a mid-stage N-arylation with a heterocycle.
+    Mid-stage is defined as occurring in the middle of the synthesis.
     """
-    found_organotin = False
+    found = False
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal found_organotin
+    def dfs_traverse(node, depth=0):
+        nonlocal found, max_depth
+
+        max_depth = max(max_depth, depth)
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                print(f"Examining reaction: {rsmi}")
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
-                reactants = reactants_part.split(".")
+                # Check for secondary amine in reactants
+                amine_pattern = Chem.MolFromSmarts("[NH]")
 
-                # Check if product contains tin
-                if "Sn" in product_part:
-                    print(f"Found product with tin: {product_part}")
+                # Check for heterocycle patterns
+                pyridine_pattern = Chem.MolFromSmarts("c1ccncc1")
 
-                    # Check if any reactant has aromatic halide
-                    for reactant in reactants:
-                        print(f"Checking reactant: {reactant}")
+                # Check for N-aryl bond in product
+                n_aryl_pattern = Chem.MolFromSmarts("[N]-c:c")
 
-                        # Check for aromatic halides
-                        if (
-                            checker.check_fg("Aromatic halide", reactant)
-                            or checker.check_fg("Primary halide", reactant)
-                            or checker.check_fg("Secondary halide", reactant)
-                            or checker.check_fg("Tertiary halide", reactant)
-                        ):
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-                            # Verify this is a reaction that forms organotin compounds
-                            if (
-                                checker.check_reaction("Stille reaction_aryl", rsmi)
-                                or checker.check_reaction("Stille reaction_vinyl", rsmi)
-                                or checker.check_reaction("Stille reaction_benzyl", rsmi)
-                                or checker.check_reaction("Stille reaction_allyl", rsmi)
-                                or checker.check_reaction("Stille reaction_other", rsmi)
-                            ):
-                                print("Found organotin reagent formation from halide")
-                                found_organotin = True
-                                break
+                if product_mol and len(reactant_mols) >= 2:
+                    has_amine = any(
+                        mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols if mol
+                    )
+                    has_heterocycle = any(
+                        mol.HasSubstructMatch(pyridine_pattern) for mol in reactant_mols if mol
+                    )
 
-                            # If not a known Stille reaction, check if it's a general metal-halogen exchange
-                            # that results in an organotin compound
-                            product_mol = Chem.MolFromSmiles(product_part)
-                            reactant_mol = Chem.MolFromSmiles(reactant)
+                    if (
+                        has_amine
+                        and has_heterocycle
+                        and product_mol.HasSubstructMatch(n_aryl_pattern)
+                    ):
+                        # This is likely an N-arylation with a heterocycle
+                        print(f"Found N-arylation with heterocycle at depth {depth}")
 
-                            if product_mol and reactant_mol:
-                                # Check if the reaction involves replacing a halogen with tin
-                                if "Br" in reactant or "Cl" in reactant or "I" in reactant:
-                                    print("Found potential organotin reagent formation from halide")
-                                    found_organotin = True
-                                    break
+                        # Check if it's mid-stage (not first or last reaction)
+                        if 0 < depth < max_depth:
+                            found = True
 
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # First pass to determine max_depth
+    def get_max_depth(node, depth=0):
+        nonlocal max_depth
+        max_depth = max(max_depth, depth)
+        for child in node.get("children", []):
+            get_max_depth(child, depth + 1)
+
+    get_max_depth(route)
+    mid_point = max_depth / 2
+
+    # Second pass to find the pattern
     dfs_traverse(route)
-    print(f"Final result: {found_organotin}")
-    return found_organotin
+    return found

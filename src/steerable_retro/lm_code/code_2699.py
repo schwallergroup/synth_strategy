@@ -2,63 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route involves aromatic halogenation (specifically chlorination).
+    Detects if the synthetic route includes a deprotection as one of the final steps.
     """
-    aromatic_halogenation_detected = False
+    deprotection_depths = []
+    max_depth = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal aromatic_halogenation_detected
+        nonlocal deprotection_depths, max_depth
 
-        if node["type"] == "reaction":
+        max_depth = max(max_depth, depth)
+
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0]
+            product = rsmi.split(">")[-1]
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+            reactant_mol = Chem.MolFromSmiles(reactants)
+            product_mol = Chem.MolFromSmiles(product)
 
-            # Aromatic C-Cl pattern
-            aromatic_cl_pattern = Chem.MolFromSmarts("c[Cl]")
+            if reactant_mol and product_mol:
+                # Check for common protecting groups
+                boc_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])-[#7]")
+                methoxy_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6;H3]")
 
-            if product is not None and aromatic_cl_pattern is not None:
-                if product.HasSubstructMatch(aromatic_cl_pattern):
-                    # Check if this bond is newly formed
-                    reactants_have_pattern = False
-                    for r in reactants:
-                        if r is not None and r.HasSubstructMatch(aromatic_cl_pattern):
-                            reactants_have_pattern = True
-                            break
+                # Boc deprotection
+                if reactant_mol.HasSubstructMatch(
+                    boc_pattern
+                ) and not product_mol.HasSubstructMatch(boc_pattern):
+                    deprotection_depths.append(depth)
+                    print(f"Deprotection detected at depth {depth}")
 
-                    if not reactants_have_pattern:
-                        print("Detected aromatic chlorination at depth", depth)
-                        aromatic_halogenation_detected = True
+                # O-demethylation
+                if reactant_mol.HasSubstructMatch(
+                    methoxy_pattern
+                ) and not product_mol.HasSubstructMatch(methoxy_pattern):
+                    deprotection_depths.append(depth)
+                    print(f"Deprotection detected at depth {depth}")
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return aromatic_halogenation_detected
+    # Check if any deprotection occurs in the last third of the synthesis
+    if deprotection_depths and max_depth > 0:
+        for depth in deprotection_depths:
+            if depth <= max_depth / 3:  # Lower depth values are later in the synthesis
+                return True
+
+    return False

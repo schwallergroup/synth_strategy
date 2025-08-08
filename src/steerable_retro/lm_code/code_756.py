@@ -2,56 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy rather than convergent.
+    This function detects if the synthetic route follows a linear strategy without convergent steps.
     """
-    # Track the maximum branching factor in the synthesis tree
     max_branching = 0
+
+    def count_reactants(reaction_node):
+        if "rsmi" in reaction_node.get("metadata", {}):
+            rsmi = reaction_node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            return len(reactants)
+        return 0
 
     def dfs_traverse(node):
         nonlocal max_branching
 
         if node["type"] == "reaction":
-            # Count number of reactants in this reaction
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                reactants = reactants_smiles.split(".")
-                branching = len(reactants)
-                max_branching = max(max_branching, branching)
+            reactant_count = count_reactants(node)
+            max_branching = max(max_branching, reactant_count)
+            print(f"Reaction with {reactant_count} reactants found")
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    # If max branching is <= 2, consider it a linear synthesis
+    # A linear synthesis typically has no more than 2 reactants per step
     is_linear = max_branching <= 2
-    if is_linear:
-        print("Linear synthesis strategy detected")
-    else:
-        print(f"Convergent synthesis detected with branching factor {max_branching}")
-
+    print(f"Linear synthesis strategy: {is_linear} (Max reactants per step: {max_branching})")
     return is_linear

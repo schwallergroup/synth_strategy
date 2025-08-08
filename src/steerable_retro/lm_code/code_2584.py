@@ -2,97 +2,115 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis uses a late-stage thiazole formation strategy,
-    where a thiazole ring is formed in the final step from a thiourea intermediate.
+    This function detects if the final product contains multiple nitrogen heterocycles.
     """
-    # Track if we found thiourea formation and thiazole formation
-    thiourea_formation_found = False
-    thiazole_formation_found = False
-    thiazole_formation_depth = float("inf")
-    thiourea_formation_depth = float("inf")
+    has_multiple_heterocycles = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal thiourea_formation_found, thiazole_formation_found
-        nonlocal thiazole_formation_depth, thiourea_formation_depth
+        nonlocal has_multiple_heterocycles
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        # Check only the root node (final product)
+        if depth == 0 and node["type"] == "mol" and "smiles" in node:
+            smiles = node["smiles"]
+            print(f"Analyzing final product: {smiles}")
 
-            # Check for thiourea formation
-            thiourea_pattern = Chem.MolFromSmarts("[#6](=[#16])[#7]")
-            product_mol = Chem.MolFromSmiles(product_smiles)
+            # List of nitrogen-containing heterocycles to check
+            nitrogen_heterocycles = [
+                "pyrrole",
+                "pyridine",
+                "pyrazole",
+                "imidazole",
+                "oxazole",
+                "thiazole",
+                "pyrimidine",
+                "pyrazine",
+                "pyridazine",
+                "triazole",
+                "tetrazole",
+                "indole",
+                "quinoline",
+                "isoquinoline",
+                "purine",
+                "carbazole",
+                "acridine",
+                "benzimidazole",
+                "indazole",
+                "benzotriazole",
+            ]
 
-            if product_mol and product_mol.HasSubstructMatch(thiourea_pattern):
-                # Check if any reactant doesn't have thiourea
-                reactant_has_thiourea = False
-                for reactant_smiles in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(thiourea_pattern):
-                        reactant_has_thiourea = True
-                        break
+            # Count different heterocycle types
+            heterocycle_types = 0
+            found_rings = []
 
-                if not reactant_has_thiourea:
-                    thiourea_formation_found = True
-                    thiourea_formation_depth = depth
-                    print(f"Found thiourea formation at depth {depth}")
+            for ring in nitrogen_heterocycles:
+                if checker.check_ring(ring, smiles):
+                    heterocycle_types += 1
+                    found_rings.append(ring)
+                    print(f"{ring.capitalize()} ring detected in final product")
 
-            # Check for thiazole formation
-            thiazole_pattern = Chem.MolFromSmarts("[s]1[c][n][c][c]1")
-            product_mol = Chem.MolFromSmiles(product_smiles)
+            print(f"Total nitrogen heterocycle types found: {heterocycle_types}")
+            print(f"Found rings: {', '.join(found_rings)}")
 
-            if product_mol and product_mol.HasSubstructMatch(thiazole_pattern):
-                # Check if any reactant doesn't have thiazole
-                reactant_has_thiazole = False
-                for reactant_smiles in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(thiazole_pattern):
-                        reactant_has_thiazole = True
-                        break
+            if heterocycle_types >= 2:
+                has_multiple_heterocycles = True
+                print("Multiple nitrogen heterocycle types detected in final product")
 
-                if not reactant_has_thiazole:
-                    thiazole_formation_found = True
-                    thiazole_formation_depth = depth
-                    print(f"Found thiazole formation at depth {depth}")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-
-    # Check if we have both thiourea formation and thiazole formation,
-    # and thiazole formation happens at a lower depth (later in synthesis)
-    # than thiourea formation
-    if (
-        thiourea_formation_found
-        and thiazole_formation_found
-        and thiazole_formation_depth < thiourea_formation_depth
-    ):
-        print("Detected late-stage thiazole formation strategy")
-        return True
-    return False
+    return has_multiple_heterocycles

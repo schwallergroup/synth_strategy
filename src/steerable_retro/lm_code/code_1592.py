@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,191 +54,94 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a linear synthesis strategy with early ring formation, mid-stage cross-coupling,
-    and late-stage N-alkylation.
+    This function detects a synthesis strategy involving multiple C-O bond formations.
     """
-    # Initialize flags for each key transformation
-    found_ring_formation = False
-    found_nitrile_to_acid = False
-    found_acid_to_ester = False
-    found_borylation = False
-    found_suzuki_coupling = False
-    found_n_alkylation = False
-
-    # Track depths for ordering
-    ring_formation_depth = -1
-    nitrile_to_acid_depth = -1
-    acid_to_ester_depth = -1
-    borylation_depth = -1
-    suzuki_depth = -1
-    n_alkylation_depth = -1
+    co_formation_reactions = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_ring_formation, found_nitrile_to_acid, found_acid_to_ester
-        nonlocal found_borylation, found_suzuki_coupling, found_n_alkylation
-        nonlocal ring_formation_depth, nitrile_to_acid_depth, acid_to_ester_depth
-        nonlocal borylation_depth, suzuki_depth, n_alkylation_depth
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Depth {depth}, Examining reaction: {rsmi}")
 
-        if node["type"] == "reaction":
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Check for various C-O bond formation reactions
+            co_formation_reaction_types = [
+                "Williamson Ether Synthesis",
+                "Esterification of Carboxylic Acids",
+                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
+                "Schotten-Baumann to ester",
+                "Transesterification",
+                "Alcohol protection with silyl ethers",
+                "O-alkylation of carboxylic acids with diazo compounds",
+                "Formation of Sulfonic Esters",
+                "Oxidative esterification of primary alcohols",
+                "Mitsunobu esterification",
+                "Mitsunobu aryl ether",
+                "Chan-Lam alcohol",
+                "Chan-Lam etherification",
+                "Acetic anhydride and alcohol to ester",
+                "Alcohol to ether",
+                "Williamson Ether Synthesis (intra to epoxy)",
+                "Oxidation of alcohol to carboxylic acid",
+                "Oxidation of aldehydes to carboxylic acids",
+                "Oxidation of alcohol and aldehyde to ester",
+            ]
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+            found_co_formation = False
+            for reaction_type in co_formation_reaction_types:
+                if checker.check_reaction(reaction_type, rsmi):
+                    print(f"Found C-O bond formation: {reaction_type}")
+                    co_formation_reactions.append((depth, reaction_type, rsmi))
+                    found_co_formation = True
+                    break
 
-                # Check for ring formation (early stage)
-                if depth >= 3:  # High depth = early in synthesis (relaxed constraint)
-                    # Check for common rings that might be formed
-                    rings_to_check = [
-                        "benzene",
-                        "pyridine",
-                        "furan",
-                        "thiophene",
-                        "pyrrole",
-                        "imidazole",
-                        "oxazole",
-                        "thiazole",
-                        "pyrimidine",
-                        "cyclopentane",
-                        "cyclohexane",
-                    ]
+            # If no specific reaction type was found, check for C-O bond formation by examining
+            # functional groups in reactants and products
+            if not found_co_formation:
+                try:
+                    reactants_part = rsmi.split(">")[0]
+                    products_part = rsmi.split(">")[-1]
 
-                    # Check if product has a ring
-                    for ring in rings_to_check:
-                        if checker.check_ring(ring, product_smiles):
-                            found_ring_formation = True
-                            ring_formation_depth = depth
-                            print(f"Detected {ring} in product at depth {depth}")
-                            break
-
-                # Check for nitrile to acid conversion
-                if any(
-                    checker.check_fg("Nitrile", r) for r in reactants_smiles
-                ) and checker.check_fg("Carboxylic acid", product_smiles):
-                    found_nitrile_to_acid = True
-                    nitrile_to_acid_depth = depth
-                    print(f"Detected nitrile to carboxylic acid conversion at depth {depth}")
-
-                # Check for acid to ester conversion
-                if checker.check_reaction("Esterification of Carboxylic Acids", rsmi):
-                    found_acid_to_ester = True
-                    acid_to_ester_depth = depth
-                    print(f"Detected esterification of carboxylic acids at depth {depth}")
-                elif any(
-                    checker.check_fg("Carboxylic acid", r) for r in reactants_smiles
-                ) and checker.check_fg("Ester", product_smiles):
-                    found_acid_to_ester = True
-                    acid_to_ester_depth = depth
-                    print(f"Detected acid to ester conversion at depth {depth}")
-
-                # Check for borylation (expanded to include boronic esters)
-                if any(checker.check_fg("Aromatic halide", r) for r in reactants_smiles) and (
-                    checker.check_fg("Boronic acid", product_smiles)
-                    or checker.check_fg("Boronic ester", product_smiles)
-                ):
-                    found_borylation = True
-                    borylation_depth = depth
-                    print(f"Detected borylation at depth {depth}")
-
-                # Check for Suzuki coupling
-                suzuki_reactions = [
-                    "Suzuki coupling with boronic acids",
-                    "Suzuki coupling with boronic acids OTf",
-                    "Suzuki coupling with sulfonic esters",
-                    "Suzuki coupling with boronic esters",
-                    "Suzuki coupling with boronic esters OTf",
-                    "Suzuki",  # Added generic Suzuki reaction
-                ]
-
-                for rxn_type in suzuki_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        found_suzuki_coupling = True
-                        suzuki_depth = depth
-                        print(f"Detected {rxn_type} at depth {depth}")
-                        break
-
-                # If no specific Suzuki reaction was detected, check for patterns
-                if not found_suzuki_coupling and depth < 6:  # Mid-stage
-                    # Check if reactants contain boronic acid/ester and aryl halide
-                    has_boronic = any(
-                        checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
-                        for r in reactants_smiles
-                    )
-                    has_aryl_halide = any(
-                        checker.check_fg("Aromatic halide", r) for r in reactants_smiles
+                    # Check for alcohol, ether, or ester formation
+                    reactants_have_alcohol = any(
+                        checker.check_fg("Primary alcohol", r)
+                        or checker.check_fg("Secondary alcohol", r)
+                        or checker.check_fg("Tertiary alcohol", r)
+                        or checker.check_fg("Aromatic alcohol", r)
+                        for r in reactants_part.split(".")
                     )
 
-                    if has_boronic and has_aryl_halide:
-                        found_suzuki_coupling = True
-                        suzuki_depth = depth
-                        print(f"Detected likely Suzuki coupling pattern at depth {depth}")
+                    product_has_ether = checker.check_fg("Ether", products_part)
+                    product_has_ester = checker.check_fg("Ester", products_part)
 
-                # Check for N-alkylation (late stage) - relaxed depth constraint
-                if depth <= 3:  # Low depth = late in synthesis
-                    n_alkylation_reactions = [
-                        "N-alkylation of primary amines with alkyl halides",
-                        "N-alkylation of secondary amines with alkyl halides",
-                        "Alkylation of amines",
-                        "N-alkylation",  # Added generic N-alkylation
-                    ]
+                    if reactants_have_alcohol and (product_has_ether or product_has_ester):
+                        print(f"Found C-O bond formation through FG analysis")
+                        co_formation_reactions.append((depth, "C-O bond formation", rsmi))
+                except Exception as e:
+                    print(f"Error in FG analysis: {e}")
 
-                    for rxn_type in n_alkylation_reactions:
-                        if checker.check_reaction(rxn_type, rsmi):
-                            found_n_alkylation = True
-                            n_alkylation_depth = depth
-                            print(f"Detected {rxn_type} at depth {depth}")
-                            break
-
-                    # If no specific N-alkylation reaction was detected, check for patterns
-                    if not found_n_alkylation:
-                        # Check if product has N-alkyl group that wasn't in reactants
-                        if checker.check_fg("Secondary amine", product_smiles) or checker.check_fg(
-                            "Tertiary amine", product_smiles
-                        ):
-                            if any(
-                                checker.check_fg("Primary amine", r)
-                                or checker.check_fg("Secondary amine", r)
-                                for r in reactants_smiles
-                            ):
-                                found_n_alkylation = True
-                                n_alkylation_depth = depth
-                                print(f"Detected N-alkylation pattern at depth {depth}")
-
-            except Exception as e:
-                print(f"Error processing reaction at depth {depth}: {e}")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if all transformations were found with a more flexible ordering
-    # We still want ring formation early, N-alkylation late, and the rest in between
-    correct_strategy = (
-        found_ring_formation
-        and found_nitrile_to_acid
-        and found_acid_to_ester
-        and (found_borylation or found_suzuki_coupling)  # Allow either borylation or Suzuki
-        and found_n_alkylation
-    )
+    print(f"Total C-O bond formations found: {len(co_formation_reactions)}")
+    for depth, reaction_type, rsmi in co_formation_reactions:
+        print(f"Depth {depth}: {reaction_type} - {rsmi}")
 
-    # Check relative ordering with some flexibility
-    correct_ordering = (
-        (ring_formation_depth > n_alkylation_depth)  # Ring formation before N-alkylation
-        and (nitrile_to_acid_depth > n_alkylation_depth)  # Nitrile to acid before N-alkylation
-        and (acid_to_ester_depth > n_alkylation_depth)  # Acid to ester before N-alkylation
-    )
+    # Check if we have at least 2 C-O bond formations
+    if len(co_formation_reactions) < 2:
+        return False
 
-    print(f"Strategy detected: {correct_strategy and correct_ordering}")
-    print(f"Ring formation: {found_ring_formation} at depth {ring_formation_depth}")
-    print(f"Nitrile to acid: {found_nitrile_to_acid} at depth {nitrile_to_acid_depth}")
-    print(f"Acid to ester: {found_acid_to_ester} at depth {acid_to_ester_depth}")
-    print(f"Borylation: {found_borylation} at depth {borylation_depth}")
-    print(f"Suzuki coupling: {found_suzuki_coupling} at depth {suzuki_depth}")
-    print(f"N-alkylation: {found_n_alkylation} at depth {n_alkylation_depth}")
+    # Sort reactions by depth to check if they're sequential
+    co_formation_reactions.sort(key=lambda x: x[0])
 
-    return correct_strategy and correct_ordering
+    # Check if the reactions are in different branches or in sequence
+    # For simplicity, we'll consider them sequential if they occur at different depths
+    depths = [d for d, _, _ in co_formation_reactions]
+    unique_depths = set(depths)
+
+    print(f"Reaction depths: {depths}")
+    print(f"Unique depths: {unique_depths}")
+
+    # If we have at least 2 different depths, consider it sequential
+    return len(unique_depths) >= 2

@@ -2,67 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the use of nitrile hydrolysis to form carboxylic acids.
+    This function detects if the synthesis route involves a nitro reduction to amine.
     """
-    nitrile_hydrolysis_found = False
+    nitro_reduction_detected = False
 
-    def dfs_traverse(node):
-        nonlocal nitrile_hydrolysis_found
+    def dfs_traverse(node, depth=0):
+        nonlocal nitro_reduction_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            try:
-                # Check if any reactant has a nitrile group
-                reactant_has_nitrile = False
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[C]#[N]")):
-                        reactant_has_nitrile = True
-                        break
+            # Check if reactant contains nitro group
+            nitro_pattern = Chem.MolFromSmarts("[#6][N+](=[O])[O-]")
 
-                # Check if product has a carboxylic acid group
-                product_mol = Chem.MolFromSmiles(product)
-                product_has_acid = product_mol and product_mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("[C](=O)[OH]")
-                )
+            # Check if product contains amine group
+            amine_pattern = Chem.MolFromSmarts("[#6][NH2]")
 
-                # If reactant has nitrile and product has acid, it's likely a nitrile hydrolysis
-                if reactant_has_nitrile and product_has_acid:
-                    nitrile_hydrolysis_found = True
-                    print(f"Nitrile hydrolysis detected in reaction: {rsmi}")
-            except:
-                print(f"Error processing reaction: {rsmi}")
+            for reactant in reactants:
+                react_mol = Chem.MolFromSmiles(reactant)
+                prod_mol = Chem.MolFromSmiles(product)
 
-        # Process children
+                if (
+                    react_mol
+                    and prod_mol
+                    and react_mol.HasSubstructMatch(nitro_pattern)
+                    and prod_mol.HasSubstructMatch(amine_pattern)
+                ):
+                    print(f"Nitro reduction detected at depth {depth}")
+                    nitro_reduction_detected = True
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Nitrile hydrolysis to acid detected: {nitrile_hydrolysis_found}")
-    return nitrile_hydrolysis_found
+    return nitro_reduction_detected

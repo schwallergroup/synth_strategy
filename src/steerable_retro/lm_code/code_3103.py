@@ -2,52 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route follows a linear fragment assembly strategy where
-    each step adds one fragment at a time rather than converging multiple fragments.
+    Detects if the synthesis route involves construction of halogenated aromatic
+    heterocycles with both chloro and fluoro substituents.
     """
-    is_linear = True
+    has_chloro_aromatic = False
+    has_fluoro_aromatic = False
+    has_nitrogen_heterocycle = False
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        nonlocal has_chloro_aromatic, has_fluoro_aromatic, has_nitrogen_heterocycle
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for chloro-aromatic
+                chloro_aromatic_pattern = Chem.MolFromSmarts("c-[Cl]")
+                if mol.HasSubstructMatch(chloro_aromatic_pattern):
+                    has_chloro_aromatic = True
+                    print("Found chloro-aromatic group")
 
-            # If any reaction has more than 2 reactants, it's not a simple linear assembly
-            if len(reactants) > 2:
-                print(f"Found reaction with {len(reactants)} reactants, not linear assembly")
-                is_linear = False
+                # Check for fluoro-aromatic
+                fluoro_aromatic_pattern = Chem.MolFromSmarts("c-[F]")
+                if mol.HasSubstructMatch(fluoro_aromatic_pattern):
+                    has_fluoro_aromatic = True
+                    print("Found fluoro-aromatic group")
 
-        # Continue traversing
+                # Check for nitrogen heterocycle
+                nitrogen_in_ring_pattern = Chem.MolFromSmarts("[#7]@[*]")
+                if mol.HasSubstructMatch(nitrogen_in_ring_pattern):
+                    has_nitrogen_heterocycle = True
+                    print("Found nitrogen heterocycle")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    if is_linear:
-        print("Route follows linear fragment assembly strategy")
-
-    return is_linear
+    # Return True if all conditions are met
+    return has_chloro_aromatic and has_fluoro_aromatic and has_nitrogen_heterocycle

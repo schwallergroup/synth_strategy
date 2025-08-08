@@ -2,53 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the use of tosylate as a leaving group in the synthesis.
+    This function detects if the synthetic route involves a late-stage amide formation.
     """
-    tosylate_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6]([S](=[O])(=[O])[O])[#6][#6]1")
+    late_stage_amide_formation = False
 
-    strategy_detected = False
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_amide_formation
 
-    def dfs_traverse(node):
-        nonlocal strategy_detected
-
-        if node["type"] == "reaction":
+        if (
+            node["type"] == "reaction" and depth <= 1
+        ):  # Check only late-stage reactions (depth 0 or 1)
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if any reactant contains tosylate group
-                for reactant_smiles in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(tosylate_pattern):
-                        print("Detected tosylate leaving group strategy")
-                        strategy_detected = True
-                        break
+                # Check for acyl chloride in reactants
+                acyl_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
+                # Check for amide in product
+                amide_pattern = Chem.MolFromSmarts("C(=O)N")
 
-        # Traverse children
+                acyl_chloride_found = False
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(acyl_chloride_pattern):
+                            acyl_chloride_found = True
+                            break
+                    except:
+                        continue
+
+                if acyl_chloride_found:
+                    try:
+                        prod_mol = Chem.MolFromSmiles(product)
+                        if prod_mol and prod_mol.HasSubstructMatch(amide_pattern):
+                            print("Late-stage amide formation detected at depth", depth)
+                            late_stage_amide_formation = True
+                    except:
+                        pass
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
     dfs_traverse(route)
-    return strategy_detected
+    return late_stage_amide_formation

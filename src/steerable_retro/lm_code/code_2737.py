@@ -2,67 +2,54 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving ester hydrolysis to form
-    a carboxylic acid.
+    This function detects a synthetic strategy involving a thiophene-containing scaffold.
     """
-    # Track if we found ester hydrolysis
-    found_ester_hydrolysis = False
+    has_thiophene_scaffold = False
 
-    def dfs_traverse(node):
-        nonlocal found_ester_hydrolysis
+    def dfs_traverse(node, depth=0):
+        nonlocal has_thiophene_scaffold
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            smiles = node["smiles"]
+            mol = Chem.MolFromSmiles(smiles)
 
-            # Check for ester to carboxylic acid conversion
-            ester_pattern = Chem.MolFromSmarts("[C$(C=O)][O][C]")
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[C$(C=O)][OH]")
-
-            # Check reactants for ester
-            has_ester = False
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(ester_pattern):
-                    has_ester = True
-                    break
-
-            # Check product for carboxylic acid
-            product_mol = Chem.MolFromSmiles(product)
-            has_carboxylic_acid = product_mol and product_mol.HasSubstructMatch(
-                carboxylic_acid_pattern
-            )
-
-            if has_ester and has_carboxylic_acid:
-                found_ester_hydrolysis = True
-                print("Found ester hydrolysis strategy")
+            if mol:
+                # Check for thiophene pattern
+                thiophene_pattern = Chem.MolFromSmarts("c1cscc1")
+                if mol.HasSubstructMatch(thiophene_pattern):
+                    print(f"Found thiophene scaffold at depth {depth}")
+                    has_thiophene_scaffold = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return found_ester_hydrolysis
+
+    return has_thiophene_scaffold

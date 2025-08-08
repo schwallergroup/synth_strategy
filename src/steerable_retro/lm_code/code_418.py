@@ -2,62 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving sequential transformation:
-    isothiocyanate formation followed by thiourea formation.
+    This function detects if the synthetic route follows a linear synthesis strategy
+    without convergent steps (each reaction has only one non-commercial reactant).
     """
-    isothiocyanate_formed = False
-    thiourea_from_isothiocyanate = False
+    is_linear = True
+    reaction_count = 0
 
-    def dfs_traverse(node):
-        nonlocal isothiocyanate_formed, thiourea_from_isothiocyanate
+    def dfs_traverse(node, depth=0):
+        nonlocal is_linear, reaction_count
 
+        indent = "  " * depth
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            reaction_count += 1
+            non_commercial_reactants = 0
 
-                # Check for isothiocyanate formation
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    isothiocyanate_pattern = Chem.MolFromSmarts("[#6]-[N]=[C]=[S]")
-                    if product_mol.HasSubstructMatch(isothiocyanate_pattern):
-                        isothiocyanate_formed = True
-                        print("Found isothiocyanate formation")
+            # Count non-commercial reactants
+            for child in node.get("children", []):
+                if child["type"] == "mol":
+                    # Consider a molecule commercial if it's marked in_stock or is a leaf node
+                    is_commercial = (
+                        child.get("in_stock", False) or len(child.get("children", [])) == 0
+                    )
+                    if not is_commercial:
+                        non_commercial_reactants += 1
+                        print(
+                            f"{indent}Found non-commercial reactant: {child.get('smiles', 'No SMILES')}"
+                        )
 
-                # Check for thiourea formation from isothiocyanate
-                thiourea_pattern = Chem.MolFromSmarts("[#6]-[NH]-[C](=[S])-[NH2]")
-                if product_mol and product_mol.HasSubstructMatch(thiourea_pattern):
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if reactant_mol.HasSubstructMatch(isothiocyanate_pattern):
-                                thiourea_from_isothiocyanate = True
-                                print("Found thiourea formation from isothiocyanate")
+            print(
+                f"{indent}Reaction {reaction_count} has {non_commercial_reactants} non-commercial reactants"
+            )
 
+            # If more than one non-commercial reactant, it's not linear
+            if non_commercial_reactants > 1:
+                is_linear = False
+                print(
+                    f"{indent}Found convergent step with {non_commercial_reactants} non-commercial reactants"
+                )
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
+    print("Starting traversal to check for linear synthesis strategy")
     dfs_traverse(route)
-    return isothiocyanate_formed and thiourea_from_isothiocyanate
+
+    print(f"Total reactions: {reaction_count}, Is linear: {is_linear}")
+    # Must have at least 2 reactions to be considered a strategy
+    return is_linear and reaction_count >= 2

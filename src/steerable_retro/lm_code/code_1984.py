@@ -2,122 +2,93 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a Suzuki coupling reaction.
+    Detects a strategy involving fragment assembly through heteroatom alkylations (N and O).
+    Looks for both N-alkylation and O-alkylation in the synthesis route.
     """
-    suzuki_detected = False
+    # Track if we've found both types of alkylations
+    n_alkylation_found = False
+    o_alkylation_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal suzuki_detected
+        nonlocal n_alkylation_found, o_alkylation_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-
-            # Check if the reaction is a Suzuki coupling using the checker function
-            suzuki_reaction_types = [
-                "Suzuki coupling with boronic acids",
-                "Suzuki coupling with boronic acids OTf",
-                "Suzuki coupling with sulfonic esters",
-                "Suzuki coupling with boronic esters OTf",
-                "Suzuki coupling with boronic esters",
-                "Suzuki",
-            ]
-
-            for reaction_type in suzuki_reaction_types:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Suzuki coupling detected at depth {depth}: {reaction_type}")
-                    suzuki_detected = True
-                    return  # No need to check further for this node
-
-            # If direct reaction check didn't work, try checking for characteristic functional groups
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            has_boronic_acid = False
-            has_boronic_ester = False
-            has_aryl_halide = False
-
-            for reactant in reactants:
-                if checker.check_fg("Boronic acid", reactant):
-                    has_boronic_acid = True
-                    print(f"Found boronic acid in reactant: {reactant}")
-                if checker.check_fg("Boronic ester", reactant):
-                    has_boronic_ester = True
-                    print(f"Found boronic ester in reactant: {reactant}")
-                if checker.check_fg("Aromatic halide", reactant):
-                    has_aryl_halide = True
-                    print(f"Found aromatic halide in reactant: {reactant}")
-
-            # If we have the characteristic reactants of a Suzuki coupling
-            if (has_boronic_acid or has_boronic_ester) and has_aryl_halide:
-                # Check if the product doesn't have the boronic acid/ester and halide anymore
-                product_has_boronic_acid = checker.check_fg("Boronic acid", product)
-                product_has_boronic_ester = checker.check_fg("Boronic ester", product)
-                product_has_aryl_halide = checker.check_fg("Aromatic halide", product)
-
-                if (
-                    not (product_has_boronic_acid or product_has_boronic_ester)
-                    and not product_has_aryl_halide
-                ):
-                    print(
-                        f"Potential Suzuki coupling detected at depth {depth} based on reactants and product"
+            # Check for N-alkylation: N-H + X-C → N-C
+            # Look for secondary amine in reactants and tertiary amine in product
+            if (
+                any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(
+                        Chem.MolFromSmarts("[N;H1]([C])[C]")
                     )
-                    suzuki_detected = True
-                    return  # No need to check further for this node
+                    for r in reactants
+                )
+                and any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts("[C][Cl,Br,I]"))
+                    for r in reactants
+                )
+                and Chem.MolFromSmiles(product)
+                and Chem.MolFromSmiles(product).HasSubstructMatch(
+                    Chem.MolFromSmarts("[N]([C])([C])[C]")
+                )
+            ):
+                n_alkylation_found = True
+                print(f"Found N-alkylation at depth {depth}")
 
-        # Traverse children
+            # Check for O-alkylation: O-H + X-C → O-C
+            if (
+                any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts("[O;H1][C]"))
+                    for r in reactants
+                )
+                and any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts("[C][Cl,Br,I]"))
+                    for r in reactants
+                )
+                and Chem.MolFromSmiles(product)
+                and Chem.MolFromSmiles(product).HasSubstructMatch(Chem.MolFromSmarts("[O]([C])[C]"))
+            ):
+                o_alkylation_found = True
+                print(f"Found O-alkylation at depth {depth}")
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
-            if suzuki_detected:
-                return  # Early termination if we found what we're looking for
 
+    # Start traversal
     dfs_traverse(route)
-    return suzuki_detected
+
+    # Return True if both types of alkylations are found
+    return n_alkylation_found and o_alkylation_found

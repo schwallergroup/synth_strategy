@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -50,88 +53,121 @@ checker = check.Check(
 
 
 def main(route):
-    """Check for amide formation from acid chloride in the synthesis route"""
-    found = False
+    """
+    This function detects if the synthesis route involves Boc protection/deprotection sequence.
+    """
+    # Track protection and deprotection events with their depths
+    protection_events = []
+    deprotection_events = []
 
-    def dfs(node, depth=0):
-        nonlocal found
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Depth {depth}, Examining reaction: {rsmi}")
 
-            # Check for amide formation reactions
+            # Extract reactants and product
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Check for Boc protection reactions
+            is_boc_protection = False
             if (
-                checker.check_reaction(
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)", rxn_smiles
-                )
-                or checker.check_reaction("Acyl chloride with secondary amine to amide", rxn_smiles)
-                or checker.check_reaction("Schotten-Baumann_amide", rxn_smiles)
-                or checker.check_reaction(
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    rxn_smiles,
-                )
-                or checker.check_reaction("Acylation of primary amines", rxn_smiles)
-                or checker.check_reaction("Acylation of secondary amines", rxn_smiles)
+                checker.check_reaction("Boc amine protection", rsmi)
+                or checker.check_reaction("Boc amine protection explicit", rsmi)
+                or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
+                or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
+                or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
+                or checker.check_reaction("Boc amine protection of primary amine", rsmi)
             ):
+                is_boc_protection = True
+                print(f"Depth {depth}: Detected Boc protection reaction")
 
-                # Verify that amide is formed
-                try:
-                    reactants = rxn_smiles.split(">")[0].split(".")
-                    product = rxn_smiles.split(">")[-1]
+            # Alternative check for Boc protection by examining functional groups
+            if not is_boc_protection:
+                # Check if product contains Boc group and reactants contain amine
+                has_boc_in_product = "C(=O)OC(C)(C)C" in product or checker.check_fg(
+                    "Carbamic ester", product
+                )
+                has_amine_in_reactants = any(
+                    checker.check_fg("Primary amine", r) or checker.check_fg("Secondary amine", r)
+                    for r in reactants
+                )
 
-                    has_acyl_halide = any(checker.check_fg("Acyl halide", r) for r in reactants)
-                    has_amine = any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        or checker.check_fg("Aniline", r)
-                        for r in reactants
-                    )
-                    has_amide = (
-                        checker.check_fg("Primary amide", product)
-                        or checker.check_fg("Secondary amide", product)
-                        or checker.check_fg("Tertiary amide", product)
-                    )
+                if has_boc_in_product and has_amine_in_reactants:
+                    is_boc_protection = True
+                    print(f"Depth {depth}: Detected Boc protection by functional group analysis")
 
-                    if (
-                        (has_acyl_halide or any("C(=O)Cl" in r for r in reactants))
-                        and (has_amine or any("NH2" in r for r in reactants))
-                        and (has_amide or "NC(=O)" in product)
-                    ):
-                        found = True
-                        print(f"Found amide formation at depth {depth}: {rxn_smiles}")
-                except Exception as e:
-                    print(f"Error checking amide formation: {e}")
+            if is_boc_protection:
+                protection_events.append((depth, rsmi))
 
-            # Additional check for amide formation from carboxylic acid
-            if not found:
-                try:
-                    reactants = rxn_smiles.split(">")[0].split(".")
-                    product = rxn_smiles.split(">")[-1]
+            # Check for Boc deprotection reactions
+            is_boc_deprotection = False
+            if (
+                checker.check_reaction("Boc amine deprotection", rsmi)
+                or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
+                or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
+                or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
+            ):
+                is_boc_deprotection = True
+                print(f"Depth {depth}: Detected Boc deprotection reaction")
 
-                    has_carboxylic = any(checker.check_fg("Carboxylic acid", r) for r in reactants)
-                    has_amine = any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        or checker.check_fg("Aniline", r)
-                        for r in reactants
-                    )
-                    has_amide = (
-                        checker.check_fg("Primary amide", product)
-                        or checker.check_fg("Secondary amide", product)
-                        or checker.check_fg("Tertiary amide", product)
-                    )
+            # Alternative check for Boc deprotection by examining functional groups
+            if not is_boc_deprotection:
+                # Check if reactants contain Boc group and product contains amine
+                has_boc_in_reactants = any(
+                    "C(=O)OC(C)(C)C" in r or checker.check_fg("Carbamic ester", r)
+                    for r in reactants
+                )
+                has_amine_in_product = checker.check_fg(
+                    "Primary amine", product
+                ) or checker.check_fg("Secondary amine", product)
 
-                    if has_carboxylic and has_amine and has_amide:
-                        found = True
-                        print(
-                            f"Found amide formation from carboxylic acid at depth {depth}: {rxn_smiles}"
-                        )
-                except Exception as e:
-                    print(f"Error checking amide formation from carboxylic acid: {e}")
+                if has_boc_in_reactants and has_amine_in_product:
+                    is_boc_deprotection = True
+                    print(f"Depth {depth}: Detected Boc deprotection by functional group analysis")
 
-        # Recursively check children
+            if is_boc_deprotection:
+                deprotection_events.append((depth, rsmi))
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    dfs(route)
-    return found
+    # Start traversal
+    dfs_traverse(route)
+
+    # Check if both protection and deprotection occurred
+    has_protection = len(protection_events) > 0
+    has_deprotection = len(deprotection_events) > 0
+
+    print(f"Boc protection events: {len(protection_events)}")
+    for depth, rsmi in protection_events:
+        print(f"  Depth {depth}: {rsmi}")
+
+    print(f"Boc deprotection events: {len(deprotection_events)}")
+    for depth, rsmi in deprotection_events:
+        print(f"  Depth {depth}: {rsmi}")
+
+    # In retrosynthetic analysis, deprotection should be encountered at a lower depth than protection
+    # (since we're traversing backwards from the target)
+    has_correct_sequence = False
+    if has_protection and has_deprotection:
+        # Get the minimum depth for each event type
+        min_protection_depth = min([depth for depth, _ in protection_events])
+        min_deprotection_depth = min([depth for depth, _ in deprotection_events])
+
+        # In retrosynthesis, deprotection should be encountered before protection
+        # (lower depth = later stage in forward synthesis)
+        if min_deprotection_depth < min_protection_depth:
+            has_correct_sequence = True
+            print(
+                f"Correct sequence: Deprotection (depth {min_deprotection_depth}) occurs before Protection (depth {min_protection_depth}) in retrosynthetic analysis"
+            )
+        else:
+            print(
+                f"Incorrect sequence: Protection (depth {min_protection_depth}) occurs before Deprotection (depth {min_deprotection_depth}) in retrosynthetic analysis"
+            )
+
+    result = has_protection and has_deprotection and has_correct_sequence
+    print(f"Boc protection/deprotection sequence detected: {result}")
+    return result

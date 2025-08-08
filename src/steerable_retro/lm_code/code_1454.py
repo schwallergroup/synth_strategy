@@ -2,78 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves O-alkylation with an epoxide.
+    This function detects a strategy involving a late-stage Suzuki coupling (depth 0 or 1).
     """
-    found_epoxide_alkylation = False
+    late_stage_suzuki = False
 
-    def dfs_traverse(node):
-        nonlocal found_epoxide_alkylation
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_suzuki
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and depth <= 1:  # Only consider depth 0 or 1
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if one reactant contains an epoxide
-                epoxide_pattern = Chem.MolFromSmarts("[#6]1[#8][#6]1")
-                phenol_pattern = Chem.MolFromSmarts("c[OH]")
+                # Check for boronic acid/ester in reactants
+                boronic_pattern = Chem.MolFromSmarts("[#6]-[B]([O][#6])[O][#6]")
 
-                epoxide_found = False
-                phenol_found = False
+                # Check for C-C bond formation
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(boronic_pattern):
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol:
+                            # This is a simplified check - in a real implementation,
+                            # you would need to compare the product and reactants more carefully
+                            # to confirm C-C bond formation
+                            late_stage_suzuki = True
+                            print(f"Found late-stage Suzuki coupling at depth {depth}")
 
-                for reactant in reactants_smiles:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            if mol.HasSubstructMatch(epoxide_pattern):
-                                epoxide_found = True
-                            if mol.HasSubstructMatch(phenol_pattern):
-                                phenol_found = True
-                    except:
-                        continue
-
-                # Check if product has a C-O-C linkage where one C is aromatic
-                ether_pattern = Chem.MolFromSmarts("c-[#8]-[#6]")
-                try:
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-                    if (
-                        product_mol
-                        and product_mol.HasSubstructMatch(ether_pattern)
-                        and epoxide_found
-                        and phenol_found
-                    ):
-                        print("Found epoxide alkylation of phenol")
-                        found_epoxide_alkylation = True
-                except:
-                    pass
-
-        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    return found_epoxide_alkylation
+    return late_stage_suzuki

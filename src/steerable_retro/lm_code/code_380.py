@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,152 +54,69 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects late-stage amine alkylation via reductive amination or other alkylation methods in the final steps.
+    This function detects the formation of a tertiary alcohol from a ketone via nucleophilic addition.
     """
-    late_stage_alkylations = 0
+    # Track if we found the pattern
+    found_pattern = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_alkylations
+    def dfs_traverse(node):
+        nonlocal found_pattern
 
-        if node["type"] == "reaction" and depth <= 2:  # Focus on late-stage reactions (low depth)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+            print(f"Examining reaction: {rsmi}")
 
-                # Check for patterns consistent with amine alkylation
-                has_aldehyde = any(checker.check_fg("Aldehyde", r) for r in reactants if r)
-                has_formaldehyde = any(checker.check_fg("Formaldehyde", r) for r in reactants if r)
-                # Additional check for common formaldehyde SMILES patterns
-                if not has_formaldehyde:
-                    has_formaldehyde = any(
-                        r.strip() in ["O=CH2", "C=O", "CH2O"] for r in reactants if r
-                    )
+            # Check if the reaction is a Grignard reaction from ketone to alcohol
+            if checker.check_reaction("Grignard from ketone to alcohol", rsmi):
+                print("Found Grignard reaction from ketone to alcohol")
+                found_pattern = True
+                return
 
-                has_ketone = any(checker.check_fg("Ketone", r) for r in reactants if r)
-                has_primary_amine = any(
-                    checker.check_fg("Primary amine", r) for r in reactants if r
-                )
-                has_secondary_amine = any(
-                    checker.check_fg("Secondary amine", r) for r in reactants if r
-                )
-                has_alkyl_halide = any(
-                    checker.check_fg("Primary halide", r)
-                    or checker.check_fg("Secondary halide", r)
-                    or checker.check_fg("Tertiary halide", r)
-                    for r in reactants
-                    if r
-                )
+            # Check for ketone in reactants
+            has_ketone = False
+            for reactant in reactants:
+                if checker.check_fg("Ketone", reactant):
+                    print(f"Found ketone in reactant: {reactant}")
+                    has_ketone = True
+                    break
 
-                print(f"  Has aldehyde: {has_aldehyde}")
-                print(f"  Has formaldehyde: {has_formaldehyde}")
-                print(f"  Has ketone: {has_ketone}")
-                print(f"  Has primary amine: {has_primary_amine}")
-                print(f"  Has secondary amine: {has_secondary_amine}")
-                print(f"  Has alkyl halide: {has_alkyl_halide}")
+            # Check if product contains tertiary alcohol
+            has_tertiary_alcohol = checker.check_fg("Tertiary alcohol", product)
+            if has_tertiary_alcohol:
+                print(f"Found tertiary alcohol in product: {product}")
 
-                # Check if product has more substituted amine than reactants
-                product_has_secondary_amine = checker.check_fg("Secondary amine", product)
-                product_has_tertiary_amine = checker.check_fg("Tertiary amine", product)
+            # If we have both ketone in reactants and tertiary alcohol in product
+            if has_ketone and has_tertiary_alcohol:
+                # Check for relevant nucleophilic addition reactions
+                relevant_reactions = [
+                    "Grignard from ketone to alcohol",
+                    "Reaction of alkyl halides with organometallic coumpounds",
+                    "Olefination of ketones with Grignard reagents",
+                    "Preparation of organolithium compounds",
+                    "Aerobic oxidation of Grignard reagents",
+                ]
 
-                print(f"  Product has secondary amine: {product_has_secondary_amine}")
-                print(f"  Product has tertiary amine: {product_has_tertiary_amine}")
+                # Check if any of the relevant reactions match
+                for rxn_type in relevant_reactions:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        print(f"Found tertiary alcohol formation from ketone via {rxn_type}")
+                        found_pattern = True
+                        return
 
-                # Check for various amine alkylation reactions
-                is_reductive_amination_aldehyde = checker.check_reaction(
-                    "Reductive amination with aldehyde", rsmi
-                )
-                is_reductive_amination_ketone = checker.check_reaction(
-                    "Reductive amination with ketone", rsmi
-                )
-                is_reductive_amination_alcohol = checker.check_reaction(
-                    "Reductive amination with alcohol", rsmi
-                )
-                is_n_alkylation = checker.check_reaction(
-                    "N-alkylation of primary amines with alkyl halides", rsmi
-                ) or checker.check_reaction(
-                    "N-alkylation of secondary amines with alkyl halides", rsmi
-                )
-                is_methylation = (
-                    checker.check_reaction("Methylation", rsmi)
-                    or checker.check_reaction("Methylation with MeI_primary", rsmi)
-                    or checker.check_reaction("Methylation with MeI_secondary", rsmi)
-                    or checker.check_reaction("Methylation with MeI_tertiary", rsmi)
-                    or checker.check_reaction("DMS Amine methylation", rsmi)
-                    or checker.check_reaction("Eschweiler-Clarke Primary Amine Methylation", rsmi)
-                    or checker.check_reaction("Eschweiler-Clarke Secondary Amine Methylation", rsmi)
-                    or checker.check_reaction(
-                        "Reductive methylation of primary amine with formaldehyde", rsmi
-                    )
-                    or checker.check_reaction("N-methylation", rsmi)
-                )
-
-                # Check for reductive amination with formaldehyde specifically
-                is_reductive_amination_formaldehyde = (
-                    has_formaldehyde
-                    and (has_primary_amine or has_secondary_amine)
-                    and (product_has_secondary_amine or product_has_tertiary_amine)
-                )
-
-                print(f"  Is reductive amination with aldehyde: {is_reductive_amination_aldehyde}")
-                print(f"  Is reductive amination with ketone: {is_reductive_amination_ketone}")
-                print(f"  Is reductive amination with alcohol: {is_reductive_amination_alcohol}")
+                # If no specific reaction type matched but we have the transformation
+                # This is a fallback for nucleophilic additions not covered by specific reaction types
                 print(
-                    f"  Is reductive amination with formaldehyde: {is_reductive_amination_formaldehyde}"
+                    "Found tertiary alcohol formation from ketone via unspecified nucleophilic addition"
                 )
-                print(f"  Is N-alkylation: {is_n_alkylation}")
-                print(f"  Is methylation: {is_methylation}")
+                found_pattern = True
 
-                # Detect amine alkylation
-                is_amine_alkylation = False
-
-                # Case 1: Reductive amination
-                if (
-                    (has_aldehyde or has_ketone or has_formaldehyde)
-                    and (has_primary_amine or has_secondary_amine)
-                    and (
-                        is_reductive_amination_aldehyde
-                        or is_reductive_amination_ketone
-                        or is_reductive_amination_alcohol
-                        or is_reductive_amination_formaldehyde
-                    )
-                ):
-                    is_amine_alkylation = True
-
-                # Case 2: Direct N-alkylation
-                elif (
-                    (has_primary_amine or has_secondary_amine)
-                    and (has_alkyl_halide or has_formaldehyde)
-                    and (is_n_alkylation or is_methylation)
-                ):
-                    is_amine_alkylation = True
-
-                # Case 3: Any methylation reaction that produces a more substituted amine
-                elif is_methylation and (
-                    (has_primary_amine and product_has_secondary_amine)
-                    or (has_secondary_amine and product_has_tertiary_amine)
-                ):
-                    is_amine_alkylation = True
-
-                # Case 4: Pattern-based detection for formaldehyde methylation
-                elif has_formaldehyde and (
-                    (has_primary_amine and product_has_secondary_amine)
-                    or (has_secondary_amine and product_has_tertiary_amine)
-                ):
-                    # Verify that a methyl group is added (formaldehyde -> methyl)
-                    is_amine_alkylation = True
-                    print(f"  Detected formaldehyde methylation pattern")
-
-                if is_amine_alkylation:
-                    late_stage_alkylations += 1
-                    print(f"Found late-stage amine alkylation at depth {depth}: {rsmi}")
-
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Total late-stage amine alkylations found: {late_stage_alkylations}")
-
-    return late_stage_alkylations >= 1
+    return found_pattern

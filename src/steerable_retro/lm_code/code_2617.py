@@ -2,70 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy where a nitrogen heterocycle is formed
-    in the late stage of the synthesis (low depth in the tree).
+    Detects if the synthesis follows a linear strategy without convergent steps.
     """
-    cyclization_detected = False
+    # Track the maximum branching factor
+    max_branching = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal cyclization_detected
+    def dfs_traverse(node):
+        nonlocal max_branching
 
-        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "children" in node:
+                # Count number of non-trivial reactants (complex molecules)
+                complex_reactants = 0
+                for child in node["children"]:
+                    if child["type"] == "mol" and not child.get("in_stock", False):
+                        # This is a complex intermediate, not a simple starting material
+                        complex_reactants += 1
 
-                try:
-                    reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+                max_branching = max(max_branching, complex_reactants)
 
-                    if all(mol is not None for mol in reactants_mols) and product_mol is not None:
-                        # Count rings in reactants and product
-                        reactants_ring_count = sum(
-                            mol.GetRingInfo().NumRings() for mol in reactants_mols
-                        )
-                        product_ring_count = product_mol.GetRingInfo().NumRings()
-
-                        # Check if a new ring is formed
-                        if product_ring_count > reactants_ring_count:
-                            # Check if the new ring contains nitrogen
-                            nitrogen_pattern = Chem.MolFromSmarts("[#7]")
-                            if product_mol.HasSubstructMatch(nitrogen_pattern):
-                                # Check if the nitrogen is part of a ring
-                                for atom in product_mol.GetAtoms():
-                                    if atom.GetAtomicNum() == 7 and atom.IsInRing():
-                                        cyclization_detected = True
-                                        print(
-                                            f"Late-stage nitrogen heterocycle formation detected at depth {depth}"
-                                        )
-                                        break
-                except Exception as e:
-                    print(f"Error processing reaction SMILES: {e}")
-
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return cyclization_detected
+
+    # If max_branching is 1, it's a linear synthesis
+    is_linear = max_branching <= 1
+    print(f"Maximum branching factor: {max_branching}, Linear synthesis: {is_linear}")
+    return is_linear

@@ -2,62 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis uses Boc protection strategy
-    for amine groups.
+    Detects if the synthetic route involves nucleophilic aromatic substitution
+    activated by nitro groups.
     """
-    boc_protection_count = 0
+    found_nitro_activated_snar = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal boc_protection_count
+    def dfs_traverse(node):
+        nonlocal found_nitro_activated_snar
 
-        if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if this is a Boc protection
-                product_mol = Chem.MolFromSmiles(product)
-                boc_pattern = Chem.MolFromSmarts("[#7]-[#6](=[#8])-[#8]-[#6]([#6])([#6])[#6]")
+            # Check for nitro group in reactants
+            nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
+            aromatic_pattern = Chem.MolFromSmarts("a")
 
-                if product_mol and product_mol.HasSubstructMatch(boc_pattern):
-                    # Check if this is a new Boc group (not present in all reactants)
-                    has_new_boc = False
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and not reactant_mol.HasSubstructMatch(boc_pattern):
-                            has_new_boc = True
-                            break
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if (
+                        mol
+                        and mol.HasSubstructMatch(nitro_pattern)
+                        and mol.HasSubstructMatch(aromatic_pattern)
+                    ):
+                        # Check if this is likely an SNAr reaction
+                        # Look for common leaving groups
+                        leaving_groups = [
+                            Chem.MolFromSmarts("[#6]-[F,Cl,Br,I]"),  # Halides
+                            Chem.MolFromSmarts("[#6]-[#16]-[#6]#[#7]"),  # Thiocyanate
+                            Chem.MolFromSmarts(
+                                "[#6]-[#8]-[#16](=[O])(=[O])[#6]"
+                            ),  # Tosylate/mesylate
+                        ]
 
-                    if has_new_boc:
-                        print(f"Found Boc protection at depth {depth}")
-                        boc_protection_count += 1
+                        for lg_pattern in leaving_groups:
+                            if mol.HasSubstructMatch(lg_pattern):
+                                prod_mol = Chem.MolFromSmiles(product)
+                                if prod_mol and prod_mol.HasSubstructMatch(nitro_pattern):
+                                    # If the product still has the nitro group but the leaving group is replaced
+                                    if not prod_mol.HasSubstructMatch(lg_pattern) or len(
+                                        prod_mol.GetSubstructMatches(lg_pattern)
+                                    ) < len(mol.GetSubstructMatches(lg_pattern)):
+                                        print("Found nitro-activated SNAr")
+                                        found_nitro_activated_snar = True
+                except:
+                    continue
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return boc_protection_count >= 2  # At least 2 Boc protections
+    return found_nitro_activated_snar

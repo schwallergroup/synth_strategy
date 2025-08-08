@@ -2,73 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a convergent synthesis where multiple fragments are prepared separately
-    and then coupled together.
+    This function detects if the synthesis includes a nitro reduction to amine.
     """
-    fragment_counts = {}  # depth -> count of fragments
-    coupling_reactions = []  # list of (depth, num_reactants)
+    nitro_reduction_found = False
 
     def dfs_traverse(node, depth=0):
+        nonlocal nitro_reduction_found
+
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Count number of reactants
-            num_reactants = len(reactants)
+                # Check if this is a nitro reduction reaction
+                nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-            # Record reactions with multiple reactants (potential coupling reactions)
-            if num_reactants > 1:
-                coupling_reactions.append((depth, num_reactants))
-                print(
-                    f"Found potential coupling reaction at depth {depth} with {num_reactants} reactants"
-                )
+                # Check if nitro group in reactant and amine in product
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    product_mol = Chem.MolFromSmiles(product)
 
-            # Update fragment count at this depth
-            if depth in fragment_counts:
-                fragment_counts[depth] += (
-                    num_reactants - 1
-                )  # -1 because we're counting additional fragments
-            else:
-                fragment_counts[depth] = num_reactants - 1
+                    if (
+                        reactant_mol
+                        and product_mol
+                        and reactant_mol.HasSubstructMatch(nitro_pattern)
+                        and product_mol.HasSubstructMatch(amine_pattern)
+                        and not product_mol.HasSubstructMatch(nitro_pattern)
+                    ):
+                        nitro_reduction_found = True
+                        print(f"Nitro reduction found at depth {depth}")
+                        break
 
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-
-    # Analyze the fragment counts and coupling reactions
-    total_fragments = sum(fragment_counts.values())
-    has_multi_fragment_coupling = any(num_reactants >= 2 for _, num_reactants in coupling_reactions)
-
-    # Check if this is a convergent synthesis (multiple fragments, coupling reactions)
-    is_convergent = total_fragments >= 2 and has_multi_fragment_coupling
-
-    print(f"Fragment counts by depth: {fragment_counts}")
-    print(f"Coupling reactions: {coupling_reactions}")
-    print(f"Total fragments: {total_fragments}")
-    print(f"Convergent fragment coupling strategy detected: {is_convergent}")
-
-    return is_convergent
+    return nitro_reduction_found

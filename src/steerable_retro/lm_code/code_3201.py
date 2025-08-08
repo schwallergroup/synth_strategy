@@ -2,62 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a convergent synthesis strategy with multiple fragment couplings.
-    Counts reactions with 2 or more reactants.
+    This function detects if the synthesis preserves stereochemistry throughout
+    the route, maintaining chiral centers.
     """
-    fragment_coupling_count = 0
+    preserves_stereochemistry = True
 
-    def dfs_traverse(node):
-        nonlocal fragment_coupling_count
+    def dfs_traverse(node, depth=0):
+        nonlocal preserves_stereochemistry
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if we have multiple reactants (convergent)
-                if len(reactants) >= 2:
-                    # Check if reactants are complex enough (not just simple reagents)
-                    complex_reactants = 0
+                # Count chiral centers in product
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    Chem.AssignStereochemistry(product_mol)
+                    product_chiral_centers = len(Chem.FindMolChiralCenters(product_mol))
+
+                    # Count chiral centers in reactants
+                    reactant_chiral_centers = 0
                     for reactant in reactants:
-                        try:
-                            mol = Chem.MolFromSmiles(reactant)
-                            if mol and mol.GetNumAtoms() > 6:  # Arbitrary threshold for "complex"
-                                complex_reactants += 1
-                        except:
-                            continue
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            Chem.AssignStereochemistry(reactant_mol)
+                            reactant_chiral_centers += len(Chem.FindMolChiralCenters(reactant_mol))
 
-                    if complex_reactants >= 2:
-                        fragment_coupling_count += 1
-                        print(
-                            f"Found fragment coupling reaction with {complex_reactants} complex reactants"
-                        )
+                    # If product has fewer chiral centers than reactants combined,
+                    # stereochemistry might not be preserved
+                    if product_chiral_centers < reactant_chiral_centers:
+                        print(f"Potential loss of stereochemistry at depth {depth}")
+                        print(f"Product chiral centers: {product_chiral_centers}")
+                        print(f"Reactant chiral centers: {reactant_chiral_centers}")
+                        preserves_stereochemistry = False
 
-        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return fragment_coupling_count >= 2  # At least 2 fragment couplings for convergent strategy
+    return preserves_stereochemistry

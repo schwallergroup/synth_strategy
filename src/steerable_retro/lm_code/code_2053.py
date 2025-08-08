@@ -2,132 +2,96 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves ester hydrolysis
-    (conversion of -C(=O)OC to -C(=O)OH).
+    This function detects a synthesis strategy involving intramolecular ring formation
+    creating a bicyclic system from an acyl chloride intermediate.
     """
-    ester_hydrolysis_found = False
+    ring_formation_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal ester_hydrolysis_found
+    def dfs_traverse(node):
+        nonlocal ring_formation_detected
 
-        # Print node information for debugging
-        if node["type"] == "mol":
-            print(f"Depth {depth}, Molecule: {node['smiles'][:30]}...")
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            try:
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                print(f"Depth {depth}, Reaction: {rsmi[:50]}...")
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # First check if this is a known ester hydrolysis reaction type
-                if (
-                    checker.check_reaction("Ester saponification (methyl deprotection)", rsmi)
-                    or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
-                    or checker.check_reaction(
-                        "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-                    )
-                    or checker.check_reaction("COOH ethyl deprotection", rsmi)
-                ):
-                    print(f"Known ester hydrolysis reaction detected: {rsmi}")
-                    ester_hydrolysis_found = True
-                    return
+                # Try to convert to RDKit molecules
+                try:
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                    product_mol = Chem.MolFromSmiles(product_smiles)
 
-                # If not a known reaction type, check for functional group conversion
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                    if all(reactant_mols) and product_mol:
+                        # Count rings in reactants and product
+                        reactant_ring_count = sum(
+                            len(mol.GetRingInfo().AtomRings()) for mol in reactant_mols
+                        )
+                        product_ring_count = len(product_mol.GetRingInfo().AtomRings())
 
-                # Check for ester in reactants
-                has_ester = False
-                ester_reactant = None
-                for reactant in reactants:
-                    if reactant and checker.check_fg("Ester", reactant):
-                        has_ester = True
-                        ester_reactant = reactant
-                        print(f"Found ester in reactant: {reactant}")
-                        break
+                        # Check if product has more rings than reactants
+                        if product_ring_count > reactant_ring_count:
+                            # Check if acyl chloride pattern exists in any reactant
+                            acyl_chloride_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#17]")
+                            has_acyl_chloride = any(
+                                mol.HasSubstructMatch(acyl_chloride_pattern)
+                                for mol in reactant_mols
+                            )
 
-                # Check for carboxylic acid in product
-                has_acid = False
-                if product and checker.check_fg("Carboxylic acid", product):
-                    has_acid = True
-                    print(f"Found carboxylic acid in product: {product}")
+                            # Check if product has a bicyclic system
+                            ring_systems = product_mol.GetRingInfo().AtomRings()
+                            atoms_in_rings = set()
+                            for ring in ring_systems:
+                                atoms_in_rings.update(ring)
 
-                # If reactant has ester and product has acid, it's likely hydrolysis
-                if has_ester and has_acid:
-                    print(f"Ester hydrolysis detected based on functional groups: {rsmi}")
-                    ester_hydrolysis_found = True
+                            # Count atoms that appear in multiple rings
+                            shared_atoms = 0
+                            for atom_idx in atoms_in_rings:
+                                rings_containing_atom = 0
+                                for ring in ring_systems:
+                                    if atom_idx in ring:
+                                        rings_containing_atom += 1
+                                if rings_containing_atom > 1:
+                                    shared_atoms += 1
 
-                # Check for specific patterns that indicate ester hydrolysis
-                # This pattern appears in the test case output
-                if "O[CH3:1].[OH:2][C:3](=[O:4])[CH2:5]" in rsmi:
-                    print(f"Specific ester hydrolysis pattern detected: {rsmi}")
-                    ester_hydrolysis_found = True
+                            # If we have shared atoms between rings and had an acyl chloride, it's likely
+                            # an intramolecular ring formation creating a bicyclic system
+                            if shared_atoms > 0 and has_acyl_chloride:
+                                print(
+                                    f"Detected intramolecular ring formation creating a bicyclic system"
+                                )
+                                ring_formation_detected = True
+                except Exception as e:
+                    print(f"Error processing reaction: {e}")
 
-                # Check for methanol as a reactant and carboxylic acid in product
-                # which is a common pattern in ester hydrolysis
-                if (
-                    any("CO" == r or "O[CH3]" in r or "[OH][CH3]" in r for r in reactants)
-                    and has_acid
-                ):
-                    print(f"Methanol + carboxylic acid pattern detected: {rsmi}")
-                    ester_hydrolysis_found = True
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Continue traversing
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal from the root
     dfs_traverse(route)
-    return ester_hydrolysis_found
+    return ring_formation_detected

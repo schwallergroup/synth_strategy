@@ -2,127 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis employs a late-stage reductive amination
-    to connect major fragments.
+    Detects if the synthesis preserves a dimethoxyphenyl group throughout the route.
     """
-    found_late_stage_reductive_amination = False
+    dimethoxyphenyl_pattern = Chem.MolFromSmarts("[c]1[c]([O][C])[c][c][c][c]1[O][C]")
+    has_dimethoxyphenyl_at_all_depths = True
+    depths_checked = set()
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_late_stage_reductive_amination
+    def dfs_traverse(node):
+        nonlocal has_dimethoxyphenyl_at_all_depths, depths_checked
 
-        # For reaction nodes, check if it's a late-stage reductive amination
-        if node["type"] == "reaction" and depth <= 2:  # Late stage (low depth)
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            depth = None
 
-                # Direct check for reductive amination reactions
-                if (
-                    checker.check_reaction("Reductive amination with aldehyde", rsmi)
-                    or checker.check_reaction("Reductive amination with ketone", rsmi)
-                    or checker.check_reaction("Reductive amination with alcohol", rsmi)
-                ):
-                    print(f"Found late-stage reductive amination at depth {depth}: {rsmi}")
-                    found_late_stage_reductive_amination = True
-                else:
-                    # Fallback to functional group analysis
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+            # Try to get depth from parent reaction if this is a product
+            if node.get("children"):
+                for child in node["children"]:
+                    if (
+                        child["type"] == "reaction"
+                        and "metadata" in child
+                        and "depth" in child["metadata"]
+                    ):
+                        depth = child["metadata"]["depth"]
+                        break
 
-                    # Check for carbonyl and amine patterns in reactants
-                    carbonyl_present = False
-                    amine_present = False
+            if mol and depth is not None:
+                depths_checked.add(depth)
+                if not mol.HasSubstructMatch(dimethoxyphenyl_pattern):
+                    has_dimethoxyphenyl_at_all_depths = False
+                    print(f"Dimethoxyphenyl group not found at depth {depth}")
 
-                    for reactant in reactants:
-                        if (
-                            checker.check_fg("Aldehyde", reactant)
-                            or checker.check_fg("Formaldehyde", reactant)
-                            or checker.check_fg("Ketone", reactant)
-                        ):
-                            carbonyl_present = True
-                            print(f"Found carbonyl group in reactant: {reactant}")
-
-                        if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                            "Secondary amine", reactant
-                        ):
-                            amine_present = True
-                            print(f"Found amine group in reactant: {reactant}")
-
-                    # Check if product has a new C-N bond (simplified check)
-                    if carbonyl_present and amine_present:
-                        # Check if the product has a new amine but no carbonyl
-                        product_has_carbonyl = (
-                            checker.check_fg("Aldehyde", product)
-                            or checker.check_fg("Formaldehyde", product)
-                            or checker.check_fg("Ketone", product)
-                        )
-
-                        product_has_amine = (
-                            checker.check_fg("Primary amine", product)
-                            or checker.check_fg("Secondary amine", product)
-                            or checker.check_fg("Tertiary amine", product)
-                        )
-
-                        if product_has_amine and not product_has_carbonyl:
-                            print(
-                                f"Detected potential reductive amination at depth {depth}: {rsmi}"
-                            )
-                            found_late_stage_reductive_amination = True
-
-        # Process children with incremented depth
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    print(f"Late-stage reductive amination detected: {found_late_stage_reductive_amination}")
-    return found_late_stage_reductive_amination
+    # Only return True if we've checked multiple depths and found the group at all of them
+    return has_dimethoxyphenyl_at_all_depths and len(depths_checked) >= 3

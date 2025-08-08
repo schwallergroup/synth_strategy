@@ -2,83 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route contains a late-stage N-methylation via reductive amination.
-    Specifically looks for addition of a methyl group to a nitrogen atom in the final steps.
+    Detects if the synthetic route follows a linear fragment assembly strategy
+    rather than a convergent approach.
     """
-    found_n_methylation = False
+    # Track the number of reactants at each step
+    reactant_counts = []
 
-    def is_n_methylation(reactants, product):
-        # Check if one reactant is formaldehyde
-        formaldehyde_pattern = Chem.MolFromSmarts("[CH2]=O")
-        has_formaldehyde = False
-        for r in reactants:
-            r_mol = Chem.MolFromSmiles(r)
-            if r_mol and r_mol.HasSubstructMatch(formaldehyde_pattern):
-                has_formaldehyde = True
-                break
-
-        if not has_formaldehyde:
-            return False
-
-        # Check if another reactant has NH or NH2 group
-        amine_pattern = Chem.MolFromSmarts("[N;H1,H2]")
-        has_amine = False
-        for r in reactants:
-            r_mol = Chem.MolFromSmiles(r)
-            if r_mol and r_mol.HasSubstructMatch(amine_pattern):
-                has_amine = True
-                break
-
-        if not has_amine:
-            return False
-
-        # Check if product has N-CH3 group
-        n_methyl_pattern = Chem.MolFromSmarts("[N]-[CH3]")
-        product_mol = Chem.MolFromSmiles(product)
-        if product_mol and product_mol.HasSubstructMatch(n_methyl_pattern):
-            return True
-
-        return False
-
-    def dfs_traverse(node, depth=0):
-        nonlocal found_n_methylation
-
-        if (
-            node["type"] == "reaction" and depth <= 1
-        ):  # Check only late-stage reactions (depth 0 or 1)
+    def dfs_traverse(node):
+        if node["type"] == "reaction":
+            # Extract reactants
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            # Count non-empty reactants
+            count = sum(1 for r in reactants_smiles if r)
+            reactant_counts.append(count)
 
-            if is_n_methylation(reactants, product):
-                found_n_methylation = True
-                print(f"Found N-methylation at depth {depth}")
-
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Late-stage N-methylation: {found_n_methylation}")
-    return found_n_methylation
+    # Check if we have reactions
+    if not reactant_counts:
+        return False
+
+    # Linear assembly typically has 2 reactants per step
+    # (one main fragment and one small molecule/reagent)
+    linear_steps = sum(1 for count in reactant_counts if count == 2)
+
+    # Strategy is present if most steps have 2 reactants
+    strategy_present = linear_steps >= len(reactant_counts) * 0.75
+    print(f"Linear fragment assembly strategy detected: {strategy_present}")
+    return strategy_present

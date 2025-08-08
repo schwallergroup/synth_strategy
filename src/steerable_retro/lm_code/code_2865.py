@@ -2,59 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy (no convergent steps).
+    Detects if the synthetic route involves a Boc deprotection in the early stages.
     """
-    is_linear = True
+    found_boc_deprotection = False
+    max_depth = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+        nonlocal found_boc_deprotection, max_depth
+
+        max_depth = max(max_depth, depth)
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            # Extract reactants and products
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Count non-reagent reactants (simplified approach)
-                significant_reactants = 0
-                for reactant in reactants:
-                    # Skip common reagents (simplified)
-                    if (
-                        "O=P(Cl)(Cl)Cl" in reactant
-                        or "O=[N+]([O-])[O-]" in reactant
-                        or "N" == reactant
-                    ):
-                        continue
-                    significant_reactants += 1
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-                if significant_reactants > 2:
-                    print(
-                        f"Found convergent step with {significant_reactants} significant reactants at depth {depth}"
-                    )
-                    is_linear = False
+            if product and reactants:
+                # Check for Boc group in reactants but not in product
+                boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")
+                if any(r and r.HasSubstructMatch(boc_pattern) for r in reactants) and (
+                    not product.HasSubstructMatch(boc_pattern)
+                ):
+                    found_boc_deprotection = True
+                    print(f"Found Boc deprotection at depth {depth}")
 
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return is_linear
+
+    # Consider it early stage if deprotection occurs in the upper half of the synthesis depth
+    early_stage = found_boc_deprotection and (max_depth / 2 < max_depth)
+    print(f"Boc deprotection in early stage detected: {early_stage}")
+    return early_stage

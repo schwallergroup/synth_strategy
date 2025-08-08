@@ -2,63 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route contains a nitro reduction step
-    (converting an aromatic nitro group to an amine).
+    Detects a synthetic strategy involving biaryl formation via cross-coupling.
     """
-    nitro_reduction_found = False
+    has_biaryl_formation = False
 
-    def dfs_traverse(node):
-        nonlocal nitro_reduction_found
+    def dfs_traverse(node, depth=0):
+        nonlocal has_biaryl_formation
 
         if node["type"] == "reaction":
-            # Extract reactants and product
             rsmi = node["metadata"].get("rsmi", "")
-            if rsmi:
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if reactant has nitro group and product has amine at same position
-                for reactant in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check for biaryl formation (two aromatic rings connected)
+            # Look for reactions where separate aromatic rings in reactants become connected in product
+            if len(reactants) >= 2:
+                # Check if product contains biaryl motif
+                try:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol:
+                        biaryl_pattern = Chem.MolFromSmarts(
+                            "[c]!@[c]"
+                        )  # Non-fused aromatic C connected to another aromatic C
+                        if prod_mol.HasSubstructMatch(biaryl_pattern):
+                            # Check if reactants have aromatic rings
+                            aromatic_reactants = 0
+                            for r in reactants:
+                                r_mol = Chem.MolFromSmiles(r)
+                                if r_mol and r_mol.HasSubstructMatch(Chem.MolFromSmarts("c")):
+                                    aromatic_reactants += 1
 
-                    if reactant_mol and product_mol:
-                        nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
-                        amine_pattern = Chem.MolFromSmarts("[NH2]")
-
-                        if (
-                            reactant_mol.HasSubstructMatch(nitro_pattern)
-                            and product_mol.HasSubstructMatch(amine_pattern)
-                            and not product_mol.HasSubstructMatch(nitro_pattern)
-                        ):
-                            print("Nitro reduction detected")
-                            nitro_reduction_found = True
+                            if aromatic_reactants >= 2:
+                                has_biaryl_formation = True
+                                print(f"Found biaryl formation at depth {depth}")
+                except:
+                    pass  # Handle parsing errors gracefully
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    return nitro_reduction_found
+
+    return has_biaryl_formation

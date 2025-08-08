@@ -2,66 +2,119 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy for synthesizing a conjugated dye system with a PEG spacer.
+    This function detects if the synthesis follows a linear strategy rather than convergent.
+    It checks if most reactions have only one main reactant contributing to the product scaffold.
     """
-    # Track key structural elements
-    has_styryl_bridge = False
-    has_peg_linker = False
-    has_dimethylamino = False
+    reaction_count = 0
+    linear_reaction_count = 0
+    max_depth = 0
+    branch_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_styryl_bridge, has_peg_linker, has_dimethylamino
+    def dfs_traverse(node, depth=0, path=None):
+        nonlocal reaction_count, linear_reaction_count, max_depth, branch_count
 
-        if node["type"] == "mol" and depth == 0:  # Final product
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if not mol:
-                return
+        if path is None:
+            path = []
 
-            # Check for styryl bridge (conjugated C=C between aromatics)
-            styryl_pattern = Chem.MolFromSmarts("c-C=C-c")
-            if mol.HasSubstructMatch(styryl_pattern):
-                has_styryl_bridge = True
-                print("Found styryl bridge in final product")
+        # Update max depth
+        max_depth = max(max_depth, depth)
 
-            # Check for PEG linker
-            peg_pattern = Chem.MolFromSmarts("O-C-C-O-C-C-O")
-            if mol.HasSubstructMatch(peg_pattern):
-                has_peg_linker = True
-                print("Found PEG linker in final product")
+        if node["type"] == "reaction":
+            reaction_count += 1
 
-            # Check for dimethylamino group
-            dimethylamino_pattern = Chem.MolFromSmarts("c-N(-C)(-C)")
-            if mol.HasSubstructMatch(dimethylamino_pattern):
-                has_dimethylamino = True
-                print("Found dimethylamino group in final product")
+            # Extract reactants and product
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+                # Count significant reactants (those with more than 5 heavy atoms)
+                significant_reactants = 0
+                main_scaffold_found = False
 
-    # Start traversal
+                for reactant in reactants_smiles:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol is None:
+                        continue
+
+                    # Check if this is a significant reactant
+                    if mol.GetNumHeavyAtoms() > 5:
+                        significant_reactants += 1
+
+                        # Check if this reactant contains most of the product scaffold
+                        product_mol = Chem.MolFromSmiles(product_smiles)
+                        if (
+                            product_mol
+                            and mol.GetNumHeavyAtoms() > 0.7 * product_mol.GetNumHeavyAtoms()
+                        ):
+                            main_scaffold_found = True
+
+                # If only one significant reactant or we found a main scaffold contributor, consider it a linear step
+                if significant_reactants <= 1 or main_scaffold_found:
+                    linear_reaction_count += 1
+                else:
+                    # This is a convergent step - check if it's a meaningful branch point
+                    if len(node.get("children", [])) > 1:
+                        branch_count += 1
+
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+
+        # Process children
+        children = node.get("children", [])
+        if len(children) > 0:
+            for i, child in enumerate(children):
+                # Create a new path for each branch
+                new_path = path + [i]
+                dfs_traverse(child, depth + 1, new_path)
+
     dfs_traverse(route)
 
-    # Return True if we found all key elements of the conjugated dye
-    return has_styryl_bridge and has_peg_linker and has_dimethylamino
+    # Calculate linearity score based on multiple factors
+    linearity_score = 0
+
+    # Factor 1: Percentage of linear reactions
+    if reaction_count > 0:
+        reaction_linearity = linear_reaction_count / reaction_count
+        linearity_score += reaction_linearity * 0.7  # 70% weight
+
+    # Factor 2: Route structure (fewer branches = more linear)
+    if reaction_count > 0:
+        branch_ratio = 1.0 - (branch_count / reaction_count)
+        linearity_score += branch_ratio * 0.3  # 30% weight
+
+    # If at least 70% linearity score, consider it a linear synthesis
+    is_linear = linearity_score >= 0.7
+
+    print(
+        f"Linear synthesis analysis: {linear_reaction_count}/{reaction_count} reactions are linear"
+    )
+    print(f"Branch count: {branch_count}, Max depth: {max_depth}")
+    print(f"Linearity score: {linearity_score:.2f}")
+
+    return is_linear

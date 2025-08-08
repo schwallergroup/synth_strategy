@@ -2,119 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route includes an ester hydrolysis step (converting ester to carboxylic acid).
+    Detects a linear synthesis strategy that maintains a chloro-substituted aromatic ring.
     """
-    found_ester_hydrolysis = False
+    chloro_aromatic_count = 0
+    max_reactants_per_step = 0
 
-    def dfs_traverse(node):
-        nonlocal found_ester_hydrolysis
+    def dfs_traverse(node, depth=0):
+        nonlocal chloro_aromatic_count, max_reactants_per_step
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check if this is an ester hydrolysis reaction
-            if checker.check_reaction(
-                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-            ):
-                # Verify that reactants contain ester and product contains carboxylic acid
-                has_ester = any(checker.check_fg("Ester", reactant) for reactant in reactants)
-                has_acid = checker.check_fg("Carboxylic acid", product)
+                reactants = reactants_smiles.split(".")
+                num_reactants = len(reactants)
+                max_reactants_per_step = max(max_reactants_per_step, num_reactants)
 
-                if has_ester and has_acid:
-                    print(f"Found ester hydrolysis step: {rsmi}")
-                    print(f"Reactants have ester: {has_ester}, Product has acid: {has_acid}")
-                    found_ester_hydrolysis = True
+                product = Chem.MolFromSmiles(product_smiles)
 
-            # Check for ester saponification reactions
-            elif checker.check_reaction(
-                "Ester saponification (methyl deprotection)", rsmi
-            ) or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi):
-                # Verify that reactants contain ester and product contains carboxylic acid
-                has_ester = any(checker.check_fg("Ester", reactant) for reactant in reactants)
-                has_acid = checker.check_fg("Carboxylic acid", product)
+                if product:
+                    # Check for chloro-aromatic pattern
+                    chloro_aromatic_pattern = Chem.MolFromSmarts("[Cl][c]")
+                    if product.HasSubstructMatch(chloro_aromatic_pattern):
+                        chloro_aromatic_count += 1
 
-                if has_ester and has_acid:
-                    print(f"Found ester saponification step: {rsmi}")
-                    print(f"Reactants have ester: {has_ester}, Product has acid: {has_acid}")
-                    found_ester_hydrolysis = True
-
-            # Check for COOH ethyl deprotection (another form of ester hydrolysis)
-            elif checker.check_reaction("COOH ethyl deprotection", rsmi):
-                has_ester = any(checker.check_fg("Ester", reactant) for reactant in reactants)
-                has_acid = checker.check_fg("Carboxylic acid", product)
-
-                if has_ester and has_acid:
-                    print(f"Found COOH ethyl deprotection step: {rsmi}")
-                    found_ester_hydrolysis = True
-
-            # Direct check for ester to carboxylic acid transformation
-            else:
-                has_ester = any(checker.check_fg("Ester", reactant) for reactant in reactants)
-                has_acid = checker.check_fg("Carboxylic acid", product)
-                has_acid_in_reactants = any(
-                    checker.check_fg("Carboxylic acid", reactant) for reactant in reactants
-                )
-
-                # Make sure we're actually creating a new acid group, not just preserving an existing one
-                if has_ester and has_acid and not has_acid_in_reactants:
-                    print(f"Found ester to acid transformation: {rsmi}")
-                    found_ester_hydrolysis = True
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return found_ester_hydrolysis
+
+    # Linear synthesis typically has 1-2 reactants per step
+    is_linear = max_reactants_per_step <= 2
+    maintains_chloro_aromatic = chloro_aromatic_count >= 2  # Present in multiple steps
+
+    print(f"Linear synthesis: {is_linear}, Chloro-aromatic count: {chloro_aromatic_count}")
+    return is_linear and maintains_chloro_aromatic

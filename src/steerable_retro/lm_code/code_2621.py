@@ -2,89 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a sequence of functional group interconversions:
-    ester → acid → acid chloride.
+    Detects if the synthetic route involves formation of an aryl ether.
     """
-    # Track the sequence of transformations
-    transformations = []
+    has_aryl_ether_formation = False
 
-    # SMARTS patterns
-    ester_pattern = Chem.MolFromSmarts("C(=O)OC")
-    acid_pattern = Chem.MolFromSmarts("C(=O)O")
-    acid_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
+    def dfs_traverse(node):
+        nonlocal has_aryl_ether_formation
 
-    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                try:
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-                    product_mol = Chem.MolFromSmiles(product)
+                # Check for phenol in reactants
+                phenol_pattern = Chem.MolFromSmarts("[c]-[OH]")
 
-                    # Check for ester to acid conversion
-                    has_ester_reactant = any(
-                        mol is not None and mol.HasSubstructMatch(ester_pattern)
-                        for mol in reactant_mols
-                    )
-                    has_acid_product = product_mol is not None and product_mol.HasSubstructMatch(
-                        acid_pattern
-                    )
+                has_phenol = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(phenol_pattern):
+                        has_phenol = True
+                        break
 
-                    if has_ester_reactant and has_acid_product:
-                        transformations.append(("ester_to_acid", depth))
-                        print(f"Found ester to acid conversion at depth {depth}")
-
-                    # Check for acid to acid chloride conversion
-                    has_acid_reactant = any(
-                        mol is not None and mol.HasSubstructMatch(acid_pattern)
-                        for mol in reactant_mols
-                    )
-                    has_acid_chloride_product = (
-                        product_mol is not None
-                        and product_mol.HasSubstructMatch(acid_chloride_pattern)
-                    )
-
-                    if has_acid_reactant and has_acid_chloride_product:
-                        transformations.append(("acid_to_acid_chloride", depth))
-                        print(f"Found acid to acid chloride conversion at depth {depth}")
-                except:
-                    print("Error processing SMILES in reaction")
+                # Check for aryl ether in product
+                if has_phenol:
+                    aryl_ether_pattern = Chem.MolFromSmarts("[c]-[O]-[C]")
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(aryl_ether_pattern):
+                        print("Detected aryl ether formation")
+                        has_aryl_ether_formation = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if we have the complete sequence
-    has_ester_to_acid = any(t[0] == "ester_to_acid" for t in transformations)
-    has_acid_to_acid_chloride = any(t[0] == "acid_to_acid_chloride" for t in transformations)
-
-    strategy_present = has_ester_to_acid and has_acid_to_acid_chloride
-    print(f"Functional group interconversion sequence: {strategy_present}")
-    return strategy_present
+    return has_aryl_ether_formation

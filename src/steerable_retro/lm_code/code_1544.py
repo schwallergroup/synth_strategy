@@ -2,69 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a sequence involving alcohol protection (as acetate),
-    deprotection, and subsequent activation (as mesylate) for nucleophilic substitution.
+    Detects reductive amination strategy (aldehyde to amine conversion)
+    in the synthetic sequence.
     """
-    acetate_deprotection = False
-    alcohol_mesylation = False
+    found_pattern = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal acetate_deprotection, alcohol_mesylation
+        nonlocal found_pattern
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                # Check for acetate deprotection
-                acetate_pattern = Chem.MolFromSmarts("[C]-[O]-[C](=[O])-[C]")
-                alcohol_pattern = Chem.MolFromSmarts("[C]-[O;H1]")
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(acetate_pattern):
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol and product_mol.HasSubstructMatch(alcohol_pattern):
-                            acetate_deprotection = True
-                            print("Acetate deprotection detected at depth", depth)
+            # Check for aldehyde pattern in reactants
+            aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
+            amine_pattern = Chem.MolFromSmarts("[#7]([#6])[#6]")  # Secondary or tertiary amine
 
-                # Check for alcohol mesylation
-                mesylate_product_pattern = Chem.MolFromSmarts("[C]-[O]-[S](=[O])(=[O])-[C]")
+            # Check if any reactant has aldehyde and product has amine
+            aldehyde_in_reactants = False
+            for reactant in reactants_smiles:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.HasSubstructMatch(aldehyde_pattern):
+                    aldehyde_in_reactants = True
+                    break
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(alcohol_pattern):
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol and product_mol.HasSubstructMatch(mesylate_product_pattern):
-                            alcohol_mesylation = True
-                            print("Alcohol mesylation detected at depth", depth)
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            amine_in_product = product_mol and product_mol.HasSubstructMatch(amine_pattern)
 
-        # Continue traversing
+            if aldehyde_in_reactants and amine_in_product:
+                found_pattern = True
+                print(f"Found reductive amination pattern at depth {depth}")
+
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-    return acetate_deprotection and alcohol_mesylation
+    return found_pattern

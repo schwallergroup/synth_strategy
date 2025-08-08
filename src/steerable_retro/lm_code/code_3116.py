@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,55 +54,102 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis route includes hydration of an alkene
-    to form an alcohol.
+    Detects if there's a transformation from nitrile to lactone in the route.
+    This can happen across multiple steps, not necessarily in a single reaction.
     """
-    hydration_found = False
+    # Track nitrile-containing molecules and lactone-containing molecules with their depths
+    nitrile_molecules = []
+    lactone_molecules = []
+    nitrile_to_lactone_found = False
 
-    def dfs_traverse(node):
-        nonlocal hydration_found
+    def dfs(node, depth=0):
+        nonlocal nitrile_to_lactone_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        # Check molecule nodes
+        if node.get("type") == "mol" and "smiles" in node:
+            mol_smiles = node["smiles"]
+
+            # Track molecules with nitrile groups
+            if checker.check_fg("Nitrile", mol_smiles):
+                nitrile_molecules.append((depth, mol_smiles))
+                print(f"Molecule with nitrile found at depth {depth}: {mol_smiles}")
+
+            # Track molecules with lactone structures
+            is_lactone = False
+            if checker.check_fg("Ester", mol_smiles):
+                for ring in [
+                    "oxolane",
+                    "oxane",
+                    "tetrahydrofuran",
+                    "tetrahydropyran",
+                    "furan",
+                    "pyran",
+                ]:
+                    if checker.check_ring(ring, mol_smiles):
+                        is_lactone = True
+                        break
+
+                # Also check for coumarin structure
+                if "O=c1occc2" in mol_smiles:
+                    is_lactone = True
+
+            if is_lactone:
+                lactone_molecules.append((depth, mol_smiles))
+                print(f"Molecule with lactone found at depth {depth}: {mol_smiles}")
+
+            # Check if we have both nitrile and lactone molecules in the right order
+            # Nitrile should be at higher depth (earlier in synthesis) than lactone
+            if nitrile_molecules and lactone_molecules:
+                nitrile_depths = [d for d, _ in nitrile_molecules]
+                lactone_depths = [d for d, _ in lactone_molecules]
+
+                if max(nitrile_depths) > min(lactone_depths):
+                    nitrile_to_lactone_found = True
+                    print(
+                        f"Nitrile to lactone transformation detected: nitrile at depth {max(nitrile_depths)}, lactone at depth {min(lactone_depths)}"
+                    )
+
+        # Also check reaction nodes for direct transformation
+        if (
+            node.get("type") == "reaction"
+            and "metadata" in node
+            and "rsmi" in node.get("metadata", {})
+        ):
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if this is a known alkene hydration reaction
-            if checker.check_reaction(
-                "Markovnikov alkene hydration to alcohol", rsmi
-            ) or checker.check_reaction("anti-Markovnikov alkene hydration to alcohol", rsmi):
-                print(f"Alkene hydration reaction detected: {rsmi}")
-                hydration_found = True
-            else:
-                # Fallback: Check for alkene in reactants and alcohol in products
-                reactant_has_alkene = False
-                product_has_alcohol = False
+            # Check if any reactant has a nitrile group
+            has_nitrile = any(checker.check_fg("Nitrile", reactant) for reactant in reactants)
 
-                for reactant in reactants:
-                    if checker.check_fg("Alkene", reactant) or checker.check_fg("Vinyl", reactant):
-                        print(f"Alkene found in reactant: {reactant}")
-                        reactant_has_alkene = True
+            # Check if product has a lactone (cyclic ester)
+            has_lactone = False
+            if checker.check_fg("Ester", product):
+                for ring in [
+                    "oxolane",
+                    "oxane",
+                    "tetrahydrofuran",
+                    "tetrahydropyran",
+                    "furan",
+                    "pyran",
+                ]:
+                    if checker.check_ring(ring, product):
+                        has_lactone = True
                         break
 
-                if reactant_has_alkene:
-                    if (
-                        checker.check_fg("Primary alcohol", product)
-                        or checker.check_fg("Secondary alcohol", product)
-                        or checker.check_fg("Tertiary alcohol", product)
-                    ):
-                        print(f"Alcohol found in product: {product}")
-                        product_has_alcohol = True
+                # Also check for coumarin structure
+                if "O=c1occc2" in product:
+                    has_lactone = True
 
-                if reactant_has_alkene and product_has_alcohol:
-                    # Additional check to ensure it's a hydration reaction
-                    # Look for common hydration reagents or conditions in the reaction
-                    if "H2O" in rsmi or "OH" in rsmi:
-                        print(f"Alkene hydration detected through pattern matching: {rsmi}")
-                        hydration_found = True
+            if has_nitrile and has_lactone:
+                print(f"Direct nitrile to lactone transformation detected: {rsmi}")
+                nitrile_to_lactone_found = True
 
+        # Recursively check children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs(child, depth + 1)
 
-    dfs_traverse(route)
-    print(f"Hydration strategy found: {hydration_found}")
-    return hydration_found
+    # Start DFS from the root
+    dfs(route)
+
+    return nitrile_to_lactone_found

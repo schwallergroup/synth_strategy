@@ -2,125 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage amide formation from carboxylic acid and amine.
+    This function detects if the synthesis follows a linear strategy
+    (as opposed to convergent) by checking if most reactions have only 1-2 reactants.
     """
-    late_amide_formation = False
+    reaction_count = 0
+    linear_reaction_count = 0
 
-    # List of amide formation reaction types to check
-    amide_formation_reactions = [
-        "Carboxylic acid with primary amine to amide",
-        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-        "Ester with primary amine to amide",
-        "Ester with secondary amine to amide",
-        "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-        "Acyl chloride with secondary amine to amide",
-    ]
+    def dfs_traverse(node):
+        nonlocal reaction_count, linear_reaction_count
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_amide_formation
+        if node["type"] == "reaction":
+            rsmi = node["metadata"].get("rsmi", "")
+            if rsmi:
+                reaction_count += 1
+                reactants = rsmi.split(">")[0].split(".")
+                # Count non-empty reactants
+                reactant_count = sum(1 for r in reactants if r.strip())
 
-        if node["type"] == "reaction" and depth <= 2:  # Late stage (low depth)
-            try:
-                if "rsmi" in node.get("metadata", {}):
-                    rsmi = node["metadata"]["rsmi"]
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                # Linear reactions typically have 1-2 reactants
+                if reactant_count <= 2:
+                    linear_reaction_count += 1
 
-                    # Check if this is an amide formation reaction
-                    is_amide_formation = False
-                    for reaction_type in amide_formation_reactions:
-                        if checker.check_reaction(reaction_type, rsmi):
-                            is_amide_formation = True
-                            print(f"Detected {reaction_type} reaction at depth {depth}")
-                            break
-
-                    if not is_amide_formation:
-                        # Fallback: check for functional groups
-                        has_carboxylic_acid = False
-                        has_amine = False
-                        has_amide_product = False
-
-                        for reactant in reactants:
-                            if checker.check_fg("Carboxylic acid", reactant):
-                                has_carboxylic_acid = True
-                                print(f"Found carboxylic acid in reactant: {reactant}")
-                            if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                                "Secondary amine", reactant
-                            ):
-                                has_amine = True
-                                print(f"Found amine in reactant: {reactant}")
-
-                        if (
-                            checker.check_fg("Primary amide", product)
-                            or checker.check_fg("Secondary amide", product)
-                            or checker.check_fg("Tertiary amide", product)
-                        ):
-                            has_amide_product = True
-                            print(f"Found amide in product: {product}")
-
-                        if has_carboxylic_acid and has_amine and has_amide_product:
-                            is_amide_formation = True
-                            print(
-                                f"Detected amide formation based on functional groups at depth {depth}"
-                            )
-
-                    if is_amide_formation:
-                        print(f"Confirmed late-stage amide formation at depth {depth}")
-                        late_amide_formation = True
-            except Exception as e:
-                print(f"Error analyzing reaction at depth {depth}: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return late_amide_formation
+
+    # If at least 80% of reactions are linear, consider it a linear synthesis
+    if reaction_count > 0 and (linear_reaction_count / reaction_count) >= 0.8:
+        print(
+            f"Linear synthesis detected: {linear_reaction_count}/{reaction_count} reactions are linear"
+        )
+        return True
+    return False

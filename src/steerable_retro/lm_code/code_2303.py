@@ -2,98 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route contains a protection-deprotection sequence,
-    specifically looking for carbamate (Cbz) protection and deprotection.
+    This function detects a strategy involving late-stage esterification of a phenol.
     """
-    protection_found = False
-    deprotection_found = False
-    protection_depth = -1
-    deprotection_depth = -1
+    found_late_esterification = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal protection_found, deprotection_found, protection_depth, deprotection_depth
+        nonlocal found_late_esterification
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction" and depth <= 1:  # Late stage = low depth (0 or 1)
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+                reactants = rsmi.split(">")[0]
                 product = rsmi.split(">")[-1]
 
-                # Check for carbamate protection (formation of Cbz group)
-                if not protection_found:
-                    # Look for carbamate formation: presence in product but not in reactants
-                    carbamate_pattern = "[NX3]-[CX3](=[OX1])-[OX2]-[CH2]-[cX3]:[cX3]"
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol and product_mol.HasSubstructMatch(
-                        Chem.MolFromSmarts(carbamate_pattern)
-                    ):
-                        # Check if reactants don't have this pattern
-                        has_in_reactants = False
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(
-                                Chem.MolFromSmarts(carbamate_pattern)
-                            ):
-                                has_in_reactants = True
-                                break
+                reactant_mol = Chem.MolFromSmiles(reactants)
+                product_mol = Chem.MolFromSmiles(product)
 
-                        if not has_in_reactants:
-                            protection_found = True
-                            protection_depth = depth
-                            print(f"Carbamate protection found at depth {depth}")
+                if reactant_mol and product_mol:
+                    # Phenol pattern
+                    phenol_pattern = Chem.MolFromSmarts("[OH]-[c]")
+                    # Ester pattern
+                    ester_pattern = Chem.MolFromSmarts("[c]-[O]-[C](=[O])-[#6]")
 
-                # Check for carbamate deprotection
-                if not deprotection_found:
-                    # Look for carbamate removal: presence in reactants but not in product
-                    carbamate_pattern = "[NX3]-[CX3](=[OX1])-[OX2]-[CH2]-[cX3]:[cX3]"
-                    primary_amine_pattern = "[NX3H2]"
+                    # Check for phenol in reactants and ester in product
+                    if reactant_mol.HasSubstructMatch(
+                        phenol_pattern
+                    ) and product_mol.HasSubstructMatch(ester_pattern):
+                        found_late_esterification = True
+                        print(f"Found late-stage phenol esterification at depth {depth}: {rsmi}")
 
-                    # Check if product has primary amine
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol and product_mol.HasSubstructMatch(
-                        Chem.MolFromSmarts(primary_amine_pattern)
-                    ):
-                        # Check if any reactant has carbamate
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(
-                                Chem.MolFromSmarts(carbamate_pattern)
-                            ):
-                                deprotection_found = True
-                                deprotection_depth = depth
-                                print(f"Carbamate deprotection found at depth {depth}")
-                                break
-
-        # Traverse children
+        # Traverse children with increased depth
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if protection happened before deprotection
-    if protection_found and deprotection_found and protection_depth > deprotection_depth:
-        print("Protection-deprotection sequence detected")
-        return True
-
-    return False
+    print(f"Late-stage phenol esterification detected: {found_late_esterification}")
+    return found_late_esterification

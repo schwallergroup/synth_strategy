@@ -2,101 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects preservation of cyano groups throughout the synthesis.
-    In retrosynthesis, we check if cyano groups in the product are preserved in the reactants.
+    Detects a synthetic strategy that utilizes hydrazide chemistry
+    in multiple steps of the synthesis.
     """
-    cyano_groups_preserved = True
-    reactions_with_cyano = 0
+    # Track hydrazide occurrences
+    hydrazide_reactions = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal cyano_groups_preserved, reactions_with_cyano
+    def dfs_traverse(node):
+        nonlocal hydrazide_reactions
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check if product has cyano groups
-                product_has_cyano = checker.check_fg("Nitrile", product_smiles)
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-                if product_has_cyano:
-                    reactions_with_cyano += 1
+            if not all(reactants) or not product:
+                print("Warning: Could not parse all molecules in reaction")
+                return
 
-                    # In retrosynthesis, we check if all cyano groups in product are preserved in reactants
-                    reactants_have_all_cyano = False
+            # Check for hydrazide pattern in reactants or product
+            hydrazide_pattern = Chem.MolFromSmarts("[NX3][NX3][CX3]=[OX1]")
 
-                    # Get atom indices of cyano groups in product
-                    product_cyano_indices = checker.get_fg_atom_indices("Nitrile", product_smiles)
+            # Check product for hydrazide
+            if product.HasSubstructMatch(hydrazide_pattern):
+                hydrazide_reactions += 1
+                print(f"Found hydrazide formation in product")
 
-                    if product_cyano_indices:
-                        # Check if all product cyano groups are preserved in reactants
-                        # This is a simplification - ideally we would use atom mapping to track specific groups
-                        reactant_has_cyano = False
-                        for reactant in reactants_smiles:
-                            if checker.check_fg("Nitrile", reactant):
-                                reactant_has_cyano = True
-                                break
+            # Check if hydrazine is a reactant
+            hydrazine_pattern = Chem.MolFromSmarts("[NX3][NX3]")
+            for reactant in reactants:
+                if reactant.HasSubstructMatch(hydrazine_pattern) and not reactant.HasSubstructMatch(
+                    hydrazide_pattern
+                ):
+                    hydrazide_reactions += 1
+                    print(f"Found hydrazine as reactant")
 
-                        if not reactant_has_cyano:
-                            cyano_groups_preserved = False
-                            print(
-                                f"Cyano group not preserved at depth {depth}: product has cyano but reactants don't"
-                            )
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Only return True if we actually had cyano groups and they were preserved
-    return cyano_groups_preserved and reactions_with_cyano > 0
+    # Return True if multiple hydrazide-related reactions are found
+    return hydrazide_reactions >= 2

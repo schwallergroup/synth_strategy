@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,125 +54,86 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a linear synthesis strategy with amide formation from carboxylic acid.
+    Detects a linear synthesis strategy where a core scaffold (like purine, indole, etc.)
+    is preserved while sequential modifications are made to side chains.
+
+    The scaffold may be built in early stages and then preserved in later stages.
     """
-    has_amide_formation = False
+    # Track synthesis structure
     reaction_count = 0
-    max_branch_factor = 0
+    branch_count = 0
+
+    # Common ring scaffolds to check
+    common_scaffolds = [
+        "purine",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "benzene",
+        "naphthalene",
+        "anthracene",
+        "pyridine",
+        "pyrimidine",
+        "pyrazine",
+        "furan",
+        "thiophene",
+        "pyrrole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+    ]
+
+    # Track scaffold presence at each step
+    scaffold_at_step = {}
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_amide_formation, reaction_count, max_branch_factor
+        nonlocal reaction_count, branch_count
 
         if node["type"] == "reaction":
             reaction_count += 1
 
-            # Check branching factor at this reaction node
-            if "children" in node:
-                branch_factor = len(node["children"])
-                max_branch_factor = max(max_branch_factor, branch_factor)
+            # In retrosynthesis, a reaction with >2 children means convergent synthesis
+            if len(node.get("children", [])) > 2:
+                branch_count += 1
+                print(
+                    f"Branch detected at depth {depth} with {len(node.get('children', []))} reactants"
+                )
 
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            # Get product and reactants
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+                # Check for scaffolds in the product
+                product_scaffolds = []
+                for scaffold in common_scaffolds:
+                    if checker.check_ring(scaffold, product_smiles):
+                        product_scaffolds.append(scaffold)
 
-                # Check for amide formation using reaction checkers
-                amide_formation_reactions = [
-                    "Carboxylic acid with primary amine to amide",
-                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                    "Acylation of primary amines",
-                    "Acylation of secondary amines",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acyl chloride with secondary amine to amide",
-                    "Acyl chloride with ammonia to amide",
-                    "Ester with primary amine to amide",
-                    "Ester with secondary amine to amide",
-                    "Ester with ammonia to amide",
-                    "Schotten-Baumann_amide",
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    "Aminolysis of esters",
-                    "Acylation of secondary amines with anhydrides",
-                ]
+                # Store scaffold info for this step
+                scaffold_at_step[depth] = {
+                    "product": product_smiles,
+                    "product_scaffolds": product_scaffolds,
+                    "reactants": reactants_smiles,
+                    "reactant_scaffolds": [],
+                }
 
-                # Check if any of the amide formation reactions match
-                for rxn in amide_formation_reactions:
-                    if checker.check_reaction(rxn, rsmi):
-                        print(f"Matched reaction type: {rxn}")
+                # Check for scaffolds in each reactant
+                for reactant in reactants_smiles:
+                    reactant_scaffold_list = []
+                    for scaffold in common_scaffolds:
+                        if checker.check_ring(scaffold, reactant):
+                            reactant_scaffold_list.append(scaffold)
+                    scaffold_at_step[depth]["reactant_scaffolds"].append(reactant_scaffold_list)
 
-                        # Verify the reactants have the expected functional groups
-                        acid_groups = ["Carboxylic acid", "Acyl halide", "Ester", "Anhydride"]
-                        amine_groups = [
-                            "Primary amine",
-                            "Secondary amine",
-                            "Tertiary amine",
-                            "Aniline",
-                        ]
-                        amide_groups = ["Primary amide", "Secondary amide", "Tertiary amide"]
+                print(f"Depth {depth}: Product scaffolds: {product_scaffolds}")
+                print(
+                    f"Depth {depth}: Reactant scaffolds: {scaffold_at_step[depth]['reactant_scaffolds']}"
+                )
 
-                        has_acid_precursor = any(
-                            any(checker.check_fg(fg, r) for fg in acid_groups) for r in reactants
-                        )
-
-                        has_amine = any(
-                            any(checker.check_fg(fg, r) for fg in amine_groups) for r in reactants
-                        )
-
-                        has_amide_product = any(
-                            checker.check_fg(fg, product) for fg in amide_groups
-                        )
-
-                        print(f"Has acid precursor: {has_acid_precursor}")
-                        print(f"Has amine: {has_amine}")
-                        print(f"Has amide product: {has_amide_product}")
-
-                        # Check if reactants don't already have amide groups
-                        reactants_have_amide = any(
-                            any(checker.check_fg(fg, r) for fg in amide_groups) for r in reactants
-                        )
-
-                        # If reactants have necessary groups and product has amide
-                        if (
-                            has_acid_precursor
-                            and has_amine
-                            and has_amide_product
-                            and not reactants_have_amide
-                        ):
-                            has_amide_formation = True
-                            print(f"Confirmed amide formation at depth {depth}")
-                            break
-
-                # If no specific reaction type matched, try a more general approach
-                if not has_amide_formation:
-                    # Check if reactants have acid/amine and product has amide (that wasn't in reactants)
-                    acid_groups = ["Carboxylic acid", "Acyl halide", "Ester", "Anhydride"]
-                    amine_groups = ["Primary amine", "Secondary amine", "Tertiary amine", "Aniline"]
-                    amide_groups = ["Primary amide", "Secondary amide", "Tertiary amide"]
-
-                    has_acid_precursor = any(
-                        any(checker.check_fg(fg, r) for fg in acid_groups) for r in reactants
-                    )
-
-                    has_amine = any(
-                        any(checker.check_fg(fg, r) for fg in amine_groups) for r in reactants
-                    )
-
-                    has_amide_product = any(checker.check_fg(fg, product) for fg in amide_groups)
-
-                    # Check if reactants don't already have amide groups
-                    reactants_have_amide = any(
-                        any(checker.check_fg(fg, r) for fg in amide_groups) for r in reactants
-                    )
-
-                    if (
-                        has_acid_precursor
-                        and has_amine
-                        and has_amide_product
-                        and not reactants_have_amide
-                    ):
-                        print("Detected amide formation through functional group analysis")
-                        has_amide_formation = True
+            except Exception as e:
+                print(f"Error processing reaction at depth {depth}: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -178,10 +142,57 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Check if it's a linear synthesis (minimal branching and at least 3 reactions)
-    is_linear = reaction_count >= 3 and max_branch_factor <= 2
+    # Sort depths to analyze from late stage (low depth) to early stage (high depth)
+    depths = sorted(scaffold_at_step.keys())
 
-    print(f"Reaction count: {reaction_count}, Max branch factor: {max_branch_factor}")
-    print(f"Has amide formation: {has_amide_formation}, Is linear: {is_linear}")
+    if len(depths) < 2:
+        print("Not enough reaction steps to analyze scaffold preservation")
+        return False
 
-    return has_amide_formation and is_linear
+    # Find the main scaffold in the final product (lowest depth)
+    main_scaffold = None
+    has_scaffolds = False
+
+    # Find the first depth where a scaffold appears in the product
+    for depth in depths:
+        if scaffold_at_step[depth]["product_scaffolds"]:
+            main_scaffold = scaffold_at_step[depth]["product_scaffolds"][0]
+            has_scaffolds = True
+            break
+
+    print(f"Main scaffold identified: {main_scaffold}")
+
+    # Modified scaffold preservation logic
+    scaffold_preserved = False
+    if main_scaffold:
+        # Count consecutive steps where the scaffold appears in products
+        consecutive_steps = 0
+        current_streak = 0
+
+        for depth in depths:
+            if main_scaffold in scaffold_at_step[depth]["product_scaffolds"]:
+                current_streak += 1
+                consecutive_steps = max(consecutive_steps, current_streak)
+            else:
+                current_streak = 0
+
+        # Scaffold is preserved if it exists in at least 2 consecutive steps
+        scaffold_preserved = consecutive_steps >= 2
+        print(f"Scaffold appears in {consecutive_steps} consecutive product steps")
+
+    # A linear synthesis with preserved scaffold should have:
+    # 1. No branches (linear)
+    # 2. Scaffold preserved in at least 2 consecutive steps
+    # 3. At least 2 reactions
+    # 4. At least one recognized scaffold
+    is_linear = branch_count == 0 and reaction_count > 0
+
+    print(f"Linear synthesis detection:")
+    print(f"- Reaction count: {reaction_count}")
+    print(f"- Branch count: {branch_count}")
+    print(f"- Is linear: {is_linear}")
+    print(f"- Has scaffolds: {has_scaffolds}")
+    print(f"- Scaffold preserved: {scaffold_preserved}")
+    print(f"- Main scaffold: {main_scaffold}")
+
+    return is_linear and scaffold_preserved and reaction_count >= 2 and has_scaffolds

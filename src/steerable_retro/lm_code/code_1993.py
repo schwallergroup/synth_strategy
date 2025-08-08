@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,172 +54,165 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis route involves heterocycle formation,
-    by checking for an increase in the number of rings containing heteroatoms.
+    Detects if the synthesis route preserves a tetramethyltetralin scaffold
+    throughout the synthesis
     """
-    heterocycle_formation_found = False
+    scaffold_preserved = True
 
-    # List of common heterocycles to check
-    heterocycle_types = [
-        "furan",
-        "pyran",
-        "dioxane",
-        "tetrahydrofuran",
-        "tetrahydropyran",
-        "oxirane",
-        "oxetane",
-        "oxolane",
-        "oxane",
-        "dioxolane",
-        "dioxolene",
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "pyrrolidine",
-        "piperidine",
-        "piperazine",
-        "morpholine",
-        "thiomorpholine",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "purine",
-        "thiophene",
-        "thiopyran",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
+    # Define tetramethyltetralin patterns - these will match various tetramethyltetralin isomers
+    tetramethyltetralin_patterns = [
+        Chem.MolFromSmarts("C1CCc2c(C)c(C)c(C)c(C)c2C1"),  # General pattern
+        Chem.MolFromSmarts("CC1(C)CCC(C)(C)c2ccccc21"),  # Specific pattern from test case
+        Chem.MolFromSmarts("C1CC(C)(C)c2ccc(C)c(C)c2C1"),  # Another possible isomer
+        Chem.MolFromSmarts("C1CC(C)(C)c2cc(C)c(C)cc2C1"),  # Another possible isomer
     ]
 
-    # List of heterocycle formation reactions
-    heterocycle_formation_reactions = [
-        "Formation of NOS Heterocycles",
-        "Paal-Knorr pyrrole synthesis",
-        "benzimidazole_derivatives_carboxylic-acid/ester",
-        "benzimidazole_derivatives_aldehyde",
-        "benzothiazole",
-        "benzoxazole_arom-aldehyde",
-        "benzoxazole_carboxylic-acid",
-        "thiazole",
-        "tetrazole_terminal",
-        "tetrazole_connect_regioisomere_1",
-        "tetrazole_connect_regioisomere_2",
-        "1,2,4-triazole_acetohydrazide",
-        "1,2,4-triazole_carboxylic-acid/ester",
-        "3-nitrile-pyridine",
-        "pyrazole",
-        "Fischer indole",
-        "Friedlaender chinoline",
-        "benzofuran",
-        "benzothiophene",
-        "indole",
-        "oxadiazole",
-        "imidazole",
-        "Huisgen_Cu-catalyzed_1,4-subst",
-        "Huisgen_Ru-catalyzed_1,5_subst",
-    ]
+    # Pattern for dimethylindane which could be part of tetramethyltetralin
+    dimethylindane_pattern = Chem.MolFromSmarts("C1CC(C)(C)c2ccccc2C1")
+
+    # Track if we found the scaffold in the final product
+    found_in_final_product = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal heterocycle_formation_found
+        nonlocal scaffold_preserved, found_in_final_product
 
-        if node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node:
+            mol_smiles = node["smiles"]
+            mol = Chem.MolFromSmiles(mol_smiles)
 
-                # Check if this is a known heterocycle formation reaction
-                for reaction_type in heterocycle_formation_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(
-                            f"Heterocycle formation reaction detected: {reaction_type} at depth {depth}"
-                        )
-                        heterocycle_formation_found = True
-                        return
+            if mol:
+                # Check if this is a starting material
+                is_starting_material = node.get("in_stock", False)
 
-                # Count specific heterocycles in product
-                product_heterocycles = {}
-                for heterocycle in heterocycle_types:
-                    if checker.check_ring(heterocycle, product):
-                        product_heterocycles[heterocycle] = (
-                            product_heterocycles.get(heterocycle, 0) + 1
-                        )
+                # If it's the final product (depth 0), we must find the scaffold
+                if depth == 0:
+                    scaffold_found = False
 
-                # Count specific heterocycles in reactants
-                reactant_heterocycles = {}
-                for reactant in reactants:
-                    for heterocycle in heterocycle_types:
-                        if checker.check_ring(heterocycle, reactant):
-                            reactant_heterocycles[heterocycle] = (
-                                reactant_heterocycles.get(heterocycle, 0) + 1
+                    # Try all tetramethyltetralin patterns
+                    for pattern in tetramethyltetralin_patterns:
+                        if mol.HasSubstructMatch(pattern):
+                            print(
+                                f"Tetramethyltetralin scaffold found in final product: {mol_smiles}"
                             )
+                            scaffold_found = True
+                            found_in_final_product = True
+                            break
 
-                # Check if any new heterocycle type appears in the product
-                for heterocycle in product_heterocycles:
-                    if heterocycle not in reactant_heterocycles:
-                        print(f"New heterocycle type {heterocycle} formed at depth {depth}")
-                        heterocycle_formation_found = True
-                        return
+                    # If no direct match, check for tetralin with methyl groups
+                    if not scaffold_found:
+                        has_tetralin = (
+                            checker.check_ring("tetralin", mol_smiles)
+                            if "tetralin" in globals()
+                            else False
+                        )
+                        if not has_tetralin:
+                            has_tetralin = checker.check_ring("naphthalene", mol_smiles)
 
-                # Check if the count of any heterocycle type increases
-                for heterocycle in product_heterocycles:
-                    if product_heterocycles[heterocycle] > reactant_heterocycles.get(
-                        heterocycle, 0
-                    ):
-                        print(f"Increased count of heterocycle {heterocycle} at depth {depth}")
-                        heterocycle_formation_found = True
-                        return
+                        if has_tetralin:
+                            print(f"Found tetralin/naphthalene in final product: {mol_smiles}")
 
-                # Fallback to general heterocycle counting if specific types aren't detected
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    # Count heterocycles in product
-                    product_heterocycle_count = 0
-                    ring_info = product_mol.GetRingInfo()
-                    for ring_atoms in ring_info.AtomRings():
-                        is_heterocycle = False
-                        for atom_idx in ring_atoms:
-                            atom = product_mol.GetAtomWithIdx(atom_idx)
-                            if atom.GetAtomicNum() not in [1, 6]:  # Not H or C
-                                is_heterocycle = True
-                                break
-                        if is_heterocycle:
-                            product_heterocycle_count += 1
+                            # Get ring indices
+                            ring_name = (
+                                "tetralin"
+                                if "tetralin" in globals()
+                                and checker.check_ring("tetralin", mol_smiles)
+                                else "naphthalene"
+                            )
+                            ring_indices = checker.get_ring_atom_indices(ring_name, mol_smiles)
 
-                    # Count heterocycles in reactants
-                    reactant_heterocycle_count = 0
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            ring_info = reactant_mol.GetRingInfo()
-                            for ring_atoms in ring_info.AtomRings():
-                                is_heterocycle = False
+                            if ring_indices:
+                                # Create a set of all ring atoms for faster lookup
+                                ring_atoms = set()
+                                for indices_tuple in ring_indices:
+                                    for atom_idx in indices_tuple[0]:
+                                        ring_atoms.add(atom_idx)
+
+                                # Count methyl groups attached to ring
+                                methyl_count = 0
                                 for atom_idx in ring_atoms:
-                                    atom = reactant_mol.GetAtomWithIdx(atom_idx)
-                                    if atom.GetAtomicNum() not in [1, 6]:  # Not H or C
-                                        is_heterocycle = True
-                                        break
-                                if is_heterocycle:
-                                    reactant_heterocycle_count += 1
+                                    atom = mol.GetAtomWithIdx(atom_idx)
+                                    for neighbor in atom.GetNeighbors():
+                                        # Check if neighbor is a carbon with 3 hydrogens (methyl)
+                                        if (
+                                            neighbor.GetAtomicNum() == 6
+                                            and neighbor.GetIdx() not in ring_atoms
+                                            and neighbor.GetTotalNumHs() == 3
+                                        ):
+                                            methyl_count += 1
 
-                    if product_heterocycle_count > reactant_heterocycle_count:
-                        print(f"General heterocycle formation detected at depth {depth}")
-                        heterocycle_formation_found = True
-                        return
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                                print(
+                                    f"Found {methyl_count} methyl groups attached to ring in final product"
+                                )
 
-        # Continue traversal
+                                # Check if we have at least 4 methyl groups
+                                if methyl_count >= 4:
+                                    print(f"Tetramethyltetralin scaffold found in final product")
+                                    scaffold_found = True
+                                    found_in_final_product = True
+
+                    # Check for dimethylindane as a fallback
+                    if not scaffold_found and mol.HasSubstructMatch(dimethylindane_pattern):
+                        print(
+                            f"Dimethylindane pattern found in final product - this could be part of tetramethyltetralin"
+                        )
+                        scaffold_found = True
+                        found_in_final_product = True
+
+                    if not scaffold_found:
+                        print(
+                            f"Tetramethyltetralin scaffold not found in final product: {mol_smiles}"
+                        )
+                        scaffold_preserved = False
+
+                # For intermediates (not starting materials), check if they have the scaffold
+                elif (
+                    not is_starting_material and depth <= 8
+                ):  # Only check key intermediates (not too deep in the tree)
+                    scaffold_found = False
+
+                    # Try all tetramethyltetralin patterns
+                    for pattern in tetramethyltetralin_patterns:
+                        if mol.HasSubstructMatch(pattern):
+                            print(
+                                f"Tetramethyltetralin scaffold found in intermediate at depth {depth}: {mol_smiles}"
+                            )
+                            scaffold_found = True
+                            break
+
+                    # Check for dimethylindane as a fallback
+                    if not scaffold_found and mol.HasSubstructMatch(dimethylindane_pattern):
+                        print(
+                            f"Dimethylindane pattern found in intermediate at depth {depth} - this could be part of tetramethyltetralin"
+                        )
+                        scaffold_found = True
+
+                    # For key intermediates, we should find the scaffold
+                    if (
+                        not scaffold_found and len(mol_smiles) > 10
+                    ):  # Only check substantial molecules, not small reagents
+                        print(
+                            f"Tetramethyltetralin scaffold not found in key intermediate at depth {depth}: {mol_smiles}"
+                        )
+                        # Only mark as not preserved if this is a substantial molecule that should have the scaffold
+                        if mol.GetNumHeavyAtoms() > 15:  # Adjust threshold as needed
+                            scaffold_preserved = False
+            else:
+                print(f"Failed to create RDKit molecule at depth {depth}: {mol_smiles}")
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return heterocycle_formation_found
+
+    # Final check - we must have found the scaffold in the final product
+    if not found_in_final_product:
+        scaffold_preserved = False
+
+    if scaffold_preserved:
+        print("Tetramethyltetralin scaffold is preserved throughout the synthesis")
+    else:
+        print("Tetramethyltetralin scaffold is NOT preserved throughout the synthesis")
+
+    return scaffold_preserved

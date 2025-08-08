@@ -2,72 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis uses a late-stage sulfonylation strategy where a sulfonyl group
-    is added to a nitrogen heterocycle in one of the final steps.
+    This function detects if the synthesis follows a linear strategy
+    (each reaction has only one product that's used in the next step).
+
+    In a retrosynthetic context, this means each intermediate molecule
+    (except the target) is produced by exactly one reaction and used in
+    exactly one subsequent reaction.
     """
-    sulfonyl_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])[#7]")
-    final_product_has_sulfonyl = False
-    sulfonylation_depth = None
+    # Track molecule usage across the synthesis
+    molecule_usage = {}  # smiles -> count of reactions using it
+
+    # Track if we've seen the target molecule
+    target_smiles = route["smiles"]
 
     def dfs_traverse(node, depth=0):
-        nonlocal final_product_has_sulfonyl, sulfonylation_depth
-
         if node["type"] == "mol":
-            if depth == 0:  # Final product
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol and mol.HasSubstructMatch(sulfonyl_pattern):
-                    final_product_has_sulfonyl = True
+            # Skip the target molecule (depth 0)
+            if depth > 0:
+                mol_smiles = node["smiles"]
+                if mol_smiles in molecule_usage:
+                    molecule_usage[mol_smiles] += 1
+                else:
+                    molecule_usage[mol_smiles] = 1
 
-        elif node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+                # If a molecule is used in more than one reaction, it's not linear
+                if molecule_usage[mol_smiles] > 1:
+                    print(f"Molecule {mol_smiles} is used in multiple reactions (non-linear)")
+                    return False
 
-            reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-            product_mol = Chem.MolFromSmiles(product_smiles)
-
-            if product_mol and reactants_mol:
-                product_has_sulfonyl = product_mol.HasSubstructMatch(sulfonyl_pattern)
-                reactants_have_sulfonyl = reactants_mol.HasSubstructMatch(sulfonyl_pattern)
-
-                # Check if this reaction introduces a sulfonyl group
-                if product_has_sulfonyl and not reactants_have_sulfonyl:
-                    sulfonylation_depth = depth
-                    print(f"Sulfonylation detected at depth {depth}")
-
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if not dfs_traverse(child, depth + 1):
+                return False
 
-    dfs_traverse(route)
+        return True
 
-    # Strategy is present if final product has sulfonyl group and it was introduced in a late stage (depth ≤ 1)
-    strategy_present = (
-        final_product_has_sulfonyl and sulfonylation_depth is not None and sulfonylation_depth <= 1
-    )
+    # Start traversal from the root
+    is_linear = dfs_traverse(route)
 
-    print(f"Late-stage sulfonylation strategy detected: {strategy_present}")
-    if strategy_present:
-        print(f"Sulfonylation occurred at depth {sulfonylation_depth}")
+    # Debug output
+    if is_linear:
+        print("Synthesis follows a linear strategy")
+    else:
+        print("Synthesis does not follow a linear strategy")
 
-    return strategy_present
+    return is_linear

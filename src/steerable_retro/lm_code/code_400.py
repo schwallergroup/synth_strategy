@@ -2,131 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a sequence of functional group
-    interconversions, particularly acid→amide→isocyanate.
+    This function detects if the synthesis route uses a Heck coupling reaction
+    for C-C bond formation between aryl and alkene components.
     """
-    # Track functional group transformations with molecule identifiers
-    acid_to_amide_transformations = []
-    amide_to_isocyanate_transformations = []
+    has_heck_coupling = False
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            # Get reactants and product
+    def dfs_traverse(node):
+        nonlocal has_heck_coupling
+
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # In retrosynthetic traversal, we're going from product to reactants
-            # So for acid→amide→isocyanate sequence, we need to check:
-            # 1. amide in product, acid in reactants (amide → acid in retro)
-            # 2. isocyanate in product, amide in reactants (isocyanate → amide in retro)
+            # Check for Heck coupling pattern
+            reactants_mol = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-            # Check for amide in product (acid to amide transformation in forward direction)
-            if checker.check_fg("Carboxylic acid", product_smiles) and any(
-                checker.check_fg("Primary amide", r)
-                or checker.check_fg("Secondary amide", r)
-                or checker.check_fg("Tertiary amide", r)
-                for r in reactants_smiles
-            ):
-                print(f"Depth {depth}: Acid to amide transformation detected")
-                acid_to_amide_transformations.append((product_smiles, depth))
+            if product_mol and len(reactants_mol) >= 2:
+                # Check if one reactant has aryl group
+                has_aryl = any(
+                    mol.HasSubstructMatch(Chem.MolFromSmarts("c")) for mol in reactants_mol if mol
+                )
 
-            # Check for isocyanate in product (amide to isocyanate in forward direction)
-            if checker.check_fg("Isocyanate", product_smiles) and any(
-                checker.check_fg("Primary amide", r)
-                or checker.check_fg("Secondary amide", r)
-                or checker.check_fg("Tertiary amide", r)
-                for r in reactants_smiles
-            ):
-                print(f"Depth {depth}: Amide to isocyanate transformation detected")
-                amide_to_isocyanate_transformations.append((product_smiles, depth))
+                # Check if one reactant has alkene
+                has_alkene = any(
+                    mol.HasSubstructMatch(Chem.MolFromSmarts("[C]=[C]"))
+                    for mol in reactants_mol
+                    if mol
+                )
 
-        # Continue traversal
+                # Check if product has aryl-alkene connection
+                has_aryl_alkene = product_mol.HasSubstructMatch(Chem.MolFromSmarts("c/[C]=[C]"))
+
+                if has_aryl and has_alkene and has_aryl_alkene:
+                    has_heck_coupling = True
+                    print("Detected Heck coupling for C-C bond formation")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if we have the acid→amide→isocyanate sequence
-    # For a valid sequence, we need both transformations and they must occur in the correct order
-    has_sequence = False
-
-    if acid_to_amide_transformations and amide_to_isocyanate_transformations:
-        print(
-            f"Found {len(acid_to_amide_transformations)} acid→amide and {len(amide_to_isocyanate_transformations)} amide→isocyanate transformations"
-        )
-
-        # Sort transformations by depth to check sequence
-        acid_to_amide_transformations.sort(key=lambda x: x[1])
-        amide_to_isocyanate_transformations.sort(key=lambda x: x[1])
-
-        # Check if the sequence occurs in the correct order
-        for acid_amide_mol, acid_amide_depth in acid_to_amide_transformations:
-            for iso_mol, iso_depth in amide_to_isocyanate_transformations:
-                # The acid→amide transformation should occur before amide→isocyanate
-                # In retrosynthetic traversal, earlier steps have higher depth
-                if acid_amide_depth > iso_depth:
-                    print(
-                        f"Found sequence: acid→amide at depth {acid_amide_depth}, amide→isocyanate at depth {iso_depth}"
-                    )
-                    has_sequence = True
-                    break
-            if has_sequence:
-                break
-
-    if has_sequence:
-        print("Functional group interconversion sequence detected: acid→amide→isocyanate")
-    else:
-        print("No functional group interconversion sequence detected")
-
-    return has_sequence
+    return has_heck_coupling

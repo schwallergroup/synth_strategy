@@ -2,79 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a sequential functional group transformation pattern:
-    Br → CN → COOH → amide
+    This function detects a strategy where a diamine compound undergoes
+    selective functionalization at one amine while the other remains intact
+    or is protected/deprotected.
     """
-    # Track transformations
-    transformations = []
+    # Initialize tracking variables
+    has_diamine = False
+    has_selective_functionalization = False
+
+    # SMARTS patterns
+    diamine_pattern = Chem.MolFromSmarts("[NH2][c]1[cH][cH][cH][c]([NH2])[cH]1")
+    sulfonamide_pattern = Chem.MolFromSmarts("[NH]S(=O)(=O)[c]")
 
     def dfs_traverse(node):
-        if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+        nonlocal has_diamine, has_selective_functionalization
 
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(diamine_pattern):
+                print("Detected diamine compound")
+                has_diamine = True
 
-            product_mol = Chem.MolFromSmiles(product)
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
+        elif node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0]
+            product_smiles = rsmi.split(">")[-1]
 
-            if product_mol and reactant_mols:
-                # Check for specific transformations
+            product = Chem.MolFromSmiles(product_smiles)
 
-                # Br → CN transformation
-                if any(
-                    mol.HasSubstructMatch(Chem.MolFromSmarts("c[Br]")) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(Chem.MolFromSmarts("cC#N")):
-                    transformations.append("Br_to_CN")
-                    print("Detected Br → CN transformation")
-
-                # CN → COOH transformation
-                if any(
-                    mol.HasSubstructMatch(Chem.MolFromSmarts("cC#N")) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(Chem.MolFromSmarts("cC(=O)O")):
-                    transformations.append("CN_to_COOH")
-                    print("Detected CN → COOH transformation")
-
-                # COOH → amide transformation
-                if any(
-                    mol.HasSubstructMatch(Chem.MolFromSmarts("cC(=O)O")) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(Chem.MolFromSmarts("cC(=O)N")):
-                    transformations.append("COOH_to_amide")
-                    print("Detected COOH → amide transformation")
+            # Check for selective functionalization
+            if product and product.HasSubstructMatch(sulfonamide_pattern):
+                # Check if one amine is functionalized while another remains
+                if product.GetSubstructMatches(Chem.MolFromSmarts("[NH2][c]")):
+                    print("Detected selective functionalization of diamine")
+                    has_selective_functionalization = True
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have the complete sequence
-    has_sequence = all(t in transformations for t in ["Br_to_CN", "CN_to_COOH", "COOH_to_amide"])
-
-    print(f"Sequential functional group transformation strategy detected: {has_sequence}")
-    print(f"Transformations found: {transformations}")
-
-    return has_sequence
+    # Check if the strategy was detected
+    strategy_detected = has_diamine and has_selective_functionalization
+    if strategy_detected:
+        print("Detected diamine selective functionalization strategy")
+    return strategy_detected

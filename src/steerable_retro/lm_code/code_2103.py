@@ -2,108 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route preserves a stereocenter throughout the synthesis.
+    This function detects if the synthetic route follows a convergent pattern
+    where multiple fragments are prepared separately and then joined.
     """
-    # Track stereocenters by molecule SMILES and atom indices
-    stereocenters_by_mol = {}
-    # Track depth of each molecule
-    depth_by_mol = {}
-    # Track atom mappings through reactions
-    atom_mappings = {}
+    # Track branches in the synthesis
+    branches = []
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol" and "smiles" in node:
-            mol_smiles = node["smiles"]
-            depth_by_mol[mol_smiles] = depth
+    def count_branches(node, branch_id=0):
+        """Count the number of separate branches in the synthesis"""
+        if node["type"] == "reaction":
+            reaction_smiles = node["metadata"]["rsmi"]
+            reactants = reaction_smiles.split(">")[0].split(".")
 
-            mol = Chem.MolFromSmiles(mol_smiles)
-            if mol:
-                # Find chiral centers
-                chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
-                if chiral_centers:
-                    # Store atom indices of stereocenters
-                    stereocenters_by_mol[mol_smiles] = set(
-                        atom_idx for atom_idx, _ in chiral_centers
-                    )
-                    print(
-                        f"Found {len(chiral_centers)} stereocenters at depth {depth} in molecule {mol_smiles}"
-                    )
+            # If there are multiple reactants, this might be a convergent step
+            if len(reactants) > 1:
+                # For each child, assign a new branch ID
+                new_branches = []
+                for i, child in enumerate(node.get("children", [])):
+                    new_branch_id = branch_id * 10 + (i + 1)  # Create unique branch IDs
+                    child_branches = count_branches(child, new_branch_id)
+                    new_branches.extend(child_branches)
+                return new_branches
+            else:
+                # Continue with same branch ID
+                for child in node.get("children", []):
+                    return count_branches(child, branch_id)
 
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Extract atom mappings from reaction SMILES
-            rsmi = node["metadata"]["rsmi"]
-            try:
-                reactants = rsmi.split(">")[0]
-                product = rsmi.split(">")[-1]
+        # If this is a molecule with no children, it's a leaf node (starting material)
+        if node["type"] == "mol" and not node.get("children"):
+            return [branch_id]
 
-                # Create molecules from reactants and product
-                product_mol = Chem.MolFromSmiles(product)
-
-                if product_mol:
-                    # Extract atom mapping numbers from product
-                    product_atom_maps = {}
-                    for atom in product_mol.GetAtoms():
-                        map_num = atom.GetAtomMapNum()
-                        if map_num > 0:
-                            product_atom_maps[map_num] = atom.GetIdx()
-
-                    # Store atom mappings for this reaction
-                    atom_mappings[rsmi] = product_atom_maps
-                    print(f"Extracted atom mappings from reaction: {rsmi}")
-            except Exception as e:
-                print(f"Error processing reaction SMILES: {e}")
-
+        # Process children
+        all_branches = []
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            child_branches = count_branches(child, branch_id)
+            all_branches.extend(child_branches)
 
-    # Traverse the route to collect stereocenters and depths
-    dfs_traverse(route)
+        return all_branches
 
-    # Check if any stereocenter is preserved throughout the synthesis
-    if len(stereocenters_by_mol) >= 2:
-        # Sort molecules by depth
-        mols_by_depth = sorted([(depth, smiles) for smiles, depth in depth_by_mol.items()])
+    # Start branch counting
+    branches = count_branches(route)
 
-        # Check if there's a significant depth difference (at least 2 levels)
-        if len(mols_by_depth) >= 2:
-            min_depth = mols_by_depth[0][0]
-            max_depth = mols_by_depth[-1][0]
+    # If we have multiple unique branches, it's a convergent synthesis
+    unique_branches = set(branches)
+    is_convergent = len(unique_branches) > 1
 
-            if max_depth - min_depth >= 2:
-                # Check if any stereocenter is preserved from early to late stages
-                early_mols = [smiles for depth, smiles in mols_by_depth if depth >= max_depth - 1]
-                late_mols = [smiles for depth, smiles in mols_by_depth if depth <= min_depth + 1]
+    if is_convergent:
+        print(f"Found convergent synthesis with {len(unique_branches)} branches")
 
-                for early_mol in early_mols:
-                    if early_mol in stereocenters_by_mol:
-                        for late_mol in late_mols:
-                            if late_mol in stereocenters_by_mol:
-                                print(
-                                    f"Stereocenter preservation detected from depth {max_depth} to {min_depth}"
-                                )
-                                print(f"Early molecule: {early_mol}")
-                                print(f"Late molecule: {late_mol}")
-                                return True
-
-    return False
+    return is_convergent

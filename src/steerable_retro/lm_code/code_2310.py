@@ -2,102 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects chain extension via ethylene oxide addition to form an alcohol.
+    This function detects a synthetic strategy involving SNAr reaction for C-N bond formation.
     """
-    ethylene_oxide_used = False
+    snar_detected = False
 
-    def dfs_traverse(node):
-        nonlocal ethylene_oxide_used
+    def dfs_traverse(node, depth=0):
+        nonlocal snar_detected
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check if any reactant contains oxirane (ethylene oxide ring)
-                has_oxirane = any(checker.check_ring("oxirane", r) for r in reactants if r)
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                # Check if the product contains a primary alcohol
-                has_primary_alcohol = checker.check_fg("Primary alcohol", product)
+            # Check for SNAr pattern - fluoronitrobenzene + amine
+            fluoro_nitro_pattern = Chem.MolFromSmarts("Fc1c([N+](=O)[O-])cccc1")
+            amine_pattern = Chem.MolFromSmarts("[NH2]c1ccccc1")
+            cn_bond_pattern = Chem.MolFromSmarts("c1ccccc1Nc1ccccc1")
 
-                # Check if the reaction is a ring opening of epoxide with a nucleophile
-                is_epoxide_opening = checker.check_reaction(
-                    "Ring opening of epoxide with amine", rsmi
-                )
+            reactants_with_fluoro_nitro = any(
+                r and r.HasSubstructMatch(fluoro_nitro_pattern) for r in reactants
+            )
+            reactants_with_amine = any(r and r.HasSubstructMatch(amine_pattern) for r in reactants)
 
-                # If no specific reaction match, check for general epoxide opening pattern
-                if not is_epoxide_opening:
-                    # Try to create reaction object to check if it's an epoxide opening
-                    try:
-                        rxn_mol = AllChem.ReactionFromSmarts(rsmi)
-                        if (
-                            rxn_mol
-                            and rxn_mol.GetNumReactantTemplates() > 0
-                            and rxn_mol.GetNumProductTemplates() > 0
-                        ):
-                            # Check if reactants contain oxirane and product doesn't
-                            product_has_oxirane = checker.check_ring("oxirane", product)
-                            if has_oxirane and not product_has_oxirane and has_primary_alcohol:
-                                is_epoxide_opening = True
-                    except:
-                        pass
+            if (
+                reactants_with_fluoro_nitro
+                and reactants_with_amine
+                and product
+                and product.HasSubstructMatch(cn_bond_pattern)
+            ):
+                print(f"Detected SNAr reaction at depth {depth}")
+                snar_detected = True
 
-                if has_oxirane and has_primary_alcohol and is_epoxide_opening:
-                    print(f"Ethylene oxide chain extension detected in reaction: {rsmi}")
-                    ethylene_oxide_used = True
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return ethylene_oxide_used
+
+    print(f"SNAr for C-N bond formation detected: {snar_detected}")
+    return snar_detected

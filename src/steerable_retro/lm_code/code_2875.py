@@ -2,100 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes a Grignard addition to form a C-C bond.
+    This function detects a strategy involving epoxide formation followed by epoxide opening.
     """
-    grignard_detected = False
+    epoxide_formation = False
+    epoxide_opening = False
 
     def dfs_traverse(node):
-        nonlocal grignard_detected
+        nonlocal epoxide_formation, epoxide_opening
 
-        if node["type"] == "reaction" and not grignard_detected:
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for Grignard addition reactions using the checker function
-                if (
-                    checker.check_reaction("Grignard from aldehyde to alcohol", rsmi)
-                    or checker.check_reaction("Grignard from ketone to alcohol", rsmi)
-                    or checker.check_reaction("Grignard with CO2 to carboxylic acid", rsmi)
-                    or checker.check_reaction("Grignard from nitrile to ketone", rsmi)
-                    or checker.check_reaction("Olefination of ketones with Grignard reagents", rsmi)
-                    or checker.check_reaction(
-                        "Olefination of aldehydes with Grignard reagents", rsmi
-                    )
-                    or checker.check_reaction("Formation of Grignard reagents", rsmi)
-                ):
-                    print(f"Grignard addition detected in reaction: {rsmi}")
-                    grignard_detected = True
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                # Additional check for reactions involving Grignard reagents
-                if not grignard_detected:
-                    try:
-                        reactants = rsmi.split(">")[0].split(".")
-                        product = rsmi.split(">")[-1]
+            # Check for epoxide formation
+            epoxide_pattern = Chem.MolFromSmarts("[C]1[O][C]1")
 
-                        # Check if any reactant contains a magnesium halide (Grignard reagent)
-                        for reactant in reactants:
-                            if checker.check_fg("Magnesium halide", reactant):
-                                print(f"Grignard reagent detected in reactant: {reactant}")
-                                grignard_detected = True
-                                break
-                    except Exception as e:
-                        print(f"Error analyzing reaction components: {e}")
+            # Check if epoxide is in product but not in reactants
+            if product and product.HasSubstructMatch(epoxide_pattern):
+                reactants_have_epoxide = any(
+                    r and r.HasSubstructMatch(epoxide_pattern) for r in reactants if r
+                )
+                if not reactants_have_epoxide:
+                    epoxide_formation = True
+                    print("Detected epoxide formation")
 
-        # Continue traversal even if we've found a Grignard reaction
+            # Check for epoxide opening
+            if any(r and r.HasSubstructMatch(epoxide_pattern) for r in reactants if r):
+                if not (product and product.HasSubstructMatch(epoxide_pattern)):
+                    epoxide_opening = True
+                    print("Detected epoxide opening")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
-    print(f"Grignard addition strategy: {grignard_detected}")
-    return grignard_detected
+
+    # Return True if both epoxide formation and opening are detected
+    return epoxide_formation and epoxide_opening

@@ -2,29 +2,33 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy as opposed to a convergent one.
-    It checks if most reactions have only one non-commercial reactant.
+    Detects a linear synthesis strategy (as opposed to convergent) by checking if most reactions
+    have only 1-2 reactants.
     """
     reaction_count = 0
     linear_reaction_count = 0
@@ -32,29 +36,23 @@ def main(route):
     def dfs_traverse(node):
         nonlocal reaction_count, linear_reaction_count
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+
             reaction_count += 1
-
-            # Get children nodes (reactants)
-            children = node.get("children", [])
-
-            # Count non-commercial reactants
-            non_commercial_reactants = 0
-            for child in children:
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    non_commercial_reactants += 1
-
-            # If only one non-commercial reactant, it's a linear step
-            if non_commercial_reactants <= 1:
+            if len(reactants) <= 2:
                 linear_reaction_count += 1
-                print(f"Found linear reaction step")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
 
-    # If more than 70% of reactions are linear, consider it a linear synthesis
-    if reaction_count > 0 and linear_reaction_count / reaction_count >= 0.7:
+    # If at least 80% of reactions are linear (1-2 reactants), consider it a linear strategy
+    if reaction_count > 0 and (linear_reaction_count / reaction_count) >= 0.8:
+        print(
+            f"Linear synthesis strategy detected: {linear_reaction_count}/{reaction_count} reactions are linear"
+        )
         return True
     return False

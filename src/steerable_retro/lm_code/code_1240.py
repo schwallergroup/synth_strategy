@@ -2,58 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves multiple ester hydrolysis steps
-    as part of a protection/deprotection sequence.
+    This function detects a synthetic strategy involving protection/deprotection sequences.
     """
-    ester_hydrolysis_count = 0
+    protection_count = 0
 
     def dfs_traverse(node):
-        nonlocal ester_hydrolysis_count
+        nonlocal protection_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for ester hydrolysis: reactant has ester C(=O)OC pattern and product has carboxylic acid C(=O)O
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                product_mol = Chem.MolFromSmiles(product)
+                try:
+                    # Check for common protection reactions
 
-                if reactant_mol and product_mol:
-                    if reactant_mol.HasSubstructMatch(
-                        Chem.MolFromSmarts("[C](=[O])[O][C]")
-                    ) and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[C](=[O])[O]")):
-                        ester_hydrolysis_count += 1
-                        print(
-                            f"Detected ester hydrolysis at depth {node['metadata'].get('depth', 'unknown')}"
-                        )
+                    # 1. Boc protection
+                    boc_pattern = Chem.MolFromSmarts(
+                        "[#6]-[#6](-[#6])(-[#6])-[#8]-[#6](=[#8])-[#7]"
+                    )
 
-        # Traverse children
+                    # 2. Ester formation (carboxylic acid protection)
+                    ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])")
+
+                    # 3. Benzyl ether formation (alcohol/phenol protection)
+                    benzyl_pattern = Chem.MolFromSmarts("c1ccccc1-[#6]-[#8]")
+
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+
+                    if product_mol:
+                        # Check if product has protection group but not all reactants do
+                        for pattern, name in [
+                            (boc_pattern, "Boc"),
+                            (ester_pattern, "Ester"),
+                            (benzyl_pattern, "Benzyl"),
+                        ]:
+                            if product_mol.HasSubstructMatch(pattern):
+                                all_reactants_have_pattern = all(
+                                    r and r.HasSubstructMatch(pattern) for r in reactant_mols
+                                )
+                                if not all_reactants_have_pattern:
+                                    protection_count += 1
+                                    print(f"{name} protection detected in reaction: {rsmi}")
+                except:
+                    pass
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return ester_hydrolysis_count >= 2  # Return True if at least 2 ester hydrolysis steps are found
+
+    print(f"Total protection reactions detected: {protection_count}")
+    return protection_count >= 2

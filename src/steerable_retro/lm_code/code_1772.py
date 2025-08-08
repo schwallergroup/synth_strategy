@@ -2,68 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves O-alkylation of a phenol.
+    Detects synthesis strategy involving reduction of aldehyde to alcohol.
     """
-    phenol_alkylation_detected = False
+    aldehyde_reduction_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal phenol_alkylation_detected
+    def dfs_traverse(node):
+        nonlocal aldehyde_reduction_found
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            # Check for aldehyde to alcohol reduction
+            aldehyde_pattern = Chem.MolFromSmarts("[C:1]=[O:2]")
+            alcohol_pattern = Chem.MolFromSmarts("[C:1]-[O:2]")
 
-                # Check for phenol in reactants
-                phenol_pattern = Chem.MolFromSmarts("c[OH]")
-                has_phenol = any(
-                    mol.HasSubstructMatch(phenol_pattern) for mol in reactant_mols if mol
-                )
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol and product_mol.HasSubstructMatch(alcohol_pattern):
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(aldehyde_pattern):
+                        print("Detected aldehyde reduction to alcohol")
+                        aldehyde_reduction_found = True
 
-                # Check for alkyl halide in reactants
-                alkyl_halide_pattern = Chem.MolFromSmarts("[#6][Br,I,Cl]")
-                has_alkyl_halide = any(
-                    mol.HasSubstructMatch(alkyl_halide_pattern) for mol in reactant_mols if mol
-                )
-
-                # Check for aryl ether in product
-                aryl_ether_pattern = Chem.MolFromSmarts("c[O][#6]")
-                has_aryl_ether = product_mol and product_mol.HasSubstructMatch(aryl_ether_pattern)
-
-                if has_phenol and (has_alkyl_halide or len(reactants) > 1) and has_aryl_ether:
-                    print(f"Detected phenol O-alkylation at depth {depth}")
-                    phenol_alkylation_detected = True
-            except:
-                print("Error processing reaction SMILES")
-
-        # Process children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return phenol_alkylation_detected
+    return aldehyde_reduction_found

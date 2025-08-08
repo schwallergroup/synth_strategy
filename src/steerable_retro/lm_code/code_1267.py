@@ -2,62 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy involving protected aniline derivatives.
+    This function detects if the synthetic route involves an early-stage
+    bromination followed by a coupling reaction.
     """
-    steps_with_protected_aniline = 0
-    total_steps = 0
+    bromination_depth = -1
+    coupling_depth = -1
 
-    def dfs_traverse(node):
-        nonlocal steps_with_protected_aniline, total_steps
+    def dfs_traverse(node, depth=0):
+        nonlocal bromination_depth, coupling_depth
 
         if node["type"] == "reaction":
-            total_steps += 1
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                reactant_mol = Chem.MolFromSmiles(reactants)
+                try:
+                    # Check for bromination
+                    if "Br" in product and any("Br" in r for r in reactants):
+                        product_mol = Chem.MolFromSmiles(product)
+                        aryl_bromide_pattern = Chem.MolFromSmarts("c-[#35]")
 
-                if reactant_mol:
-                    # Protected aniline pattern (carbamate)
-                    protected_aniline_pattern = Chem.MolFromSmarts("[c]-[N]-[C](=[O])-[O]")
+                        if product_mol is not None and product_mol.HasSubstructMatch(
+                            aryl_bromide_pattern
+                        ):
+                            bromination_depth = depth
+                            print(f"Bromination detected at depth {depth}")
 
-                    if reactant_mol.HasSubstructMatch(protected_aniline_pattern):
-                        steps_with_protected_aniline += 1
-                        print(f"Found protected aniline in step: {rsmi}")
+                    # Check for coupling reaction
+                    if len(reactants) >= 2:
+                        product_mol = Chem.MolFromSmiles(product)
+                        biaryl_pattern = Chem.MolFromSmarts("c:c-c:c")
+
+                        if product_mol is not None and product_mol.HasSubstructMatch(
+                            biaryl_pattern
+                        ):
+                            coupling_depth = depth
+                            print(f"Coupling reaction detected at depth {depth}")
+                except:
+                    pass
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if it's a linear synthesis with protected anilines
-    is_linear_with_protected_aniline = steps_with_protected_aniline >= 2 and total_steps >= 3
+    # Check if bromination occurs at a higher depth (earlier in synthesis) than coupling
+    early_bromination = (
+        bromination_depth > coupling_depth and bromination_depth != -1 and coupling_depth != -1
+    )
+    if early_bromination:
+        print(
+            f"Early-stage bromination (depth {bromination_depth}) followed by coupling (depth {coupling_depth})"
+        )
 
-    print(f"Steps with protected aniline: {steps_with_protected_aniline}/{total_steps}")
-    print(f"Linear synthesis with protected aniline: {is_linear_with_protected_aniline}")
-
-    return is_linear_with_protected_aniline
+    return early_bromination

@@ -2,101 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthesis featuring multiple nitrogen protecting group manipulations
-    (≥2 different protecting groups) with a late-stage introduction of a heteroaromatic ring
+    This function detects if the synthesis involves the formation of a piperazine ring
     via nucleophilic aromatic substitution.
     """
-    # Track protecting groups and late-stage heteroaryl introduction
-    protecting_groups_used = set()
-    late_stage_heteroaryl_introduction = False
-    max_depth = 0
+    piperazine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#7][#6][#6]1")
+    chloro_aromatic_pattern = Chem.MolFromSmarts("[Cl]-[c]")
 
-    # SMARTS patterns for protecting groups
-    phthalimide_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6][#6][#6]1C(=O)[N]C(=O)")
-    boc_pattern = Chem.MolFromSmarts("[#6]C([#6])([#6])OC(=O)[N]")
-    cbz_pattern = Chem.MolFromSmarts("O=C([O][C][c]1[cH][cH][cH][cH][cH]1)[N]")
+    has_piperazine_formation = False
 
-    # Pattern for heteroaromatic rings
-    heteroaromatic_pattern = Chem.MolFromSmarts("[a;!c]1[a][a][a][a][a]1")
+    def dfs_traverse(node):
+        nonlocal has_piperazine_formation
 
-    def dfs_traverse(node, depth=0):
-        nonlocal protecting_groups_used, late_stage_heteroaryl_introduction, max_depth
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        max_depth = max(max_depth, depth)
+            try:
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product = Chem.MolFromSmiles(product_smiles)
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for protecting groups
-                if mol.HasSubstructMatch(phthalimide_pattern):
-                    protecting_groups_used.add("phthalimide")
-                if mol.HasSubstructMatch(boc_pattern):
-                    protecting_groups_used.add("boc")
-                if mol.HasSubstructMatch(cbz_pattern):
-                    protecting_groups_used.add("cbz")
+                # Check if product has piperazine
+                has_piperazine_in_product = product is not None and product.HasSubstructMatch(
+                    piperazine_pattern
+                )
 
-        elif node["type"] == "reaction":
-            # Check for late-stage heteroaryl introduction
-            if depth <= 1:  # Late stage (depth 0 or 1)
-                if "rsmi" in node.get("metadata", {}):
-                    rsmi = node["metadata"]["rsmi"]
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                # Check if any reactant has chloro-aromatic
+                has_chloro_aromatic_in_reactants = any(
+                    r is not None and r.HasSubstructMatch(chloro_aromatic_pattern)
+                    for r in reactants
+                )
 
-                    # Check if any reactant has a heteroaromatic ring
-                    reactant_has_heteroaromatic = False
-                    for reactant in reactants:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(heteroaromatic_pattern):
-                            reactant_has_heteroaromatic = True
+                # Check if any reactant has piperazine precursor (secondary amine)
+                has_secondary_amine_in_reactants = any(
+                    r is not None and r.HasSubstructMatch(Chem.MolFromSmarts("[NH]"))
+                    for r in reactants
+                )
 
-                    # Check if product has a heteroaromatic ring
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol and product_mol.HasSubstructMatch(heteroaromatic_pattern):
-                        if reactant_has_heteroaromatic:
-                            # Check if this is likely an SNAr reaction (halogen on heteroaromatic)
-                            halogen_heteroaromatic = Chem.MolFromSmarts("[a;!c][a]([F,Cl,Br,I])")
-                            for reactant in reactants:
-                                mol = Chem.MolFromSmiles(reactant)
-                                if mol and mol.HasSubstructMatch(halogen_heteroaromatic):
-                                    late_stage_heteroaryl_introduction = True
-                                    print(
-                                        f"Late-stage heteroaryl introduction detected at depth {depth}"
-                                    )
+                # Check if this is a piperazine formation via nucleophilic aromatic substitution
+                if (
+                    has_piperazine_in_product
+                    and has_chloro_aromatic_in_reactants
+                    and has_secondary_amine_in_reactants
+                ):
+                    print("Found piperazine formation via nucleophilic aromatic substitution")
+                    has_piperazine_formation = True
+            except:
+                print(f"Error processing reaction SMILES: {rsmi}")
 
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if the strategy is present
-    has_multiple_protecting_groups = len(protecting_groups_used) >= 2
-
-    if has_multiple_protecting_groups and late_stage_heteroaryl_introduction:
-        print(f"Protection-deprotection cascade with late-stage heteroaryl introduction detected")
-        print(f"Protecting groups used: {protecting_groups_used}")
-        return True
-    return False
+    return has_piperazine_formation

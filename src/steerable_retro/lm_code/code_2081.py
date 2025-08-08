@@ -2,56 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes that convert a nitrile to a heterocycle.
+    This function detects if the synthetic route involves early-stage bromination
+    (typically at depth >= 3).
     """
-    nitrile_to_heterocycle = False
+    bromination_detected = False
 
-    def dfs_traverse(node):
-        nonlocal nitrile_to_heterocycle
+    def dfs_traverse(node, depth=0):
+        nonlocal bromination_detected
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction" and depth >= 3:  # Early stage reactions
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants_smiles = rsmi.split(">")[0]
                 product_smiles = rsmi.split(">")[-1]
 
-                # Check for nitrile in reactants
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
-                nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
-                nitrile_present = any(r and r.HasSubstructMatch(nitrile_pattern) for r in reactants)
+                # Check if product contains bromine but reactants don't all have it
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol and "Br" in product_smiles:
+                    # Check if any reactant doesn't have bromine
+                    reactant_list = reactants_smiles.split(".")
+                    all_reactants_have_bromine = True
+                    for r in reactant_list:
+                        if "Br" not in r:
+                            all_reactants_have_bromine = False
+                            break
 
-                # Check for heterocycle in product
-                product = Chem.MolFromSmiles(product_smiles)
-                # Generic heterocycle pattern - this is simplified and might need refinement
-                heterocycle_pattern = Chem.MolFromSmarts("*1[n,o,s]*[n,o,s]*1")
+                    if not all_reactants_have_bromine:
+                        print(f"Early-stage bromination detected at depth {depth}")
+                        bromination_detected = True
 
-                if product and product.HasSubstructMatch(heterocycle_pattern) and nitrile_present:
-                    nitrile_to_heterocycle = True
-                    print("Detected conversion of nitrile to heterocycle")
-
+        # Traverse children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return nitrile_to_heterocycle
+    return bromination_detected

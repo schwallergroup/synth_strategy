@@ -2,68 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a late-stage amide formation.
+    Detects if the synthesis follows a linear pattern without convergent steps.
     """
-    late_stage_amide_formation = False
+    max_reactants_per_step = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_amide_formation
+    def dfs_traverse(node):
+        nonlocal max_reactants_per_step
 
-        if (
-            node["type"] == "reaction" and depth <= 1
-        ):  # Check only late-stage reactions (depth 0 or 1)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Extract reactants
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-                # Check for acyl chloride in reactants
-                acyl_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
-                # Check for amide in product
-                amide_pattern = Chem.MolFromSmarts("C(=O)N")
+            # Count number of reactants
+            num_reactants = len(reactants_smiles)
+            max_reactants_per_step = max(max_reactants_per_step, num_reactants)
 
-                acyl_chloride_found = False
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(acyl_chloride_pattern):
-                            acyl_chloride_found = True
-                            break
-                    except:
-                        continue
-
-                if acyl_chloride_found:
-                    try:
-                        prod_mol = Chem.MolFromSmiles(product)
-                        if prod_mol and prod_mol.HasSubstructMatch(amide_pattern):
-                            print("Late-stage amide formation detected at depth", depth)
-                            late_stage_amide_formation = True
-                    except:
-                        pass
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return late_stage_amide_formation
+
+    # Consider it linear if no step has more than 2 reactants
+    is_linear = max_reactants_per_step <= 2
+
+    if is_linear:
+        print(
+            f"Confirmed linear synthesis pattern (max reactants per step: {max_reactants_per_step})"
+        )
+    else:
+        print(f"Detected convergent synthesis (max reactants per step: {max_reactants_per_step})")
+
+    return is_linear

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,73 +54,88 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthetic route involves thiazole ring formation from a chloroacetyl compound and thiourea.
+    This function detects if the synthesis includes a late-stage amidation
+    (carboxylic acid to amide transformation in the last or second-to-last step).
     """
-    thiazole_formed = False
-    thiourea_used = False
-    chloroacetyl_used = False
+    has_late_amidation = False
 
-    def dfs_traverse(node):
-        nonlocal thiazole_formed, thiourea_used, chloroacetyl_used
+    def dfs_traverse(node, depth=0, path=None):
+        nonlocal has_late_amidation
 
-        if node["type"] == "reaction":
+        if path is None:
+            path = []
+
+        # Add current node to path
+        path.append(node)
+
+        # Check if this is a reaction node at depth 1 or 2 (late-stage)
+        if node["type"] == "reaction" and 1 <= depth <= 2:
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for thiourea in reactants
+                print(f"Examining reaction at depth {depth}: {rsmi}")
+
+                # Check if this is an amidation reaction using comprehensive list
+                amidation_reactions = [
+                    "Carboxylic acid with primary amine to amide",
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                    "Ester with primary amine to amide",
+                    "Acyl chloride with secondary amine to amide",
+                    "Ester with secondary amine to amide",
+                    "Acyl chloride with ammonia to amide",
+                    "Ester with ammonia to amide",
+                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    "Schotten-Baumann to ester",
+                    "Acyl chloride with primary amine to imide",
+                ]
+
+                # Check if any of the known amidation reactions match
+                is_amidation = False
+                for reaction in amidation_reactions:
+                    if checker.check_reaction(reaction, rsmi):
+                        print(f"Matched reaction type: {reaction}")
+                        is_amidation = True
+                        break
+
+                # Define functional groups to check
+                acid_groups = ["Carboxylic acid", "Acyl halide", "Ester", "Anhydride"]
+                amide_groups = ["Primary amide", "Secondary amide", "Tertiary amide"]
+
+                # Check for acid groups in reactants
+                has_acid = False
                 for reactant in reactants:
-                    try:
-                        if checker.check_fg("Thiourea", reactant):
-                            thiourea_used = True
-                            print(f"Found thiourea in reactant: {reactant}")
-                    except Exception as e:
-                        print(f"Error checking thiourea: {e}")
-                        continue
+                    for acid in acid_groups:
+                        if checker.check_fg(acid, reactant):
+                            print(f"Found {acid} in reactant: {reactant}")
+                            has_acid = True
 
-                # Check for chloroacetyl compound in reactants (has both primary halide and ketone)
-                for reactant in reactants:
-                    try:
-                        # Look for a molecule with both a primary halide (specifically chloride) and a ketone/acyl group
-                        mol = Chem.MolFromSmiles(reactant)
-                        if (
-                            mol
-                            and "Cl" in reactant
-                            and checker.check_fg("Primary halide", reactant)
-                            and checker.check_fg("Ketone", reactant)
-                        ):
-                            chloroacetyl_used = True
-                            print(f"Found chloroacetyl compound in reactant: {reactant}")
-                    except Exception as e:
-                        print(f"Error checking chloroacetyl: {e}")
-                        continue
+                # Check for amide groups in product
+                has_amide = False
+                for amide in amide_groups:
+                    if checker.check_fg(amide, product):
+                        print(f"Found {amide} in product: {product}")
+                        has_amide = True
 
-                # Check for thiazole formation (thiazole in product but not in reactants)
-                try:
-                    # First check if thiazole is in any reactants
-                    thiazole_in_reactants = any(
-                        checker.check_ring("thiazole", r) for r in reactants
-                    )
+                # If we didn't match a known reaction but found acid → amide transformation
+                if not is_amidation and has_acid and has_amide:
+                    print("Detected amidation based on functional group transformation")
+                    is_amidation = True
 
-                    # Then check if thiazole is in the product
-                    if checker.check_ring("thiazole", product) and not thiazole_in_reactants:
-                        thiazole_formed = True
-                        print(f"Found thiazole formation in product: {product}")
+                if is_amidation and has_acid and has_amide:
+                    has_late_amidation = True
+                    print(f"Confirmed late-stage amidation at depth {depth}")
+                    print(f"Reaction SMILES: {rsmi}")
 
-                    # Alternative: directly check if this is a thiazole formation reaction
-                    if checker.check_reaction("thiazole", rsmi):
-                        thiazole_formed = True
-                        print(f"Detected thiazole formation reaction: {rsmi}")
-                except Exception as e:
-                    print(f"Error checking thiazole formation: {e}")
-
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            # Create a new path for each branch to avoid modifying the current path
+            dfs_traverse(child, depth + 1, path.copy())
 
     dfs_traverse(route)
-
-    # Return True if both patterns were found and thiazole was formed
-    result = thiazole_formed and thiourea_used and chloroacetyl_used
-    print(f"Thiazole formation from chloroacetyl detected: {result}")
-    return result
+    print(
+        f"Synthesis {'includes' if has_late_amidation else 'does not include'} late-stage amidation"
+    )
+    return has_late_amidation

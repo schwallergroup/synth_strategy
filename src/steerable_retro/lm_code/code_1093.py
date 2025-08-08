@@ -2,119 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route maintains a cyano group
-    throughout the synthesis.
+    This function detects preservation of bromine functional handle throughout the synthesis.
+    It checks if the target molecule and a significant portion of intermediates contain a bromine atom.
     """
-    # Track the final product (target molecule)
-    final_product_smiles = route["smiles"]
-    print(f"Final product: {final_product_smiles}")
+    # Track molecules with and without bromine
+    molecules_with_bromine = 0
+    total_non_starting_molecules = 0
+    has_bromine_in_target = False
 
-    # Check if final product has cyano group
-    if not checker.check_fg("Nitrile", final_product_smiles):
-        print(f"Final product does not have a cyano group: {final_product_smiles}")
-        return False
+    def dfs_traverse(node, depth=0):
+        nonlocal molecules_with_bromine, total_non_starting_molecules, has_bromine_in_target
 
-    # Track molecules in the synthetic pathway that should maintain the cyano group
-    cyano_maintained = True
+        if node["type"] == "mol" and node["smiles"]:
+            # Skip starting materials (in_stock=True)
+            if not node.get("in_stock", False):
+                mol_smiles = node["smiles"]
+                total_non_starting_molecules += 1
 
-    def dfs_traverse(node, depth=0, in_cyano_path=False):
-        nonlocal cyano_maintained
+                # Check if molecule contains bromine using RDKit
+                mol = Chem.MolFromSmiles(mol_smiles)
 
-        # For molecule nodes
-        if node["type"] == "mol" and node.get("smiles"):
-            mol_smiles = node["smiles"]
-            has_cyano = checker.check_fg("Nitrile", mol_smiles)
+                # Check for bromine atoms directly
+                has_bromine = any(atom.GetSymbol() == "Br" for atom in mol.GetAtoms())
 
-            # If this is the first node (final product), mark it as in the cyano path
-            if depth == 0:
-                in_cyano_path = has_cyano
-                print(f"Depth {depth}, Final product has cyano: {has_cyano}")
+                # If molecule has bromine, increment counter
+                if has_bromine:
+                    molecules_with_bromine += 1
+                    print(f"Molecule with bromine found at depth {depth}: {mol_smiles}")
 
-            # If we're in a path that should maintain cyano but this molecule doesn't have it
-            if in_cyano_path and not has_cyano and not node.get("in_stock", False):
-                print(f"Molecule at depth {depth} without cyano group found: {mol_smiles}")
-                cyano_maintained = False
+                    # If this is the target molecule (depth 0), mark it
+                    if depth == 0:
+                        has_bromine_in_target = True
+                else:
+                    print(f"Molecule WITHOUT bromine found at depth {depth}: {mol_smiles}")
 
-        # For reaction nodes, check if the cyano group is maintained through the reaction
-        elif (
-            node["type"] == "reaction"
-            and in_cyano_path
-            and "metadata" in node
-            and "rsmi" in node["metadata"]
-        ):
-            rsmi = node["metadata"]["rsmi"]
-            product = rsmi.split(">")[-1]
-            reactants = rsmi.split(">")[0].split(".")
-
-            # Check if product has cyano
-            product_has_cyano = checker.check_fg("Nitrile", product)
-
-            # Check if at least one reactant has cyano
-            reactant_has_cyano = any(checker.check_fg("Nitrile", r) for r in reactants)
-
-            # If cyano is in product but not in any reactant, it's being introduced
-            if product_has_cyano and not reactant_has_cyano:
-                print(f"Cyano group introduced in reaction: {rsmi}")
-                # This is fine - cyano is being introduced
-
-            # If cyano is in reactant but not in product, it's being removed
-            elif reactant_has_cyano and not product_has_cyano:
-                print(f"Cyano group removed in reaction: {rsmi}")
-                cyano_maintained = False
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1, in_cyano_path)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    return cyano_maintained
+
+    # Calculate threshold - at least 40% of intermediates should have bromine
+    threshold_count = total_non_starting_molecules * 0.4
+
+    # Check if target has bromine and enough intermediates have bromine
+    bromine_preserved = has_bromine_in_target and (molecules_with_bromine >= threshold_count)
+
+    print(
+        f"Summary: {molecules_with_bromine}/{total_non_starting_molecules} non-starting molecules have bromine"
+    )
+    print(f"Target molecule has bromine: {has_bromine_in_target}")
+    print(f"Threshold count: {threshold_count}")
+    print(f"Bromine preservation strategy: {bromine_preserved}")
+
+    return bromine_preserved

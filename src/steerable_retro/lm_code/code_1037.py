@@ -2,66 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic route that includes ring opening of a cyclic structure.
+    This function detects a silyl protection-deprotection sequence in the synthesis.
+    Specifically looking for TBS (tert-butyldimethylsilyl) protection of alcohols.
     """
-    has_ring_opening = False
+    protection_found = False
+    deprotection_found = False
 
     def dfs_traverse(node):
-        nonlocal has_ring_opening
+        nonlocal protection_found, deprotection_found
 
         if node["type"] == "reaction":
-            try:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1].split(".")
+                reactants_smiles = rsmi.split(">")[0]
+                products_smiles = rsmi.split(">")[-1]
 
-                # Convert SMILES to molecules, filtering out None values
-                reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-                products = [Chem.MolFromSmiles(smi) for smi in product_smiles if smi]
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".") if r]
+                products = [Chem.MolFromSmiles(p) for p in products_smiles.split(".") if p]
 
-                # Filter out None molecules (failed parsing)
-                reactants = [mol for mol in reactants if mol is not None]
-                products = [mol for mol in products if mol is not None]
+                # Check for silyl protection (alcohol to silyl ether)
+                silyl_ether_patt = Chem.MolFromSmarts("[#6]-[#14](-[#6])(-[#6])-[#8]-[#6]")
+                alcohol_patt = Chem.MolFromSmarts("[#8H]-[#6]")
 
-                if reactants and products:  # Ensure we have valid molecules
-                    # Count rings in reactants and products
-                    reactant_rings = sum(mol.GetRingInfo().NumRings() for mol in reactants)
-                    product_rings = sum(mol.GetRingInfo().NumRings() for mol in products)
+                # Protection: alcohol in reactants, silyl ether in products
+                if any(mol.HasSubstructMatch(alcohol_patt) for mol in reactants if mol) and any(
+                    mol.HasSubstructMatch(silyl_ether_patt) for mol in products if mol
+                ):
+                    protection_found = True
+                    print("Found silyl protection reaction")
 
-                    # Check if there's a decrease in ring count
-                    if product_rings < reactant_rings:
-                        print(f"Found ring opening: {reactant_rings} rings → {product_rings} rings")
-                        has_ring_opening = True
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                # Deprotection: silyl ether in reactants, alcohol in products
+                if any(mol.HasSubstructMatch(silyl_ether_patt) for mol in reactants if mol) and any(
+                    mol.HasSubstructMatch(alcohol_patt) for mol in products if mol
+                ):
+                    deprotection_found = True
+                    print("Found silyl deprotection reaction")
 
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Ring opening strategy detected: {has_ring_opening}")
-    return has_ring_opening
+    # Return True if both protection and deprotection were found
+    return protection_found and deprotection_found

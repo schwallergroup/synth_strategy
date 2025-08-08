@@ -2,56 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis strategy involving difluoromethoxy ether formation
-    from a phenol group.
+    This function detects transformation of aryl halide to boronic acid.
     """
-    difluoromethoxy_formation = False
+    halogen_to_boronic_detected = False
 
     def dfs_traverse(node):
-        nonlocal difluoromethoxy_formation
+        nonlocal halogen_to_boronic_detected
 
         if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if any reactant has a phenol group
-            phenol_present = any(
-                Chem.MolFromSmiles(r)
-                and Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts("[c][OH]"))
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
+            # Check for aryl halide in reactants
+            aryl_halide_present = False
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol:
+                    aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,Cl,I]")
+                    if reactant_mol.HasSubstructMatch(aryl_halide_pattern):
+                        aryl_halide_present = True
+                        break
 
-            # Check if product has a difluoromethoxy group
+            # Check for boronic acid in product
             product_mol = Chem.MolFromSmiles(product)
-            if product_mol and product_mol.HasSubstructMatch(
-                Chem.MolFromSmarts("[c][O][CH]([F])[F]")
-            ):
-                if phenol_present:
-                    difluoromethoxy_formation = True
-                    print("Detected difluoromethoxy ether formation from phenol")
+            if product_mol and aryl_halide_present:
+                boronic_acid_pattern = Chem.MolFromSmarts("[c][B]([OH])[OH]")
+                if product_mol.HasSubstructMatch(boronic_acid_pattern):
+                    halogen_to_boronic_detected = True
+                    print("Halogen to boronic acid transformation detected in reaction:", rsmi)
 
         # Traverse children
         for child in node.get("children", []):
@@ -60,5 +65,4 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Difluoromethoxy ether formation strategy detected: {difluoromethoxy_formation}")
-    return difluoromethoxy_formation
+    return halogen_to_boronic_detected

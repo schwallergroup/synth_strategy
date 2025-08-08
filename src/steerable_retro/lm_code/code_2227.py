@@ -2,72 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a synthesis preserves an amide functional group
-    throughout the synthesis.
+    This function detects if the synthetic route involves multiple sequential aromatic substitutions.
     """
-    # SMARTS pattern for amide group
-    amide_pattern = Chem.MolFromSmarts("[NH][C](=O)")
+    aromatic_substitutions = []
 
-    # Track molecules at each depth
-    molecules_by_depth = {}
+    def dfs_traverse(node):
+        nonlocal aromatic_substitutions
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol" and "smiles" in node:
-            # Store molecule at this depth
-            if depth not in molecules_by_depth:
-                molecules_by_depth[depth] = []
-            molecules_by_depth[depth].append(node["smiles"])
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                depth = node.get("depth", 0)
 
-        # Process children
+                # Check for aromatic chlorination
+                if re.search(r"\[Cl:[0-9]+\]", rsmi):
+                    aromatic_substitutions.append(("chlorination", depth))
+                    print(f"Found aromatic chlorination at depth {depth}: {rsmi}")
+
+                # Check for aromatic nitration
+                if re.search(r"\[N\+:[0-9]+\]\(=\[O:[0-9]+\]\)\[O-:[0-9]+\]", rsmi):
+                    aromatic_substitutions.append(("nitration", depth))
+                    print(f"Found aromatic nitration at depth {depth}: {rsmi}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if amide group is present at all depths
-    amide_preserved = True
-    for depth, molecules in molecules_by_depth.items():
-        depth_has_amide = False
-        for smiles in molecules:
-            try:
-                mol = Chem.MolFromSmiles(smiles)
-                if mol and mol.HasSubstructMatch(amide_pattern):
-                    depth_has_amide = True
-                    break
-            except:
-                continue
-
-        if (
-            not depth_has_amide and molecules
-        ):  # If we have molecules at this depth but none with amide
-            amide_preserved = False
-            break
-
-    if amide_preserved:
-        print("Amide functional group is preserved throughout synthesis")
-    else:
-        print("Amide functional group is not preserved throughout synthesis")
-
-    return amide_preserved
+    # Check if we have at least 2 different aromatic substitutions
+    substitution_types = set([sub[0] for sub in aromatic_substitutions])
+    return len(substitution_types) >= 2

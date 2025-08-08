@@ -2,126 +2,46 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes where specific aromatic motifs (chlorobenzene and phenyl ether)
-    are maintained throughout the synthesis.
+    Detects the combined protection-activation-etherification strategy with late-stage sulfonamide formation.
     """
-    # Track if motifs are present in main pathway molecules
-    main_pathway_molecules = []
-    target_molecule = None
+    # Check for all components of the strategy
+    has_phthalimide = phthalimide_protection_strategy(route)
+    has_tosylation = tosylation_activation_strategy(route)
+    has_etherification = etherification_via_tosylate_strategy(route)
+    has_late_sulfonamide = late_stage_sulfonamide_formation(route)
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol" and node["smiles"]:
-            smiles = node["smiles"]
-            mol = Chem.MolFromSmiles(smiles)
+    # The full strategy requires at least 3 of the 4 components
+    strategy_score = sum(
+        [has_phthalimide, has_tosylation, has_etherification, has_late_sulfonamide]
+    )
+    full_strategy_detected = strategy_score >= 3
 
-            # Skip small molecules (likely reagents/solvents)
-            if mol.GetNumAtoms() < 6:
-                print(f"Skipping small molecule: {smiles}")
-                return
-
-            # The first molecule in DFS is the target molecule
-            if depth == 0:
-                nonlocal target_molecule
-                target_molecule = {
-                    "smiles": smiles,
-                    "has_chlorobenzene": checker.check_fg("Aromatic halide", smiles),
-                    "has_phenyl_ether": checker.check_fg("Ether", smiles)
-                    and checker.check_ring("benzene", smiles),
-                }
-                print(f"Target molecule: {smiles}")
-                print(f"  Has chlorobenzene: {target_molecule['has_chlorobenzene']}")
-                print(f"  Has phenyl ether: {target_molecule['has_phenyl_ether']}")
-            else:
-                # For other molecules, check if they're part of the main pathway
-                # by verifying they have similar structure to the target
-                if mol.GetNumHeavyAtoms() > 10:  # Main pathway molecules are typically larger
-                    main_pathway_molecules.append(
-                        {
-                            "smiles": smiles,
-                            "has_chlorobenzene": checker.check_fg("Aromatic halide", smiles),
-                            "has_phenyl_ether": checker.check_fg("Ether", smiles)
-                            and checker.check_ring("benzene", smiles),
-                        }
-                    )
-                    print(f"Main pathway molecule: {smiles}")
-                    print(f"  Has chlorobenzene: {main_pathway_molecules[-1]['has_chlorobenzene']}")
-                    print(f"  Has phenyl ether: {main_pathway_molecules[-1]['has_phenyl_ether']}")
-
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
-
-    # Start traversal
-    dfs_traverse(route)
-
-    # Check if we have enough molecules in the main pathway
-    if len(main_pathway_molecules) < 2:
-        print(f"Not enough main pathway molecules: {len(main_pathway_molecules)}")
-        return False
-
-    # Check if target molecule has both motifs
-    if not (target_molecule["has_chlorobenzene"] and target_molecule["has_phenyl_ether"]):
-        print("Target molecule doesn't have both motifs")
-        return False
-
-    # Check if all main pathway molecules have both motifs
-    all_have_chlorobenzene = all(mol["has_chlorobenzene"] for mol in main_pathway_molecules)
-    all_have_phenyl_ether = all(mol["has_phenyl_ether"] for mol in main_pathway_molecules)
-
-    result = all_have_chlorobenzene and all_have_phenyl_ether
-
-    print(f"Maintained aromatic motifs strategy detected: {result}")
-    print(f"All main pathway molecules have chlorobenzene: {all_have_chlorobenzene}")
-    print(f"All main pathway molecules have phenyl ether: {all_have_phenyl_ether}")
-    print(f"Total main pathway molecules: {len(main_pathway_molecules)}")
-
-    return result
+    print(
+        f"Protection-activation-etherification strategy detected: {full_strategy_detected} (score: {strategy_score}/4)"
+    )
+    return full_strategy_detected

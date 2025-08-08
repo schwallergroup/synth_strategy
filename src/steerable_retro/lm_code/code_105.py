@@ -2,56 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a convergent approach with multiple fragment couplings.
+    This function detects sulfonamide formation from amine and sulfonyl chloride.
     """
-    fragment_couplings = 0
+    sulfonamide_formation_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal fragment_couplings
+    def dfs_traverse(node):
+        nonlocal sulfonamide_formation_found
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # If there are multiple reactants, it might be a fragment coupling
-            if len(reactants_smiles) >= 2:
-                # Check if both reactants are complex (not just simple reagents)
-                complex_reactants = 0
-                for r_smiles in reactants_smiles:
-                    try:
-                        r_mol = Chem.MolFromSmiles(r_smiles)
-                        if r_mol and r_mol.GetNumAtoms() > 6:  # Arbitrary threshold for "complex"
-                            complex_reactants += 1
-                    except:
-                        pass
+            try:
+                product_mol = Chem.MolFromSmiles(product)
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
 
-                if complex_reactants >= 2:
-                    fragment_couplings += 1
-                    print(f"Fragment coupling detected at depth {depth}")
+                # Check for sulfonyl chloride pattern
+                sulfonyl_chloride_pattern = Chem.MolFromSmarts("S(=O)(=O)Cl")
+                # Check for amine pattern
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                # Check for sulfonamide pattern in product
+                sulfonamide_pattern = Chem.MolFromSmarts("S(=O)(=O)[NH]")
 
+                reactant_has_sulfonyl_chloride = any(
+                    mol and mol.HasSubstructMatch(sulfonyl_chloride_pattern)
+                    for mol in reactant_mols
+                )
+                reactant_has_amine = any(
+                    mol and mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols
+                )
+                product_has_sulfonamide = product_mol and product_mol.HasSubstructMatch(
+                    sulfonamide_pattern
+                )
+
+                if (
+                    reactant_has_sulfonyl_chloride
+                    and reactant_has_amine
+                    and product_has_sulfonamide
+                ):
+                    print("Detected sulfonamide formation")
+                    sulfonamide_formation_found = True
+            except:
+                pass
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from root
     dfs_traverse(route)
-    return fragment_couplings >= 2  # Return True if at least 2 fragment couplings are detected
+    return sulfonamide_formation_found

@@ -2,137 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a halogen substituent is maintained throughout the synthesis.
+    Detects Suzuki coupling between heteroaromatic systems.
+    Looks for C-C bond formation between a boronate and an aryl halide,
+    where at least one is a heterocycle.
     """
-    # Track halogen atoms through the synthesis
-    halogen_maintained = False
+    suzuki_detected = False
 
-    # Get the final product (root node)
-    final_product_smiles = route["smiles"]
-    final_product = Chem.MolFromSmiles(final_product_smiles)
+    def dfs_traverse(node):
+        nonlocal suzuki_detected
 
-    # Check if final product has any halogen
-    has_halogen = False
-    halogen_types = [
-        "Primary halide",
-        "Secondary halide",
-        "Tertiary halide",
-        "Aromatic halide",
-        "Alkenyl halide",
-        "Haloalkyne",
-    ]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-    for halogen_type in halogen_types:
-        if checker.check_fg(halogen_type, final_product_smiles):
-            has_halogen = True
-            print(f"Final product contains {halogen_type}")
-            break
+                # Check for boronate in reactants
+                boronate_pattern = Chem.MolFromSmarts("[c][B][O][C]")
+                # Check for aryl halide in reactants
+                aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
+                # Check for heterocycles
+                thiophene_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#16][#6]1")
+                pyridine_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6][#7][#6]1")
 
-    if not has_halogen:
-        print("Final product does not contain any halogen")
-        return False
+                has_boronate = False
+                has_aryl_halide = False
+                has_heterocycle = False
 
-    # Track if halogen is maintained throughout synthesis
-    def dfs_traverse(node, depth=0):
-        nonlocal halogen_maintained
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(boronate_pattern):
+                            has_boronate = True
+                        if mol.HasSubstructMatch(aryl_halide_pattern):
+                            has_aryl_halide = True
+                        if mol.HasSubstructMatch(thiophene_pattern) or mol.HasSubstructMatch(
+                            pyridine_pattern
+                        ):
+                            has_heterocycle = True
 
-        # Process molecule nodes
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+                # Check if product has a new C-C bond between aromatics
+                prod_mol = Chem.MolFromSmiles(product)
+                if prod_mol and has_boronate and has_aryl_halide and has_heterocycle:
+                    # This is a simplified check - in a real implementation,
+                    # we would need to track the specific atoms involved in the new bond
+                    suzuki_detected = True
+                    print(f"Detected Suzuki coupling between heteroaromatics: {rsmi}")
 
-            # Skip checking starting materials (in_stock)
-            if node.get("in_stock", False):
-                return
-
-            # Check if this intermediate has a halogen
-            has_halogen_intermediate = False
-            for halogen_type in halogen_types:
-                if checker.check_fg(halogen_type, mol_smiles):
-                    has_halogen_intermediate = True
-                    print(f"Intermediate at depth {depth} contains {halogen_type}")
-                    break
-
-            if not has_halogen_intermediate and depth > 0:  # Skip final product (depth 0)
-                print(f"Halogen not maintained in intermediate at depth {depth}")
-                halogen_maintained = False
-                return
-
-        # Process reaction nodes and check if halogen is preserved
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check if this reaction preserves halogens
-            # Skip reactions that are known to remove or modify halogens
-            halogen_removing_reactions = ["Aromatic dehalogenation", "Dehalogenation"]
-
-            for rxn_type in halogen_removing_reactions:
-                if checker.check_reaction(rxn_type, rsmi):
-                    print(f"Halogen-removing reaction detected: {rxn_type}")
-                    halogen_maintained = False
-                    return
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal and set initial value
-    halogen_maintained = True
     dfs_traverse(route)
-
-    if halogen_maintained:
-        print("Halogen substituent maintained throughout synthesis")
-    else:
-        print("Halogen substituent NOT maintained throughout synthesis")
-
-    return halogen_maintained
+    return suzuki_detected

@@ -2,66 +2,91 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects N-alkylation as a fragment coupling strategy.
+    This function detects if the synthetic route includes a deprotection step
+    (acetamide to amine) followed by an amidation reaction.
     """
-    n_alkylation_found = False
+    # Track reactions in sequence
+    reaction_sequence = []
 
     def dfs_traverse(node):
-        nonlocal n_alkylation_found
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Check reaction type
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                # Check for N-alkylation
-                amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
-                mesylate_pattern = Chem.MolFromSmarts("[#6]-[#8][#16](=[#8])(=[#8])[#6]")
+            if product_mol:
+                # Check for deprotection (acetamide to amine)
+                acetamide_pattern = Chem.MolFromSmarts("[#6][#6](=[#8])[#7]")
+                amine_pattern = Chem.MolFromSmarts("[#7;H2]")
 
-                product_mol = Chem.MolFromSmiles(product)
-
-                amine_found = False
-                mesylate_found = False
-
-                for reactant in reactants:
+                is_deprotection = False
+                for reactant in reactants_smiles:
                     reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        if reactant_mol.HasSubstructMatch(amine_pattern):
-                            amine_found = True
-                        if reactant_mol.HasSubstructMatch(mesylate_pattern):
-                            mesylate_found = True
+                    if (
+                        reactant_mol
+                        and reactant_mol.HasSubstructMatch(acetamide_pattern)
+                        and product_mol.HasSubstructMatch(amine_pattern)
+                    ):
+                        is_deprotection = True
+                        reaction_sequence.append("deprotection")
+                        print("Detected acetamide deprotection")
+                        break
 
-                if amine_found and mesylate_found:
-                    n_alkylation_found = True
-                    print("N-alkylation fragment coupling detected")
+                # Check for amidation
+                if not is_deprotection:
+                    amide_pattern = Chem.MolFromSmarts("[#6](=[#8])[#7]")
+                    if product_mol.HasSubstructMatch(amide_pattern):
+                        # Check if this is a new amide formation
+                        amide_count_product = len(product_mol.GetSubstructMatches(amide_pattern))
+                        amide_count_reactants = 0
 
-        # Traverse children
+                        for reactant in reactants_smiles:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol:
+                                amide_count_reactants += len(
+                                    reactant_mol.GetSubstructMatches(amide_pattern)
+                                )
+
+                        if amide_count_product > amide_count_reactants:
+                            reaction_sequence.append("amidation")
+                            print("Detected amide formation")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return n_alkylation_found
+    # Check if deprotection is followed by amidation
+    for i in range(len(reaction_sequence) - 1):
+        if reaction_sequence[i] == "deprotection" and reaction_sequence[i + 1] == "amidation":
+            return True
+
+    return False

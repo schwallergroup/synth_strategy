@@ -2,61 +2,52 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving conversion of aryl hydroxyl
-    to aryl chloride.
+    Detects if the synthesis route follows a linear strategy rather than convergent.
+    Checks if most reactions have only 1-2 reactants.
     """
-    has_hydroxyl_to_chloride = False
+    reaction_count = 0
+    linear_reaction_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_hydroxyl_to_chloride
+    def dfs_traverse(node):
+        nonlocal reaction_count, linear_reaction_count
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
 
-            # Check for aryl hydroxyl in reactants and aryl chloride in product
-            aryl_hydroxyl_pattern = Chem.MolFromSmarts("[c][OH]")
-            aryl_chloride_pattern = Chem.MolFromSmarts("[c][Cl]")
+            reaction_count += 1
+            if len(reactants) <= 2:
+                linear_reaction_count += 1
 
-            has_aryl_hydroxyl = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(aryl_hydroxyl_pattern)
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
-            product_mol = Chem.MolFromSmiles(product)
-            has_aryl_chloride = product_mol and product_mol.HasSubstructMatch(aryl_chloride_pattern)
-
-            if has_aryl_hydroxyl and has_aryl_chloride:
-                print(f"Detected hydroxyl to chloride conversion at depth {depth}")
-                has_hydroxyl_to_chloride = True
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    return has_hydroxyl_to_chloride
+    # If at least 80% of reactions are linear (1-2 reactants), consider it a linear strategy
+    return reaction_count > 0 and (linear_reaction_count / reaction_count) >= 0.8

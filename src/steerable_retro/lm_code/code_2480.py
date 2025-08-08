@@ -2,67 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects nucleophilic aromatic substitution where a chlorine
-    on an aromatic ring is replaced by an amine.
+    Detects a strategy that includes an alkene reduction step.
     """
-    nas_detected = False
+    has_alkene_reduction = False
 
     def dfs_traverse(node):
-        nonlocal nas_detected
+        nonlocal has_alkene_reduction
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for nucleophilic aromatic substitution
-                try:
-                    # Pattern for chlorine on aromatic
-                    cl_aromatic_pattern = Chem.MolFromSmarts("c-Cl")
-                    # Pattern for amine on aromatic
-                    amine_aromatic_pattern = Chem.MolFromSmarts("c-[N]")
+            # For alkene reduction, we expect one reactant
+            if len(reactants_smiles) == 1:
+                reactant = Chem.MolFromSmiles(reactants_smiles[0])
+                product = Chem.MolFromSmiles(product_smiles)
 
-                    # Check if any reactant has chlorine on aromatic
-                    cl_in_reactants = False
-                    for reactant in reactants:
-                        react_mol = Chem.MolFromSmiles(reactant)
-                        if react_mol and react_mol.HasSubstructMatch(cl_aromatic_pattern):
-                            cl_in_reactants = True
-                            break
+                if reactant and product:
+                    alkene_pattern = Chem.MolFromSmarts("[#6]=[#6]")
+                    reactant_alkenes = len(reactant.GetSubstructMatches(alkene_pattern))
+                    product_alkenes = len(product.GetSubstructMatches(alkene_pattern))
 
-                    # Check if product has amine on aromatic where chlorine was
-                    if cl_in_reactants:
-                        prod_mol = Chem.MolFromSmiles(product)
-                        if prod_mol and prod_mol.HasSubstructMatch(amine_aromatic_pattern):
-                            nas_detected = True
-                            print("Nucleophilic aromatic substitution detected")
-                except:
-                    pass
+                    # If reactant has more alkenes than product, it's a reduction
+                    if reactant_alkenes > product_alkenes:
+                        has_alkene_reduction = True
+                        print("Alkene reduction detected")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return nas_detected
+
+    print(f"Has alkene reduction strategy: {has_alkene_reduction}")
+    return has_alkene_reduction

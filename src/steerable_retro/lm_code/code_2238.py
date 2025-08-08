@@ -2,57 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves a tetrazole ring that is maintained throughout
+    This function detects if the synthesis route employs a phenol O-alkylation with
+    a morpholine-containing side chain.
     """
-    has_tetrazole_in_final = False
-    has_tetrazole_in_intermediate = False
+    morpholine_alkylation_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_tetrazole_in_final, has_tetrazole_in_intermediate
+    def dfs_traverse(node):
+        nonlocal morpholine_alkylation_found
 
-        if node["type"] == "mol":
-            if "smiles" in node:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    # Tetrazole pattern
-                    tetrazole_pattern = Chem.MolFromSmarts("c1nnn[nH]1")
-                    tetrazole_pattern2 = Chem.MolFromSmarts("c1nnn[n]1-[#6]")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                    if mol.HasSubstructMatch(tetrazole_pattern) or mol.HasSubstructMatch(
-                        tetrazole_pattern2
-                    ):
-                        if depth == 0:  # Final product
-                            has_tetrazole_in_final = True
-                            print("Final product contains tetrazole")
-                        else:  # Intermediate
-                            has_tetrazole_in_intermediate = True
-                            print(f"Intermediate at depth {depth} contains tetrazole")
+            # Check for phenol in reactants
+            phenol_pattern = Chem.MolFromSmarts("c[OH]")
+
+            # Check for morpholine in reactants
+            morpholine_pattern = Chem.MolFromSmarts("[O]1CCN(CC)CC1")
+
+            # Check for phenyl ether in product
+            phenyl_ether_pattern = Chem.MolFromSmarts("c[O]C")
+
+            # Check if we have at least two reactants
+            if len(reactants) >= 2:
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
+                product_mol = Chem.MolFromSmiles(product)
+
+                if product_mol and product_mol.HasSubstructMatch(phenyl_ether_pattern):
+                    # Check if one reactant has phenol and another has morpholine
+                    has_phenol = any(
+                        mol and mol.HasSubstructMatch(phenol_pattern) for mol in reactant_mols
+                    )
+                    has_morpholine = any(
+                        mol and mol.HasSubstructMatch(morpholine_pattern) for mol in reactant_mols
+                    )
+
+                    if has_phenol and has_morpholine:
+                        print("Found phenol O-alkylation with morpholine-containing side chain")
+                        morpholine_alkylation_found = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_tetrazole_in_final and has_tetrazole_in_intermediate
+
+    return morpholine_alkylation_found

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,112 +54,126 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy involving early halogenation steps
-    (bromination and/or chlorination at depth >= 2) or the use of halogenated
-    starting materials at early stages.
+    This function detects a mid-stage N-alkylation reaction.
+    Mid-stage is defined as occurring at depth 1 in the synthesis tree.
     """
-    halogenation_count = 0
-    halogenated_reactants_used = False
+    n_alkylation_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal halogenation_count, halogenated_reactants_used
+        nonlocal n_alkylation_detected
 
-        if node["type"] == "reaction" and depth >= 2:  # Early-stage reaction
+        if node["type"] == "reaction" and depth == 1:  # Mid stage
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                print(f"Checking reaction at depth {depth}: {rsmi}")
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
-
-                # Check if this is a halogenation reaction using checker functions
-                is_bromination = (
-                    checker.check_reaction("Aromatic bromination", rsmi)
-                    or checker.check_reaction("Bromination", rsmi)
-                    or checker.check_reaction("Wohl-Ziegler bromination benzyl primary", rsmi)
-                    or checker.check_reaction("Wohl-Ziegler bromination benzyl secondary", rsmi)
-                    or checker.check_reaction("Wohl-Ziegler bromination benzyl tertiary", rsmi)
-                    or checker.check_reaction("Wohl-Ziegler bromination allyl primary", rsmi)
-                    or checker.check_reaction("Wohl-Ziegler bromination allyl secondary", rsmi)
-                    or checker.check_reaction("Wohl-Ziegler bromination allyl tertiary", rsmi)
+                # Use checker functions to identify N-alkylation reactions
+                is_primary_alkylation = checker.check_reaction(
+                    "N-alkylation of primary amines with alkyl halides", rsmi
+                )
+                is_secondary_alkylation = checker.check_reaction(
+                    "N-alkylation of secondary amines with alkyl halides", rsmi
+                )
+                is_epoxide_ring_opening = checker.check_reaction(
+                    "Ring opening of epoxide with amine", rsmi
                 )
 
-                is_chlorination = (
-                    checker.check_reaction("Aromatic chlorination", rsmi)
-                    or checker.check_reaction("Chlorination", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_sulfonyl chloride", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_SOCl2", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_CHCl3", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_CH2Cl2", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_PCl5_ortho", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_POCl3_ortho", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_POCl3_para", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_POCl3", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_HCl", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_Salt", rsmi)
-                    or checker.check_reaction("Alcohol to chloride_Other", rsmi)
-                    or checker.check_reaction("Primary amine to chloride", rsmi)
+                # Check for other N-alkylation reaction types
+                is_methylation_primary = checker.check_reaction(
+                    "Methylation with MeI_primary", rsmi
+                )
+                is_methylation_secondary = checker.check_reaction(
+                    "Methylation with MeI_secondary", rsmi
+                )
+                is_n_methylation = checker.check_reaction("N-methylation", rsmi)
+                is_eschweiler_clarke_primary = checker.check_reaction(
+                    "Eschweiler-Clarke Primary Amine Methylation", rsmi
+                )
+                is_eschweiler_clarke_secondary = checker.check_reaction(
+                    "Eschweiler-Clarke Secondary Amine Methylation", rsmi
+                )
+                is_reductive_methylation = checker.check_reaction(
+                    "Reductive methylation of primary amine with formaldehyde", rsmi
                 )
 
-                if is_bromination or is_chlorination:
-                    print(f"Direct halogenation reaction detected at depth {depth}")
-                    halogenation_count += 1
+                print(f"Primary alkylation: {is_primary_alkylation}")
+                print(f"Secondary alkylation: {is_secondary_alkylation}")
+                print(f"Epoxide ring opening: {is_epoxide_ring_opening}")
+                print(
+                    f"Methylation reactions: {is_methylation_primary}, {is_methylation_secondary}, {is_n_methylation}"
+                )
+                print(
+                    f"Eschweiler-Clarke: {is_eschweiler_clarke_primary}, {is_eschweiler_clarke_secondary}"
+                )
+                print(f"Reductive methylation: {is_reductive_methylation}")
+
+                if (
+                    is_primary_alkylation
+                    or is_secondary_alkylation
+                    or is_methylation_primary
+                    or is_methylation_secondary
+                    or is_n_methylation
+                    or is_eschweiler_clarke_primary
+                    or is_eschweiler_clarke_secondary
+                    or is_reductive_methylation
+                    or is_epoxide_ring_opening
+                ):
+                    print(f"Detected N-alkylation reaction at depth {depth}")
+                    n_alkylation_detected = True
                 else:
-                    # Check if reactants contain halogen atoms (Br or Cl)
+                    # Fallback check using reactants and products
                     try:
+                        reactants = rsmi.split(">")[0].split(".")
+                        product = rsmi.split(">")[-1]
+
+                        # Check for amine in reactants
+                        amine_in_reactants = False
                         for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                br_atoms = len(
-                                    [a for a in reactant_mol.GetAtoms() if a.GetSymbol() == "Br"]
-                                )
-                                cl_atoms = len(
-                                    [a for a in reactant_mol.GetAtoms() if a.GetSymbol() == "Cl"]
-                                )
+                            if checker.check_fg("Primary amine", reactant) or checker.check_fg(
+                                "Secondary amine", reactant
+                            ):
+                                amine_in_reactants = True
+                                print(f"Found amine in reactant: {reactant}")
+                                break
 
-                                if br_atoms > 0 or cl_atoms > 0:
-                                    print(
-                                        f"Halogenated reactant found at depth {depth}: {reactant}"
-                                    )
-                                    print(f"Br atoms: {br_atoms}, Cl atoms: {cl_atoms}")
-                                    halogenated_reactants_used = True
-                                    break
+                        # Check for tertiary amine in product
+                        tertiary_amine_in_product = checker.check_fg("Tertiary amine", product)
+                        if tertiary_amine_in_product:
+                            print(f"Found tertiary amine in product: {product}")
 
-                        # Also check for increase in halide atoms (fallback method)
-                        product_mol = Chem.MolFromSmiles(product)
-                        reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+                        # Check for alkyl halide in reactants
+                        alkyl_halide_in_reactants = False
+                        for reactant in reactants:
+                            if (
+                                checker.check_fg("Primary halide", reactant)
+                                or checker.check_fg("Secondary halide", reactant)
+                                or checker.check_fg("Tertiary halide", reactant)
+                            ):
+                                alkyl_halide_in_reactants = True
+                                print(f"Found alkyl halide in reactant: {reactant}")
+                                break
 
-                        if product_mol:
-                            product_br_count = len(
-                                [a for a in product_mol.GetAtoms() if a.GetSymbol() == "Br"]
+                        # Check for epoxide in reactants
+                        epoxide_in_reactants = False
+                        for reactant in reactants:
+                            if checker.check_fg("Oxirane", reactant) or checker.check_ring(
+                                "oxirane", reactant
+                            ):
+                                epoxide_in_reactants = True
+                                print(f"Found epoxide in reactant: {reactant}")
+                                break
+
+                        if (
+                            amine_in_reactants
+                            and tertiary_amine_in_product
+                            and (alkyl_halide_in_reactants or epoxide_in_reactants)
+                        ):
+                            print(
+                                f"Detected N-alkylation through functional group analysis at depth {depth}"
                             )
-                            product_cl_count = len(
-                                [a for a in product_mol.GetAtoms() if a.GetSymbol() == "Cl"]
-                            )
-
-                            reactants_br_count = sum(
-                                len([a for a in mol.GetAtoms() if a.GetSymbol() == "Br"])
-                                for mol in reactant_mols
-                                if mol is not None
-                            )
-                            reactants_cl_count = sum(
-                                len([a for a in mol.GetAtoms() if a.GetSymbol() == "Cl"])
-                                for mol in reactant_mols
-                                if mol is not None
-                            )
-
-                            new_halide_formed = (product_br_count > reactants_br_count) or (
-                                product_cl_count > reactants_cl_count
-                            )
-
-                            if new_halide_formed:
-                                print(f"Halogenation via atom count detected at depth {depth}")
-                                print(
-                                    f"Br count: {reactants_br_count} → {product_br_count}, Cl count: {reactants_cl_count} → {product_cl_count}"
-                                )
-                                halogenation_count += 1
+                            n_alkylation_detected = True
                     except Exception as e:
-                        print(f"Error checking for halide atoms: {e}")
+                        print(f"Error in fallback check: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -164,9 +181,4 @@ def main(route):
 
     # Start traversal from the root
     dfs_traverse(route)
-
-    print(f"Total halogenation reactions found: {halogenation_count}")
-    print(f"Halogenated reactants used in early stages: {halogenated_reactants_used}")
-
-    # Return True if either halogenation reactions are found or halogenated reactants are used
-    return bool(halogenation_count >= 1 or halogenated_reactants_used)
+    return n_alkylation_detected

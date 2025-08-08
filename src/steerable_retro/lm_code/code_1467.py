@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,111 +54,102 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route involves amide formation in the final step.
+    Detects a strategy involving SNAr reactions on nitro-activated aromatic rings.
     """
-    final_amide_formation = False
-    target_mol_smiles = route["smiles"]
+    nitro_activated_snar_found = False
 
-    def dfs_traverse(node, depth=0, path=None):
-        nonlocal final_amide_formation, target_mol_smiles
-        if path is None:
-            path = []
+    def dfs_traverse(node):
+        nonlocal nitro_activated_snar_found
 
-        # Add current node to path
-        path.append(node)
+        if node["type"] == "reaction":
+            try:
+                # Extract reactants and product
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+                # Check if this is a nucleophilic aromatic substitution reaction
+                if checker.check_reaction(
+                    "nucl_sub_aromatic_ortho_nitro", rsmi
+                ) or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi):
+                    print(f"Found potential nitro-activated SNAr reaction: {rsmi}")
 
-            # Check if this reaction produces the target molecule
-            is_final_step = False
-            if (
-                len(path) >= 2
-                and path[-2]["type"] == "mol"
-                and path[-2]["smiles"] == target_mol_smiles
-            ):
-                is_final_step = True
-                print(f"Found reaction leading to target molecule at depth {depth}")
+                    # Check for nitro-activated haloarene in reactants
+                    for reactant in reactants:
+                        if checker.check_fg("Nitro group", reactant) and checker.check_fg(
+                            "Aromatic halide", reactant
+                        ):
+                            print(f"Found nitro-activated haloarene: {reactant}")
 
-            # Check for amide formation reactions
-            is_amide_reaction = False
+                            # Check for amine nucleophile in other reactants
+                            for other_reactant in reactants:
+                                if other_reactant != reactant and (
+                                    checker.check_fg("Primary amine", other_reactant)
+                                    or checker.check_fg("Secondary amine", other_reactant)
+                                    or checker.check_fg("Aniline", other_reactant)
+                                ):
+                                    print(f"Found amine nucleophile: {other_reactant}")
 
-            # Check for specific amide formation reactions from the provided list
-            amide_reaction_types = [
-                "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                "Ester with primary amine to amide",
-                "Ester with secondary amine to amide",
-                "Ester with ammonia to amide",
-                "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                "Acyl chloride with secondary amine to amide",
-                "Acyl chloride with ammonia to amide",
-                "Carboxylic acid with primary amine to amide",
-                "Schotten-Baumann to ester",
-                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                "Acylation of primary amines",
-                "Acylation of secondary amines",
-            ]
+                                    # Verify product has nitro group and new C-N bond
+                                    if checker.check_fg("Nitro group", product) and (
+                                        checker.check_fg("Primary amine", product)
+                                        or checker.check_fg("Secondary amine", product)
+                                        or checker.check_fg("Tertiary amine", product)
+                                        or checker.check_fg("Aniline", product)
+                                    ):
+                                        print(f"Confirmed nitro-activated SNAr product: {product}")
+                                        nitro_activated_snar_found = True
+                                        return
 
-            for reaction_type in amide_reaction_types:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Detected amide formation reaction: {reaction_type}")
-                    is_amide_reaction = True
-                    break
+                # Alternative detection method if reaction type check fails
+                if not nitro_activated_snar_found:
+                    for reactant in reactants:
+                        # Check for nitro-activated haloarene
+                        if checker.check_fg("Nitro group", reactant) and checker.check_fg(
+                            "Aromatic halide", reactant
+                        ):
+                            print(f"Found nitro-activated haloarene (alt method): {reactant}")
 
-            # If no specific reaction type matched, check for functional group changes
-            if not is_amide_reaction:
-                # Check for reactant functional groups that could form amides
-                reactant_list = reactants_smiles.split(".")
-                acid_present = any(checker.check_fg("Carboxylic acid", r) for r in reactant_list)
-                ester_present = any(checker.check_fg("Ester", r) for r in reactant_list)
-                acyl_halide_present = any(checker.check_fg("Acyl halide", r) for r in reactant_list)
-                anhydride_present = any(checker.check_fg("Anhydride", r) for r in reactant_list)
+                            # Check for amine nucleophile
+                            amine_found = False
+                            for other_reactant in reactants:
+                                if other_reactant != reactant and (
+                                    checker.check_fg("Primary amine", other_reactant)
+                                    or checker.check_fg("Secondary amine", other_reactant)
+                                    or checker.check_fg("Aniline", other_reactant)
+                                ):
+                                    amine_found = True
+                                    print(f"Found amine nucleophile (alt method): {other_reactant}")
+                                    break
 
-                # Check for amine reactants
-                primary_amine_present = any(
-                    checker.check_fg("Primary amine", r) for r in reactant_list
-                )
-                secondary_amine_present = any(
-                    checker.check_fg("Secondary amine", r) for r in reactant_list
-                )
-                amine_present = primary_amine_present or secondary_amine_present
+                            # Verify product has nitro group but no halide, and has amine group
+                            if amine_found:
+                                prod_mol = Chem.MolFromSmiles(product)
+                                if (
+                                    checker.check_fg("Nitro group", product)
+                                    and not checker.check_fg("Aromatic halide", product)
+                                    and (
+                                        checker.check_fg("Primary amine", product)
+                                        or checker.check_fg("Secondary amine", product)
+                                        or checker.check_fg("Tertiary amine", product)
+                                        or checker.check_fg("Aniline", product)
+                                    )
+                                ):
+                                    print(
+                                        f"Confirmed nitro-activated SNAr product (alt method): {product}"
+                                    )
+                                    nitro_activated_snar_found = True
+                                    return
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
 
-                # Check for amide in product
-                amide_in_product = (
-                    checker.check_fg("Primary amide", product_smiles)
-                    or checker.check_fg("Secondary amide", product_smiles)
-                    or checker.check_fg("Tertiary amide", product_smiles)
-                )
-
-                # Check for amide in reactants (to verify it's newly formed)
-                amide_in_reactants = any(
-                    checker.check_fg("Primary amide", r)
-                    or checker.check_fg("Secondary amide", r)
-                    or checker.check_fg("Tertiary amide", r)
-                    for r in reactant_list
-                )
-
-                # Verify amide is formed in the reaction
-                if (
-                    (acid_present or ester_present or acyl_halide_present or anhydride_present)
-                    and amine_present
-                    and amide_in_product
-                    and not amide_in_reactants
-                ):
-                    print(f"Detected amide formation from functional group analysis")
-                    is_amide_reaction = True
-
-            # If this is an amide formation reaction and it's the final step
-            if is_amide_reaction and is_final_step:
-                print(f"Detected late-stage amide formation at depth {depth}")
-                final_amide_formation = True
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1, path.copy())
+            dfs_traverse(child)
+            if nitro_activated_snar_found:
+                return
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: late-stage amide formation = {final_amide_formation}")
-    return final_amide_formation
+
+    return nitro_activated_snar_found

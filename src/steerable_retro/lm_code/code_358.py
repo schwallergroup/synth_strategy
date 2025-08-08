@@ -2,53 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy without convergent steps
+    Detects if the synthesis route involves formation of a sulfonamide from an isocyanate.
     """
-    # Track the maximum branching factor at each depth
-    branching_factors = {}
+    isocyanate_found = False
+    sulfonamide_formed = False
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node):
+        nonlocal isocyanate_found, sulfonamide_formed
+
         if node["type"] == "reaction":
-            # Count number of reactants
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            num_reactants = len(reactants)
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Update maximum branching factor at this depth
-            if depth not in branching_factors or num_reactants > branching_factors[depth]:
-                branching_factors[depth] = num_reactants
+                # Check for isocyanate in reactants
+                isocyanate_pattern = Chem.MolFromSmarts("[#8]=[#6]=[#7]")
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(isocyanate_pattern):
+                            isocyanate_found = True
+                    except:
+                        continue
 
-        # Continue traversal
+                # Check for sulfonamide in product
+                sulfonamide_pattern = Chem.MolFromSmarts("[#7]-[#16](=[#8])(=[#8])-[#8]")
+                try:
+                    mol = Chem.MolFromSmiles(product)
+                    if mol and mol.HasSubstructMatch(sulfonamide_pattern):
+                        if isocyanate_found:
+                            sulfonamide_formed = True
+                except:
+                    pass
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    print(f"Branching factors at each depth: {branching_factors}")
-
-    # A linear synthesis should have a maximum branching factor of 2
-    # (allowing for reagents that aren't part of the main synthetic path)
-    is_linear = all(bf <= 2 for bf in branching_factors.values())
-
-    return is_linear
+    print(f"Sulfonamide formation from isocyanate: {sulfonamide_formed}")
+    return sulfonamide_formed

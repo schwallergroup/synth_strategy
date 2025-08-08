@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,82 +54,93 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects the presence of a fluorinated aromatic group in the final product.
-    Specifically looking for difluoro or trifluoro groups.
+    Detects if the route contains a late-stage amide coupling (at depth 0 or 1).
     """
-    has_fluorinated_aromatic = False
+    found_late_amide = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_fluorinated_aromatic
+    def calculate_depth(node, root):
+        """Calculate depth of a node if not already provided"""
+        if "depth" in node:
+            return node["depth"]
 
-        if node["type"] == "mol" and "smiles" in node:
-            # Check if this is the final product (at root, depth 0)
-            if depth == 0:
-                print(f"Examining final product: {node['smiles']}")
+        # Simple depth calculation based on distance from root
+        depth = 0
+        current = node
+        queue = [(root, 0)]
 
-                # Check for trifluoro group
-                if checker.check_fg("Trifluoro group", node["smiles"]):
-                    print(f"Found trifluoro group in final product: {node['smiles']}")
-                    has_fluorinated_aromatic = True
-                    return
+        while queue:
+            current_node, current_depth = queue.pop(0)
 
-                # Check for aromatic rings with multiple fluorine atoms
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    # Create a dictionary to count fluorines per aromatic ring
-                    aromatic_atoms = set()
-                    for atom in mol.GetAtoms():
-                        if atom.GetIsAromatic():
-                            aromatic_atoms.add(atom.GetIdx())
+            if current_node == current:
+                depth = current_depth
+                break
 
-                    # Count fluorines attached to aromatic atoms
-                    fluorine_count = 0
-                    for atom in mol.GetAtoms():
-                        if atom.GetSymbol() == "F":
-                            # Check if this fluorine is attached to an aromatic atom
-                            for neighbor in atom.GetNeighbors():
-                                if neighbor.GetIdx() in aromatic_atoms:
-                                    fluorine_count += 1
-                                    break
+            for child in current_node.get("children", []):
+                queue.append((child, current_depth + 1))
 
-                    if fluorine_count >= 2:
-                        print(
-                            f"Found multiple ({fluorine_count}) fluorines on aromatic ring in final product: {node['smiles']}"
+        return depth
+
+    def dfs_traverse(node, current_depth=0):
+        nonlocal found_late_amide
+
+        # Store depth for future reference
+        if "depth" not in node:
+            node["depth"] = current_depth
+
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            depth = node.get("depth", current_depth)
+
+            if depth <= 1:  # Late stage (depth 0 or 1)
+                print(f"Checking reaction at depth {depth}: {rsmi}")
+
+                # Check for amide coupling reactions using the checker
+                amide_coupling_reactions = [
+                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                    "Carboxylic acid with primary amine to amide",
+                    "Ester with primary amine to amide",
+                    "Ester with secondary amine to amide",
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                    "Acyl chloride with secondary amine to amide",
+                    "Acylation of primary amines",
+                    "Acylation of secondary amines",
+                ]
+
+                for reaction_type in amide_coupling_reactions:
+                    try:
+                        if checker.check_reaction(reaction_type, rsmi):
+                            print(
+                                f"Found late-stage amide coupling: {reaction_type} at depth {depth}"
+                            )
+                            found_late_amide = True
+                            break
+                    except Exception as e:
+                        print(f"Error checking reaction {reaction_type}: {e}")
+
+                # If no specific reaction type matched, check for amide formation more generally
+                if not found_late_amide:
+                    try:
+                        reactants = rsmi.split(">")[0].split(".")
+                        product = rsmi.split(">")[-1]
+
+                        has_acid = any(checker.check_fg("Carboxylic acid", r) for r in reactants)
+                        has_amine = any(
+                            checker.check_fg("Primary amine", r) for r in reactants
+                        ) or any(checker.check_fg("Secondary amine", r) for r in reactants)
+                        forms_amide = (
+                            checker.check_fg("Primary amide", product)
+                            or checker.check_fg("Secondary amide", product)
+                            or checker.check_fg("Tertiary amide", product)
                         )
-                        has_fluorinated_aromatic = True
 
-            # Also check all molecules in the route for debugging
-            else:
-                if checker.check_fg("Trifluoro group", node["smiles"]):
-                    print(
-                        f"Found trifluoro group in intermediate at depth {depth}: {node['smiles']}"
-                    )
+                        if has_acid and has_amine and forms_amide:
+                            print(f"Found late-stage amide coupling (generic) at depth {depth}")
+                            found_late_amide = True
+                    except Exception as e:
+                        print(f"Error in generic amide coupling check: {e}")
 
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    # Count fluorines attached to aromatic atoms
-                    aromatic_atoms = set()
-                    for atom in mol.GetAtoms():
-                        if atom.GetIsAromatic():
-                            aromatic_atoms.add(atom.GetIdx())
-
-                    fluorine_count = 0
-                    for atom in mol.GetAtoms():
-                        if atom.GetSymbol() == "F":
-                            for neighbor in atom.GetNeighbors():
-                                if neighbor.GetIdx() in aromatic_atoms:
-                                    fluorine_count += 1
-                                    break
-
-                    if fluorine_count >= 2:
-                        print(
-                            f"Found multiple ({fluorine_count}) fluorines on aromatic ring at depth {depth}: {node['smiles']}"
-                        )
-
-        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, current_depth + 1)
 
     dfs_traverse(route)
-    print(f"Fluorinated aromatic strategy detected: {has_fluorinated_aromatic}")
-    return has_fluorinated_aromatic
+    return found_late_amide

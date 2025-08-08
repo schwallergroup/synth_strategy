@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,119 +54,110 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis includes Boc protection of an amine group.
-
-    This function traverses the synthesis route and checks for:
-    1. Boc protection reactions (adding tert-butyloxycarbonyl to amines)
-    2. Boc deprotection reactions (removing tert-butyloxycarbonyl from protected amines)
-    3. Presence of Boc-protected intermediates
-
-    Returns True if a Boc protection strategy is detected, False otherwise.
+    This function detects a linear synthesis strategy involving an amino acid derivative.
     """
-    boc_protection_detected = False
+    # Track if amino acid is present in the main synthetic pathway
+    amino_acid_in_pathway = False
+    # Track if synthesis is linear (no significant branching)
+    is_linear = True
+    # Track the main synthetic pathway
+    main_path_nodes = []
 
-    def dfs_traverse(node, depth=0):
-        nonlocal boc_protection_detected
+    def dfs_traverse(node, depth=0, path=None):
+        nonlocal amino_acid_in_pathway, is_linear, main_path_nodes
 
-        # Skip further processing if we already found Boc protection
-        if boc_protection_detected:
-            return
+        if path is None:
+            path = []
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        current_path = path + [node]
 
-            print(f"Depth {depth}, Examining reaction: {rsmi}")
-
-            # Check for Boc protection reactions directly
-            is_boc_protection = any(
-                [
-                    checker.check_reaction("Boc amine protection", rsmi),
-                    checker.check_reaction("Boc amine protection explicit", rsmi),
-                    checker.check_reaction("Boc amine protection with Boc anhydride", rsmi),
-                    checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi),
-                    checker.check_reaction("Boc amine protection of secondary amine", rsmi),
-                    checker.check_reaction("Boc amine protection of primary amine", rsmi),
-                ]
-            )
-
-            # Check for Boc deprotection reactions directly
-            is_boc_deprotection = any(
-                [
-                    checker.check_reaction("Boc amine deprotection", rsmi),
-                    checker.check_reaction("Boc amine deprotection of guanidine", rsmi),
-                    checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi),
-                    checker.check_reaction("Tert-butyl deprotection of amine", rsmi),
-                ]
-            )
-
-            # If we find a direct Boc protection or deprotection reaction, that's sufficient
-            if is_boc_protection:
-                print(f"Boc protection reaction detected: {rsmi}")
-                boc_protection_detected = True
-                return
-
-            if is_boc_deprotection:
-                print(f"Boc deprotection reaction detected: {rsmi}")
-                boc_protection_detected = True
-                return
-
-            # Additional checks for Boc protection strategy
-            # Check for amines in reactants and carbamates in products
-            has_primary_amine = any(checker.check_fg("Primary amine", r) for r in reactants)
-            has_secondary_amine = any(checker.check_fg("Secondary amine", r) for r in reactants)
-            has_carbamate_in_product = checker.check_fg("Carbamic ester", product)
-
-            # Look for evidence of Boc reagents in reactants
-            boc_reagents = ["(BOC)2O", "BOC-Cl", "Boc2O", "Boc-Cl", "Boc anhydride"]
-            has_boc_reagent = any(
-                reagent.lower() in r.lower() for reagent in boc_reagents for r in reactants
-            )
-
-            # If we have amine reactants, carbamate products, and evidence of Boc chemistry
-            if (has_primary_amine or has_secondary_amine) and has_carbamate_in_product:
-                print(f"Potential Boc protection: amine reactants and carbamate in product")
-                # Additional verification that it's specifically a Boc carbamate
-                # This is a heuristic check for tert-butyl group connected to carbamate
-                mol = Chem.MolFromSmiles(product)
-                if mol:
-                    for atom in mol.GetAtoms():
-                        if (
-                            atom.GetSymbol() == "C" and atom.GetDegree() == 4
-                        ):  # Potential tert-butyl carbon
-                            neighbors = [n.GetSymbol() for n in atom.GetNeighbors()]
-                            if (
-                                neighbors.count("C") >= 3
-                            ):  # tert-butyl typically has 3 methyl groups
-                                print(f"Found potential tert-butyl group in product")
-                                boc_protection_detected = True
-                                return
-
-        elif node["type"] == "mol" and node["smiles"]:
-            # Check if this molecule contains a Boc-protected amine
+        # For molecule nodes, check if it's an amino acid
+        if node["type"] == "mol":
             mol_smiles = node["smiles"]
-            if checker.check_fg("Carbamic ester", mol_smiles):
-                print(f"Depth {depth}, Molecule contains carbamate group: {mol_smiles}")
-                # Additional check to verify it's a Boc carbamate
+
+            # Check for amino acid pattern using the checker function
+            is_amino_acid = False
+            try:
+                # Check for carboxylic acid and amine groups in proximity
+                has_carboxylic_acid = checker.check_fg("Carboxylic acid", mol_smiles)
+                has_amine = (
+                    checker.check_fg("Primary amine", mol_smiles)
+                    or checker.check_fg("Secondary amine", mol_smiles)
+                    or checker.check_fg("Tertiary amine", mol_smiles)
+                )
+
+                # More specific check for amino acid structure
                 mol = Chem.MolFromSmiles(mol_smiles)
-                if mol:
-                    for atom in mol.GetAtoms():
-                        if (
-                            atom.GetSymbol() == "C" and atom.GetDegree() == 4
-                        ):  # Potential tert-butyl carbon
-                            neighbors = [n.GetSymbol() for n in atom.GetNeighbors()]
-                            if (
-                                neighbors.count("C") >= 3
-                            ):  # tert-butyl typically has 3 methyl groups
-                                print(f"Found Boc-protected intermediate: {mol_smiles}")
-                                boc_protection_detected = True
-                                return
+                if mol and has_carboxylic_acid and has_amine:
+                    # Check if the amine and carboxylic acid are on adjacent carbons
+                    amino_acid_pattern = Chem.MolFromSmarts("[NX3]-[CX4]-[CX3](=[OX1])-[OX2]")
+                    if mol.HasSubstructMatch(amino_acid_pattern):
+                        is_amino_acid = True
+                        print(f"Amino acid detected: {mol_smiles}")
+            except Exception as e:
+                print(f"Error checking amino acid: {e}")
 
-        # Continue DFS traversal
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            # If this is the target molecule (depth 0) or a significant intermediate
+            # and it's an amino acid, mark it
+            if depth <= 2 and is_amino_acid:
+                amino_acid_in_pathway = True
+                if node not in main_path_nodes:
+                    main_path_nodes.append(node)
 
+        # For reaction nodes, check if it's a typical amino acid modification reaction
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rxn_smiles = node["metadata"]["rsmi"]
+
+            # Check for common amino acid modification reactions
+            try:
+                is_amino_acid_reaction = (
+                    checker.check_reaction("Esterification of Carboxylic Acids", rxn_smiles)
+                    or checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rxn_smiles
+                    )
+                    or checker.check_reaction("Boc amine protection", rxn_smiles)
+                    or checker.check_reaction("Boc amine deprotection", rxn_smiles)
+                    or checker.check_reaction("Reductive amination with aldehyde", rxn_smiles)
+                    or checker.check_reaction("Reductive amination with ketone", rxn_smiles)
+                )
+
+                if is_amino_acid_reaction:
+                    print(f"Amino acid modification reaction detected: {rxn_smiles}")
+            except Exception as e:
+                print(f"Error checking reaction: {e}")
+
+        children = node.get("children", [])
+
+        # If this node has more than 2 children, it might indicate a non-linear synthesis
+        # But we need to check if these are just reagents or actual branching pathways
+        if len(children) > 2:
+            significant_children = 0
+            for child in children:
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    significant_children += 1
+
+            if significant_children > 1:
+                print(
+                    f"Non-linear synthesis detected: node has {significant_children} significant children"
+                )
+                is_linear = False
+
+        # Continue traversal
+        for child in children:
+            dfs_traverse(child, depth + 1, current_path)
+
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Boc protection strategy: {boc_protection_detected}")
-    return boc_protection_detected
+
+    # Check if we have a linear amino acid synthesis
+    result = amino_acid_in_pathway and is_linear
+
+    if result:
+        print("Linear amino acid synthesis strategy detected")
+    else:
+        if not amino_acid_in_pathway:
+            print("No amino acid detected in the main synthetic pathway")
+        if not is_linear:
+            print("Synthesis is not linear")
+
+    return result

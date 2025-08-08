@@ -2,87 +2,103 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves multiple SNAr reactions for C-N bond formation,
-    particularly on pyrimidine or similar electron-deficient aromatic rings.
+    Detects if the synthetic route preserves stereocenters throughout the synthesis.
+
+    Returns True if:
+    1. The final product has at least one stereocenter
+    2. All reactions in the route preserve existing stereocenters
     """
-    snar_count = 0
+    # Track if we've found any violations of stereocenter preservation
+    stereocenters_preserved = True
+    # Track if the final product has stereocenters
+    has_final_product_stereocenters = False
 
-    def dfs_traverse(node):
-        nonlocal snar_count
+    def get_chiral_atoms_with_mapping(mol_smiles):
+        """Helper function to get chiral atoms with their atom mapping"""
+        mol = Chem.MolFromSmiles(mol_smiles)
+        if not mol:
+            return {}
 
-        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
+        chiral_atoms = {}
 
-            # Check for SNAr pattern: aromatic carbon with leaving group (Cl, F, Br)
-            # being replaced by nitrogen nucleophile
+        for atom_idx, chirality in chiral_centers:
+            atom = mol.GetAtomWithIdx(atom_idx)
+            # Get atom mapping if available
+            atom_map = (
+                atom.GetProp("molAtomMapNumber") if atom.HasProp("molAtomMapNumber") else None
+            )
+            if atom_map:
+                chiral_atoms[atom_map] = chirality
 
-            # Create molecules
-            product_mol = Chem.MolFromSmiles(product)
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+        return chiral_atoms
 
-            if product_mol and all(reactant_mols):
-                # Look for pyrimidine or similar electron-deficient aromatic rings in reactants
-                pyrimidine_pattern = Chem.MolFromSmarts("c1ncncc1")
+    def dfs_traverse(node, depth=0):
+        nonlocal stereocenters_preserved, has_final_product_stereocenters
 
-                # Check if any reactant contains pyrimidine
-                has_pyrimidine = False
-                for r_mol in reactant_mols:
-                    if r_mol.HasSubstructMatch(pyrimidine_pattern):
-                        has_pyrimidine = True
-                        break
+        if node["type"] == "mol" and "smiles" in node:
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol and depth == 0:  # Final product
+                    chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
+                    has_final_product_stereocenters = len(chiral_centers) > 0
+                    print(f"Final product has {len(chiral_centers)} stereocenters")
+            except Exception as e:
+                print(f"Error processing molecule: {e}")
 
-                # Look for C-N bond formation
-                # This is a simplified check - in a real implementation, you would need to
-                # analyze the reaction more carefully using atom mapping
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
-                halide_pattern = Chem.MolFromSmarts("c[Cl,F,Br]")
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-                has_amine = False
-                has_halide = False
+                # Get chiral atoms with their mapping from reactants and product
+                reactant_chiral_atoms = get_chiral_atoms_with_mapping(reactants_smiles)
+                product_chiral_atoms = get_chiral_atoms_with_mapping(product_smiles)
 
-                for r_mol in reactant_mols:
-                    if r_mol.HasSubstructMatch(amine_pattern):
-                        has_amine = True
-                    if r_mol.HasSubstructMatch(halide_pattern):
-                        has_halide = True
+                # Check if any chiral atoms in reactants lost their chirality in the product
+                for atom_map, chirality in reactant_chiral_atoms.items():
+                    if atom_map in product_chiral_atoms:
+                        # Check if chirality is preserved (R->R or S->S)
+                        if product_chiral_atoms[atom_map] != chirality:
+                            print(
+                                f"Stereocenter with map {atom_map} changed from {chirality} to {product_chiral_atoms[atom_map]}"
+                            )
+                            stereocenters_preserved = False
+                    else:
+                        # Mapped atom exists in reactants but not in products or lost chirality
+                        print(f"Stereocenter with map {atom_map} was lost in the product")
+                        stereocenters_preserved = False
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
-                # If we have a pyrimidine, an amine, and a halide, it's likely an SNAr
-                if has_pyrimidine and has_amine and has_halide:
-                    snar_count += 1
-                    print(f"SNAr reaction detected: {rsmi}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if we have multiple SNAr reactions
-    has_multiple_snar = snar_count >= 2
-    print(f"Number of SNAr reactions detected: {snar_count}")
-
-    return has_multiple_snar
+    return stereocenters_preserved and has_final_product_stereocenters

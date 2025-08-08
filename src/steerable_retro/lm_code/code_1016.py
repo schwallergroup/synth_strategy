@@ -2,68 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving late-stage functional group modifications,
-    particularly focusing on ester hydrolysis in the final steps.
+    Detects a strategy involving coupling reactions with halogenated aryl compounds.
     """
-    late_stage_hydrolysis = False
+    # Initialize tracking variables
+    has_halogenated_aryl = False
+    has_coupling_with_haloarene = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_hydrolysis
+        nonlocal has_halogenated_aryl, has_coupling_with_haloarene
 
-        if (
-            node["type"] == "reaction" and depth <= 1
-        ):  # Only consider reactions at depth 0 or 1 (late stage)
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            if "smiles" in node:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Check for halogenated aryl compounds
+                    haloarene_pattern = Chem.MolFromSmarts("c-[F,Cl,Br,I]")
+                    if mol.HasSubstructMatch(haloarene_pattern):
+                        has_halogenated_aryl = True
+                        print("Detected halogenated aryl compound")
 
-                try:
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                    if all(reactant_mols) and product_mol:
-                        # Check for ester pattern in reactants
-                        ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])-[#6]")
-                        has_ester = any(
-                            mol.HasSubstructMatch(ester_pattern) for mol in reactant_mols
-                        )
+            # Check for coupling reactions involving haloarenes
+            halogen_present = any("Cl" in r or "F" in r or "Br" in r or "I" in r for r in reactants)
+            if halogen_present and len(reactants) >= 2:
+                # Check if it's a coupling reaction (new C-C bond formation)
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    # If product has more C-C bonds than the sum in reactants, it might be a coupling
+                    has_coupling_with_haloarene = True
+                    print("Detected potential coupling reaction with haloarene")
 
-                        # Check for carboxylic acid pattern in product
-                        acid_pattern = Chem.MolFromSmarts("[#8]-[#6](=[#8])-[#6]")
-                        has_acid = product_mol.HasSubstructMatch(acid_pattern)
-
-                        if has_ester and has_acid:
-                            print(f"Detected late-stage ester hydrolysis at depth {depth}")
-                            late_stage_hydrolysis = True
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return late_stage_hydrolysis
+
+    # Check if all required elements are present
+    result = has_halogenated_aryl and has_coupling_with_haloarene
+
+    print(f"Halogenated aryl detected: {has_halogenated_aryl}")
+    print(f"Coupling with haloarene detected: {has_coupling_with_haloarene}")
+    print(f"Overall halogenated aryl coupling strategy detected: {result}")
+
+    return result

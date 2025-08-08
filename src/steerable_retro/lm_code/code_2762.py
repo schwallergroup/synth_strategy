@@ -2,62 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves fragment coupling via ether formation.
+    This function detects a synthetic strategy involving the conversion of a
+    Weinreb amide to a ketone.
     """
-    ether_coupling_found = False
+    # Initialize tracking variables
+    has_weinreb_to_ketone = False
 
     def dfs_traverse(node):
-        nonlocal ether_coupling_found
+        nonlocal has_weinreb_to_ketone
 
         if node["type"] == "reaction":
             # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
+
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Only consider reactions with multiple reactants (fragment coupling)
-            if len(reactants_smiles) >= 2:
+            # Check for Weinreb amide in reactants
+            weinreb_amide_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#7](-[#6])-[#6](=[#8])-[#6]")
+            # Check for ketone in product
+            ketone_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#6]")
+
+            has_weinreb = False
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(weinreb_amide_pattern):
+                        has_weinreb = True
+                        break
+                except:
+                    continue
+
+            has_ketone = False
+            try:
                 product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol and product_mol.HasSubstructMatch(ketone_pattern):
+                    has_ketone = True
+            except:
+                pass
 
-                if product_mol:
-                    # Check for ether pattern in product
-                    ether_pattern = Chem.MolFromSmarts("[c][OX2][#6]")
-
-                    if product_mol.HasSubstructMatch(ether_pattern):
-                        # Check if ether is not present in any of the reactants
-                        ether_in_reactants = False
-                        for reactant in reactants_smiles:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(ether_pattern):
-                                ether_in_reactants = True
-                                break
-
-                        if not ether_in_reactants:
-                            ether_coupling_found = True
-                            print(
-                                f"Found fragment coupling via ether formation at depth {node.get('depth', 'unknown')}"
-                            )
+            if has_weinreb and has_ketone:
+                print("Found Weinreb amide to ketone transformation")
+                has_weinreb_to_ketone = True
 
         # Traverse children
         for child in node.get("children", []):
@@ -66,5 +79,4 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Fragment coupling via ether formation strategy detected: {ether_coupling_found}")
-    return ether_coupling_found
+    return has_weinreb_to_ketone

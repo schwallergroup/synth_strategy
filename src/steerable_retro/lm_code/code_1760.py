@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,66 +54,134 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects the transformation of an oxime to an oxime ether.
-    This is typically done via a Williamson ether synthesis reaction.
+    This function detects if the synthetic route involves late-stage heterocycle formation,
+    specifically a pyrazole ring formation in the second half of the synthesis.
     """
-    oxime_ether_formation_found = False
+    heterocycle_formation_found = False
+    heterocycle_formation_depth = -1
+    max_depth = -1
 
-    def dfs_traverse(node):
-        nonlocal oxime_ether_formation_found
+    # List of heterocycles to check
+    heterocycles = [
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "isoxazole",
+        "isothiazole",
+        "triazole",
+        "tetrazole",
+        "oxadiazole",
+        "thiadiazole",
+    ]
 
-        if node["type"] == "reaction" and not oxime_ether_formation_found:
-            try:
-                if "rsmi" in node.get("metadata", {}):
-                    rsmi = node["metadata"]["rsmi"]
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal heterocycle_formation_found, heterocycle_formation_depth, max_depth
 
-                    # Check if this is a Williamson ether synthesis
-                    is_williamson = checker.check_reaction("Williamson Ether Synthesis", rsmi)
+        # Update max depth
+        max_depth = max(max_depth, depth)
 
-                    # Check for oxime in reactants
-                    has_oxime_reactant = any(checker.check_fg("Oxime", r) for r in reactants)
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                    # Check for primary/secondary/tertiary halide in reactants
-                    has_halide_reactant = any(
-                        checker.check_fg("Primary halide", r)
-                        or checker.check_fg("Secondary halide", r)
-                        or checker.check_fg("Tertiary halide", r)
-                        for r in reactants
-                    )
+            print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                    # Check for oxime ether in product
-                    # Since "Oxime ether" might not be in the FG list, we check for absence of oxime
-                    # and presence of ether in the product
-                    has_oxime_product = checker.check_fg("Oxime", product)
-                    has_ether_product = checker.check_fg("Ether", product)
+            # Check for heterocycle formation
+            product_has_heterocycle = False
+            reactants_have_heterocycle = False
+            formed_heterocycle = None
 
-                    if (
-                        is_williamson
-                        and has_oxime_reactant
-                        and has_halide_reactant
-                        and not has_oxime_product
-                        and has_ether_product
-                    ):
-                        print(
-                            "Found oxime to oxime ether transformation via Williamson ether synthesis"
-                        )
-                        oxime_ether_formation_found = True
+            # Check which heterocycle is formed
+            for heterocycle in heterocycles:
+                if checker.check_ring(heterocycle, product_smiles):
+                    print(f"Product contains {heterocycle} ring")
+                    product_has_heterocycle = True
+                    formed_heterocycle = heterocycle
 
-                    # Fallback check if Williamson reaction check fails
-                    elif has_oxime_reactant and has_halide_reactant and not has_oxime_product:
-                        # Use SMARTS pattern for oxime ether as fallback
-                        oxime_ether_pattern = Chem.MolFromSmarts("[C]=[N][O][C]")
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol and product_mol.HasSubstructMatch(oxime_ether_pattern):
-                            print("Found oxime to oxime ether transformation (fallback detection)")
-                            oxime_ether_formation_found = True
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                    # Check if any reactant has the same heterocycle
+                    for reactant in reactants_smiles:
+                        if checker.check_ring(heterocycle, reactant):
+                            print(f"Reactant also contains {heterocycle} ring")
+                            reactants_have_heterocycle = True
+                            break
 
+                    # If heterocycle is in product but not in reactants, it's formed in this reaction
+                    if not reactants_have_heterocycle:
+                        # Check if this is a known heterocycle formation reaction
+                        reaction_is_heterocycle_formation = False
+
+                        # Check for specific reaction types that form heterocycles
+                        reaction_names_to_check = [
+                            "pyrazole formation",
+                            "pyrazole",
+                            "{pyrazole}",
+                            "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
+                            "Huisgen 1,3 dipolar cycloaddition",
+                            "Huisgen alkene-azide 1,3 dipolar cycloaddition",
+                            "[3+2]-cycloaddition of hydrazone and alkyne",
+                            "[3+2]-cycloaddition of hydrazone and alkene",
+                            "[3+2]-cycloaddition of diazoalkane and alkyne",
+                            "[3+2]-cycloaddition of diazoalkane and alkene",
+                        ]
+
+                        for reaction_name in reaction_names_to_check:
+                            if checker.check_reaction(reaction_name, rsmi):
+                                print(f"Confirmed {reaction_name} formation reaction")
+                                reaction_is_heterocycle_formation = True
+                                break
+
+                        # Direct check for pyrazole formation
+                        if heterocycle == "pyrazole" and not reaction_is_heterocycle_formation:
+                            # Check for hydrazine in reactants and nitrile in reactants
+                            has_hydrazine = False
+                            has_nitrile = False
+
+                            for reactant in reactants_smiles:
+                                if checker.check_fg("Hydrazine", reactant):
+                                    print("Found hydrazine in reactants")
+                                    has_hydrazine = True
+                                if checker.check_fg("Nitrile", reactant):
+                                    print("Found nitrile in reactants")
+                                    has_nitrile = True
+
+                            if has_hydrazine and has_nitrile:
+                                print("Detected pyrazole formation from hydrazine and nitrile")
+                                reaction_is_heterocycle_formation = True
+
+                        if reaction_is_heterocycle_formation:
+                            print(f"{formed_heterocycle} ring formation detected at depth {depth}")
+                            heterocycle_formation_found = True
+                            # If multiple formations are found, keep the one with the lowest depth (latest stage)
+                            if (
+                                heterocycle_formation_depth == -1
+                                or depth < heterocycle_formation_depth
+                            ):
+                                heterocycle_formation_depth = depth
+
+                    break  # Once we find a heterocycle in the product, no need to check others
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return oxime_ether_formation_found
+
+    print(f"Max depth: {max_depth}")
+    print(f"Heterocycle formation found: {heterocycle_formation_found}")
+    print(f"Heterocycle formation depth: {heterocycle_formation_depth}")
+
+    # Calculate the halfway point of the synthesis
+    halfway_depth = max_depth / 2
+    print(f"Halfway depth: {halfway_depth}")
+
+    # Check if heterocycle formation occurred in the second half of synthesis
+    # In retrosynthetic analysis, lower depth values correspond to later stages in synthesis
+    # So we need to check if the formation depth is less than halfway_depth
+    is_late_stage = heterocycle_formation_found and heterocycle_formation_depth < halfway_depth
+    print(f"Is late stage heterocycle formation: {is_late_stage}")
+
+    return is_late_stage

@@ -2,69 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves connecting heterocycles via an oxygen linker.
+    This function detects if the synthesis follows a linear (non-convergent) strategy.
+
+    A linear synthesis is characterized by:
+    1. Each reaction step has at most one non-in-stock reactant
+    2. There is a single path from the target molecule to the starting materials
     """
-    found_oxygen_linker = False
+    # Track if we have a linear synthesis
+    is_linear = True
 
-    def dfs_traverse(node):
-        nonlocal found_oxygen_linker
+    def count_non_stock_reactants(node):
+        """Count the number of non-in-stock reactants in a reaction node"""
+        non_stock_count = 0
+        for child in node.get("children", []):
+            if child["type"] == "mol" and not child.get("in_stock", False):
+                non_stock_count += 1
+        return non_stock_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal is_linear
 
-            # Check for formation of c-O-C pattern connecting heterocycles
-            oxygen_linker_pattern = Chem.MolFromSmarts("c-[#8]-[#6]")
-            benzothiazole_pattern = Chem.MolFromSmarts("c1ccc2c(c1)nc(s2)")
+        # If we already determined it's not linear, no need to continue
+        if not is_linear:
+            return
 
-            product_mol = Chem.MolFromSmiles(product)
-            if not product_mol:
+        # For reaction nodes, check if there's more than one non-in-stock reactant
+        if node["type"] == "reaction":
+            non_stock_count = count_non_stock_reactants(node)
+            if non_stock_count > 1:
+                print(
+                    f"Found non-linear step: reaction has {non_stock_count} non-in-stock reactants"
+                )
+                is_linear = False
                 return
 
-            if product_mol.HasSubstructMatch(
-                oxygen_linker_pattern
-            ) and product_mol.HasSubstructMatch(benzothiazole_pattern):
-                # Check if this pattern was formed in this reaction
-                pattern_in_reactants = False
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
-                    if reactant_mol.HasSubstructMatch(
-                        oxygen_linker_pattern
-                    ) and reactant_mol.HasSubstructMatch(benzothiazole_pattern):
-                        pattern_in_reactants = True
-                        break
-
-                if not pattern_in_reactants:
-                    found_oxygen_linker = True
-                    print(f"Found oxygen linker formation at depth: {node.get('depth', 'unknown')}")
-
+        # Continue traversing children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the target molecule
     dfs_traverse(route)
 
-    return found_oxygen_linker
+    print(f"Synthesis is {'linear' if is_linear else 'convergent'}")
+    return is_linear

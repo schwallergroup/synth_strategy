@@ -2,100 +2,106 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves sequential functional group
-    interconversions, specifically carboxylic acid → acid chloride → amide.
+    Detects a strategy where a benzofuran core scaffold is maintained throughout the synthesis
+    while peripheral functional groups are modified.
     """
-    # Track the sequence of functional group transformations
-    transformations = []
+    # Track if benzofuran is present in all molecules
+    all_have_benzofuran = True
+    molecule_count = 0
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+    def dfs_traverse(node):
+        nonlocal all_have_benzofuran, molecule_count
 
-                # Define patterns for functional groups
-                carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
-                acid_chloride_pattern = Chem.MolFromSmarts("[C](=O)[Cl]")
-                amide_pattern = Chem.MolFromSmarts("[C](=O)[N]")
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            molecule_count += 1
+            smiles = node["smiles"]
 
-                # Check for transformations
-                reactants_have_acid = False
-                reactants_have_acid_chloride = False
-                product_has_acid_chloride = False
-                product_has_amide = False
+            try:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    print(f"Failed to parse molecule SMILES: {smiles}")
+                    all_have_benzofuran = False
+                    return
 
-                for reactant in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        if reactant_mol.HasSubstructMatch(carboxylic_acid_pattern):
-                            reactants_have_acid = True
-                        if reactant_mol.HasSubstructMatch(acid_chloride_pattern):
-                            reactants_have_acid_chloride = True
+                # Check for benzofuran core using the checker function
+                has_benzofuran = checker.check_ring("benzofuran", smiles)
 
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if product_mol:
-                    if product_mol.HasSubstructMatch(acid_chloride_pattern):
-                        product_has_acid_chloride = True
-                    if product_mol.HasSubstructMatch(amide_pattern):
-                        product_has_amide = True
+                # Additional check with a more general pattern for benzofuran
+                if not has_benzofuran:
+                    # Try a more general pattern for benzofuran (benzene fused to furan)
+                    benzofuran_pattern = Chem.MolFromSmarts("c1ccc2c(c1)cco2")
+                    if mol.HasSubstructMatch(benzofuran_pattern):
+                        has_benzofuran = True
+                        print(f"SMARTS pattern detected benzofuran in: {smiles}")
 
-                # Record transformations with their depth
-                if reactants_have_acid and product_has_acid_chloride:
-                    transformations.append(("acid_to_acid_chloride", depth))
-                    print(f"Carboxylic acid to acid chloride transformation at depth {depth}")
+                if not has_benzofuran:
+                    all_have_benzofuran = False
+                    print(f"Molecule without benzofuran core: {smiles}")
+                else:
+                    print(f"Molecule with benzofuran core: {smiles}")
+            except Exception as e:
+                print(f"Error processing molecule SMILES: {smiles} - {e}")
+                all_have_benzofuran = False
 
-                if reactants_have_acid_chloride and product_has_amide:
-                    transformations.append(("acid_chloride_to_amide", depth))
-                    print(f"Acid chloride to amide transformation at depth {depth}")
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have the sequence acid → acid chloride → amide
-    # Sort by depth (higher depth = earlier in synthesis)
-    transformations.sort(key=lambda x: x[1], reverse=True)
-
-    # Extract just the transformation types in sequence
-    transformation_sequence = [t[0] for t in transformations]
-
-    # Check if our target sequence exists in the correct order
-    target_sequence = ["acid_to_acid_chloride", "acid_chloride_to_amide"]
-
-    # Check if target_sequence is a subsequence of transformation_sequence
-    result = False
-    for i in range(len(transformation_sequence) - len(target_sequence) + 1):
-        if transformation_sequence[i : i + len(target_sequence)] == target_sequence:
-            result = True
-            print(
-                "Sequential functional group interconversions detected: acid → acid chloride → amide"
-            )
-            break
-
-    return result
+    # Strategy is present if all non-starting molecules contain benzofuran and we have multiple molecules
+    print(f"All have benzofuran: {all_have_benzofuran}, Molecule count: {molecule_count}")
+    return all_have_benzofuran and molecule_count > 1

@@ -2,150 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes construction of a heterocyclic scaffold.
-    It checks for the formation of various heterocyclic rings that weren't present in the reactants.
+    This function detects if the synthetic route involves benzyl ether formation
+    as a protection strategy for phenols.
     """
-    has_scaffold_construction = False
-
-    # List of heterocyclic rings to check
-    heterocyclic_rings = [
-        "imidazole",
-        "pyrazole",
-        "triazole",
-        "tetrazole",
-        "oxazole",
-        "thiazole",
-        "isoxazole",
-        "isothiazole",
-        "pyrrole",
-        "furan",
-        "thiophene",
-        "pyridine",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "indole",
-        "benzimidazole",
-        "benzoxazole",
-        "benzothiazole",
-        "quinoline",
-        "isoquinoline",
-    ]
-
-    # List of heterocycle-forming reaction types
-    heterocycle_forming_reactions = [
-        "Paal-Knorr pyrrole synthesis",
-        "Fischer indole",
-        "benzimidazole_derivatives_aldehyde",
-        "benzimidazole_derivatives_carboxylic-acid/ester",
-        "benzothiazole",
-        "benzoxazole_arom-aldehyde",
-        "benzoxazole_carboxylic-acid",
-        "thiazole",
-        "tetrazole_terminal",
-        "Huisgen_Cu-catalyzed_1,4-subst",
-        "Huisgen_Ru-catalyzed_1,5_subst",
-        "1,2,4-triazole_acetohydrazide",
-        "1,2,4-triazole_carboxylic-acid/ester",
-        "pyrazole",
-        "oxadiazole",
-        "imidazole",
-    ]
+    benzyl_ether_count = 0
+    phenol_protection_events = 0
 
     def dfs_traverse(node):
-        nonlocal has_scaffold_construction
+        nonlocal benzyl_ether_count, phenol_protection_events
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if this is a known heterocycle-forming reaction
-                for reaction_type in heterocycle_forming_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Detected heterocycle-forming reaction: {reaction_type}")
-                        has_scaffold_construction = True
-                        return
+            # Check for phenol to benzyl ether transformation
+            phenol_pattern = Chem.MolFromSmarts("[c][OH]")
+            benzyl_ether_pattern = Chem.MolFromSmarts("[c][O][CH2][c]")
 
-                # Parse molecules
-                reactant_mols = []
-                for r in reactants:
-                    mol = Chem.MolFromSmiles(r)
-                    if mol:
-                        reactant_mols.append(mol)
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-                product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                # Check if product has benzyl ether
+                if product_mol.HasSubstructMatch(benzyl_ether_pattern):
+                    benzyl_ether_count += 1
 
-                if product_mol and reactant_mols:
-                    # Check for heterocyclic rings in product that aren't in reactants
-                    for ring_name in heterocyclic_rings:
-                        if checker.check_ring(ring_name, product):
-                            # Check if any reactant already has this ring
-                            reactants_have_ring = any(
-                                checker.check_ring(ring_name, Chem.MolToSmiles(mol))
-                                for mol in reactant_mols
-                            )
+                    # Check if any reactant has phenol
+                    for r_mol in reactant_mols:
+                        if r_mol and r_mol.HasSubstructMatch(phenol_pattern):
+                            phenol_protection_events += 1
+                            print(f"Found phenol protection event: {rsmi}")
+                            break
 
-                            if not reactants_have_ring:
-                                print(f"Detected heterocyclic scaffold construction: {ring_name}")
-                                has_scaffold_construction = True
-                                return
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from root
     dfs_traverse(route)
-    return has_scaffold_construction
+
+    # Strategy is present if we have at least one phenol protection event
+    result = phenol_protection_events >= 1
+    print(
+        f"Benzyl ether protection strategy detected: {result} (protection events: {phenol_protection_events})"
+    )
+    return result

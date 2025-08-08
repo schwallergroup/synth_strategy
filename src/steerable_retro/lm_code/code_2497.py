@@ -2,125 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis uses a Grignard addition to a Weinreb amide.
+    This function detects if the synthesis follows a linear strategy (as opposed to convergent).
+    A linear synthesis is characterized by having only one non-stock reactant in each reaction.
     """
-    found_pattern = False
+    is_linear = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
+    def dfs_traverse(node):
+        nonlocal is_linear
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                print(f"Examining reaction at depth {depth}: {rsmi}")
+            # Count non-stock reactants
+            non_stock_reactants = 0
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    non_stock_reactants += 1
 
-                # Check if this is a Weinreb amide to ketone reaction
-                if checker.check_reaction("Ketone from Weinreb amide", rsmi):
-                    print(f"Found Ketone from Weinreb amide reaction at depth {depth}")
+            # If more than one non-stock reactant, it's not a linear synthesis
+            if non_stock_reactants > 1:
+                is_linear = False
+                print(f"Non-linear step detected with {non_stock_reactants} non-stock reactants")
 
-                    # Extract reactants to check for Grignard reagent
-                    reactants = rsmi.split(">")[0].split(".")
-
-                    # Check if any reactant is a Grignard reagent
-                    for reactant in reactants:
-                        if checker.check_fg("Magnesium halide", reactant):
-                            print(f"Found Grignard reagent: {reactant}")
-                            found_pattern = True
-                            return
-
-                # Alternative check: look for both components and verify reaction pattern
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                has_grignard = False
-                has_weinreb = False
-
-                for reactant in reactants:
-                    # Check for Grignard reagent
-                    if checker.check_fg("Magnesium halide", reactant):
-                        print(f"Found Grignard reagent: {reactant}")
-                        has_grignard = True
-
-                    # Check for Weinreb amide structure
-                    # Weinreb amides are tertiary amides with N-methoxy-N-methyl group
-                    if checker.check_fg("Tertiary amide", reactant):
-                        # More specific check for N-methoxy-N-methyl amide structure
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            for atom in mol.GetAtoms():
-                                # Find nitrogen atoms
-                                if atom.GetAtomicNum() == 7:
-                                    # Check if connected to oxygen (methoxy group)
-                                    for neighbor in atom.GetNeighbors():
-                                        if neighbor.GetAtomicNum() == 8:
-                                            print(f"Found potential Weinreb amide: {reactant}")
-                                            has_weinreb = True
-
-                # If both components are present and product is a ketone
-                if has_grignard and has_weinreb:
-                    if checker.check_fg("Ketone", product):
-                        print(
-                            f"Found Grignard-Weinreb pattern through component analysis at depth {depth}"
-                        )
-                        found_pattern = True
-                    else:
-                        print(f"Found Grignard and Weinreb components but product is not a ketone")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
-            if found_pattern:
-                return
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return found_pattern
+
+    print(f"Linear synthesis strategy detected: {is_linear}")
+    return is_linear

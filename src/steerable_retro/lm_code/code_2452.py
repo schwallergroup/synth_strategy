@@ -2,74 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects Cbz (benzyloxycarbonyl) protection of an amine.
+    This function detects if the synthetic route involves early TMS protection
+    that is maintained through multiple steps of the synthesis.
     """
-    found_cbz_protection = False
+    tms_pattern = Chem.MolFromSmarts("[#6][Si]([#6])([#6])[#6]")
+    tms_reactions = []
+    tms_depth = -1
+    max_depth = -1
 
-    def dfs_traverse(node):
-        nonlocal found_cbz_protection
+    def dfs_traverse(node, depth=0):
+        nonlocal tms_reactions, tms_depth, max_depth
+
+        max_depth = max(max_depth, depth)
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for amine to Cbz-protected amine conversion
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
-                cbz_pattern = Chem.MolFromSmarts("[NH][C](=[O])[O][CH2][c]")
+            # Check if TMS is being introduced in this reaction
+            if (
+                not any(
+                    Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(tms_pattern)
+                    for r in reactants
+                )
+                and Chem.MolFromSmiles(product)
+                and Chem.MolFromSmiles(product).HasSubstructMatch(tms_pattern)
+            ):
+                tms_reactions.append(depth)
+                tms_depth = depth
+                print(f"TMS introduction detected at depth {depth}")
 
-                # Check if reactants contain chloroformate and amine
-                has_amine = False
-                has_chloroformate = False
+            # Check if TMS is maintained in this reaction
+            elif (
+                any(
+                    Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(tms_pattern)
+                    for r in reactants
+                )
+                and Chem.MolFromSmiles(product)
+                and Chem.MolFromSmiles(product).HasSubstructMatch(tms_pattern)
+            ):
+                tms_reactions.append(depth)
+                print(f"TMS maintained at depth {depth}")
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        if reactant_mol.HasSubstructMatch(amine_pattern):
-                            has_amine = True
-                        if reactant_mol.HasSubstructMatch(
-                            Chem.MolFromSmarts("[Cl][C](=[O])[O][CH2][c]")
-                        ):
-                            has_chloroformate = True
-
-                # Check if product contains Cbz group
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    product_mol
-                    and product_mol.HasSubstructMatch(cbz_pattern)
-                    and has_amine
-                    and has_chloroformate
-                ):
-                    found_cbz_protection = True
-                    print("Found Cbz protection of amine")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return found_cbz_protection
+    # Check if TMS was introduced early and maintained through multiple steps
+    if tms_depth >= 0 and tms_depth >= max_depth - 1 and len(tms_reactions) >= 2:
+        print(
+            f"TMS protection strategy detected: introduced at depth {tms_depth} and maintained through {len(tms_reactions)} reactions"
+        )
+        return True
+    return False

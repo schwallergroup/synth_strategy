@@ -2,165 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects Suzuki coupling for biaryl formation.
-    Looks for reactions where a boronic acid and aryl halide form a biaryl system.
+    This function detects a synthetic strategy involving triazole ring formation
+    in the middle stage of synthesis.
     """
-    suzuki_detected = False
+    triazole_formed = False
 
     def dfs_traverse(node):
-        nonlocal suzuki_detected
+        nonlocal triazole_formed
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Check if this is a middle-stage reaction (depth around 1)
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            print(f"Analyzing reaction: {rsmi}")
+                # Convert SMILES to molecules
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product = Chem.MolFromSmiles(product_smiles)
 
-            # First, directly check if this is a Suzuki coupling reaction
-            is_suzuki = False
-            suzuki_reaction_types = [
-                "Suzuki coupling with boronic acids",
-                "Suzuki coupling with boronic esters",
-                "Suzuki coupling with boronic acids OTf",
-                "Suzuki coupling with boronic esters OTf",
-                "Suzuki coupling with sulfonic esters",
-                "{Suzuki}",  # General Suzuki reaction type
-            ]
+                if product:
+                    # Check if product contains a triazole
+                    triazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#7][#6][#6]1")
+                    if product.HasSubstructMatch(triazole_pattern):
+                        # Check if reactants don't have triazole
+                        reactants_have_triazole = False
+                        for r in reactants:
+                            if r and r.HasSubstructMatch(triazole_pattern):
+                                reactants_have_triazole = True
+                                break
 
-            for rxn_type in suzuki_reaction_types:
-                if checker.check_reaction(rxn_type, rsmi):
-                    print(f"Detected {rxn_type}")
-                    is_suzuki = True
-                    break
+                        if not reactants_have_triazole:
+                            print("Detected triazole formation")
+                            triazole_formed = True
 
-            # If not detected by reaction type, check for characteristic patterns
-            if not is_suzuki:
-                # Check if we have a boronic compound and an aryl halide/triflate
-                has_boronic_compound = False
-                has_aryl_electrophile = False
-
-                for reactant in reactants:
-                    if checker.check_fg("Boronic acid", reactant) or checker.check_fg(
-                        "Boronic ester", reactant
-                    ):
-                        print(f"Found boronic compound in reactant: {reactant}")
-                        has_boronic_compound = True
-
-                    if checker.check_fg("Aromatic halide", reactant) or checker.check_fg(
-                        "Triflate", reactant
-                    ):
-                        print(f"Found aryl electrophile in reactant: {reactant}")
-                        has_aryl_electrophile = True
-
-                # If we have both required components, this might be a Suzuki coupling
-                if has_boronic_compound and has_aryl_electrophile:
-                    print(
-                        "Found both boronic compound and aryl electrophile, checking product for biaryl system"
-                    )
-
-                    # Check if the product has a biaryl system
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        # Better pattern for biaryl detection
-                        biaryl_pattern = Chem.MolFromSmarts("c:c-c:c")
-                        if product_mol.HasSubstructMatch(biaryl_pattern):
-                            print(
-                                f"Detected potential Suzuki coupling with biaryl formation: {rsmi}"
-                            )
-                            is_suzuki = True
-
-            if is_suzuki:
-                # Verify we have the right reactants
-                has_boronic_compound = False
-                has_aryl_electrophile = False
-
-                for reactant in reactants:
-                    print(f"Checking reactant: {reactant}")
-                    # Check for boronic acids or esters
-                    if checker.check_fg("Boronic acid", reactant):
-                        print("Found boronic acid")
-                        has_boronic_compound = True
-                    elif checker.check_fg("Boronic ester", reactant):
-                        print("Found boronic ester")
-                        has_boronic_compound = True
-
-                    # Check for aryl halides or triflates
-                    if checker.check_fg("Aromatic halide", reactant):
-                        print("Found aromatic halide")
-                        has_aryl_electrophile = True
-                    elif checker.check_fg("Triflate", reactant):
-                        print("Found triflate")
-                        has_aryl_electrophile = True
-
-                print(f"Has boronic compound: {has_boronic_compound}")
-                print(f"Has aryl electrophile: {has_aryl_electrophile}")
-
-                # Verify the product has a biaryl system
-                if has_boronic_compound and has_aryl_electrophile:
-                    product_mol = Chem.MolFromSmiles(product)
-
-                    if product_mol:
-                        # Better pattern for biaryl detection
-                        biaryl_pattern = Chem.MolFromSmarts("c:c-c:c")
-
-                        if product_mol.HasSubstructMatch(biaryl_pattern):
-                            print(f"Detected biaryl system in product: {product}")
-                            suzuki_detected = True
-                            print(f"Confirmed Suzuki coupling for biaryl formation: {rsmi}")
-
-        # Continue DFS traversal
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return suzuki_detected
+    return triazole_formed

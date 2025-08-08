@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -49,43 +52,85 @@ checker = check.Check(
 )
 
 
-def main(route, depth=0, sequence_count=0):
+def main(route):
     """
-    Detects if the synthesis route includes a sequence of aromatic substitution reactions.
+    This function detects if the synthetic route employs a late-stage sulfonamide formation
+    as the final step (depth 0) or penultimate step (depth 1).
     """
-    if route["type"] == "reaction":
-        try:
-            rsmi = route["metadata"]["rsmi"]
+    result = False
 
-            # Check if this is an aromatic substitution reaction
-            is_aromatic_sub = False
+    def dfs_traverse(node):
+        nonlocal result
 
-            # Check for common aromatic substitution reactions
-            if (
-                checker.check_reaction("Aromatic chlorination", rsmi)
-                or checker.check_reaction("Aromatic bromination", rsmi)
-                or checker.check_reaction("Aromatic fluorination", rsmi)
-                or checker.check_reaction("Aromatic iodination", rsmi)
-                or checker.check_reaction("Aromatic nitration with HNO3", rsmi)
-                or checker.check_reaction("Friedel-Crafts alkylation", rsmi)
-                or checker.check_reaction("Friedel-Crafts acylation", rsmi)
-                or checker.check_reaction("N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi)
-            ):
-                is_aromatic_sub = True
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            # Extract depth with proper error handling
+            depth_match = re.search(
+                r"Depth: (\d+)", node.get("metadata", {}).get("ID", "Depth: -1")
+            )
+            depth = int(depth_match.group(1)) if depth_match else -1
 
-            if is_aromatic_sub:
-                sequence_count += 1
-                if sequence_count >= 2:  # At least 2 aromatic substitutions in sequence
-                    print(
-                        f"Aromatic substitution sequence detected with {sequence_count} reactions"
+            if depth <= 1:  # Final or penultimate step (late-stage)
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
+
+                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+
+                # Check if product contains sulfonamide
+                product_has_sulfonamide = checker.check_fg("Sulfonamide", product_smiles)
+
+                if product_has_sulfonamide:
+                    print(f"Product contains sulfonamide at depth {depth}")
+
+                    # Check if sulfonamide is formed in this step (not present in reactants)
+                    sulfonamide_in_reactants = False
+                    for reactant in reactants_smiles:
+                        if checker.check_fg("Sulfonamide", reactant):
+                            sulfonamide_in_reactants = True
+                            print(f"Sulfonamide already present in reactant: {reactant}")
+                            break
+
+                    # Check for sulfonyl chloride in reactants
+                    sulfonyl_chloride_present = False
+                    for reactant in reactants_smiles:
+                        if checker.check_fg("Sulfonyl halide", reactant):
+                            sulfonyl_chloride_present = True
+                            print(f"Found sulfonyl chloride in reactant: {reactant}")
+                            break
+
+                    # Check for amine in reactants
+                    amine_present = False
+                    for reactant in reactants_smiles:
+                        if (
+                            checker.check_fg("Primary amine", reactant)
+                            or checker.check_fg("Secondary amine", reactant)
+                            or checker.check_fg("Aniline", reactant)
+                        ):
+                            amine_present = True
+                            print(f"Found amine in reactant: {reactant}")
+                            break
+
+                    # Check if this is a sulfonamide formation reaction
+                    is_sulfonamide_reaction = checker.check_reaction(
+                        "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+                    ) or checker.check_reaction(
+                        "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
                     )
-                    return True
-        except Exception as e:
-            print(f"Error analyzing aromatic substitution: {e}")
 
-    # Recursively check children with updated sequence count
-    for child in route.get("children", []):
-        if aromatic_substitution_sequence_strategy(child, depth + 1, sequence_count):
-            return True
+                    if is_sulfonamide_reaction:
+                        print(f"Reaction is a sulfonamide formation reaction")
 
-    return False
+                    if not sulfonamide_in_reactants and (
+                        is_sulfonamide_reaction or (sulfonyl_chloride_present and amine_present)
+                    ):
+                        print(f"Detected late-stage sulfonamide formation at depth {depth}")
+                        result = True
+                else:
+                    print(f"Product does not contain sulfonamide at depth {depth}")
+
+        for child in node.get("children", []):
+            dfs_traverse(child)
+
+    dfs_traverse(route)
+    print(f"Final result: {result}")
+    return result

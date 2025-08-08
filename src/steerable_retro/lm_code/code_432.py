@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,83 +54,155 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy where a thioether (C-S-C) linkage
-    is formed as a key connection between fragments.
+    This function detects if the synthetic route follows a linear strategy with
+    a late-stage amide bond disconnection.
     """
-    thioether_formed = False
+    late_stage_disconnection = False
+    is_linear = True
+    total_nodes = 0
+    branching_nodes = 0
 
-    def dfs_traverse(node):
-        nonlocal thioether_formed
+    # First pass to check if the route is mostly linear
+    def check_linearity(node):
+        nonlocal total_nodes, branching_nodes
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                print(f"Analyzing reaction: {rsmi}")
-
-                # Check for thiol in reactants
-                reactant_has_thiol = any(
-                    checker.check_fg("Aliphatic thiol", r) or checker.check_fg("Aromatic thiol", r)
-                    for r in reactants
-                )
-                print(f"Reactant has thiol: {reactant_has_thiol}")
-
-                # Check for alkylating agents in reactants (halides or alcohols)
-                reactant_has_alkylating_agent = any(
-                    checker.check_fg("Primary halide", r)
-                    or checker.check_fg("Secondary halide", r)
-                    or checker.check_fg("Tertiary halide", r)
-                    or checker.check_fg("Primary alcohol", r)
-                    or checker.check_fg("Secondary alcohol", r)
-                    or checker.check_fg("Tertiary alcohol", r)
-                    for r in reactants
-                )
-                print(f"Reactant has alkylating agent: {reactant_has_alkylating_agent}")
-
-                # Check for thioether (monosulfide) in product
-                product_has_thioether = checker.check_fg("Monosulfide", product)
-                print(f"Product has thioether: {product_has_thioether}")
-
-                # Check if reactants don't already have thioether
-                reactants_have_thioether = any(
-                    checker.check_fg("Monosulfide", r) for r in reactants
-                )
-                print(f"Reactants have thioether: {reactants_have_thioether}")
-
-                # Check if the reaction is an S-alkylation type or has the characteristics of one
-                reaction_is_salkylation = (
-                    checker.check_reaction("S-alkylation of thiols", rsmi)
-                    or checker.check_reaction("S-alkylation of thiols (ethyl)", rsmi)
-                    or checker.check_reaction("S-alkylation of thiols with alcohols", rsmi)
-                    or checker.check_reaction("S-alkylation of thiols with alcohols (ethyl)", rsmi)
-                    or checker.check_reaction("thioether_nucl_sub", rsmi)
-                    or (
-                        reactant_has_thiol
-                        and reactant_has_alkylating_agent
-                        and product_has_thioether
-                        and not reactants_have_thioether
-                    )
-                )
-                print(f"Reaction is S-alkylation: {reaction_is_salkylation}")
-
-                # Check if this is a thioether formation (new thioether in product)
-                is_thioether_formation = (
-                    reactant_has_thiol
-                    and reactant_has_alkylating_agent
-                    and product_has_thioether
-                    and not reactants_have_thioether
-                )
-
-                if is_thioether_formation:
-                    print(f"Found thioether formation via S-alkylation: {rsmi}")
-                    thioether_formed = True
+        total_nodes += 1
+        if len(node.get("children", [])) > 1:
+            branching_nodes += 1
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            check_linearity(child)
 
-    # Call dfs_traverse on the root node
-    dfs_traverse(route)
+    # Second pass to find late-stage amide disconnection
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_disconnection
 
-    return thioether_formed
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Check for amide bond disconnection at low depth (late stage)
+            if depth <= 3:  # Late stage (depth 0, 1, 2, or 3)
+                print(f"Examining reaction at depth {depth}: {rsmi}")
+
+                # Check if this is an amide coupling reaction using reaction checkers
+                is_amide_coupling = any(
+                    [
+                        checker.check_reaction(
+                            "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                        ),
+                        checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi),
+                        checker.check_reaction("Schotten-Baumann to ester", rsmi),
+                        checker.check_reaction(
+                            "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+                        ),
+                        checker.check_reaction("Ester with primary amine to amide", rsmi),
+                        checker.check_reaction("Ester with secondary amine to amide", rsmi),
+                        checker.check_reaction("Ester with ammonia to amide", rsmi),
+                        checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi),
+                        checker.check_reaction("Acyl chloride with ammonia to amide", rsmi),
+                        checker.check_reaction("Carboxylic acid to amide conversion", rsmi),
+                    ]
+                )
+
+                # Check for azide reduction to amine (which can be used in amide formation)
+                is_azide_reduction = any(
+                    [
+                        checker.check_reaction("Azide to amine reduction (Staudinger)", rsmi),
+                        checker.check_reaction("Reduction of nitro groups to amines", rsmi),
+                    ]
+                )
+
+                # Check if product contains an amide group
+                has_amide_product = any(
+                    [
+                        checker.check_fg("Primary amide", product),
+                        checker.check_fg("Secondary amide", product),
+                        checker.check_fg("Tertiary amide", product),
+                    ]
+                )
+
+                if is_amide_coupling:
+                    print(
+                        f"Found late-stage amide bond disconnection via reaction check at depth {depth}"
+                    )
+                    late_stage_disconnection = True
+                elif is_azide_reduction and has_amide_product:
+                    print(
+                        f"Found late-stage azide reduction to amine (for amide formation) at depth {depth}"
+                    )
+                    late_stage_disconnection = True
+                # Alternatively, check for amide formation by examining reactants and product
+                elif len(reactants) > 0 and has_amide_product:
+                    product_mol = Chem.MolFromSmiles(product)
+
+                    if product_mol:
+                        print(f"Product contains amide group: {product}")
+
+                        # Check if we have appropriate reactants for amide formation
+                        has_acid_derivative = False
+                        has_amine_derivative = False
+                        has_azide = False
+
+                        for r in reactants:
+                            # Check for acid derivatives
+                            if any(
+                                [
+                                    checker.check_fg("Carboxylic acid", r),
+                                    checker.check_fg("Acyl halide", r),
+                                    checker.check_fg("Ester", r),
+                                    checker.check_fg("Anhydride", r),
+                                ]
+                            ):
+                                has_acid_derivative = True
+                                print(f"Found acid derivative in reactants: {r}")
+
+                            # Check for amine derivatives
+                            if any(
+                                [
+                                    checker.check_fg("Primary amine", r),
+                                    checker.check_fg("Secondary amine", r),
+                                    checker.check_fg("Aniline", r),
+                                    checker.check_fg("Ammonia", r),
+                                ]
+                            ):
+                                has_amine_derivative = True
+                                print(f"Found amine derivative in reactants: {r}")
+
+                            # Check for azide (which can be reduced to amine)
+                            if checker.check_fg("Azide", r):
+                                has_azide = True
+                                print(f"Found azide in reactants (potential amine source): {r}")
+
+                        # Verify appropriate components are present
+                        if (has_acid_derivative and has_amine_derivative) or has_azide:
+                            print(
+                                f"Found late-stage amide bond disconnection via reactant/product analysis at depth {depth}"
+                            )
+                            late_stage_disconnection = True
+
+        # Process children nodes
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
+
+    # Check if the route is mostly linear
+    check_linearity(route)
+    linearity_ratio = 1.0 - (branching_nodes / max(1, total_nodes))
+    is_linear = linearity_ratio >= 0.7  # At least 70% of nodes should be non-branching
+
+    print(f"Total nodes: {total_nodes}, Branching nodes: {branching_nodes}")
+    print(f"Linearity ratio: {linearity_ratio:.2f}")
+
+    # Only proceed if the route is mostly linear
+    if is_linear:
+        print("Route is sufficiently linear, checking for late-stage amide disconnection")
+        dfs_traverse(route)
+    else:
+        print(f"Route is not sufficiently linear (linearity ratio: {linearity_ratio:.2f})")
+
+    result = is_linear and late_stage_disconnection
+    print(
+        f"Final result: {result} (is_linear: {is_linear}, late_stage_disconnection: {late_stage_disconnection})"
+    )
+    return result

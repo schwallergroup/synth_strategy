@@ -2,83 +2,137 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear build-up strategy
-    rather than a convergent approach.
-
-    A linear build-up strategy typically involves:
-    1. A chain-like synthesis path with limited branching
-    2. Sequential addition of building blocks
-    3. Most reaction steps having 1-2 reactants
+    Detects a synthetic strategy where the final step involves formation of an amide bond.
     """
-    # Track metrics for analysis
-    reaction_count = 0
-    max_reactants_per_step = 0
+    # Initialize tracking variables
+    has_amide_formation = False
+    late_stage_amide_formation = False
 
-    # Track tree structure
-    max_depth = 0
-    branch_points = 0
-
-    def dfs_traverse(node, depth=0):
-        nonlocal reaction_count, max_reactants_per_step, max_depth, branch_points
-
-        # Update max depth
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node, depth=0, is_first_call=True):
+        nonlocal has_amide_formation, late_stage_amide_formation
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Count number of distinct reactants
-                reactant_count = len([r for r in reactants if r])
-                max_reactants_per_step = max(max_reactants_per_step, reactant_count)
-                reaction_count += 1
+            # Check for amide formation reactions directly
+            is_amide_formation = (
+                checker.check_reaction(
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+                )
+                or checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi)
+                or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
+                or checker.check_reaction("Ester with primary amine to amide", rsmi)
+                or checker.check_reaction("Ester with secondary amine to amide", rsmi)
+                or checker.check_reaction("Acyl chloride with ammonia to amide", rsmi)
+                or checker.check_reaction("Ester with ammonia to amide", rsmi)
+                or checker.check_reaction("Schotten-Baumann_amide", rsmi)
+                or checker.check_reaction(
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    rsmi,
+                )
+            )
 
-                # Check for branching (more than 2 children indicates convergent synthesis)
-                if len(node.get("children", [])) > 2:
-                    branch_points += 1
+            # If not a known reaction type, check for functional group changes
+            if not is_amide_formation:
+                # Check for amine in reactants
+                reactant_has_amine = any(
+                    checker.check_fg("Primary amine", r_smiles)
+                    or checker.check_fg("Secondary amine", r_smiles)
+                    for r_smiles in reactants_smiles
+                )
 
-        # Recursively process children
-        children = node.get("children", [])
-        for child in children:
-            dfs_traverse(child, depth + 1)
+                # Check for acyl source in reactants
+                reactant_has_acyl = any(
+                    checker.check_fg("Acyl halide", r_smiles)
+                    or checker.check_fg("Carboxylic acid", r_smiles)
+                    or checker.check_fg("Ester", r_smiles)
+                    or checker.check_fg("Anhydride", r_smiles)
+                    for r_smiles in reactants_smiles
+                )
+
+                # Check for amide in product
+                product_has_amide = (
+                    checker.check_fg("Primary amide", product_smiles)
+                    or checker.check_fg("Secondary amide", product_smiles)
+                    or checker.check_fg("Tertiary amide", product_smiles)
+                )
+
+                # If reactants have amine and acyl source, and product has amide, it's likely amide formation
+                is_amide_formation = reactant_has_amine and reactant_has_acyl and product_has_amide
+
+            if is_amide_formation:
+                print(f"Found amide formation reaction at depth {depth}: {rsmi}")
+                has_amide_formation = True
+
+                # In retrosynthesis, late-stage reactions are at depth 0 or 1
+                if is_first_call or depth <= 1:
+                    late_stage_amide_formation = True
+                    print(f"Found late-stage amide formation at depth {depth}")
+
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1, False)
 
     # Start traversal
-    dfs_traverse(route)
+    dfs_traverse(route, is_first_call=True)
 
-    # Analyze synthesis pattern
-    print(f"Reaction count: {reaction_count}")
-    print(f"Max reactants per step: {max_reactants_per_step}")
-    print(f"Max depth: {max_depth}")
-    print(f"Branch points: {branch_points}")
+    # The strategy requires amide formation at a late stage (depth 0 or 1)
+    strategy_present = late_stage_amide_formation
 
-    # Criteria for linear build-up:
-    # 1. At least one reaction
-    # 2. Limited branching (few branch points)
-    # 3. Deeper tree structure (depth > branch points)
-    if reaction_count > 0 and (branch_points == 0 or max_depth > branch_points * 2):
-        print("Detected linear build-up strategy")
-        return True
-
-    return False
+    print(f"Late-stage amide formation strategy detected: {strategy_present}")
+    return strategy_present

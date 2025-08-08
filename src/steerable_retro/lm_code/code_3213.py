@@ -2,81 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if certain functional groups (like cyano) are preserved
-    throughout the synthesis.
+    Detects a strategy involving late-stage convergent coupling of two complex fragments,
+    where at least one fragment contains a heterocycle.
     """
-    # Track functional groups at each depth
-    functional_groups_by_depth = {}
-    max_depth = 0
+    found_late_convergent = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal max_depth
+        nonlocal found_late_convergent
 
-        if depth > max_depth:
-            max_depth = depth
+        if (
+            depth <= 1
+            and node["type"] == "reaction"
+            and "metadata" in node
+            and "rsmi" in node["metadata"]
+        ):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            product = rsmi.split(">")[-1]
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol = Chem.MolFromSmiles(node["smiles"])
+            # Split reactants
+            reactant_smiles = reactants_part.split(".")
 
-            if mol:
-                # Check for cyano group
-                cyano_pattern = Chem.MolFromSmarts("[CX2]#[NX1]")
-                has_cyano = mol.HasSubstructMatch(cyano_pattern)
+            # Only consider reactions with at least 2 reactants
+            if len(reactant_smiles) >= 2:
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactant_smiles]
+                product_mol = Chem.MolFromSmiles(product)
 
-                # Check for halogens
-                halogen_pattern = Chem.MolFromSmarts("[#6][Cl,Br,I]")
-                has_halogen = mol.HasSubstructMatch(halogen_pattern)
+                if product_mol and all(r for r in reactant_mols):
+                    # Check if at least one reactant has a heterocycle
+                    heterocycle_patterns = [
+                        Chem.MolFromSmarts("[n]1[c][n][c][c]1"),  # imidazole
+                        Chem.MolFromSmarts("[s]1[c][n][c][c]1"),  # thiazole
+                        Chem.MolFromSmarts("[o]1[c][c][c][c]1"),  # furan
+                        Chem.MolFromSmarts("[nH]1[c][c][c][c]1"),  # pyrrole
+                    ]
 
-                if depth not in functional_groups_by_depth:
-                    functional_groups_by_depth[depth] = {"cyano": has_cyano, "halogen": has_halogen}
-                else:
-                    functional_groups_by_depth[depth]["cyano"] = (
-                        functional_groups_by_depth[depth]["cyano"] or has_cyano
-                    )
-                    functional_groups_by_depth[depth]["halogen"] = (
-                        functional_groups_by_depth[depth]["halogen"] or has_halogen
-                    )
+                    has_heterocycle = False
+                    for r in reactant_mols:
+                        if r and any(r.HasSubstructMatch(p) for p in heterocycle_patterns):
+                            has_heterocycle = True
+                            break
+
+                    # Check if reactants are complex (at least 10 atoms)
+                    complex_reactants = sum(1 for r in reactant_mols if r and r.GetNumAtoms() >= 10)
+
+                    if has_heterocycle and complex_reactants >= 1:
+                        found_late_convergent = True
+                        print(f"Late-stage convergent coupling detected at depth {depth}")
+                        print(f"Reactants: {reactant_smiles}")
 
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
 
-    # Check if cyano group is preserved throughout
-    cyano_preserved = True
-    halogen_preserved = True
+    print(f"Late-stage convergent coupling strategy detected: {found_late_convergent}")
 
-    for depth in range(max_depth + 1):
-        if depth in functional_groups_by_depth:
-            if not functional_groups_by_depth[depth]["cyano"]:
-                cyano_preserved = False
-            if not functional_groups_by_depth[depth]["halogen"]:
-                halogen_preserved = False
-
-    if cyano_preserved:
-        print("Cyano group preserved throughout synthesis")
-    if halogen_preserved:
-        print("Halogen groups preserved throughout synthesis")
-
-    return cyano_preserved or halogen_preserved
+    return found_late_convergent

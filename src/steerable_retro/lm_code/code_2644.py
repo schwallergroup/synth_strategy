@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,214 +54,100 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a synthetic strategy involving late-stage introduction of
-    cyclic amine fragments to a heterocyclic core.
+    This function detects a strategy involving amide coupling between a heterocyclic
+    carboxylic acid and an amine with a stereocenter.
     """
-    # Track fragment introductions
-    fragment_introductions = []
-    depths = []
-
-    # List of cyclic amines to check
-    cyclic_amines = [
-        "morpholine",
-        "pyrrolidine",
-        "piperidine",
-        "piperazine",
-        "aziridine",
-        "azetidine",
-        "azepane",
-        "diazepane",
-        "thiomorpholine",
-    ]
-
-    # List of heterocyclic rings to check in the core
+    # Define heterocyclic rings to check
     heterocyclic_rings = [
-        "pyridine",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazine",
         "furan",
-        "thiophene",
         "pyrrole",
+        "pyridine",
+        "pyrazole",
         "imidazole",
         "oxazole",
         "thiazole",
-        "indole",
-        "benzimidazole",
-        "quinoline",
-        "isoquinoline",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
         "triazole",
         "tetrazole",
-        "benzoxazole",
-        "benzothiazole",
-        "purine",
-        "isoxazole",
-        "isothiazole",
-        "oxadiazole",
-        "thiadiazole",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "benzimidazole",
     ]
 
+    # Track if we've found the required components in a single reaction
+    found_valid_reaction = False
+
     def dfs_traverse(node):
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                # Extract depth safely
-                depth = 0
-                if "metadata" in node and "ID" in node["metadata"]:
-                    id_str = node["metadata"]["ID"]
-                    depth_match = re.search(r"Depth: (\d+)", id_str)
-                    if depth_match:
-                        depth = int(depth_match.group(1))
+        nonlocal found_valid_reaction
 
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and not found_valid_reaction:
+            # Extract reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                reactants = reactants_str.split(".")
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check if product contains a heterocyclic core
-                has_heterocyclic_core = False
-                core_found = None
-                for ring in heterocyclic_rings:
-                    if checker.check_ring(ring, product_str):
-                        has_heterocyclic_core = True
-                        core_found = ring
-                        print(f"Found heterocyclic core: {ring} in product")
-                        break
+            # Check for amide coupling reaction
+            is_amide_coupling = (
+                checker.check_reaction(
+                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                )
+                or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
+                or checker.check_reaction("Schotten-Baumann_amide", rsmi)
+            )
 
-                if has_heterocyclic_core:
-                    # Check for cyclic amine fragments in reactants
-                    for reactant in reactants:
-                        for amine in cyclic_amines:
-                            if checker.check_ring(amine, reactant):
-                                print(f"Found {amine} in reactant: {reactant}")
+            if not is_amide_coupling:
+                # Alternative check for amide formation
+                has_acid = any(checker.check_fg("Carboxylic acid", r) for r in reactants_smiles)
+                has_amine = any(
+                    checker.check_fg("Primary amine", r) or checker.check_fg("Secondary amine", r)
+                    for r in reactants_smiles
+                )
+                has_amide = checker.check_fg("Primary amide", product_smiles) or checker.check_fg(
+                    "Secondary amide", product_smiles
+                )
 
-                                # Verify this is a fragment introduction by checking:
-                                # 1. The amine is not in other reactants
-                                # 2. The amine is in the product
-                                other_reactants = [r for r in reactants if r != reactant]
-                                other_reactants_have_amine = any(
-                                    checker.check_ring(amine, r) for r in other_reactants
-                                )
+                is_amide_coupling = has_acid and has_amine and has_amide
 
-                                if not other_reactants_have_amine and checker.check_ring(
-                                    amine, product_str
-                                ):
-                                    # Check if this is a nucleophilic substitution or coupling reaction
-                                    is_coupling = (
-                                        checker.check_reaction(
-                                            "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
-                                        )
-                                        or checker.check_reaction(
-                                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-                                            rsmi,
-                                        )
-                                        or checker.check_reaction(
-                                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
-                                            rsmi,
-                                        )
-                                        or checker.check_reaction(
-                                            "Williamson Ether Synthesis", rsmi
-                                        )
-                                        or checker.check_reaction(
-                                            "N-alkylation of primary amines with alkyl halides",
-                                            rsmi,
-                                        )
-                                        or checker.check_reaction(
-                                            "N-alkylation of secondary amines with alkyl halides",
-                                            rsmi,
-                                        )
-                                        or checker.check_reaction("Buchwald-Hartwig", rsmi)
-                                        or checker.check_reaction("N-arylation_heterocycles", rsmi)
-                                        or checker.check_reaction(
-                                            "Ullmann-Goldberg Substitution amine", rsmi
-                                        )
-                                        or checker.check_reaction("Goldberg coupling", rsmi)
-                                        or checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
-                                        or checker.check_reaction(
-                                            "nucl_sub_aromatic_ortho_nitro", rsmi
-                                        )
-                                        or checker.check_reaction(
-                                            "nucl_sub_aromatic_para_nitro", rsmi
-                                        )
-                                        or
-                                        # Additional nucleophilic substitution reactions
-                                        checker.check_reaction(
-                                            "Ullmann-Goldberg Substitution aryl alcohol", rsmi
-                                        )
-                                        or checker.check_reaction(
-                                            "Goldberg coupling aryl amine-aryl chloride", rsmi
-                                        )
-                                        or checker.check_reaction(
-                                            "Goldberg coupling aryl amide-aryl chloride", rsmi
-                                        )
-                                        or checker.check_reaction(
-                                            "Displacement of ethoxy group by primary amine", rsmi
-                                        )
-                                        or checker.check_reaction(
-                                            "Displacement of ethoxy group by secondary amine", rsmi
-                                        )
-                                    )
+            if is_amide_coupling:
+                print(f"Found amide coupling reaction: {rsmi}")
 
-                                    # Also check for general nucleophilic substitution patterns
-                                    if not is_coupling:
-                                        # Check if reactant has a halide (common leaving group)
-                                        has_leaving_group = False
-                                        for leaving_group in [
-                                            "Primary halide",
-                                            "Secondary halide",
-                                            "Tertiary halide",
-                                            "Aromatic halide",
-                                        ]:
-                                            for r in other_reactants:
-                                                if checker.check_fg(leaving_group, r):
-                                                    has_leaving_group = True
-                                                    print(
-                                                        f"Found leaving group: {leaving_group} in other reactant"
-                                                    )
-                                                    break
-                                            if has_leaving_group:
-                                                break
+                # Check for heterocyclic acid
+                heterocyclic_acid_found = False
+                for reactant in reactants_smiles:
+                    if checker.check_fg("Carboxylic acid", reactant):
+                        # Check if it contains a heterocyclic ring
+                        for ring in heterocyclic_rings:
+                            if checker.check_ring(ring, reactant):
+                                print(f"Found heterocyclic acid with {ring} ring: {reactant}")
+                                heterocyclic_acid_found = True
+                                break
 
-                                        # If there's a leaving group and the amine is nucleophilic, it's likely a substitution
-                                        if has_leaving_group:
-                                            is_coupling = True
-                                            print(
-                                                f"Inferred nucleophilic substitution based on leaving group"
-                                            )
+                # Check for amine with stereocenter
+                stereocenter_amine_found = False
+                for reactant in reactants_smiles:
+                    if ("@H" in reactant or "@@H" in reactant) and (
+                        checker.check_fg("Primary amine", reactant)
+                        or checker.check_fg("Secondary amine", reactant)
+                    ):
+                        print(f"Found amine with stereocenter: {reactant}")
+                        stereocenter_amine_found = True
 
-                                    if is_coupling:
-                                        fragment_introductions.append((amine, depth))
-                                        print(
-                                            f"Detected {amine} introduction at depth {depth} with core {core_found}"
-                                        )
+                # If both conditions are met in the same reaction
+                if heterocyclic_acid_found and stereocenter_amine_found:
+                    print("Found valid heterocyclic amide coupling with stereocenter")
+                    found_valid_reaction = True
 
-                depths.append(depth)
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Calculate max depth to determine what's "late stage"
-    max_depth = max(depths) if depths else 0
-
-    # Consider first third of synthesis as "late stage" (lower depth values)
-    late_stage_threshold = max_depth // 3
-
-    # Count late stage fragment introductions
-    late_stage_introductions = sum(
-        1 for _, depth in fragment_introductions if depth <= late_stage_threshold
-    )
-
-    # Determine if the strategy is present (at least 1 fragment introduced in late stage)
-    strategy_present = late_stage_introductions >= 1
-
-    print(f"Late-stage fragment introduction strategy detected: {strategy_present}")
-    print(f"- Total fragment introductions: {len(fragment_introductions)}")
-    print(f"- Late-stage introductions: {late_stage_introductions}")
-    print(f"- Max depth: {max_depth}, Late stage threshold: {late_stage_threshold}")
-
-    return strategy_present
+    return found_valid_reaction

@@ -2,62 +2,54 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy where a heterocyclic core is built and
-    then modified through multiple steps, maintaining the core structure.
+    Detects if the synthesis follows a linear strategy without convergent steps.
     """
-    heterocycle_depths = []
+    is_linear = True
 
-    def dfs_traverse(node, depth=0):
+    def count_reactants(node):
+        nonlocal is_linear
+
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
 
-                # Define patterns for various heterocycles
-                thiophene_pattern = Chem.MolFromSmarts("c1cscc1")
-                pyrimidine_pattern = Chem.MolFromSmarts("c1ncncn1")
+                # If more than 2 reactants, it might be convergent
+                # (allowing for 2 because many reactions have reagents)
+                if len(reactants) > 2:
+                    is_linear = False
+                    print("Found potential convergent step with", len(reactants), "reactants")
 
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        if product_mol.HasSubstructMatch(
-                            thiophene_pattern
-                        ) or product_mol.HasSubstructMatch(pyrimidine_pattern):
-                            heterocycle_depths.append(depth)
-                            print(f"Heterocyclic core detected at depth {depth}")
-                except:
-                    print("Error processing heterocycle detection")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            count_reactants(child)
 
-    # Start traversal from the root
-    dfs_traverse(route)
+    # Start traversal
+    count_reactants(route)
 
-    # Check if heterocyclic core is maintained through multiple steps
-    if len(heterocycle_depths) >= 3:  # Present in at least 3 steps
-        print("Heterocyclic core building strategy detected")
-        return True
-    return False
+    return is_linear

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,63 +54,109 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the final product contains multiple nitrogen heterocycles.
+    Detects linear synthesis strategy with heterocyclic scaffolds preserved
+    throughout the synthesis.
     """
-    has_multiple_heterocycles = False
+    # Track reaction steps and branching
+    reaction_count = 0
+    max_reactants_per_step = 0
+    heterocycle_preserved = True
+
+    # Define common heterocyclic rings to check
+    heterocyclic_rings = [
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "pyridine",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "pyrrole",
+        "furan",
+        "thiophene",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "triazole",
+        "tetrazole",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+        "piperidine",
+        "morpholine",
+        "piperazine",
+        "pyrrolidine",
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_multiple_heterocycles
+        nonlocal reaction_count, max_reactants_per_step, heterocycle_preserved
 
-        # Check only the root node (final product)
-        if depth == 0 and node["type"] == "mol" and "smiles" in node:
-            smiles = node["smiles"]
-            print(f"Analyzing final product: {smiles}")
+        if node["type"] == "reaction":
+            reaction_count += 1
 
-            # List of nitrogen-containing heterocycles to check
-            nitrogen_heterocycles = [
-                "pyrrole",
-                "pyridine",
-                "pyrazole",
-                "imidazole",
-                "oxazole",
-                "thiazole",
-                "pyrimidine",
-                "pyrazine",
-                "pyridazine",
-                "triazole",
-                "tetrazole",
-                "indole",
-                "quinoline",
-                "isoquinoline",
-                "purine",
-                "carbazole",
-                "acridine",
-                "benzimidazole",
-                "indazole",
-                "benzotriazole",
-            ]
+            # Extract reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-            # Count different heterocycle types
-            heterocycle_types = 0
-            found_rings = []
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            for ring in nitrogen_heterocycles:
-                if checker.check_ring(ring, smiles):
-                    heterocycle_types += 1
-                    found_rings.append(ring)
-                    print(f"{ring.capitalize()} ring detected in final product")
+            # Count reactants
+            num_reactants = len(reactants_smiles)
+            max_reactants_per_step = max(max_reactants_per_step, num_reactants)
 
-            print(f"Total nitrogen heterocycle types found: {heterocycle_types}")
-            print(f"Found rings: {', '.join(found_rings)}")
+            # Check if heterocycles are preserved across the reaction
+            product_heterocycles = []
+            for ring in heterocyclic_rings:
+                if checker.check_ring(ring, product_smiles):
+                    product_heterocycles.append(ring)
 
-            if heterocycle_types >= 2:
-                has_multiple_heterocycles = True
-                print("Multiple nitrogen heterocycle types detected in final product")
+            reactant_heterocycles = []
+            for reactant in reactants_smiles:
+                for ring in heterocyclic_rings:
+                    if checker.check_ring(ring, reactant):
+                        reactant_heterocycles.append(ring)
 
-        # Continue traversing
+            # If product has heterocycles but none of the reactants do, this is heterocycle formation
+            # If reactants have heterocycles but product doesn't, this is heterocycle destruction
+            if (product_heterocycles and not reactant_heterocycles) or (
+                reactant_heterocycles and not product_heterocycles
+            ):
+                print(f"Heterocycle not preserved in reaction: {rsmi}")
+                print(f"Product heterocycles: {product_heterocycles}")
+                print(f"Reactant heterocycles: {reactant_heterocycles}")
+                heterocycle_preserved = False
+
+        elif node["type"] == "mol" and depth == 0:
+            # Check if the final product contains any heterocycle
+            final_product_smiles = node["smiles"]
+            has_heterocycle = False
+            for ring in heterocyclic_rings:
+                if checker.check_ring(ring, final_product_smiles):
+                    has_heterocycle = True
+                    print(f"Final product contains heterocycle: {ring}")
+                    break
+
+            if not has_heterocycle:
+                print("Final product does not contain any heterocycle")
+                heterocycle_preserved = False
+
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-    return has_multiple_heterocycles
+
+    # Linear synthesis typically has max 2 reactants per step
+    is_linear = max_reactants_per_step <= 2 and heterocycle_preserved and reaction_count > 0
+
+    if is_linear:
+        print(f"Found linear heterocycle synthesis with {reaction_count} steps")
+    else:
+        print(
+            f"Not a linear heterocycle synthesis: max_reactants={max_reactants_per_step}, heterocycle_preserved={heterocycle_preserved}, reaction_count={reaction_count}"
+        )
+
+    return is_linear

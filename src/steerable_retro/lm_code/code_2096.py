@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,129 +54,110 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the final step (depth 0) in the synthesis is an N-acylation reaction.
+    Detects if the synthesis route involves acylation of an aromatic amine.
     """
-    found_late_acylation = False
+    acylation_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_late_acylation
+    def dfs_traverse(node):
+        nonlocal acylation_found
 
-        print(f"Traversing node of type {node['type']} at depth {depth}")
-
-        # For molecule nodes, just traverse children
-        if node["type"] == "mol":
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1)
-            return
-
-        # For reaction nodes
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
             try:
-                # Check if this is a leaf reaction node (no further children) or has FINAL in ID
-                is_final_step = (
-                    depth == 0  # First reaction in traversal
-                    or "FINAL" in node.get("metadata", {}).get("ID", "")  # ID contains FINAL
-                    or all(
-                        child.get("in_stock", False)
-                        for child in node.get("children", [])
-                        if child["type"] == "mol"
-                    )  # All children are in stock
-                )
+                rsmi = node["metadata"]["rsmi"]
+                print(f"Examining reaction: {rsmi}")
 
-                if is_final_step:
-                    print(f"Examining potential final reaction step")
+                # Check for acylation reaction types directly
+                acylation_reactions = [
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    "Schotten-Baumann to ester",
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                    "Acylation of primary amines",
+                    "Acylation of secondary amines",
+                    "Schotten-Baumann_amide",
+                ]
 
-                    # Extract reactants and product
-                    rsmi = node["metadata"].get("rsmi", "")
-                    if not rsmi:
-                        print("No reaction SMILES found in metadata")
-                        return
+                for reaction_type in acylation_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(f"Found reaction type: {reaction_type}")
 
-                    reactants_smiles = rsmi.split(">")[0].split(".")
-                    product_smiles = rsmi.split(">")[-1]
+                        # Correctly split the reaction SMILES
+                        parts = rsmi.split(">")
+                        if len(parts) >= 3:
+                            reactants_smiles = parts[0]
+                            products_smiles = parts[2]
 
-                    print(f"Reactants: {reactants_smiles}")
-                    print(f"Product: {product_smiles}")
+                            # Check if reactants contain aromatic amine
+                            reactants = reactants_smiles.split(".")
+                            for reactant in reactants:
+                                # Check for aniline or primary amine on benzene
+                                if checker.check_fg("Aniline", reactant) or (
+                                    checker.check_fg("Primary amine", reactant)
+                                    and checker.check_ring("benzene", reactant)
+                                ):
+                                    print(f"Found aromatic amine in reactant: {reactant}")
 
-                    # Check if this is an N-acylation reaction
-                    is_acylation = (
-                        checker.check_reaction(
-                            "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                            rsmi,
-                        )
-                        or checker.check_reaction("Acylation of primary amines", rsmi)
-                        or checker.check_reaction("Acylation of secondary amines", rsmi)
-                        or checker.check_reaction(
-                            "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Acyl chloride with secondary amine to amide", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Carboxylic acid with primary amine to amide", rsmi
-                        )
-                        or checker.check_reaction("Ester with primary amine to amide", rsmi)
-                        or checker.check_reaction("Ester with secondary amine to amide", rsmi)
-                        or checker.check_reaction("Schotten-Baumann to ester", rsmi)
-                    )
+                                    # Check if product contains acylated amine
+                                    products = products_smiles.split(".")
+                                    for product in products:
+                                        # Check for amide connected to aromatic ring
+                                        if (
+                                            checker.check_fg("Primary amide", product)
+                                            or checker.check_fg("Secondary amide", product)
+                                            or checker.check_fg("Tertiary amide", product)
+                                        ) and checker.check_ring("benzene", product):
+                                            print(
+                                                f"Found acylated aromatic amine in product: {product}"
+                                            )
+                                            acylation_found = True
+                                            return
 
-                    if is_acylation:
-                        print("Detected N-acylation reaction")
-                        found_late_acylation = True
-                    else:
-                        # Alternative check: look for amide formation
-                        product_has_amide = (
-                            checker.check_fg("Primary amide", product_smiles)
-                            or checker.check_fg("Secondary amide", product_smiles)
-                            or checker.check_fg("Tertiary amide", product_smiles)
-                        )
+                # Additional check for specific cases where the reaction might not be directly classified
+                parts = rsmi.split(">")
+                if len(parts) >= 3:
+                    reactants_smiles = parts[0]
+                    products_smiles = parts[2]
 
-                        reactants_have_amide = any(
-                            checker.check_fg("Primary amide", r)
-                            or checker.check_fg("Secondary amide", r)
-                            or checker.check_fg("Tertiary amide", r)
-                            for r in reactants_smiles
-                        )
+                    reactants = reactants_smiles.split(".")
+                    products = products_smiles.split(".")
 
-                        # Check for amine in reactants
-                        reactants_have_amine = any(
-                            checker.check_fg("Primary amine", r)
-                            or checker.check_fg("Secondary amine", r)
-                            or checker.check_fg("Tertiary amine", r)
-                            or checker.check_fg("Aniline", r)
-                            for r in reactants_smiles
-                        )
-
-                        # Check for acyl source in reactants
-                        reactants_have_acyl_source = any(
-                            checker.check_fg("Acyl halide", r)
-                            or checker.check_fg("Carboxylic acid", r)
-                            or checker.check_fg("Ester", r)
-                            or checker.check_fg("Anhydride", r)
-                            for r in reactants_smiles
-                        )
-
-                        if (
-                            product_has_amide
-                            and not reactants_have_amide
-                            and reactants_have_amine
-                            and reactants_have_acyl_source
+                    # Check for aromatic amine in reactants and amide in products
+                    aromatic_amine_in_reactants = False
+                    for reactant in reactants:
+                        if checker.check_fg("Aniline", reactant) or (
+                            checker.check_fg("Primary amine", reactant)
+                            and checker.check_ring("benzene", reactant)
                         ):
-                            print("Detected amide formation from amine and acyl source")
-                            found_late_acylation = True
+                            aromatic_amine_in_reactants = True
+                            print(
+                                f"Found aromatic amine in reactant (additional check): {reactant}"
+                            )
+                            break
+
+                    if aromatic_amine_in_reactants:
+                        for product in products:
+                            if (
+                                (
+                                    checker.check_fg("Primary amide", product)
+                                    or checker.check_fg("Secondary amide", product)
+                                    or checker.check_fg("Tertiary amide", product)
+                                )
+                                and checker.check_ring("benzene", product)
+                                and not checker.check_fg("Aniline", product)
+                            ):
+                                print(
+                                    f"Found acylated aromatic amine in product (additional check): {product}"
+                                )
+                                acylation_found = True
+                                return
+
             except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                print(f"Error processing reaction: {e}")
 
-            # Continue traversal for reaction nodes
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1)
+        # Continue traversal
+        for child in node.get("children", []):
+            dfs_traverse(child)
 
-    # Start traversal from the target molecule
-    if route["type"] == "mol":
-        print("Starting traversal from target molecule")
-        dfs_traverse(route)
-    else:
-        print("Route does not start with a molecule node")
-
-    print(f"Final result: {found_late_acylation}")
-    return found_late_acylation
+    # Start traversal from the root
+    dfs_traverse(route)
+    print(f"Acylation found: {acylation_found}")
+    return acylation_found

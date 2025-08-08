@@ -2,66 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route employs a late-stage sulfonylation strategy,
-    where a phenol is converted to a sulfonate ester in one of the final steps.
+    This function detects synthesis strategies centered around a thiophene core.
     """
-    sulfonylation_detected = False
+    thiophene_reactions = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal sulfonylation_detected
+        nonlocal thiophene_reactions
 
-        if (
-            node["type"] == "reaction" and depth <= 1
-        ):  # Focus on late-stage reactions (depth 0 or 1)
-            if "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for phenol in reactants
-                phenol_pattern = Chem.MolFromSmarts("[#6][O;H1]")
-                # Check for sulfonate in product
-                sulfonate_pattern = Chem.MolFromSmarts("[#6][O][S](=[O])(=[O])[#6]")
+                # Thiophene pattern
+                thiophene_pattern = Chem.MolFromSmarts("[c]1[c][s][c][c]1")
 
-                reactant_has_phenol = False
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(phenol_pattern):
-                        reactant_has_phenol = True
-                        break
+                # Check if thiophene is involved in the reaction
+                thiophene_involved = False
 
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    reactant_has_phenol
-                    and product_mol
-                    and product_mol.HasSubstructMatch(sulfonate_pattern)
-                ):
-                    print(f"Late-stage sulfonylation detected at depth {depth}")
-                    sulfonylation_detected = True
+                try:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(thiophene_pattern):
+                        for reactant in reactants:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.HasSubstructMatch(thiophene_pattern):
+                                thiophene_involved = True
+                                break
 
+                        if thiophene_involved:
+                            thiophene_reactions += 1
+                            print(f"Thiophene modification detected at depth {depth}")
+                except:
+                    pass
+
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from root
     dfs_traverse(route)
-    return sulfonylation_detected
+
+    # Return True if multiple thiophene-involving reactions are detected
+    return thiophene_reactions >= 2

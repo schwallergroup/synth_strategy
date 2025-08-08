@@ -2,63 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving early acylation of an aromatic heterocycle.
+    This function detects if the synthetic route follows a linear synthesis strategy
+    (no convergent steps where multiple fragments are combined).
     """
-    early_acylation_found = False
+    is_linear = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal early_acylation_found
+    def dfs_traverse(node):
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and depth >= 3:  # Early steps (depth >= 3)
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # Check if any reactant is an acylating agent
-            acylating_agent_found = False
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol:
-                    acyl_chloride_pattern = Chem.MolFromSmarts("[C](=O)[Cl]")
-                    if mol.HasSubstructMatch(acyl_chloride_pattern):
-                        acylating_agent_found = True
-                        print(f"Found acylating agent at depth {depth}: {reactant}")
+                # If there are multiple reactants, it's a convergent step
+                if len(reactants_smiles) > 1:
+                    # Check if all but one are small molecules (potential reagents)
+                    non_reagent_count = 0
+                    for r in reactants_smiles:
+                        mol = Chem.MolFromSmiles(r)
+                        if mol and mol.GetNumAtoms() > 5:  # Arbitrary threshold for "non-reagent"
+                            non_reagent_count += 1
 
-            # Check if product has a new carbonyl group attached to aromatic ring
-            if acylating_agent_found:
-                prod_mol = Chem.MolFromSmiles(product)
-                if prod_mol:
-                    aromatic_carbonyl_pattern = Chem.MolFromSmarts("c-[C](=O)")
-                    if prod_mol.HasSubstructMatch(aromatic_carbonyl_pattern):
-                        early_acylation_found = True
-                        print(f"Found early acylation of aromatic system at depth {depth}")
+                    if non_reagent_count > 1:
+                        print(f"Convergent step detected: {rsmi}")
+                        is_linear = False
+            except Exception as e:
+                print(f"Error in linear synthesis detection: {e}")
 
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    return early_acylation_found
+    print(f"Linear synthesis strategy: {is_linear}")
+    return is_linear

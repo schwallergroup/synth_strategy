@@ -2,66 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects multiple O-alkylation steps in the synthesis.
+    Detects N-methylation reaction in the synthetic route.
     """
-    o_alkylation_count = 0
+    found_n_methylation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal o_alkylation_count
+        nonlocal found_n_methylation
 
-        if node["type"] == "reaction":
-            # Get reactants and product
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for O-alkylation pattern
-            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
-            product_mol = Chem.MolFromSmiles(product_part)
+            # Pattern for secondary amine (NH)
+            sec_amine_pattern = Chem.MolFromSmarts("[#6]-[NH]-[#6]")
+            # Pattern for tertiary amine with methyl (N-CH3)
+            tert_amine_pattern = Chem.MolFromSmarts("[#6]-[N]([CH3])-[#6]")
 
-            if product_mol and all(r for r in reactants_mols):
-                # Look for hydroxyl in reactants
-                oh_pattern = Chem.MolFromSmarts("[OH]")
-                benzyl_pattern = Chem.MolFromSmarts("[CH2][c]1[cH][cH][cH][cH][cH]1")
+            has_sec_amine = False
 
-                # Look for ether in product
-                ether_pattern = Chem.MolFromSmarts("[O][CH2][c]")
+            # Check reactants for secondary amine
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(sec_amine_pattern):
+                        has_sec_amine = True
+                        break
+                except:
+                    continue
 
-                reactants_have_oh = any(r.HasSubstructMatch(oh_pattern) for r in reactants_mols)
-                reactants_have_benzyl = any(
-                    r.HasSubstructMatch(benzyl_pattern) for r in reactants_mols
-                )
-                product_has_ether = product_mol.HasSubstructMatch(ether_pattern)
+            # Check product for N-methylated amine
+            if has_sec_amine:
+                try:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(tert_amine_pattern):
+                        found_n_methylation = True
+                        print(f"Found N-methylation at depth {depth}")
+                except:
+                    pass
 
-                if reactants_have_oh and reactants_have_benzyl and product_has_ether:
-                    print(f"O-alkylation detected at depth {depth}")
-                    o_alkylation_count += 1
-
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    return o_alkylation_count >= 2  # Return True if at least 2 O-alkylations are detected
+    return found_n_methylation

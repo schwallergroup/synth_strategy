@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,88 +54,96 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects late-stage amide formation (depth 0 or 1)
-    from acyl chloride and amine.
+    This function detects if the route involves late-stage incorporation of a morpholine group.
     """
-    late_amide_formation_detected = False
+    morpholine_added = False
+    late_stage = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_amide_formation_detected
+        nonlocal morpholine_added, late_stage
 
-        if node["type"] == "reaction" and depth <= 1:  # Only consider late-stage reactions
-            try:
-                if "rsmi" in node.get("metadata", {}):
-                    rsmi = node["metadata"]["rsmi"]
-                    reactants_part = rsmi.split(">")[0]
-                    reactants = reactants_part.split(".")
-                    product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 2:  # Late stage (expanded definition)
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                    print(f"Checking reaction at depth {depth}: {rsmi}")
+                print(f"Checking reaction at depth {depth}: {rsmi}")
 
-                    # Check if this is an acylation reaction
-                    is_acylation = checker.check_reaction(
-                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                        rsmi,
-                    )
+                # Check if product contains morpholine
+                if checker.check_ring("morpholine", product):
+                    print(f"Product contains morpholine at depth {depth}")
 
-                    if is_acylation:
-                        print(f"Found acylation reaction at depth {depth}")
-                        late_amide_formation_detected = True
-                        return
+                    # Check if morpholine is being incorporated (present in reactants as separate entity)
+                    morpholine_in_reactants = False
+                    non_morpholine_in_reactants = False
 
-                    # If not detected by reaction type, check by functional groups
-                    acyl_halide_present = False
-                    amine_present = False
-                    amide_in_product = False
-
-                    # Check reactants for acyl halide and amine
                     for reactant in reactants:
-                        if checker.check_fg("Acyl halide", reactant):
-                            print(f"Found acyl halide in reactant: {reactant}")
-                            acyl_halide_present = True
+                        if checker.check_ring("morpholine", reactant):
+                            # If the reactant is primarily just morpholine (or a simple derivative)
+                            if len(Chem.MolFromSmiles(reactant).GetAtoms()) <= 15:
+                                morpholine_in_reactants = True
+                                print(f"Found morpholine-containing reactant: {reactant}")
+                        else:
+                            non_morpholine_in_reactants = True
 
-                        if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                            "Secondary amine", reactant
-                        ):
-                            print(f"Found amine in reactant: {reactant}")
-                            amine_present = True
+                    # Check for relevant reaction types that would incorporate morpholine
+                    is_incorporation_reaction = False
 
-                    # Check product for amide
-                    if (
-                        checker.check_fg("Primary amide", product)
-                        or checker.check_fg("Secondary amide", product)
-                        or checker.check_fg("Tertiary amide", product)
+                    # Check common reaction types for morpholine incorporation
+                    if checker.check_reaction(
+                        "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
                     ):
-                        print(f"Found amide in product: {product}")
-                        amide_in_product = True
-
-                    # Check for Schotten-Baumann reaction specifically
-                    is_schotten_baumann = checker.check_reaction(
-                        "Schotten-Baumann to ester", rsmi
+                        is_incorporation_reaction = True
+                        print(f"Detected morpholine incorporation reaction: Sulfonamide synthesis")
+                    elif checker.check_reaction(
+                        "N-alkylation of primary amines with alkyl halides", rsmi
                     ) or checker.check_reaction(
-                        "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
-                    )
-
-                    if is_schotten_baumann:
-                        print(f"Found Schotten-Baumann reaction at depth {depth}")
-                        late_amide_formation_detected = True
-                        return
-
-                    # If we have all the components, it's likely an amide formation
-                    if acyl_halide_present and amine_present and amide_in_product:
+                        "N-alkylation of secondary amines with alkyl halides", rsmi
+                    ):
+                        is_incorporation_reaction = True
+                        print(f"Detected morpholine incorporation reaction: N-alkylation")
+                    elif checker.check_reaction("Williamson Ether Synthesis", rsmi):
+                        is_incorporation_reaction = True
                         print(
-                            f"Late-stage amide formation detected at depth {depth} by functional group analysis"
+                            f"Detected morpholine incorporation reaction: Williamson Ether Synthesis"
                         )
-                        late_amide_formation_detected = True
-            except Exception as e:
-                print(f"Error processing reaction at depth {depth}: {e}")
+                    elif checker.check_reaction(
+                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
+                    ) or checker.check_reaction(
+                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
+                    ):
+                        is_incorporation_reaction = True
+                        print(f"Detected morpholine incorporation reaction: N-arylation")
+                    elif checker.check_reaction("sulfon_amide", rsmi):
+                        is_incorporation_reaction = True
+                        print(f"Detected morpholine incorporation reaction: Sulfonamide formation")
 
+                    # Check for sulfonylation specifically
+                    if morpholine_in_reactants and any(
+                        "S(=O)(=O)Cl" in r or "S(Cl)(=O)=O" in r for r in reactants
+                    ):
+                        is_incorporation_reaction = True
+                        print(f"Detected sulfonylation of morpholine at depth {depth}")
+
+                    # If we have morpholine in reactants, non-morpholine in reactants, and it's an incorporation reaction
+                    if morpholine_in_reactants and non_morpholine_in_reactants:
+                        morpholine_added = True
+                        late_stage = True
+                        print(f"Late-stage morpholine incorporation confirmed at depth {depth}")
+
+                    # Alternative detection: if product has morpholine but no reactant has it
+                    elif not morpholine_in_reactants and non_morpholine_in_reactants:
+                        # This means morpholine was formed in the reaction
+                        morpholine_added = True
+                        late_stage = True
+                        print(f"Late-stage morpholine formation detected at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            if (
-                not late_amide_formation_detected
-            ):  # Stop traversal if we already found what we're looking for
-                dfs_traverse(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: {late_amide_formation_detected}")
-    return late_amide_formation_detected
+    print(f"Final result: morpholine_added={morpholine_added}, late_stage={late_stage}")
+    return morpholine_added and late_stage

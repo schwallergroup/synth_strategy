@@ -2,113 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthesis strategy involving a ring opening step.
+    This function detects a synthetic strategy involving multiple protection steps
+    (both amine and aldehyde protection).
     """
-    has_ring_opening = False
+    # Track if we found the key features
+    found_amine_protection = False
+    found_aldehyde_protection = False
+
+    # SMARTS patterns
+    boc_pattern = Chem.MolFromSmarts("[#6]C([#6])([#6])[#8]C(=[#8])[#7]")
+    acetal_pattern = Chem.MolFromSmarts("[#6]1[#8][#6][#6][#8]1")
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_ring_opening
+        nonlocal found_amine_protection, found_aldehyde_protection
 
         if node["type"] == "reaction":
-            # Check if reaction is explicitly marked as ring-breaking
-            if node.get("metadata", {}).get("RingBreaker", False):
-                print(f"Detected explicitly marked ring opening reaction at depth {depth}")
-                has_ring_opening = True
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+
+            if not rsmi:
                 return
 
+            reactants, products = rsmi.split(">")[0], rsmi.split(">")[-1]
+
             try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+                product_mol = Chem.MolFromSmiles(products)
 
-                reactants = reactants_part.split(".")
-                product = product_part
+                # Check for Boc protection
+                if product_mol and product_mol.HasSubstructMatch(boc_pattern):
+                    print(f"Found Boc protection at depth {depth}")
+                    found_amine_protection = True
 
-                # Convert to RDKit molecules
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r.strip()]
+                # Check for acetal protection
+                if product_mol and product_mol.HasSubstructMatch(acetal_pattern):
+                    print(f"Found acetal protection at depth {depth}")
+                    found_aldehyde_protection = True
+            except:
+                pass
 
-                # Skip if any conversion failed
-                if product_mol is None or any(r is None for r in reactant_mols):
-                    print(f"Failed to parse SMILES at depth {depth}: {rsmi}")
-                    return
-
-                # Count rings in reactants and product
-                reactant_ring_count = sum(len(Chem.GetSSSR(mol)) for mol in reactant_mols)
-                product_ring_count = len(Chem.GetSSSR(product_mol))
-
-                print(
-                    f"Ring count at depth {depth}: reactants={reactant_ring_count}, product={product_ring_count}"
-                )
-
-                if reactant_ring_count > product_ring_count:
-                    print(
-                        f"Detected ring opening at depth {depth}: {reactant_ring_count} → {product_ring_count}"
-                    )
-                    has_ring_opening = True
-
-                    # Additional check for specific ring opening reactions
-                    if checker.check_reaction("Retro-Diels-Alder from oxazole", rsmi):
-                        print(f"Identified specific ring opening: Retro-Diels-Alder from oxazole")
-
-            except Exception as e:
-                print(f"Error processing reaction at depth {depth}: {e}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Ring opening strategy detection: {has_ring_opening}")
-    return has_ring_opening
+    # Return True if both protection types were found
+    return found_amine_protection and found_aldehyde_protection

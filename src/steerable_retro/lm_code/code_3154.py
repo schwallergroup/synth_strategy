@@ -2,75 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if an aromatic ether linkage is formed early and maintained throughout the synthesis.
+    This function detects a synthetic strategy that involves a diazo compound
+    as a key intermediate in the synthesis.
     """
-    max_depth = 0
-    ether_formation_depth = None
+    has_diazo = False
 
-    def dfs_traverse(node, current_depth=0):
-        nonlocal max_depth, ether_formation_depth
+    # SMARTS pattern for diazo group
+    diazo_pattern = Chem.MolFromSmarts("[#6]=[#7+]=[#7-]")
 
-        # Update max depth
-        max_depth = max(max_depth, current_depth)
+    def dfs_traverse(node):
+        nonlocal has_diazo
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(diazo_pattern):
+                has_diazo = True
+                print(f"Found diazo intermediate: {node['smiles']}")
 
-            # Create RDKit mol objects
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
-
-            if all(reactant_mols) and product_mol:
-                # Check for aromatic ether formation
-                aromatic_ether_pattern = Chem.MolFromSmarts("c[#8]c")
-
-                # Check if reactants don't have aromatic ether but product does
-                reactants_with_ether = any(
-                    mol.HasSubstructMatch(aromatic_ether_pattern) for mol in reactant_mols
-                )
-                product_has_ether = product_mol.HasSubstructMatch(aromatic_ether_pattern)
-
-                if product_has_ether and not reactants_with_ether:
-                    print(f"Detected aromatic ether formation at depth {current_depth}")
-                    ether_formation_depth = current_depth
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            dfs_traverse(child)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if ether formation occurs early (high depth) and is maintained
-    if ether_formation_depth is not None and max_depth > 0:
-        # Early formation means high depth value (closer to starting materials)
-        if ether_formation_depth >= max_depth * 0.7:  # Consider "early" as in the last 30% of steps
-            print(
-                f"Confirmed early aromatic ether formation at depth {ether_formation_depth} (max depth: {max_depth})"
-            )
-            return True
+    if has_diazo:
+        print("Detected synthesis strategy using diazo intermediate")
+    else:
+        print("No diazo intermediate found in the synthesis route")
 
-    return False
+    return has_diazo

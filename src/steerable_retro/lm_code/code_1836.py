@@ -2,63 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves formation of an oxazole ring.
+    This function detects if the synthetic route employs sulfonamide protection
+    of a nitrogen atom in an indoline/indole scaffold.
     """
-    # Track if we found oxazole formation
-    found_oxazole_formation = False
+    sulfonamide_protection = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_oxazole_formation
+    def dfs_traverse(node):
+        nonlocal sulfonamide_protection
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0]
-                products = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0]
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check if product contains oxazole but reactants don't
-                product_mol = Chem.MolFromSmiles(products)
-                if product_mol:
-                    oxazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#6][#6][#8]1")
-                    if product_mol.HasSubstructMatch(oxazole_pattern):
-                        # Check if reactants don't have oxazole
-                        reactants_have_oxazole = False
-                        for reactant in reactants.split("."):
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(oxazole_pattern):
-                                reactants_have_oxazole = True
-                                break
+            # Define SMARTS patterns for indoline/indole N and sulfonamide
+            indoline_n_pattern = Chem.MolFromSmarts("N1CCc2ccccc12")
+            indole_n_pattern = Chem.MolFromSmarts("[nH]1ccc2ccccc12")
+            sulfonamide_pattern = Chem.MolFromSmarts("NS(=O)(=O)")
 
-                        if not reactants_have_oxazole:
-                            found_oxazole_formation = True
-                            print(f"Found oxazole ring formation at depth {depth}")
+            try:
+                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-        # Process children
+                if reactants_mol and product_mol:
+                    # Check if reactants contain indoline/indole N and product contains sulfonamide
+                    if (
+                        reactants_mol.HasSubstructMatch(indoline_n_pattern)
+                        or reactants_mol.HasSubstructMatch(indole_n_pattern)
+                    ) and product_mol.HasSubstructMatch(sulfonamide_pattern):
+                        print("Detected sulfonamide protection of indoline/indole nitrogen")
+                        sulfonamide_protection = True
+            except:
+                print("Error processing SMILES in sulfonamide protection detection")
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-
-    return found_oxazole_formation
+    return sulfonamide_protection

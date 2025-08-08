@@ -2,76 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving reductive amination.
+    Detects synthesis strategies that use bromo groups as coupling handles
+    to form C-C bonds between aromatic fragments.
     """
-    reductive_amination_detected = False
+    has_bromo_coupling = False
 
-    def dfs_traverse(node):
-        nonlocal reductive_amination_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal has_bromo_coupling
 
-        if node["type"] == "reaction" and not reductive_amination_detected:
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                try:
-                    # Check for reductive amination pattern:
-                    # 1. One reactant has C=O (ketone/aldehyde)
-                    # 2. One reactant has NH or NH2
-                    # 3. Product has C-N where C was part of C=O
+            # Check for bromo in reactants
+            bromo_reactants = []
+            for reactant in reactants_smiles:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("c[Br]")):
+                    bromo_reactants.append(reactant)
 
-                    carbonyl_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#6]")  # Ketone
-                    amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")  # Primary or secondary amine
+            # If we have bromo reactants, check if product has new C-C bond
+            if bromo_reactants:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol:
+                    # This is a simplification - in a real implementation we would need to
+                    # analyze the reaction more carefully to confirm C-C bond formation
+                    if (
+                        not product_mol.HasSubstructMatch(Chem.MolFromSmarts("c[Br]"))
+                        or product_mol.GetNumAtoms()
+                        > sum(Chem.MolFromSmiles(r).GetNumAtoms() for r in reactants_smiles) - 5
+                    ):
+                        has_bromo_coupling = True
+                        print(f"Detected bromo-to-CC coupling at depth {depth}")
 
-                    product_mol = Chem.MolFromSmiles(product)
-
-                    has_carbonyl = False
-                    has_amine = False
-
-                    for r in reactants:
-                        r_mol = Chem.MolFromSmiles(r)
-                        if r_mol:
-                            if r_mol.HasSubstructMatch(carbonyl_pattern):
-                                has_carbonyl = True
-                            if r_mol.HasSubstructMatch(amine_pattern):
-                                has_amine = True
-
-                    # If product has tertiary amine and reactants had carbonyl and amine
-                    if has_carbonyl and has_amine:
-                        tertiary_amine_pattern = Chem.MolFromSmarts("[#6]-[#7](-[#6])-[#6]")
-                        if product_mol and product_mol.HasSubstructMatch(tertiary_amine_pattern):
-                            reductive_amination_detected = True
-                            print(f"Reductive amination detected in reaction: {rsmi}")
-                except:
-                    pass
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return reductive_amination_detected
+    return has_bromo_coupling

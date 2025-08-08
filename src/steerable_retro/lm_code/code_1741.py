@@ -2,118 +2,92 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear (non-convergent) strategy.
-
-    A linear synthesis strategy involves sequential transformations of a single main building block,
-    while a convergent strategy combines multiple complex fragments at some point.
+    Detects a synthetic strategy involving Suzuki coupling to install a vinyl group
+    on an aromatic ring.
     """
-    is_linear = True
-
-    # List of functional groups commonly found in reagents rather than building blocks
-    reagent_fg_types = [
-        "Triflate",
-        "Mesylate",
-        "Tosylate",
-        "Magnesium halide",
-        "Zinc halide",
-        "Tin",
-        "Silyl protective group",
-        "TMS ether protective group",
-    ]
+    suzuki_vinyl_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+        nonlocal suzuki_vinyl_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Extract reactants
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-            # If there are multiple reactants, check if they are significant building blocks
-            if len(reactants) > 1:
-                significant_reactants = []
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                for r in reactants:
-                    mol = Chem.MolFromSmiles(r)
-                    if mol is None:
-                        continue
+            # Check for aryl bromide in reactants
+            aryl_bromide_pattern = Chem.MolFromSmarts("c-Br")
+            has_aryl_bromide = False
 
-                    # Skip if it's likely a reagent based on functional groups
-                    is_reagent = False
-                    for fg in reagent_fg_types:
-                        if checker.check_fg(fg, r):
-                            is_reagent = True
-                            break
+            # Check for vinyl boronic acid or derivative in reactants
+            vinyl_boron_pattern = Chem.MolFromSmarts("C=C-[B]")
+            has_vinyl_boron = False
 
-                    # Consider as significant if it has enough heavy atoms and isn't a typical reagent
-                    if not is_reagent and mol.GetNumHeavyAtoms() > 5:
-                        significant_reactants.append(r)
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(aryl_bromide_pattern):
+                            has_aryl_bromide = True
+                        if (
+                            mol.HasSubstructMatch(vinyl_boron_pattern)
+                            or "B" in reactant
+                            and "C=C" in reactant
+                        ):
+                            has_vinyl_boron = True
+                except:
+                    continue
 
-                # If we have multiple significant reactants at a late stage (low depth),
-                # this indicates a convergent synthesis
-                if len(significant_reactants) > 1 and depth < 3:
-                    is_linear = False
-                    print(
-                        f"Convergent step detected at depth {depth} with {len(significant_reactants)} significant reactants"
-                    )
+            # Check if product has a vinyl group attached to an aromatic ring
+            aryl_vinyl_pattern = Chem.MolFromSmarts("c-C=C")
+            has_aryl_vinyl_product = False
 
-        # Traverse children
+            try:
+                mol = Chem.MolFromSmiles(product_smiles)
+                if mol and mol.HasSubstructMatch(aryl_vinyl_pattern):
+                    has_aryl_vinyl_product = True
+            except:
+                pass
+
+            # If all conditions are met, we have a Suzuki coupling for vinyl installation
+            if has_aryl_bromide and has_vinyl_boron and has_aryl_vinyl_product:
+                suzuki_vinyl_found = True
+                print("Found Suzuki coupling: vinyl group installed on aromatic ring")
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    if is_linear:
-        print("Linear synthesis strategy detected")
-
-    return is_linear
+    return suzuki_vinyl_found

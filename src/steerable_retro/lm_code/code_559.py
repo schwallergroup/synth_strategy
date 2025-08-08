@@ -2,57 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy where each step
-    has only one main complex reactant (as opposed to convergent synthesis).
+    This function detects if the synthesis involves a biphenyl core with
+    an ether linker to another functional group.
     """
-    is_linear = True
+    biphenyl_pattern = Chem.MolFromSmarts("c1ccccc1-c1ccccc1")
+    ether_linker_pattern = Chem.MolFromSmarts("cOCCC")
 
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+    contains_biphenyl_with_ether = False
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+    def dfs_traverse(node):
+        nonlocal contains_biphenyl_with_ether
 
-                # Count complex reactants (more than 15 atoms)
-                complex_reactants = 0
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.GetNumAtoms() > 15:  # Arbitrary threshold for "complex"
-                        complex_reactants += 1
+        if node["type"] == "mol" and node["smiles"]:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                has_biphenyl = mol.HasSubstructMatch(biphenyl_pattern)
+                has_ether_linker = mol.HasSubstructMatch(ether_linker_pattern)
 
-                if complex_reactants > 1:
-                    print(
-                        f"Found convergent step at depth {depth} with {complex_reactants} complex reactants"
-                    )
-                    is_linear = False
+                if has_biphenyl and has_ether_linker:
+                    contains_biphenyl_with_ether = True
+                    print(f"Found biphenyl core with ether linker in molecule: {node['smiles']}")
 
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return is_linear
+
+    return contains_biphenyl_with_ether

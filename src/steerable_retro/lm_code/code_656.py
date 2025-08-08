@@ -2,69 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects multiple SNAr reactions in the synthetic route.
+    This function detects if the synthesis involves a late-stage aromatic amine coupling.
     """
-    snar_reactions = []
+    late_stage_coupling = False
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            # Extract reactants and products
+        nonlocal late_stage_coupling
+
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0]
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for SNAr pattern: ArX + nucleophile → Ar-nucleophile
-            # Look for halogen displacement by O, N, or S nucleophiles
-            reactants_mol = Chem.MolFromSmiles(reactants)
-            product_mol = Chem.MolFromSmiles(product)
+            # Check if we have at least 2 reactants
+            if len(reactants_smiles) >= 2:
+                # Check if both reactants have aromatic rings
+                aromatic_reactants = 0
+                for reactant_smiles in reactants_smiles:
+                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                    if reactant_mol:
+                        aromatic_pattern = Chem.MolFromSmarts("c1ccccc1")
+                        if reactant_mol.HasSubstructMatch(aromatic_pattern):
+                            aromatic_reactants += 1
 
-            if reactants_mol and product_mol:
-                # Check for aryl halide in reactants
-                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[F,Cl,Br,I]")
+                # If we have at least 2 aromatic reactants and the product has an aromatic amine
+                if aromatic_reactants >= 2:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol:
+                        aromatic_amine_pattern = Chem.MolFromSmarts("c[NH]c")
+                        if product_mol.HasSubstructMatch(aromatic_amine_pattern):
+                            print(
+                                f"Late-stage aromatic amine coupling detected at depth {depth}: {rsmi}"
+                            )
+                            late_stage_coupling = True
 
-                # Check for aryl ether, amine, or thioether in product
-                aryl_o_pattern = Chem.MolFromSmarts("[c]-[O]")
-                aryl_n_pattern = Chem.MolFromSmarts("[c]-[N]")
-                aryl_s_pattern = Chem.MolFromSmarts("[c]-[S]")
-
-                if reactants_mol.HasSubstructMatch(aryl_halide_pattern) and (
-                    product_mol.HasSubstructMatch(aryl_o_pattern)
-                    or product_mol.HasSubstructMatch(aryl_n_pattern)
-                    or product_mol.HasSubstructMatch(aryl_s_pattern)
-                ):
-                    snar_reactions.append(depth)
-                    print(f"SNAr reaction found at depth {depth}")
-
-        # Traverse children
+        # Traverse children with incremented depth
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if at least 2 SNAr reactions were found
-    if len(snar_reactions) >= 2:
-        print(f"Sequential SNAr strategy detected with {len(snar_reactions)} reactions")
-        return True
-    return False
+    return late_stage_coupling

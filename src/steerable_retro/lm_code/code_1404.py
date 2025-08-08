@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,93 +54,166 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the route contains a late-stage amide coupling (at depth 0 or 1).
+    This function detects if the synthesis involves coupling between thiophene and pyridine rings.
     """
-    found_late_amide = False
+    has_thiophene_pyridine_coupling = False
 
-    def calculate_depth(node, root):
-        """Calculate depth of a node if not already provided"""
-        if "depth" in node:
-            return node["depth"]
+    def dfs_traverse(node):
+        nonlocal has_thiophene_pyridine_coupling
 
-        # Simple depth calculation based on distance from root
-        depth = 0
-        current = node
-        queue = [(root, 0)]
-
-        while queue:
-            current_node, current_depth = queue.pop(0)
-
-            if current_node == current:
-                depth = current_depth
-                break
-
-            for child in current_node.get("children", []):
-                queue.append((child, current_depth + 1))
-
-        return depth
-
-    def dfs_traverse(node, current_depth=0):
-        nonlocal found_late_amide
-
-        # Store depth for future reference
-        if "depth" not in node:
-            node["depth"] = current_depth
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
             rsmi = node["metadata"]["rsmi"]
-            depth = node.get("depth", current_depth)
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            if depth <= 1:  # Late stage (depth 0 or 1)
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+            try:
+                # Check if reactants contain thiophene and pyridine rings
+                has_thiophene_reactant = any(
+                    checker.check_ring("thiophene", r) for r in reactants_smiles
+                )
+                has_pyridine_reactant = any(
+                    checker.check_ring("pyridine", r) for r in reactants_smiles
+                )
 
-                # Check for amide coupling reactions using the checker
-                amide_coupling_reactions = [
-                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                    "Carboxylic acid with primary amine to amide",
-                    "Ester with primary amine to amide",
-                    "Ester with secondary amine to amide",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acyl chloride with secondary amine to amide",
-                    "Acylation of primary amines",
-                    "Acylation of secondary amines",
-                ]
+                # Check if product has both thiophene and pyridine rings
+                has_thiophene_product = checker.check_ring("thiophene", product_smiles)
+                has_pyridine_product = checker.check_ring("pyridine", product_smiles)
 
-                for reaction_type in amide_coupling_reactions:
-                    try:
-                        if checker.check_reaction(reaction_type, rsmi):
-                            print(
-                                f"Found late-stage amide coupling: {reaction_type} at depth {depth}"
-                            )
-                            found_late_amide = True
-                            break
-                    except Exception as e:
-                        print(f"Error checking reaction {reaction_type}: {e}")
+                # Check if this is a coupling reaction
+                is_coupling_reaction = (
+                    checker.check_reaction("Suzuki", rsmi)
+                    or checker.check_reaction("Stille", rsmi)
+                    or checker.check_reaction("Negishi", rsmi)
+                    or checker.check_reaction("Heck", rsmi)
+                    or checker.check_reaction("Sonogashira", rsmi)
+                    or checker.check_reaction("Ullmann condensation", rsmi)
+                    or checker.check_reaction("Ullmann-Goldberg", rsmi)
+                    or checker.check_reaction("Buchwald-Hartwig", rsmi)
+                    or checker.check_reaction("N-arylation", rsmi)
+                )
 
-                # If no specific reaction type matched, check for amide formation more generally
-                if not found_late_amide:
-                    try:
-                        reactants = rsmi.split(">")[0].split(".")
-                        product = rsmi.split(">")[-1]
+                # Check if thiophene and pyridine are in separate reactants
+                separate_rings = False
+                if has_thiophene_reactant and has_pyridine_reactant:
+                    thiophene_reactants = [
+                        r for r in reactants_smiles if checker.check_ring("thiophene", r)
+                    ]
+                    pyridine_reactants = [
+                        r for r in reactants_smiles if checker.check_ring("pyridine", r)
+                    ]
 
-                        has_acid = any(checker.check_fg("Carboxylic acid", r) for r in reactants)
-                        has_amine = any(
-                            checker.check_fg("Primary amine", r) for r in reactants
-                        ) or any(checker.check_fg("Secondary amine", r) for r in reactants)
-                        forms_amide = (
-                            checker.check_fg("Primary amide", product)
-                            or checker.check_fg("Secondary amide", product)
-                            or checker.check_fg("Tertiary amide", product)
+                    # Check if there's at least one reactant with thiophene but no pyridine
+                    # and at least one with pyridine but no thiophene
+                    thiophene_only = any(
+                        not checker.check_ring("pyridine", r) for r in thiophene_reactants
+                    )
+                    pyridine_only = any(
+                        not checker.check_ring("thiophene", r) for r in pyridine_reactants
+                    )
+
+                    separate_rings = thiophene_only and pyridine_only
+
+                # Check if rings were already connected in any reactant
+                rings_already_connected = False
+                for reactant in reactants_smiles:
+                    if checker.check_ring("thiophene", reactant) and checker.check_ring(
+                        "pyridine", reactant
+                    ):
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            thiophene_indices = checker.get_ring_atom_indices("thiophene", reactant)
+                            pyridine_indices = checker.get_ring_atom_indices("pyridine", reactant)
+
+                            if (
+                                thiophene_indices
+                                and pyridine_indices
+                                and len(thiophene_indices) > 0
+                                and len(pyridine_indices) > 0
+                            ):
+                                if are_rings_connected(
+                                    reactant_mol, thiophene_indices, pyridine_indices
+                                ):
+                                    rings_already_connected = True
+                                    break
+
+                # Verify that the product has both rings and they're connected
+                if (
+                    has_thiophene_product
+                    and has_pyridine_product
+                    and is_coupling_reaction
+                    and separate_rings
+                    and not rings_already_connected
+                ):
+                    # Create RDKit mol object for the product to check connectivity
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol:
+                        # Get atom indices for thiophene and pyridine rings in the product
+                        thiophene_indices = checker.get_ring_atom_indices(
+                            "thiophene", product_smiles
                         )
+                        pyridine_indices = checker.get_ring_atom_indices("pyridine", product_smiles)
 
-                        if has_acid and has_amine and forms_amide:
-                            print(f"Found late-stage amide coupling (generic) at depth {depth}")
-                            found_late_amide = True
-                    except Exception as e:
-                        print(f"Error in generic amide coupling check: {e}")
+                        if (
+                            thiophene_indices
+                            and pyridine_indices
+                            and len(thiophene_indices) > 0
+                            and len(pyridine_indices) > 0
+                        ):
+                            if are_rings_connected(
+                                product_mol, thiophene_indices, pyridine_indices
+                            ):
+                                print(f"Found thiophene-pyridine coupling in reaction: {rsmi}")
+                                has_thiophene_pyridine_coupling = True
+            except Exception as e:
+                print(f"Error processing reaction SMILES {rsmi}: {str(e)}")
 
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            dfs_traverse(child)
+
+    def are_rings_connected(mol, ring1_indices, ring2_indices):
+        """Check if two rings are connected in a molecule, either directly or through a linker."""
+        # Flatten the nested tuples to get all atom indices for each ring
+        ring1_atoms = set([atom for match in ring1_indices for tup in match for atom in tup])
+        ring2_atoms = set([atom for match in ring2_indices for tup in match for atom in tup])
+
+        # First check for direct bonds
+        for atom1 in ring1_atoms:
+            for atom2 in ring2_atoms:
+                bond = mol.GetBondBetweenAtoms(atom1, atom2)
+                if bond is not None:
+                    return True
+
+        # If no direct bonds, check for paths between rings
+        # Use BFS to find paths between any atom in ring1 and any atom in ring2
+        for start_atom in ring1_atoms:
+            visited = set([start_atom])
+            queue = deque([(start_atom, 0)])  # (atom_idx, distance)
+
+            while queue:
+                current_atom, distance = queue.popleft()
+
+                # Limit path length to avoid considering very distant connections
+                if distance > 3:  # Allow up to 3-atom linkers
+                    continue
+
+                # Get neighbors of current atom
+                atom = mol.GetAtomWithIdx(current_atom)
+                for neighbor in atom.GetNeighbors():
+                    neighbor_idx = neighbor.GetIdx()
+
+                    # Skip already visited atoms
+                    if neighbor_idx in visited:
+                        continue
+
+                    # If neighbor is in ring2, we found a path
+                    if neighbor_idx in ring2_atoms:
+                        return True
+
+                    # Otherwise, add to queue for further exploration
+                    visited.add(neighbor_idx)
+                    queue.append((neighbor_idx, distance + 1))
+
+        return False
 
     dfs_traverse(route)
-    return found_late_amide
+    return has_thiophene_pyridine_coupling

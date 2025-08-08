@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,129 +54,182 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy where one heterocycle (indole)
-    is maintained while another heterocycle (thiazole) is constructed.
+    Detects if the synthesis follows a linear strategy (no convergent steps)
+    where each reaction has only one non-reagent reactant.
     """
-    # Track if we found the pattern
-    found_indole_in_starting_materials = False
-    found_thiazole_in_starting_materials = False
-    found_indole_thiazole_in_product = False
-    thiazole_constructed = False
-    final_product_smiles = None
+    is_linear = True
 
-    # First pass to identify the final product (leaf molecule node)
-    def find_final_product(node, depth=0):
-        nonlocal final_product_smiles
+    # List of common reagent functional groups
+    reagent_fg = [
+        "Triflate",
+        "Tosylate",
+        "Mesylate",
+        "Boronic acid",
+        "Boronic ester",
+        "Magnesium halide",
+        "Zinc halide",
+        "Tin",
+        "Alkyl lithium",
+        "Silane",
+        "Acyl halide",
+        "Anhydride",
+    ]
 
-        if node["type"] == "mol" and not node.get("in_stock", False) and not node.get("children"):
-            # This is a leaf molecule node that's not a starting material - potential final product
-            if final_product_smiles is None or depth < find_final_product.min_depth:
-                final_product_smiles = node["smiles"]
-                find_final_product.min_depth = depth
+    # Common protecting groups and their reagents
+    protecting_reagents = [
+        "Boc",
+        "TMS ether protective group",
+        "Silyl protective group",
+        "Acetal/Ketal",
+    ]
 
-        # Traverse children
-        for child in node.get("children", []):
-            find_final_product(child, depth + 1)
+    # Reactions that typically have special handling
+    coupling_reactions = [
+        "Suzuki coupling with boronic acids",
+        "Suzuki coupling with boronic esters",
+        "Sonogashira alkyne_aryl halide",
+        "Sonogashira acetylene_aryl halide",
+        "Buchwald-Hartwig",
+        "Negishi coupling",
+        "Stille reaction",
+        "Heck terminal vinyl",
+        "Ullmann-Goldberg Substitution",
+    ]
 
-    find_final_product.min_depth = float("inf")
-    find_final_product(route)
+    protection_reactions = [
+        "Boc amine protection",
+        "Alcohol protection with silyl ethers",
+        "Protection of carboxylic acid",
+        "Aldehyde or ketone acetalization",
+    ]
 
-    # If no final product found, try to find the molecule at the lowest depth
-    if final_product_smiles is None:
+    deprotection_reactions = [
+        "Boc amine deprotection",
+        "Alcohol deprotection from silyl ethers",
+        "Deprotection of carboxylic acid",
+        "Acetal hydrolysis",
+    ]
 
-        def find_lowest_depth_molecule(node, depth=0):
-            nonlocal final_product_smiles
+    def dfs_traverse(node):
+        nonlocal is_linear
 
-            if node["type"] == "mol":
-                if final_product_smiles is None or depth < find_lowest_depth_molecule.min_depth:
-                    final_product_smiles = node["smiles"]
-                    find_lowest_depth_molecule.min_depth = depth
-
-            # Traverse children
-            for child in node.get("children", []):
-                find_lowest_depth_molecule(child, depth + 1)
-
-        find_lowest_depth_molecule.min_depth = float("inf")
-        find_lowest_depth_molecule(route)
-
-    print(f"Identified final product: {final_product_smiles}")
-
-    # Second pass to check for the pattern
-    def dfs_traverse(node, depth=0):
-        nonlocal found_indole_in_starting_materials, found_thiazole_in_starting_materials
-        nonlocal found_indole_thiazole_in_product, thiazole_constructed
-
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            has_indole = checker.check_ring("indole", mol_smiles)
-            has_thiazole = checker.check_ring("thiazole", mol_smiles)
-
-            # Check if this is a starting material
-            if node.get("in_stock", False):
-                # Check if starting material contains indole
-                if has_indole:
-                    found_indole_in_starting_materials = True
-                    print(f"Found indole in starting material: {mol_smiles}")
-
-                # Check if starting material contains thiazole
-                if has_thiazole:
-                    found_thiazole_in_starting_materials = True
-                    print(f"Found thiazole in starting material: {mol_smiles}")
-
-            # Check if this is the final product
-            if mol_smiles == final_product_smiles:
-                if has_indole and has_thiazole:
-                    found_indole_thiazole_in_product = True
-                    print(f"Found both indole and thiazole in final product: {mol_smiles}")
-                    print(f"Indole present: {has_indole}, Thiazole present: {has_thiazole}")
-
-        elif node["type"] == "reaction":
-            # Check if this reaction constructs a thiazole ring
-            if "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            try:
+                # Extract reactants and product
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+                reactants_part = rsmi.split(">")[0]
+                reactants = reactants_part.split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check if product has thiazole but reactants don't
-                product_has_thiazole = checker.check_ring("thiazole", product)
-                reactants_have_thiazole = any(
-                    checker.check_ring("thiazole", reactant) for reactant in reactants
+                print(f"Processing reaction: {rsmi}")
+
+                # Check if this is a coupling, protection, or deprotection reaction
+                is_coupling = any(checker.check_reaction(rxn, rsmi) for rxn in coupling_reactions)
+                is_protection = any(
+                    checker.check_reaction(rxn, rsmi) for rxn in protection_reactions
+                )
+                is_deprotection = any(
+                    checker.check_reaction(rxn, rsmi) for rxn in deprotection_reactions
                 )
 
-                if product_has_thiazole and not reactants_have_thiazole:
-                    thiazole_constructed = True
-                    print(f"Thiazole ring constructed in reaction: {rsmi}")
+                print(
+                    f"Reaction classification - Coupling: {is_coupling}, Protection: {is_protection}, Deprotection: {is_deprotection}"
+                )
 
-                # Also check if the reaction is a known thiazole-forming reaction
-                if checker.check_reaction("thiazole", rsmi) or checker.check_reaction(
-                    "{thiazole}", rsmi
-                ):
-                    thiazole_constructed = True
-                    print(f"Detected thiazole-forming reaction: {rsmi}")
+                # Count substantial reactants (excluding small reagents)
+                substantial_reactants = []
+                for r in reactants:
+                    # Skip empty strings
+                    if not r:
+                        continue
 
-        # Traverse children
+                    try:
+                        mol = Chem.MolFromSmiles(r)
+                        if mol:
+                            # Count atoms excluding H
+                            atom_count = mol.GetNumHeavyAtoms()
+
+                            # Check if this is likely a reagent
+                            is_reagent = False
+
+                            # Small molecules are typically reagents
+                            if atom_count <= 3:
+                                is_reagent = True
+                                print(
+                                    f"Identified small molecule reagent: {r} with {atom_count} heavy atoms"
+                                )
+
+                            # Check for common reagent functional groups
+                            for fg in reagent_fg:
+                                if checker.check_fg(fg, r):
+                                    is_reagent = True
+                                    print(f"Identified reagent with {fg} functional group: {r}")
+                                    break
+
+                            # Check for protecting group reagents
+                            for pg in protecting_reagents:
+                                if checker.check_fg(pg, r):
+                                    is_reagent = True
+                                    print(f"Identified protecting group reagent: {r}")
+                                    break
+
+                            # Special handling for coupling reactions
+                            if is_coupling and not is_reagent and atom_count > 3:
+                                # For coupling reactions, check if this is a coupling partner
+                                coupling_groups = [
+                                    "Boronic acid",
+                                    "Boronic ester",
+                                    "Magnesium halide",
+                                    "Zinc halide",
+                                    "Tin",
+                                    "Alkyne",
+                                    "Aromatic halide",
+                                ]
+
+                                # If we already have one substantial reactant, this one might be a coupling partner
+                                if len(substantial_reactants) > 0:
+                                    for fg in coupling_groups:
+                                        if checker.check_fg(fg, r):
+                                            is_reagent = True
+                                            print(f"Identified coupling partner with {fg}: {r}")
+                                            break
+
+                            # Special handling for protection reactions
+                            if is_protection and not is_reagent and atom_count > 3:
+                                # Check if this is a protecting group reagent
+                                if any(checker.check_fg(pg, r) for pg in protecting_reagents):
+                                    is_reagent = True
+                                    print(f"Identified protection reagent: {r}")
+
+                            # Special handling for Boc anhydride and similar large reagents
+                            if not is_reagent and "OC(=O)OC(=O)" in r:
+                                is_reagent = True
+                                print(f"Identified anhydride reagent: {r}")
+
+                            # Consider molecules with more than 3 heavy atoms as substantial if not a reagent
+                            if not is_reagent:
+                                substantial_reactants.append(r)
+                                print(
+                                    f"Identified substantial reactant: {r} with {atom_count} heavy atoms"
+                                )
+                    except Exception as e:
+                        print(f"Error processing reactant {r}: {e}")
+
+                # If more than one substantial reactant, it's not a linear synthesis
+                if len(substantial_reactants) > 1:
+                    is_linear = False
+                    print(
+                        f"Found convergent step with {len(substantial_reactants)} substantial reactants: {substantial_reactants}"
+                    )
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # The pattern is found if:
-    # 1. Indole is present in starting materials
-    # 2. Thiazole is NOT present in starting materials (it's constructed)
-    # 3. Both indole and thiazole are present in the final product
-    # 4. A thiazole ring is constructed during synthesis
-    result = (
-        found_indole_in_starting_materials
-        and not found_thiazole_in_starting_materials
-        and found_indole_thiazole_in_product
-        and thiazole_constructed
-    )
-
-    print(f"Indole in starting materials: {found_indole_in_starting_materials}")
-    print(f"Thiazole in starting materials: {found_thiazole_in_starting_materials}")
-    print(f"Both indole and thiazole in final product: {found_indole_thiazole_in_product}")
-    print(f"Thiazole constructed during synthesis: {thiazole_constructed}")
-    print(f"Final result: {result}")
-
-    return result
+    print(f"Linear synthesis detection result: {is_linear}")
+    return is_linear

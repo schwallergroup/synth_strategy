@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,84 +54,53 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy where an aldehyde is formed and then
-    transformed via reductive amination to form a C-N bond.
+    Detects a synthetic strategy involving the formation of a sulfonamide
+    from a sulfonyl chloride and an amine.
     """
-    aldehyde_formation_depth = None
-    reductive_amination_depth = None
+    found_sulfonamide_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal aldehyde_formation_depth, reductive_amination_depth
+    def dfs_traverse(node):
+        nonlocal found_sulfonamide_formation
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction" and not found_sulfonamide_formation:
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for aldehyde formation
-                try:
-                    product_has_aldehyde = checker.check_fg("Aldehyde", product)
+                # First check if this is a known sulfonamide synthesis reaction
+                if checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+                ) or checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
+                ):
+                    found_sulfonamide_formation = True
+                    print("Found sulfonamide formation step (Schotten-Baumann reaction)")
+                    return
 
-                    if product_has_aldehyde:
-                        # Check if any reactant has aldehyde
-                        has_aldehyde_in_reactants = any(
-                            checker.check_fg("Aldehyde", reactant) for reactant in reactants
-                        )
+                # If not a known reaction type, check for the functional group transformation
+                sulfonyl_halide_in_reactants = any(
+                    checker.check_fg("Sulfonyl halide", reactant) for reactant in reactants
+                )
+                sulfonamide_in_product = checker.check_fg("Sulfonamide", product)
 
-                        if not has_aldehyde_in_reactants:
-                            aldehyde_formation_depth = depth
-                            print(f"Aldehyde formation detected at depth {depth}")
-                except Exception as e:
-                    print(f"Error processing aldehyde detection: {e}")
+                if sulfonyl_halide_in_reactants and sulfonamide_in_product:
+                    # Check if any reactant has an amine
+                    for reactant in reactants:
+                        if checker.check_fg("Primary amine", reactant) or checker.check_fg(
+                            "Secondary amine", reactant
+                        ):
+                            found_sulfonamide_formation = True
+                            print(
+                                "Found sulfonamide formation step (functional group transformation)"
+                            )
+                            return
 
-                # Check for reductive amination (aldehyde or ketone to amine transformation)
-                try:
-                    # Direct check for reductive amination reaction
-                    if (
-                        checker.check_reaction("Reductive amination with aldehyde", rsmi)
-                        or checker.check_reaction("Reductive amination with ketone", rsmi)
-                        or checker.check_reaction("Reductive amination with alcohol", rsmi)
-                    ):
-                        reductive_amination_depth = depth
-                        print(f"Reductive amination detected at depth {depth}")
-                    else:
-                        # Backup check based on functional groups
-                        aldehyde_in_reactants = any(
-                            checker.check_fg("Aldehyde", reactant) for reactant in reactants
-                        )
-                        ketone_in_reactants = any(
-                            checker.check_fg("Ketone", reactant) for reactant in reactants
-                        )
-
-                        # Check for any type of amine in product
-                        amine_in_product = (
-                            checker.check_fg("Primary amine", product)
-                            or checker.check_fg("Secondary amine", product)
-                            or checker.check_fg("Tertiary amine", product)
-                        )
-
-                        if (aldehyde_in_reactants or ketone_in_reactants) and amine_in_product:
-                            reductive_amination_depth = depth
-                            print(f"Reductive amination detected at depth {depth}")
-                except Exception as e:
-                    print(f"Error processing reductive amination detection: {e}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if both aldehyde formation and reductive amination were detected
-    # and in the correct sequence (aldehyde formation before reductive amination in synthesis,
-    # which means aldehyde formation has higher depth in retrosynthesis)
-    if (
-        aldehyde_formation_depth is not None
-        and reductive_amination_depth is not None
-        and aldehyde_formation_depth > reductive_amination_depth
-    ):
-        print("Aldehyde to amine transformation strategy detected")
-        return True
-    return False
+    return found_sulfonamide_formation

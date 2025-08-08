@@ -2,75 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy where a halogenated aromatic group
-    is introduced late in the synthesis via reductive amination.
+    This function detects if an early step in the synthesis involves aromatic sulfonation.
     """
-    # Track if we found the pattern
-    found_pattern = False
+    has_early_sulfonation = False
 
-    def dfs_traverse(node):
-        nonlocal found_pattern
+    def dfs_traverse(node, depth=0):
+        nonlocal has_early_sulfonation
 
-        if node["type"] == "reaction" and not found_pattern:
-            if "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and depth >= 3:  # Early steps (depth >= 3)
+            if "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Convert to RDKit molecules
+                # Check if product contains sulfonyl chloride
                 product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+                sulfonyl_chloride_pattern = Chem.MolFromSmarts("[c][S](=[O])(=[O])[Cl]")
 
-                if product_mol and all(reactant_mols):
-                    # Check for reductive amination with halogenated aromatic
-                    aldehyde_pattern = Chem.MolFromSmarts("[C;H1]=O")
-                    sec_amine_pattern = Chem.MolFromSmarts("[N;H1]")
-                    tert_amine_pattern = Chem.MolFromSmarts("[N;H0]")
-                    halogen_pattern = Chem.MolFromSmarts("[c]~[Cl,Br,F,I]")
-
-                    # Check if this is a reductive amination
-                    is_reductive_amination = (
-                        any(r.HasSubstructMatch(aldehyde_pattern) for r in reactant_mols)
-                        and any(r.HasSubstructMatch(sec_amine_pattern) for r in reactant_mols)
-                        and product_mol.HasSubstructMatch(tert_amine_pattern)
-                    )
-
-                    # Check if halogenated aromatic is introduced
-                    halogen_introduced = product_mol.HasSubstructMatch(halogen_pattern) and any(
-                        r.HasSubstructMatch(halogen_pattern) for r in reactant_mols
-                    )
-
-                    # Check if this is a late-stage reaction (depth 0 or 1)
-                    if is_reductive_amination and halogen_introduced:
-                        found_pattern = True
-                        print("Detected late-stage reductive amination with halogenated aromatic")
+                if product_mol and product_mol.HasSubstructMatch(sulfonyl_chloride_pattern):
+                    has_early_sulfonation = True
+                    print(f"Detected early aromatic sulfonation at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Call dfs_traverse on the root node
+    # Start traversal from root
     dfs_traverse(route)
-
-    return found_pattern
+    return has_early_sulfonation

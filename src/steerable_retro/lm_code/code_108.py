@@ -2,60 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects benzoxazole ring formation via cyclization.
-    It looks for reactions where a benzoxazole scaffold is formed that wasn't present in the reactants.
-    """
-    benzoxazole_pattern = Chem.MolFromSmarts("c1ccc2c(c1)nco2")
-    strategy_detected = False
+    This function detects if the synthesis follows a linear strategy (each step builds on previous).
 
-    def dfs_traverse(node):
-        nonlocal strategy_detected
+    A linear synthesis is defined as a route where:
+    1. Each reaction has exactly one non-stock molecule that continues the synthesis path
+    2. There are multiple reaction steps
+    """
+    # Track the number of reaction steps and if we have a non-linear path
+    reaction_steps = 0
+    is_non_linear = False
+
+    def dfs_traverse(node, depth=0):
+        nonlocal reaction_steps, is_non_linear
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reaction_steps += 1
+            print(f"Found reaction at depth {depth}")
 
-            # Check if benzoxazole is in product but not in reactants
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if product_mol and product_mol.HasSubstructMatch(benzoxazole_pattern):
-                benzoxazole_in_reactants = False
-                for reactant_smiles in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(benzoxazole_pattern):
-                        benzoxazole_in_reactants = True
-                        break
+            # Get all molecule children
+            mol_children = [child for child in node.get("children", []) if child["type"] == "mol"]
 
-                if not benzoxazole_in_reactants:
-                    print("Benzoxazole formation detected")
-                    strategy_detected = True
+            # Count non-stock molecules that continue the synthesis
+            continuing_mols = []
+            for mol_child in mol_children:
+                # A molecule continues synthesis if it has reaction children
+                has_reaction_children = any(
+                    grandchild["type"] == "reaction" for grandchild in mol_child.get("children", [])
+                )
+                if has_reaction_children and not mol_child.get("in_stock", False):
+                    continuing_mols.append(mol_child)
+
+            # In a linear synthesis, at most one non-stock molecule should continue
+            if len(continuing_mols) > 1:
+                is_non_linear = True
+                print(
+                    f"Non-linear path detected at depth {depth} with {len(continuing_mols)} continuing molecules"
+                )
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal from root (target molecule)
     dfs_traverse(route)
-    return strategy_detected
+
+    print(f"Total reaction steps: {reaction_steps}")
+
+    # A linear synthesis has multiple steps and is not non-linear
+    is_linear = reaction_steps > 1 and not is_non_linear
+
+    if is_linear:
+        print("Detected linear synthesis strategy")
+    else:
+        print("Not a linear synthesis strategy")
+
+    return is_linear

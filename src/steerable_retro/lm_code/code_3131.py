@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,49 +54,74 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis uses epoxide opening to form a tertiary alcohol.
+    This function detects if chlorophenyl groups are maintained throughout the synthesis.
+    It checks if the chlorophenyl group, once introduced, is preserved in all subsequent steps.
+
+    Returns:
+        bool: True if chlorophenyl groups are maintained throughout synthesis,
+              False if they are lost at any point.
     """
-    epoxide_opening_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal epoxide_opening_detected
+        # For molecule nodes, check if it contains a chlorophenyl group
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            has_chlorophenyl = checker.check_fg("Aromatic halide", mol_smiles)
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # If this is a final product (no children), it must have chlorophenyl
+            if not node.get("children") and not has_chlorophenyl:
+                print(f"Final product without chlorophenyl found: {mol_smiles}")
+                return False
 
-                # Check if this is an epoxide opening reaction
-                if checker.check_reaction("Ring opening of epoxide with amine", rsmi):
-                    print(f"Epoxide opening reaction detected at depth {depth}")
+            # For intermediate molecules with children, check if chlorophenyl is maintained
+            if has_chlorophenyl:
+                # If molecule has chlorophenyl, all its children reactions must preserve it
+                for child in node.get("children", []):
+                    if not dfs_traverse(child, depth + 1):
+                        return False
+                return True
+            else:
+                # If molecule doesn't have chlorophenyl, continue checking children
+                for child in node.get("children", []):
+                    if dfs_traverse(child, depth + 1):
+                        return True
+                return False
 
-                    # Check if product has a tertiary alcohol
-                    if checker.check_fg("Tertiary alcohol", product):
-                        print(f"Tertiary alcohol found in product at depth {depth}")
-                        epoxide_opening_detected = True
-                        return
+        # For reaction nodes, check if chlorophenyl is maintained from product to reactants
+        elif node["type"] == "reaction":
+            try:
+                if "rsmi" in node["metadata"]:
+                    rsmi = node["metadata"]["rsmi"]
+                    product = rsmi.split(">")[-1]
 
-                # If not a standard epoxide opening reaction, check manually
-                for reactant in reactants:
-                    if checker.check_ring("oxirane", reactant):
-                        print(f"Epoxide found in reactant at depth {depth}")
+                    # If product has chlorophenyl, at least one reactant must have it too
+                    if checker.check_fg("Aromatic halide", product):
+                        # Check if any child (reactant) has chlorophenyl
+                        chlorophenyl_maintained = False
+                        for child in node.get("children", []):
+                            if dfs_traverse(child, depth + 1):
+                                chlorophenyl_maintained = True
+                                break
 
-                        # Check if product has tertiary alcohol
-                        if checker.check_fg("Tertiary alcohol", product):
-                            print(f"Tertiary alcohol found in product at depth {depth}")
+                        if not chlorophenyl_maintained:
+                            print(f"Chlorophenyl appeared without source in reaction: {rsmi}")
+                            return False
+                        return True
+                    else:
+                        # If product doesn't have chlorophenyl, no need to check reactants
+                        return False
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+                return False
 
-                            # If we found an epoxide in reactant and tertiary alcohol in product,
-                            # this is sufficient evidence of epoxide opening
-                            print(f"Epoxide opening to tertiary alcohol detected at depth {depth}")
-                            epoxide_opening_detected = True
-                            return
+            # Process children for reactions without rsmi
+            for child in node.get("children", []):
+                if dfs_traverse(child, depth + 1):
+                    return True
+            return False
 
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+        # Default case (shouldn't reach here)
+        return False
 
-    # Start traversal
-    dfs_traverse(route)
-
-    return epoxide_opening_detected
+    # Start traversal from the root (target molecule)
+    return dfs_traverse(route)

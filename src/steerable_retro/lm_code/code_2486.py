@@ -2,69 +2,187 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis uses a late-stage amide formation strategy
-    where an amide bond is formed in the final or penultimate step.
+    This function detects a strategy involving the use of persistent directing groups
+    (like methoxy) that remain throughout the synthesis.
     """
-    amide_formation_detected = False
-    late_stage_depth = 1  # Consider depth 0 or 1 as late stage
+    # Track molecules with directing groups at each depth
+    molecules_by_depth = {}
+    max_depth = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_formation_detected
+    def dfs_traverse(node, depth=0, path_id=0):
+        nonlocal max_depth
+        max_depth = max(max_depth, depth)
 
-        if node["type"] == "reaction" and depth <= late_stage_depth:
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            if mol_smiles:
+                # Check specifically for methoxy groups (common directing groups)
+                has_methoxy = "OC" in mol_smiles and checker.check_fg("Ether", mol_smiles)
 
-            # Check for amide formation
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            amide_pattern = Chem.MolFromSmarts("[C;$(C=O)][N;!$(N=*)]")
+                # Get more specific directing groups
+                if has_methoxy:
+                    # Store molecule info with the directing group
+                    if depth not in molecules_by_depth:
+                        molecules_by_depth[depth] = []
 
-            # Check if product has amide but at least one reactant doesn't
-            if product_mol and product_mol.HasSubstructMatch(amide_pattern):
-                # Count amide bonds in product
-                amide_matches_product = len(product_mol.GetSubstructMatches(amide_pattern))
+                    # Create RDKit molecule to analyze the methoxy positions
+                    try:
+                        mol = Chem.MolFromSmiles(mol_smiles)
+                        if mol:
+                            # Get atom indices of methoxy groups
+                            methoxy_indices = []
+                            for atom in mol.GetAtoms():
+                                if atom.GetSymbol() == "O" and atom.GetDegree() == 2:
+                                    neighbors = [n.GetAtomicNum() for n in atom.GetNeighbors()]
+                                    if 6 in neighbors:  # Carbon
+                                        for n in atom.GetNeighbors():
+                                            if (
+                                                n.GetAtomicNum() == 6 and n.GetDegree() == 1
+                                            ):  # Methyl carbon
+                                                methoxy_indices.append(atom.GetIdx())
 
-                # Count amide bonds in reactants
-                total_amide_matches_reactants = 0
-                for r_smiles in reactants_smiles:
-                    r_mol = Chem.MolFromSmiles(r_smiles)
-                    if r_mol:
-                        total_amide_matches_reactants += len(
-                            r_mol.GetSubstructMatches(amide_pattern)
-                        )
+                            molecules_by_depth[depth].append(
+                                {
+                                    "smiles": mol_smiles,
+                                    "path_id": path_id,
+                                    "methoxy_indices": methoxy_indices,
+                                }
+                            )
+                            print(
+                                f"Detected methoxy directing group at depth {depth}: {mol_smiles}"
+                            )
+                    except Exception as e:
+                        print(f"Error analyzing molecule: {e}")
 
-                # If product has more amide bonds than reactants combined, amide formation occurred
-                if amide_matches_product > total_amide_matches_reactants:
-                    amide_formation_detected = True
-                    print(f"Amide formation detected at depth {depth}")
+        # Traverse children with unique path IDs for each branch
+        for i, child in enumerate(node.get("children", [])):
+            dfs_traverse(child, depth + 1, path_id * 10 + i)
 
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
-
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    return amide_formation_detected
+
+    # Check if we have any directing groups
+    if not molecules_by_depth:
+        print("No directing groups detected")
+        return False
+
+    # Check for persistence along synthesis paths
+    persistent_paths = set()
+
+    # Extract all unique path IDs at the earliest stage (highest depth)
+    earliest_depth = max(molecules_by_depth.keys()) if molecules_by_depth else 0
+    earliest_paths = set()
+    for mol_info in molecules_by_depth.get(earliest_depth, []):
+        earliest_paths.add(mol_info["path_id"])
+
+    # For each path starting from the earliest stage, check if directing groups persist
+    for path_id in earliest_paths:
+        current_path_id = path_id
+        consecutive_depths = []
+        methoxy_positions = []
+
+        # Trace the path from earliest to latest stage
+        for depth in sorted(molecules_by_depth.keys(), reverse=True):
+            for mol_info in molecules_by_depth[depth]:
+                # Check if this molecule is in our current path
+                if (
+                    mol_info["path_id"] == current_path_id
+                    or current_path_id % (10 * (10 ** (max_depth - depth))) == mol_info["path_id"]
+                ):
+                    consecutive_depths.append(depth)
+                    methoxy_positions.append(mol_info["methoxy_indices"])
+                    # Update path_id for next iteration (going up the tree)
+                    current_path_id = mol_info["path_id"] // 10
+                    break
+
+        # Calculate coverage and check if methoxy persists
+        if consecutive_depths:
+            # Check if we have directing groups in at least 75% of the depths
+            depth_coverage = len(consecutive_depths) / (max_depth + 1)
+
+            # Check if methoxy groups persist (present in consecutive molecules)
+            methoxy_persists = len(consecutive_depths) >= 3  # At least 3 consecutive depths
+
+            if depth_coverage >= 0.5 and methoxy_persists:
+                persistent_paths.add(path_id)
+                print(
+                    f"Path {path_id} has persistent methoxy directing group with coverage {depth_coverage:.2f}"
+                )
+
+    # Check if we have a continuous sequence of depths with methoxy groups
+    depth_sequence = sorted(molecules_by_depth.keys())
+    longest_sequence = 0
+    current_sequence = 1
+
+    for i in range(1, len(depth_sequence)):
+        if depth_sequence[i] == depth_sequence[i - 1] + 2:  # Account for reaction nodes
+            current_sequence += 1
+        else:
+            longest_sequence = max(longest_sequence, current_sequence)
+            current_sequence = 1
+
+    longest_sequence = max(longest_sequence, current_sequence)
+
+    # Strategy is present if we have a long enough sequence of depths with methoxy groups
+    # or if at least one path has persistent directing group
+    strategy_present = (longest_sequence >= 3) or (len(persistent_paths) > 0)
+
+    print(f"Depths with directing groups: {sorted(molecules_by_depth.keys())}")
+    print(f"Max depth: {max_depth}")
+    print(f"Longest sequence of consecutive depths: {longest_sequence}")
+    print(f"Persistent paths: {persistent_paths}")
+    print(f"Strategy detected: {strategy_present}")
+
+    return strategy_present

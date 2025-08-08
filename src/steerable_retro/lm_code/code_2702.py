@@ -2,54 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route includes a Boc protection step.
+    Detects a synthetic strategy that uses Williamson ether synthesis for fragment coupling.
     """
-    boc_protection_found = False
+    has_williamson_ether = False
 
     def dfs_traverse(node):
-        nonlocal boc_protection_found
+        nonlocal has_williamson_ether
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if any reactant has an amine that becomes Boc-protected in the product
-            amine_pattern = Chem.MolFromSmarts("[NH2]")
-            boc_pattern = Chem.MolFromSmarts("[NH]C(=O)OC(C)(C)C")
+                # Check for Williamson ether synthesis
+                if len(reactants) >= 2:
+                    benzyl_bromide_patt = Chem.MolFromSmarts("c1ccccc1-[#6]-[Br]")
+                    alcohol_patt = Chem.MolFromSmarts("[#6]-[#8H]")
+                    benzyl_ether_patt = Chem.MolFromSmarts("c1ccccc1-[#6]-[#8]-[#6]")
 
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(boc_pattern):
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(amine_pattern):
-                            print("Boc protection detected")
-                            boc_protection_found = True
-                            break
-            except:
-                pass
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                    product_mol = Chem.MolFromSmiles(product) if product else None
+
+                    has_benzyl_bromide = any(
+                        mol and mol.HasSubstructMatch(benzyl_bromide_patt) for mol in reactant_mols
+                    )
+                    has_alcohol = any(
+                        mol and mol.HasSubstructMatch(alcohol_patt) for mol in reactant_mols
+                    )
+
+                    if (
+                        has_benzyl_bromide
+                        and has_alcohol
+                        and product_mol
+                        and product_mol.HasSubstructMatch(benzyl_ether_patt)
+                    ):
+                        print("Detected Williamson ether synthesis for fragment coupling")
+                        has_williamson_ether = True
 
         # Traverse children
         for child in node.get("children", []):
@@ -57,4 +71,5 @@ def main(route):
 
     # Start traversal from the root
     dfs_traverse(route)
-    return boc_protection_found
+
+    return has_williamson_ether

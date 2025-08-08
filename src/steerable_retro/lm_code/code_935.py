@@ -2,55 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves formation of an aryl ether.
+    This function detects a synthetic strategy involving the use of benzyl ethers
+    as protecting groups for phenols.
     """
-    aryl_ether_pattern = Chem.MolFromSmarts("c[#8][#6]")
-    phenol_pattern = Chem.MolFromSmarts("c[#8H]")
-
-    aryl_ether_formation = False
+    benzyl_protection_count = 0
 
     def dfs_traverse(node):
-        nonlocal aryl_ether_formation
+        nonlocal benzyl_protection_count
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+            try:
+                product_mol = Chem.MolFromSmiles(product)
 
-            if product_mol and all(r for r in reactant_mols):
-                # Check if any reactant has a phenol and product has an aryl ether
-                if any(
-                    r.HasSubstructMatch(phenol_pattern) for r in reactant_mols if r
-                ) and product_mol.HasSubstructMatch(aryl_ether_pattern):
-                    aryl_ether_formation = True
+                # Check for phenol in reactants
+                has_phenol = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts("[c][OH]")
+                    ):
+                        has_phenol = True
+                        break
 
+                # Check for benzyl ether in product
+                if (
+                    product_mol
+                    and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[c][O][CH2][c]"))
+                    and has_phenol
+                ):
+                    benzyl_protection_count += 1
+                    print(f"Detected benzyl protection in reaction: {rsmi}")
+            except:
+                pass
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Aryl ether formation strategy: {aryl_ether_formation}")
-    return aryl_ether_formation
+
+    # Return True if at least 1 benzyl protection is detected
+    result = benzyl_protection_count >= 1
+    print(f"Benzyl protecting group strategy detected: {result} (count: {benzyl_protection_count})")
+    return result

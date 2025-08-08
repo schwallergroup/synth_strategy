@@ -2,115 +2,91 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving amine protection
-    with Cbz or Boc group during the synthesis.
+    Detects if the synthesis includes multiple C-N bond forming reactions
+    (e.g., amide formation, reductive amination).
     """
-    found_protection = False
+    c_n_bond_formations = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_protection
+    def dfs_traverse(node):
+        nonlocal c_n_bond_formations
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            print(f"Checking reaction at depth {depth}: {rsmi}")
+                try:
+                    # Convert to molecules
+                    reactant_mols = [
+                        Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)
+                    ]
+                    prod_mol = Chem.MolFromSmiles(product)
 
-            # Check for amine protection reactions
-            if (
-                checker.check_reaction("Boc amine protection", rsmi)
-                or checker.check_reaction("Boc amine protection explicit", rsmi)
-                or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
-                or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
-                or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
-                or checker.check_reaction("Boc amine protection of primary amine", rsmi)
-            ):
-                print(f"Found Boc protection reaction: {rsmi}")
-                found_protection = True
-                return
-
-            # Manual check for Cbz protection (not in the reaction list)
-            # Check if product has carbamate and reactant has amine
-            has_amine_reactant = False
-            has_carbamate_product = False
-
-            for reactant in reactants:
-                if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                    "Secondary amine", reactant
-                ):
-                    print(f"Found amine in reactant: {reactant}")
-                    has_amine_reactant = True
-                    break
-
-            if has_amine_reactant and checker.check_fg("Carbamic ester", product):
-                print(f"Found carbamate in product: {product}")
-
-                # Check if the carbamate is specifically a Cbz group (contains benzyl)
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    # Check for benzyl group connected to carbamate
-                    benzyl_carbamate = Chem.MolFromSmarts("C(=O)OC[c]1[cH][cH][cH][cH][cH]1")
-                    if product_mol.HasSubstructMatch(benzyl_carbamate):
-                        print(f"Confirmed Cbz protection: {rsmi}")
-                        found_protection = True
+                    if not prod_mol or not reactant_mols:
                         return
 
-        # Traverse children
+                    # Check for amide formation
+                    amide_pattern = Chem.MolFromSmarts("[#6](=[#8])[#7]")
+                    amine_pattern = Chem.MolFromSmarts("[#7;!$(N=*);!$(N#*)]")
+
+                    # Check if product has an amide that wasn't in reactants
+                    if prod_mol.HasSubstructMatch(amide_pattern):
+                        amide_in_reactants = False
+                        for r_mol in reactant_mols:
+                            if r_mol.HasSubstructMatch(amide_pattern):
+                                amide_in_reactants = True
+                                break
+
+                        if not amide_in_reactants:
+                            c_n_bond_formations += 1
+                            print("Detected C-N bond formation: amide formation")
+
+                    # Check for reductive amination (amine formation)
+                    if prod_mol.HasSubstructMatch(amine_pattern):
+                        # Check if product has a C-N bond that wasn't in reactants
+                        # This is a simplified check and might need refinement
+                        aldehyde_pattern = Chem.MolFromSmarts("[#6](=[#8])[#1,#6]")
+                        aldehyde_in_reactants = False
+
+                        for r_mol in reactant_mols:
+                            if r_mol.HasSubstructMatch(aldehyde_pattern):
+                                aldehyde_in_reactants = True
+                                break
+
+                        if aldehyde_in_reactants:
+                            c_n_bond_formations += 1
+                            print("Detected C-N bond formation: reductive amination")
+                except:
+                    pass
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Protected amine strategy found: {found_protection}")
-    return found_protection
+    return c_n_bond_formations >= 2

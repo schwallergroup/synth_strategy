@@ -2,74 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves N-sulfonylation of a pyrazole ring.
+    This function detects a sequence of oxidation steps leading to amide formation:
+    aldehyde -> carboxylic acid -> amide
     """
-    found_sulfonylation = False
+    # Track if we've seen each step in the sequence
+    seen_aldehyde = False
+    seen_carboxylic_acid = False
+    seen_amide = False
 
     def dfs_traverse(node):
-        nonlocal found_sulfonylation
+        nonlocal seen_aldehyde, seen_carboxylic_acid, seen_amide
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            products = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            try:
-                # Pattern for pyrazole NH
-                pyrazole_nh_pattern = Chem.MolFromSmarts("[nH]1cncc1")
-                # Pattern for sulfonyl chloride
-                sulfonyl_cl_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])-[Cl]")
-                # Pattern for sulfonylated pyrazole
-                sulfonylated_pyrazole_pattern = Chem.MolFromSmarts(
-                    "[#16](=[#8])(=[#8])-[n]1[c][n][c][c]1"
-                )
+                # Convert to RDKit molecules
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        # Check for functional groups
+                        aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
+                        carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
+                        amide_pattern = Chem.MolFromSmarts("[C](=O)[N]")
 
-                pyrazole_found = False
-                sulfonyl_cl_found = False
+                        if product_mol.HasSubstructMatch(aldehyde_pattern):
+                            seen_aldehyde = True
+                        if product_mol.HasSubstructMatch(carboxylic_acid_pattern):
+                            seen_carboxylic_acid = True
+                        if product_mol.HasSubstructMatch(amide_pattern):
+                            seen_amide = True
+                except:
+                    print("Error processing molecule in oxidation_sequence_to_amide")
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        if reactant_mol.HasSubstructMatch(pyrazole_nh_pattern):
-                            pyrazole_found = True
-                        if reactant_mol.HasSubstructMatch(sulfonyl_cl_pattern):
-                            sulfonyl_cl_found = True
-
-                product_mol = Chem.MolFromSmiles(products)
-                sulfonylated_product = False
-                if product_mol and product_mol.HasSubstructMatch(sulfonylated_pyrazole_pattern):
-                    sulfonylated_product = True
-
-                if pyrazole_found and sulfonyl_cl_found and sulfonylated_product:
-                    found_sulfonylation = True
-                    print("Found pyrazole N-sulfonylation reaction")
-            except:
-                pass
-
-        # Continue traversing
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
-    return found_sulfonylation
+
+    # Check if we've seen the complete sequence
+    if seen_aldehyde and seen_carboxylic_acid and seen_amide:
+        print("Detected oxidation sequence: aldehyde -> carboxylic acid -> amide")
+        return True
+    return False

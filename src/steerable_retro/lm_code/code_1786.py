@@ -2,59 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves multiple C-O bond formations.
+    Detects a synthetic strategy involving reduction of a diester to a diol.
     """
-    co_bond_formations = 0
+    has_diester_reduction = False
 
     def dfs_traverse(node):
-        nonlocal co_bond_formations
+        nonlocal has_diester_reduction
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for C-O bond formation
-            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
-            product_mol = Chem.MolFromSmiles(product_part)
+                if reactants and product:
+                    # Check for diester pattern in reactants
+                    diester_pattern = Chem.MolFromSmarts(
+                        "[C](=[O])[O][CH2][CH3].[C](=[O])[O][CH2][CH3]"
+                    )
 
-            if product_mol and all(r for r in reactants_mols):
-                # Count C-O bonds in reactants and product
-                co_pattern = Chem.MolFromSmarts("[#6]-[#8]")
+                    # Check for diol pattern in product
+                    diol_pattern = Chem.MolFromSmarts("[OH][CH2][CH][CH2][OH]")
 
-                reactant_co_count = sum(
-                    len(r.GetSubstructMatches(co_pattern)) for r in reactants_mols if r
-                )
-                product_co_count = len(product_mol.GetSubstructMatches(co_pattern))
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(diester_pattern):
+                            product_mol = Chem.MolFromSmiles(product)
+                            if product_mol and product_mol.HasSubstructMatch(diol_pattern):
+                                has_diester_reduction = True
 
-                if product_co_count > reactant_co_count:
-                    co_bond_formations += 1
-                    print(f"Found C-O bond formation: {reactant_co_count} -> {product_co_count}")
-
-        # Continue traversing
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return co_bond_formations >= 2  # Return True if at least 2 C-O bond formations
+
+    print(f"Diester reduction to diol strategy: {has_diester_reduction}")
+    return has_diester_reduction

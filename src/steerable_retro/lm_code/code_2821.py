@@ -2,149 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves late-stage aromatic bromination.
+    This function detects phenol protection (as benzyl ether) followed by deprotection.
     """
-    late_bromination_detected = False
+    protection_found = False
+    deprotection_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_bromination_detected
+    def dfs_traverse(node):
+        nonlocal protection_found, deprotection_found
 
-        if node["type"] == "reaction" and depth <= 3 and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            print(f"Checking reaction at depth {depth}: {rsmi}")
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check for aromatic bromination reaction using the provided checker
-            if checker.check_reaction("Aromatic bromination", rsmi):
-                print(f"Late-stage aromatic bromination detected at depth {depth}")
-                late_bromination_detected = True
-                return
+            # Check for protection (phenol + benzyl source -> benzyl protected phenol)
+            reactants = reactants_part.split(".")
+            product_mol = Chem.MolFromSmiles(product_part)
 
-            # If the direct check failed, analyze the reaction more carefully
-            try:
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+            if product_mol:
+                benzyl_ether_pattern = Chem.MolFromSmarts("[c][O][CH2][c]")
+                if product_mol.HasSubstructMatch(benzyl_ether_pattern):
+                    # Check if reactants include phenol
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            phenol_pattern = Chem.MolFromSmarts("[c][OH]")
+                            if mol.HasSubstructMatch(phenol_pattern):
+                                protection_found = True
+                                print("Found phenol protection with benzyl group")
 
-                # Split reactants if there are multiple
-                reactants = reactants_part.split(".")
-
-                # Convert to RDKit molecules
-                product_mol = Chem.MolFromSmiles(product_part)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
-
-                if product_mol and reactant_mols:
-                    # Check if product contains aromatic-Br bonds
-                    ar_br_pattern = Chem.MolFromSmarts("c-[Br]")
-                    product_ar_br_count = len(product_mol.GetSubstructMatches(ar_br_pattern))
-
-                    if product_ar_br_count > 0:
-                        print(f"Product contains {product_ar_br_count} aromatic-Br bonds")
-
-                        # Check if any reactant contains aromatic rings
-                        for i, reactant_mol in enumerate(reactant_mols):
-                            if reactant_mol:
-                                reactant_ar_br_count = len(
-                                    reactant_mol.GetSubstructMatches(ar_br_pattern)
-                                )
-                                print(
-                                    f"Reactant {i} contains {reactant_ar_br_count} aromatic-Br bonds"
-                                )
-
-                                # If product has more aromatic-Br bonds than this reactant,
-                                # and the reactant has aromatic rings, it might be bromination
-                                if product_ar_br_count > reactant_ar_br_count:
-                                    # Check if reactant has aromatic rings
-                                    aromatic_pattern = Chem.MolFromSmarts("c")
-                                    if reactant_mol.HasSubstructMatch(aromatic_pattern):
-                                        # Check if any reactant contains bromine source
-                                        br_sources = ["Br", "CBr", "HBr", "BBr", "NBr"]
-                                        br_source_present = any(
-                                            any(br_src in r for br_src in br_sources)
-                                            for r in reactants
-                                        )
-
-                                        if br_source_present:
-                                            print(
-                                                f"Late-stage aromatic bromination detected through detailed analysis at depth {depth}"
-                                            )
-                                            late_bromination_detected = True
-                                            return
-
-                # Additional check for specific bromination reactions
-                if (
-                    any("c" in r and "Br" in r for r in reactants)
-                    and "c" in product_part
-                    and "Br" in product_part
-                ):
-                    # Check if this is a bromination reaction by name
-                    if (
-                        checker.check_reaction("Wohl-Ziegler bromination benzyl primary", rsmi)
-                        or checker.check_reaction("Wohl-Ziegler bromination benzyl secondary", rsmi)
-                        or checker.check_reaction("Wohl-Ziegler bromination benzyl tertiary", rsmi)
-                        or checker.check_reaction("Wohl-Ziegler bromination allyl primary", rsmi)
-                        or checker.check_reaction("Wohl-Ziegler bromination allyl secondary", rsmi)
-                        or checker.check_reaction("Wohl-Ziegler bromination allyl tertiary", rsmi)
-                    ):
-                        print(f"Late-stage Wohl-Ziegler bromination detected at depth {depth}")
-                        late_bromination_detected = True
-                        return
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
+            # Check for deprotection (benzyl protected phenol -> phenol)
+            reactant_mol = Chem.MolFromSmiles(reactants_part)
+            if reactant_mol:
+                benzyl_ether_pattern = Chem.MolFromSmarts("[c][O][CH2][c]")
+                if reactant_mol.HasSubstructMatch(benzyl_ether_pattern):
+                    # Check if product includes phenol
+                    product_mol = Chem.MolFromSmiles(product_part)
+                    if product_mol:
+                        phenol_pattern = Chem.MolFromSmarts("[c][OH]")
+                        if product_mol.HasSubstructMatch(phenol_pattern):
+                            deprotection_found = True
+                            print("Found benzyl deprotection of phenol")
 
         # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: {late_bromination_detected}")
-
-    return late_bromination_detected
+    return protection_found and deprotection_found

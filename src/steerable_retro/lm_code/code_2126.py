@@ -2,70 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes SNAr reactions with nitrogen nucleophiles.
+    This function detects a synthetic strategy involving multiple C-O bond formations
+    (esterifications and etherifications) in a linear synthesis.
     """
-    snar_count = 0
+    co_bond_formation_count = 0
 
     def dfs_traverse(node):
-        nonlocal snar_count
+        nonlocal co_bond_formation_count
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for halogen-containing aromatic in one reactant
-            halogen_aromatic_pattern = Chem.MolFromSmarts("[c]-[F,Cl,Br,I]")
-            nitrogen_nucleophile_pattern = Chem.MolFromSmarts("[N;H0,H1,H2]")
+            # Check for C-O bond formation (esterification or etherification)
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-            has_halogen_aromatic = False
-            has_nitrogen_nucleophile = False
+            # Look for alcohol or carboxylic acid in reactants
+            alcohol_pattern = Chem.MolFromSmarts("[OH]")
+            acid_pattern = Chem.MolFromSmarts("[OH]C=O")
 
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if not reactant_mol:
-                    continue
+            # Look for ester or ether in product
+            ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-C(=O)")
+            ether_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6]")
 
-                if reactant_mol.HasSubstructMatch(halogen_aromatic_pattern):
-                    has_halogen_aromatic = True
+            has_alcohol_or_acid = any(
+                mol.HasSubstructMatch(alcohol_pattern) or mol.HasSubstructMatch(acid_pattern)
+                for mol in reactant_mols
+                if mol
+            )
 
-                if reactant_mol.HasSubstructMatch(nitrogen_nucleophile_pattern):
-                    has_nitrogen_nucleophile = True
+            has_ester_or_ether = product_mol and (
+                product_mol.HasSubstructMatch(ester_pattern)
+                or product_mol.HasSubstructMatch(ether_pattern)
+            )
 
-            # Check if product has new C-N bond where halogen was
-            if has_halogen_aromatic and has_nitrogen_nucleophile:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    # This is a simplification - in a real implementation,
-                    # we would need to check for new C-N bonds at positions where halogens were
-                    print("Detected potential SNAr with nitrogen nucleophile")
-                    snar_count += 1
+            if has_alcohol_or_acid and has_ester_or_ether:
+                co_bond_formation_count += 1
+                print(f"Detected C-O bond formation in reaction: {rsmi}")
 
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return snar_count >= 1
+
+    # Return True if there are at least 2 C-O bond formations
+    return co_bond_formation_count >= 2

@@ -2,69 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves sequential functionalization
-    of an aromatic ring (at least 3 sequential transformations on the same ring).
+    Detects the use of acetal protection for an aldehyde.
+    Looks for aldehyde → acetal transformation.
     """
-    # Track transformations on aromatic rings
-    transformations = []
+    acetal_protection_found = False
 
     def dfs_traverse(node, depth=0):
+        nonlocal acetal_protection_found
+
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0]
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if reaction modifies an aromatic ring
-                reactant_mol = Chem.MolFromSmiles(reactants)
-                product_mol = Chem.MolFromSmiles(product)
+            # Check for aldehyde in reactants
+            aldehyde_pattern = Chem.MolFromSmarts("[CX3H1](=O)")
+            aldehyde_present = False
+            for reactant in reactants:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol and mol.HasSubstructMatch(aldehyde_pattern):
+                    aldehyde_present = True
 
-                if reactant_mol and product_mol:
-                    # Patterns for common aromatic transformations
-                    patterns = [
-                        ("nitration", Chem.MolFromSmarts("c[N+](=[O])[O-]")),
-                        ("reduction", Chem.MolFromSmarts("c[NH2]")),
-                        ("alkylation", Chem.MolFromSmarts("c[O][C]")),
-                        ("halogenation", Chem.MolFromSmarts("c[F,Cl,Br,I]")),
-                        ("amination", Chem.MolFromSmarts("c[N]")),
-                    ]
+            # Check for acetal in product
+            acetal_pattern = Chem.MolFromSmarts("[#6]1[#8][#6][#6][#8]1")
+            product_mol = Chem.MolFromSmiles(product)
 
-                    for name, pattern in patterns:
-                        if product_mol.HasSubstructMatch(pattern):
-                            transformations.append((depth, name))
-                            print(f"Found {name} at depth {depth}")
-                            break
+            if aldehyde_present and product_mol and product_mol.HasSubstructMatch(acetal_pattern):
+                acetal_protection_found = True
+                print(f"Found acetal protection at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
     dfs_traverse(route)
-
-    # Sort transformations by depth (ascending order - early to late in synthesis)
-    transformations.sort(key=lambda x: x[0], reverse=True)
-
-    # Check if we have at least 3 sequential transformations
-    return len(transformations) >= 3
+    return acetal_protection_found

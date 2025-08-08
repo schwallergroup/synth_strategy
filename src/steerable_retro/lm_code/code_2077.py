@@ -2,163 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving Suzuki coupling using boronic acid intermediates.
+    This function detects a strategy involving functionalization of a piperazine scaffold
+    that is maintained throughout the synthesis.
     """
-    borylation_found = False
-    borylation_depth = -1
-    suzuki_coupling_found = False
-    suzuki_coupling_depth = -1
+    # Track if we found piperazine scaffold and its functionalization
+    found_piperazine = False
+    found_functionalization = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal borylation_found, borylation_depth, suzuki_coupling_found, suzuki_coupling_depth
+    def dfs_traverse(node):
+        nonlocal found_piperazine, found_functionalization
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node:
+            # Check if molecule contains piperazine scaffold
+            piperazine_pattern = Chem.MolFromSmarts("[#7]1-[#6]-[#6]-[#7]-[#6]-[#6]-1")
+            mol = Chem.MolFromSmiles(node["smiles"])
 
-                # Check for borylation (preparation of boronic acids/esters)
-                if any(
-                    checker.check_reaction(rxn, rsmi)
-                    for rxn in [
-                        "Preparation of boronic acids",
-                        "Preparation of boronic acids without boronic ether",
-                        "Preparation of boronic acids from trifluoroborates",
-                        "Preparation of boronic ethers",
-                    ]
-                ):
-                    borylation_found = True
-                    borylation_depth = depth
-                    print(f"Found borylation at depth {depth}, rsmi: {rsmi}")
+            if mol and mol.HasSubstructMatch(piperazine_pattern):
+                found_piperazine = True
+                print(f"Found piperazine scaffold in molecule: {node['smiles']}")
 
-                # Alternative check for borylation: aryl halide to boronic acid/ester
-                if not borylation_found:
-                    aryl_halide_in_reactants = any(
-                        checker.check_fg("Aromatic halide", r) for r in reactants
-                    )
-                    boronic_acid_in_product = checker.check_fg("Boronic acid", product)
-                    boronic_ester_in_product = checker.check_fg("Boronic ester", product)
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                    if aryl_halide_in_reactants and (
-                        boronic_acid_in_product or boronic_ester_in_product
-                    ):
-                        borylation_found = True
-                        borylation_depth = depth
-                        print(f"Found borylation (FG check) at depth {depth}, rsmi: {rsmi}")
+            # Check for functionalization reactions on piperazine
+            piperazine_pattern = Chem.MolFromSmarts("[#7]1-[#6]-[#6]-[#7]-[#6]-[#6]-1")
 
-                # Check for Suzuki coupling
-                if (
-                    checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                    or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
-                    or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                    or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
-                    or checker.check_reaction("Suzuki coupling with sulfonic esters", rsmi)
-                ):
-                    suzuki_coupling_found = True
-                    suzuki_coupling_depth = depth
-                    print(f"Found Suzuki coupling at depth {depth}, rsmi: {rsmi}")
-
-                # Alternative check for Suzuki coupling
-                if not suzuki_coupling_found:
-                    boronic_acid_in_reactants = any(
-                        checker.check_fg("Boronic acid", r) for r in reactants
-                    )
-                    boronic_ester_in_reactants = any(
-                        checker.check_fg("Boronic ester", r) for r in reactants
-                    )
-                    aryl_halide_in_reactants = any(
-                        checker.check_fg("Aromatic halide", r) for r in reactants
-                    )
-                    triflate_in_reactants = any(checker.check_fg("Triflate", r) for r in reactants)
-
-                    if (boronic_acid_in_reactants or boronic_ester_in_reactants) and (
-                        aryl_halide_in_reactants or triflate_in_reactants
-                    ):
-                        suzuki_coupling_found = True
-                        suzuki_coupling_depth = depth
-                        print(f"Found Suzuki coupling (FG check) at depth {depth}, rsmi: {rsmi}")
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol and product_mol.HasSubstructMatch(piperazine_pattern):
+                # Check if this is a functionalization reaction
+                # (We're looking for reactions that modify the piperazine but keep its core intact)
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(piperazine_pattern):
+                        # If both reactant and product have piperazine, it's a functionalization
+                        found_functionalization = True
+                        print(f"Found piperazine functionalization in reaction: {rsmi}")
+                        break
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if the strategy is present
-    # In retrosynthetic analysis, borylation should have higher depth than Suzuki coupling
-    # (borylation happens earlier in the forward synthesis, so appears deeper in retrosynthetic tree)
-    strategy_present = (
-        borylation_found
-        and suzuki_coupling_found
-        and borylation_depth
-        > suzuki_coupling_depth  # In retrosynthesis, borylation appears at greater depth
-    )
+    # Strategy is present if we found piperazine scaffold and its functionalization
+    strategy_present = found_piperazine and found_functionalization
 
     if strategy_present:
-        print(
-            f"Found Suzuki coupling strategy with boronic acid intermediate: borylation at depth {borylation_depth}, coupling at depth {suzuki_coupling_depth}"
-        )
-    else:
-        if borylation_found and suzuki_coupling_found:
-            print(
-                f"Found both reactions but in wrong order: borylation at depth {borylation_depth}, coupling at depth {suzuki_coupling_depth}"
-            )
-        elif borylation_found:
-            print(f"Found only borylation at depth {borylation_depth}")
-        elif suzuki_coupling_found:
-            print(f"Found only Suzuki coupling at depth {suzuki_coupling_depth}")
-        else:
-            print("Neither borylation nor Suzuki coupling found")
+        print("Detected strategy: Piperazine scaffold functionalization")
 
     return strategy_present

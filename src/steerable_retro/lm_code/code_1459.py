@@ -2,53 +2,97 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy (as opposed to convergent).
-    A linear synthesis is characterized by having only one non-stock reactant in each reaction.
+    This function detects if the synthesis involves an amine protection-deprotection sequence,
+    specifically looking for Cbz (carbamate) protection.
     """
-    is_linear = True
+    protection_depth = None
+    deprotection_depth = None
 
-    def dfs_traverse(node):
-        nonlocal is_linear
+    def dfs_traverse(node, depth=0):
+        nonlocal protection_depth, deprotection_depth
 
         if node["type"] == "reaction":
-            # Count non-stock reactants
-            non_stock_reactants = 0
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    non_stock_reactants += 1
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # If more than one non-stock reactant, it's not a linear synthesis
-            if non_stock_reactants > 1:
-                is_linear = False
-                print(f"Non-linear step detected with {non_stock_reactants} non-stock reactants")
+            # Check for carbamate protection (amine + Cbz-Cl → N-Cbz)
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            carbamate_pattern = Chem.MolFromSmarts("[N][C](=[O])[O][C]")
+
+            # Check for amine in reactants
+            amine_in_reactants = False
+            for reactant in reactants_smiles:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2]")):
+                    amine_in_reactants = True
+                    break
+
+            # Protection: amine → carbamate
+            if (
+                product_mol
+                and product_mol.HasSubstructMatch(carbamate_pattern)
+                and amine_in_reactants
+            ):
+                protection_depth = depth
+                print(f"Amine protection detected at depth {depth}")
+
+            # Deprotection: carbamate → amine
+            carbamate_in_reactants = False
+            for reactant in reactants_smiles:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.HasSubstructMatch(carbamate_pattern):
+                    carbamate_in_reactants = True
+                    break
+
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if (
+                product_mol
+                and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2]"))
+                and carbamate_in_reactants
+            ):
+                deprotection_depth = depth
+                print(f"Amine deprotection detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    print(f"Linear synthesis strategy detected: {is_linear}")
-    return is_linear
+    # Check if both protection and deprotection were found, and protection happened before deprotection
+    has_protection_deprotection = (
+        protection_depth is not None
+        and deprotection_depth is not None
+        and protection_depth > deprotection_depth
+    )
+
+    print(f"Amine protection-deprotection sequence: {has_protection_deprotection}")
+    print(f"Protection depth: {protection_depth}, Deprotection depth: {deprotection_depth}")
+    return has_protection_deprotection

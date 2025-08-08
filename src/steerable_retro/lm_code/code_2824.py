@@ -2,61 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes that include nitro group reduction to amine.
+    This function detects if the synthesis involves multiple C-O bond formations.
     """
-    found_nitro_reduction = False
+    co_bond_formations = 0
 
     def dfs_traverse(node):
-        nonlocal found_nitro_reduction
+        nonlocal co_bond_formations
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check for nitro reduction (NO2 → NH2)
-            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-            amine_pattern = Chem.MolFromSmarts("[NH2]")
+            # Check for C-O bond formation
+            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
+            product_mol = Chem.MolFromSmiles(product_part)
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            reactant_mols = [
-                Chem.MolFromSmiles(r) for r in reactants_smiles if Chem.MolFromSmiles(r)
-            ]
+            if product_mol and all(r for r in reactants_mols):
+                # Count C-O bonds in reactants and product
+                co_pattern = Chem.MolFromSmarts("[#6]-[#8]")
 
-            if product_mol and product_mol.HasSubstructMatch(amine_pattern):
-                if any(
-                    r and r.HasSubstructMatch(nitro_pattern) for r in reactant_mols if r is not None
-                ):
-                    print("Found nitro reduction")
-                    found_nitro_reduction = True
+                reactant_co_count = sum(
+                    len(r.GetSubstructMatches(co_pattern)) for r in reactants_mols if r
+                )
+                product_co_count = len(product_mol.GetSubstructMatches(co_pattern))
 
-        # Traverse children
+                if product_co_count > reactant_co_count:
+                    co_bond_formations += 1
+                    print(f"Found C-O bond formation: {reactant_co_count} -> {product_co_count}")
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return found_nitro_reduction
+    return co_bond_formations >= 2  # Return True if at least 2 C-O bond formations

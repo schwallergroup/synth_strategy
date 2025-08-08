@@ -2,109 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving multiple protection/deprotection steps,
-    specifically looking for TBDMS protection and benzyl deprotection.
+    This function detects a late-stage fragment coupling strategy where two complex fragments
+    are combined in the final steps of the synthesis.
     """
-    # Initialize tracking variables
-    has_tbdms_protection = False
-    has_benzyl_deprotection = False
-    protection_deprotection_count = 0
+    late_stage_coupling = False
 
-    def dfs_traverse(node):
-        nonlocal has_tbdms_protection, has_benzyl_deprotection, protection_deprotection_count
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_coupling
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions (low depth)
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                # Parse reactants and product
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
-                product = Chem.MolFromSmiles(product_str) if product_str else None
+            parts = rsmi.split(">")
+            if len(parts) < 3:
+                return
 
-                if product and any(reactants):
-                    # Check for TBDMS protection
-                    if any(
-                        r
-                        and r.HasSubstructMatch(
-                            Chem.MolFromSmarts("[Cl][Si]([C])([C])[C]([C])([C])[C]")
-                        )
-                        for r in reactants
-                    ) and product.HasSubstructMatch(
-                        Chem.MolFromSmarts("[OX2][Si]([C])([C])[C]([C])([C])[C]")
-                    ):
-                        has_tbdms_protection = True
-                        protection_deprotection_count += 1
-                        print("Detected TBDMS protection")
+            reactants = parts[0].split(".")
+            product = parts[-1]
 
-                    # Check for benzyl deprotection
-                    if product.HasSubstructMatch(Chem.MolFromSmarts("[OH]")) and any(
-                        r
-                        and r.HasSubstructMatch(
-                            Chem.MolFromSmarts("[OX2][CH2][cX3]1[cX3][cX3][cX3][cX3][cX3]1")
-                        )
-                        for r in reactants
-                    ):
-                        has_benzyl_deprotection = True
-                        protection_deprotection_count += 1
-                        print("Detected benzyl deprotection")
+            # Check if we're combining two complex fragments
+            if len(reactants) >= 2:
+                complex_fragments = 0
+                for reactant in reactants:
+                    # Define complexity: contains at least one ring or has more than 10 atoms
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            ring_info = mol.GetRingInfo()
+                            if ring_info.NumRings() > 0 or mol.GetNumAtoms() > 10:
+                                complex_fragments += 1
+                    except:
+                        pass
 
-                    # Check for other protection/deprotection steps
-                    if (
-                        any(
-                            r and r.HasSubstructMatch(Chem.MolFromSmarts("[OH]")) for r in reactants
-                        )
-                        and product.HasSubstructMatch(
-                            Chem.MolFromSmarts("[OX2][S](=[O])(=[O])[CH3]")
-                        )
-                    ) or (
-                        any(
-                            r
-                            and r.HasSubstructMatch(Chem.MolFromSmarts("[OX2][S](=[O])(=[O])[CH3]"))
-                            for r in reactants
-                        )
-                        and product.HasSubstructMatch(Chem.MolFromSmarts("[I]"))
-                    ):
-                        protection_deprotection_count += 1
-                        print("Detected other protection/transformation step")
+                if complex_fragments >= 2:
+                    late_stage_coupling = True
+                    print(f"Found late-stage coupling at depth {depth}")
 
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if the strategy is present
-    strategy_present = (
-        has_tbdms_protection and has_benzyl_deprotection and protection_deprotection_count >= 3
-    )
-
-    if strategy_present:
-        print(
-            f"Protection-deprotection sequence strategy detected with {protection_deprotection_count} steps"
-        )
-
-    return strategy_present
+    return late_stage_coupling

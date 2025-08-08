@@ -2,55 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a convergent synthesis strategy where multiple fragments
-    are combined in late-stage reactions.
+    Detects a synthesis strategy where ketone and hydroxyl functional groups
+    are preserved throughout the synthesis.
     """
-    has_convergent_step = False
+    # Track functional groups in each molecule
+    all_mols = []
+
+    # Define SMARTS patterns
+    ketone_pattern = Chem.MolFromSmarts("[#6][C](=[O])[#6]")
+    hydroxyl_pattern = Chem.MolFromSmarts("[#6][OH]")
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_convergent_step
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-
-            # Count non-empty reactants
-            reactant_count = sum(1 for r in reactants if r.strip())
-
-            # If this is a late-stage reaction (depth <= 1) with 3+ reactants
-            if depth <= 1 and reactant_count >= 3:
-                has_convergent_step = True
-                print(
-                    f"Detected convergent step at depth {depth} with {reactant_count} reactants: {rsmi}"
-                )
+        if node["type"] == "mol" and node.get("smiles"):
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                all_mols.append((mol, depth))
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Convergent synthesis strategy detected: {has_convergent_step}")
-    return has_convergent_step
+    # Sort molecules by depth (from final product to starting materials)
+    all_mols.sort(key=lambda x: x[1])
+
+    # Check if ketones and hydroxyls are preserved
+    has_ketone = [bool(mol.HasSubstructMatch(ketone_pattern)) for mol, _ in all_mols]
+    has_hydroxyl = [bool(mol.HasSubstructMatch(hydroxyl_pattern)) for mol, _ in all_mols]
+
+    # Strategy is present if both functional groups appear in the final product
+    # and are preserved in at least one molecule throughout the synthesis
+    ketone_preserved = has_ketone[0] and any(has_ketone[1:])
+    hydroxyl_preserved = has_hydroxyl[0] and any(has_hydroxyl[1:])
+    strategy_present = ketone_preserved and hydroxyl_preserved
+
+    print(f"Preserved functional groups strategy detection:")
+    print(f"  Ketone present in molecules: {has_ketone}")
+    print(f"  Hydroxyl present in molecules: {has_hydroxyl}")
+    print(f"  Ketone preserved: {ketone_preserved}")
+    print(f"  Hydroxyl preserved: {hydroxyl_preserved}")
+    print(f"  Strategy present: {strategy_present}")
+
+    return strategy_present

@@ -2,66 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if N-alkylation is used as a fragment coupling strategy.
+    This function detects multiple SNAr reactions in the synthetic route.
     """
-    n_alkylation_detected = False
+    snar_reactions = []
 
-    def dfs_traverse(node):
-        nonlocal n_alkylation_detected
-
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction":
+            # Extract reactants and products
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0]
+            product = rsmi.split(">")[-1]
 
-            # Check for N-alkylation pattern: typically involves a halide (Cl, Br) and an amine
-            if (
-                ("Cl" in reactants_part or "Br" in reactants_part)
-                and "N" in reactants_part
-                and "N" in product_part
-            ):
+            # Check for SNAr pattern: ArX + nucleophile → Ar-nucleophile
+            # Look for halogen displacement by O, N, or S nucleophiles
+            reactants_mol = Chem.MolFromSmiles(reactants)
+            product_mol = Chem.MolFromSmiles(product)
 
-                # More specific check: look for C-N bond formation
-                reactants = reactants_part.split(".")
-                if len(reactants) >= 2:  # Need at least two fragments for coupling
-                    # One fragment should have halide, one should have nitrogen
-                    halide_fragment = False
-                    amine_fragment = False
+            if reactants_mol and product_mol:
+                # Check for aryl halide in reactants
+                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[F,Cl,Br,I]")
 
-                    for reactant in reactants:
-                        if "Cl" in reactant or "Br" in reactant:
-                            halide_fragment = True
-                        if "N" in reactant:
-                            amine_fragment = True
+                # Check for aryl ether, amine, or thioether in product
+                aryl_o_pattern = Chem.MolFromSmarts("[c]-[O]")
+                aryl_n_pattern = Chem.MolFromSmarts("[c]-[N]")
+                aryl_s_pattern = Chem.MolFromSmarts("[c]-[S]")
 
-                    if halide_fragment and amine_fragment:
-                        n_alkylation_detected = True
+                if reactants_mol.HasSubstructMatch(aryl_halide_pattern) and (
+                    product_mol.HasSubstructMatch(aryl_o_pattern)
+                    or product_mol.HasSubstructMatch(aryl_n_pattern)
+                    or product_mol.HasSubstructMatch(aryl_s_pattern)
+                ):
+                    snar_reactions.append(depth)
+                    print(f"SNAr reaction found at depth {depth}")
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"N-alkylation fragment coupling: {n_alkylation_detected}")
-    return n_alkylation_detected
+    # Check if at least 2 SNAr reactions were found
+    if len(snar_reactions) >= 2:
+        print(f"Sequential SNAr strategy detected with {len(snar_reactions)} reactions")
+        return True
+    return False

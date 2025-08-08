@@ -2,85 +2,141 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a sequence of
-    functional group transformations: aldehyde → alcohol → ester → nitrile
+    Detects if the synthesis uses a late-stage Suzuki coupling (depth 0 or 1)
+    for final diversification.
     """
-    # SMARTS patterns for functional groups
-    aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
-    alcohol_pattern = Chem.MolFromSmarts("[CH2][OH]")
-    ester_pattern = Chem.MolFromSmarts("[#6][C](=O)[O][#6]")
-    nitrile_pattern = Chem.MolFromSmarts("[C]#N")
+    suzuki_at_late_stage = False
 
-    # Track the sequence of functional groups observed
-    sequence = []
+    def dfs_traverse(node, depth=0):
+        nonlocal suzuki_at_late_stage
 
-    def dfs_traverse(node):
-        nonlocal sequence
+        if node["type"] == "reaction" and depth <= 1:
+            # Get reaction SMILES
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                print(f"No reaction SMILES found at depth {depth}")
+                return
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for functional groups
-                if mol.HasSubstructMatch(aldehyde_pattern) and "aldehyde" not in sequence:
-                    sequence.append("aldehyde")
-                    print(f"Aldehyde detected: {node['smiles']}")
-                elif mol.HasSubstructMatch(alcohol_pattern) and "alcohol" not in sequence:
-                    sequence.append("alcohol")
-                    print(f"Alcohol detected: {node['smiles']}")
-                elif mol.HasSubstructMatch(ester_pattern) and "ester" not in sequence:
-                    sequence.append("ester")
-                    print(f"Ester detected: {node['smiles']}")
-                elif mol.HasSubstructMatch(nitrile_pattern) and "nitrile" not in sequence:
-                    sequence.append("nitrile")
-                    print(f"Nitrile detected: {node['smiles']}")
+            print(f"Checking reaction at depth {depth}: {rsmi}")
 
-        # Process children
+            # Check for Suzuki coupling reactions using the checker function
+            suzuki_reaction_types = [
+                "Suzuki coupling with boronic acids",
+                "Suzuki coupling with boronic acids OTf",
+                "Suzuki coupling with sulfonic esters",
+                "Suzuki coupling with boronic esters OTf",
+                "Suzuki coupling with boronic esters",
+                "Suzuki",
+            ]
+
+            # First try with the checker function
+            for reaction_type in suzuki_reaction_types:
+                if checker.check_reaction(reaction_type, rsmi):
+                    print(f"Found Suzuki coupling ({reaction_type}) at depth {depth}")
+                    suzuki_at_late_stage = True
+                    return
+
+            # If checker fails, try to manually identify Suzuki coupling characteristics
+            try:
+                # Split reaction SMILES to get reactants and product
+                reactants_str = rsmi.split(">")[0]
+                reagents_str = rsmi.split(">")[1] if len(rsmi.split(">")) > 2 else ""
+                product_str = rsmi.split(">")[-1]
+
+                # Check for key components of Suzuki coupling
+                reactants = reactants_str.split(".")
+                reagents = reagents_str.split(".") if reagents_str else []
+
+                # Check for boronic acid/ester in reactants
+                has_boronic = False
+                has_aryl_halide = False
+
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        # Check for boronic acid/ester
+                        if "B" in reactant and (
+                            "OB" in reactant or "B(" in reactant or "BO" in reactant
+                        ):
+                            print(f"Found boronic acid/ester: {reactant}")
+                            has_boronic = True
+
+                        # Check for aryl halide
+                        if any(x in reactant for x in ["Br", "I", "Cl"]) and any(
+                            x in reactant for x in ["c", "C:"] + list("cdefghijklmno")
+                        ):
+                            print(f"Found aryl halide: {reactant}")
+                            has_aryl_halide = True
+
+                # Check for palladium catalyst in reagents
+                has_pd = any("Pd" in reagent for reagent in reagents)
+
+                # If we have both boronic compound and aryl halide, and possibly Pd, it's likely a Suzuki coupling
+                if has_boronic and has_aryl_halide:
+                    print(
+                        f"Manual detection: Found Suzuki coupling characteristics at depth {depth}"
+                    )
+                    suzuki_at_late_stage = True
+                    return
+
+            except Exception as e:
+                print(f"Error in manual Suzuki detection: {e}")
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if the sequence contains all four functional groups in the correct order
-    correct_sequence = ["aldehyde", "alcohol", "ester", "nitrile"]
-
-    # Check if all elements are present
-    all_present = all(fg in sequence for fg in correct_sequence)
-
-    # Check if the order is preserved (allowing for other elements in between)
-    order_preserved = True
-    last_idx = -1
-    for fg in correct_sequence:
-        if fg in sequence:
-            idx = sequence.index(fg)
-            if idx <= last_idx:
-                order_preserved = False
-                break
-            last_idx = idx
-
-    result = all_present and order_preserved
-    print(f"Functional group sequence detected: {sequence}")
-    print(f"Correct sequence found: {result}")
-
-    return result
+    print(f"Late stage Suzuki coupling detected: {suzuki_at_late_stage}")
+    return suzuki_at_late_stage

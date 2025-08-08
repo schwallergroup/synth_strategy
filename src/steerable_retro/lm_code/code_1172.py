@@ -2,165 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving nitro reduction to amine,
-    followed by nitrogen functionalization ending with sulfonamide formation.
+    This function detects a convergent synthesis strategy with biaryl ether formation.
+    It looks for a reaction where two complex fragments are joined via C-O-C bond formation.
     """
-    # Track if we found each transformation
-    nitro_reduction_found = False
-    amide_formation_found = False
-    boc_deprotection_found = False
-    sulfonamide_formation_found = False
+    has_biaryl_ether_formation = False
 
-    # Track the depth of each transformation
-    nitro_reduction_depth = -1
-    amide_formation_depth = -1
-    boc_deprotection_depth = -1
-    sulfonamide_formation_depth = -1
-
-    def dfs_traverse(node, depth=0):
-        nonlocal nitro_reduction_found, amide_formation_found, boc_deprotection_found, sulfonamide_formation_found
-        nonlocal nitro_reduction_depth, amide_formation_depth, boc_deprotection_depth, sulfonamide_formation_depth
+    def dfs_traverse(node):
+        nonlocal has_biaryl_ether_formation
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                # Check if we have multiple reactants (convergent)
+                if len(reactants) >= 2:
+                    # Check for biaryl ether formation
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        # Look for biaryl ether pattern in product
+                        biaryl_ether_pattern = Chem.MolFromSmarts("[c]-[O]-[c]")
+                        if product_mol.HasSubstructMatch(biaryl_ether_pattern):
+                            # Check if reactants have aromatic rings
+                            aromatic_reactants = 0
+                            for reactant in reactants:
+                                reactant_mol = Chem.MolFromSmiles(reactant)
+                                if reactant_mol and reactant_mol.HasSubstructMatch(
+                                    Chem.MolFromSmarts("c")
+                                ):
+                                    aromatic_reactants += 1
 
-            # Check for nitro reduction
-            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-            amine_pattern = Chem.MolFromSmarts("[NH2]")
+                            # If at least 2 aromatic reactants, likely biaryl ether formation
+                            if aromatic_reactants >= 2:
+                                print("Found biaryl ether formation in convergent step")
+                                has_biaryl_ether_formation = True
 
-            reactant_has_nitro = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(nitro_pattern)
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
-            product_has_amine = (
-                Chem.MolFromSmiles(product).HasSubstructMatch(amine_pattern)
-                if Chem.MolFromSmiles(product)
-                else False
-            )
-
-            if reactant_has_nitro and product_has_amine:
-                nitro_reduction_found = True
-                nitro_reduction_depth = depth
-                print(f"Found nitro reduction at depth {depth}")
-
-            # Check for amide formation
-            carboxylic_acid_pattern = Chem.MolFromSmarts("C(=O)O")
-            amine_pattern = Chem.MolFromSmarts("N")
-            amide_pattern = Chem.MolFromSmarts("C(=O)N")
-
-            reactant_has_acid = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(carboxylic_acid_pattern)
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
-            reactant_has_amine = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(amine_pattern)
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
-            product_has_amide = (
-                Chem.MolFromSmiles(product).HasSubstructMatch(amide_pattern)
-                if Chem.MolFromSmiles(product)
-                else False
-            )
-
-            if reactant_has_acid and reactant_has_amine and product_has_amide:
-                amide_formation_found = True
-                amide_formation_depth = depth
-                print(f"Found amide formation at depth {depth}")
-
-            # Check for Boc deprotection
-            boc_pattern = Chem.MolFromSmarts("NC(=O)OC(C)(C)C")
-            free_amine_pattern = Chem.MolFromSmarts("N[H]")
-
-            reactant_has_boc = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(boc_pattern)
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
-            product_has_free_amine = (
-                Chem.MolFromSmiles(product).HasSubstructMatch(free_amine_pattern)
-                if Chem.MolFromSmiles(product)
-                else False
-            )
-
-            if reactant_has_boc and product_has_free_amine:
-                boc_deprotection_found = True
-                boc_deprotection_depth = depth
-                print(f"Found Boc deprotection at depth {depth}")
-
-            # Check for sulfonamide formation
-            sulfonyl_chloride_pattern = Chem.MolFromSmarts("S(=O)(=O)Cl")
-            amine_pattern = Chem.MolFromSmarts("N")
-            sulfonamide_pattern = Chem.MolFromSmarts("S(=O)(=O)N")
-
-            reactant_has_sulfonyl_chloride = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(sulfonyl_chloride_pattern)
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
-            reactant_has_amine = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(amine_pattern)
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
-            product_has_sulfonamide = (
-                Chem.MolFromSmiles(product).HasSubstructMatch(sulfonamide_pattern)
-                if Chem.MolFromSmiles(product)
-                else False
-            )
-
-            if reactant_has_sulfonyl_chloride and reactant_has_amine and product_has_sulfonamide:
-                sulfonamide_formation_found = True
-                sulfonamide_formation_depth = depth
-                print(f"Found sulfonamide formation at depth {depth}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if the strategy is present
-    # 1. All transformations must be found
-    # 2. Sulfonamide formation must be at the lowest depth (latest stage)
-    # 3. Nitro reduction must occur before amide formation
-    strategy_present = (
-        nitro_reduction_found
-        and amide_formation_found
-        and sulfonamide_formation_found
-        and sulfonamide_formation_depth < amide_formation_depth
-        and amide_formation_depth < nitro_reduction_depth
-    )
-
-    print(f"Strategy present: {strategy_present}")
-    return strategy_present
+    return has_biaryl_ether_formation

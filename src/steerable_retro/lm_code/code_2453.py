@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,139 +54,87 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects late-stage convergent amide coupling (in the first half of the synthesis).
+    This function detects if the synthetic route involves azide formation
+    and subsequent transformations using the azide group.
     """
-    found_late_amide_coupling = False
-    max_depth = 0
-
-    # First pass to determine the maximum depth of the route
-    def get_max_depth(node, current_depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, current_depth)
-        for child in node.get("children", []):
-            get_max_depth(child, current_depth + 1)
-
-    get_max_depth(route)
-    first_half_threshold = max_depth // 2 if max_depth > 0 else 0
-
-    print(f"Maximum depth: {max_depth}, First half threshold: {first_half_threshold}")
+    azide_molecules = set()  # Track molecules containing azide groups
+    azide_reactions = []  # Track reactions involving azides
+    azide_formation_reactions = []  # Track reactions where azide is formed
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_late_amide_coupling
+        nonlocal azide_reactions, azide_formation_reactions, azide_molecules
 
-        if (
-            node["type"] == "reaction" and depth <= first_half_threshold
-        ):  # Only consider reactions in first half
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                print(f"Examining reaction at depth {depth}: {rsmi}")
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            # Check if this molecule contains an azide group
+            if checker.check_fg("Azide", mol_smiles):
+                azide_molecules.add(mol_smiles)
+                print(f"Molecule with azide detected: {mol_smiles}")
 
-                # Check if this is an amide coupling reaction
-                amide_coupling_reactions = [
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acyl chloride with secondary amine to amide",
-                    "Carboxylic acid with primary amine to amide",
-                    "Ester with primary amine to amide",
-                    "Ester with secondary amine to amide",
-                    "Schotten-Baumann_amide",
-                    "Acylation of primary amines",
-                    "Acylation of secondary amines",
-                ]
+        elif node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                is_amide_coupling = False
-                for reaction_type in amide_coupling_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        is_amide_coupling = True
-                        print(f"Found amide coupling reaction: {reaction_type}")
-                        break
+            # Check if this is an azide formation reaction
+            reactants_have_azide = any(checker.check_fg("Azide", r) for r in reactants)
+            product_has_azide = checker.check_fg("Azide", product)
 
-                # If not found through reaction types, check for functional group changes
-                if not is_amide_coupling:
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+            # Azide formation: no azide in reactants, but azide in product
+            if not reactants_have_azide and product_has_azide:
+                azide_formation_reactions.append(depth)
+                print(f"Azide formation detected at depth {depth}")
 
-                    # Check for amide formation
-                    has_amide_product = (
-                        checker.check_fg("Primary amide", product)
-                        or checker.check_fg("Secondary amide", product)
-                        or checker.check_fg("Tertiary amide", product)
+                # Check for specific azide formation reactions
+                if (
+                    checker.check_reaction("Formation of Azides from halogens", rsmi)
+                    or checker.check_reaction("Formation of Azides from boronic acids", rsmi)
+                    or checker.check_reaction("Alcohol to azide", rsmi)
+                    or checker.check_reaction("Amine to azide", rsmi)
+                ):
+                    print(f"Specific azide formation reaction detected: {rsmi}")
+
+            # Azide transformation: azide in reactants
+            elif reactants_have_azide:
+                azide_reactions.append(depth)
+                print(f"Azide transformation at depth {depth}")
+
+                # Check for specific azide transformation reactions
+                if (
+                    checker.check_reaction("Huisgen alkyne-azide 1,3 dipolar cycloaddition", rsmi)
+                    or checker.check_reaction("Huisgen 1,3 dipolar cycloaddition", rsmi)
+                    or checker.check_reaction(
+                        "Huisgen alkene-azide 1,3 dipolar cycloaddition", rsmi
                     )
+                    or checker.check_reaction(
+                        "Azide-nitrile click cycloaddition to tetrazole", rsmi
+                    )
+                    or checker.check_reaction("Azide-nitrile click cycloaddition to triazole", rsmi)
+                    or checker.check_reaction("Azide to amine reduction (Staudinger)", rsmi)
+                ):
+                    print(f"Specific azide transformation reaction detected: {rsmi}")
 
-                    # Check for acid/acid derivative and amine in reactants
-                    has_acid_derivative = False
-                    has_amine = False
-
-                    for reactant in reactants:
-                        if (
-                            checker.check_fg("Carboxylic acid", reactant)
-                            or checker.check_fg("Acyl halide", reactant)
-                            or checker.check_fg("Ester", reactant)
-                            or checker.check_fg("Anhydride", reactant)
-                        ):
-                            has_acid_derivative = True
-                            print(f"Found acid derivative in reactant: {reactant}")
-
-                        if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                            "Secondary amine", reactant
-                        ):
-                            has_amine = True
-                            print(f"Found amine in reactant: {reactant}")
-
-                    if has_acid_derivative and has_amine and has_amide_product:
-                        is_amide_coupling = True
-                        print("Detected amide coupling through functional group analysis")
-
-                if is_amide_coupling:
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
-
-                    # Check if this is a convergent step (multiple complex fragments)
-                    if len(reactants) >= 2:
-                        # Check complexity of fragments
-                        complex_fragments = 0
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                # Consider a fragment complex if it has >7 atoms and contains at least one ring
-                                # or has >10 atoms with multiple functional groups
-                                atom_count = reactant_mol.GetNumAtoms()
-                                has_ring = reactant_mol.GetRingInfo().NumRings() > 0
-
-                                # Count functional groups
-                                fg_count = 0
-                                for fg in [
-                                    "Carboxylic acid",
-                                    "Ester",
-                                    "Alcohol",
-                                    "Amine",
-                                    "Amide",
-                                    "Nitrile",
-                                    "Halide",
-                                ]:
-                                    if checker.check_fg(fg, reactant):
-                                        fg_count += 1
-
-                                is_complex = (atom_count > 7 and has_ring) or (
-                                    atom_count > 10 and fg_count >= 2
-                                )
-
-                                if is_complex:
-                                    complex_fragments += 1
-                                    print(
-                                        f"Found complex fragment: {reactant} (atoms: {atom_count}, has ring: {has_ring}, fg_count: {fg_count})"
-                                    )
-
-                        if complex_fragments >= 2:
-                            found_late_amide_coupling = True
-                            print("Found late-stage convergent amide coupling")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return found_late_amide_coupling
+    # Check if we have evidence of an azide-mediated strategy
+    # Case 1: Azide is formed and then used in subsequent reactions
+    if azide_formation_reactions and azide_reactions:
+        print(f"Azide-mediated strategy detected: formed and then used in reactions")
+        return True
+
+    # Case 2: Starting material contains azide and it's used in multiple reactions
+    if len(azide_molecules) > 0 and len(azide_reactions) >= 2:
+        print(
+            f"Azide-mediated strategy detected: starting with azide and used in multiple reactions"
+        )
+        return True
+
+    # Case 3: Multiple azide transformations are present (even without explicit formation)
+    if len(azide_reactions) >= 2:
+        print(f"Azide-mediated strategy detected: multiple azide transformations")
+        return True
+
+    return False

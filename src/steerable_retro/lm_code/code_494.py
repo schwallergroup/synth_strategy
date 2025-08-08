@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,137 +54,84 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects multiple N-alkylation steps on a piperazine scaffold.
-    It looks for at least two separate reactions where a nitrogen in a piperazine
-    ring is alkylated.
+    Detects a strategy involving cyclopropane formation followed by ring opening.
     """
-    # Track alkylation reactions on piperazine scaffolds
-    piperazine_alkylations = {}
-    target_mol = None
+    # Track molecules with cyclopropane and their synthetic history
+    cyclopropane_molecules = set()
+    ring_opening_reactions = set()
 
-    def dfs_traverse(node, depth=0, path=None):
-        nonlocal target_mol
-
-        if path is None:
-            path = []
-
-        current_path = path + [node]
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "mol":
             mol_smiles = node["smiles"]
-            print(f"Depth {depth}, Examining molecule: {mol_smiles[:30]}...")
-
-            # If this molecule contains piperazine, it could be our target
-            if checker.check_ring("piperazine", mol_smiles):
-                print(f"Found piperazine in molecule at depth {depth}")
-
-                # If we don't have a target yet, or this is a later stage (lower depth)
-                if target_mol is None or depth < target_mol[1]:
-                    target_mol = (mol_smiles, depth)
-                    print(f"Set target molecule to: {mol_smiles[:30]}... at depth {depth}")
+            # Check if this molecule contains a cyclopropane
+            if checker.check_ring("cyclopropane", mol_smiles):
+                print(f"Depth {depth}: Found molecule with cyclopropane: {mol_smiles}")
+                cyclopropane_molecules.add(mol_smiles)
 
         elif node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and products
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                print(f"Depth {depth}, Examining reaction: {rsmi[:50]}...")
+            # In retrosynthetic direction: product -> reactants
+            # Check if product has cyclopropane but at least one reactant doesn't
+            product_has_cyclopropane = checker.check_ring("cyclopropane", product_smiles)
 
-                # Check if product contains piperazine
-                if checker.check_ring("piperazine", product):
-                    print(f"Product contains piperazine")
+            if product_has_cyclopropane:
+                # Check if any reactant doesn't have cyclopropane (cyclopropane formation)
+                for reactant in reactants_smiles:
+                    if not checker.check_ring("cyclopropane", reactant):
+                        print(f"Depth {depth}: Found cyclopropane formation reaction:")
+                        print(f"  Reactants: {reactants_smiles}")
+                        print(f"  Product: {product_smiles}")
+                        # Add product to our tracked cyclopropane molecules
+                        cyclopropane_molecules.add(product_smiles)
+                        break
 
-                    # Find reactant with piperazine
-                    piperazine_reactant = None
-                    for reactant in reactants:
-                        if checker.check_ring("piperazine", reactant):
-                            piperazine_reactant = reactant
-                            print(f"Found piperazine in reactant: {reactant[:30]}...")
+            # Check for ring opening: product has cyclopropane, reactant doesn't
+            # In retrosynthetic direction, we're going from product to reactants
+            if product_has_cyclopropane:
+                for reactant in reactants_smiles:
+                    if not checker.check_ring("cyclopropane", reactant):
+                        print(f"Depth {depth}: Found cyclopropane ring opening reaction:")
+                        print(f"  Product with ring: {product_smiles}")
+                        print(f"  Reactant without ring: {reactant}")
+                        ring_opening_reactions.add(rsmi)
+                        break
+
+            # Also check for functional group transformations on cyclopropane
+            if product_has_cyclopropane:
+                for reactant in reactants_smiles:
+                    if checker.check_ring("cyclopropane", reactant):
+                        # Check for ester hydrolysis (common cyclopropane transformation)
+                        if (
+                            checker.check_fg("Carboxylic acid", product_smiles)
+                            and checker.check_fg("Ester", reactant)
+                            and checker.check_reaction(
+                                "Ester saponification (alkyl deprotection)", rsmi
+                            )
+                        ):
+                            print(
+                                f"Depth {depth}: Found cyclopropane functional group transformation:"
+                            )
+                            print(f"  Reactant (ester): {reactant}")
+                            print(f"  Product (acid): {product_smiles}")
+                            ring_opening_reactions.add(rsmi)
                             break
 
-                    if piperazine_reactant:
-                        # Check if this is an N-alkylation reaction
-                        n_alkylation_reactions = [
-                            "N-alkylation of primary amines with alkyl halides",
-                            "N-alkylation of secondary amines with alkyl halides",
-                            "Methylation with MeI_primary",
-                            "Methylation with MeI_secondary",
-                            "Methylation with MeI_tertiary",
-                            "Methylation",
-                            "DMS Amine methylation",
-                            "Eschweiler-Clarke Primary Amine Methylation",
-                            "Eschweiler-Clarke Secondary Amine Methylation",
-                            "Reductive methylation of primary amine with formaldehyde",
-                            "N-methylation",
-                            "Reductive amination with aldehyde",
-                            "Reductive amination with ketone",
-                            "Reductive amination with alcohol",
-                            "Alkylation of amines",
-                        ]
-
-                        for reaction_type in n_alkylation_reactions:
-                            if checker.check_reaction(reaction_type, rsmi):
-                                print(f"Detected N-alkylation reaction: {reaction_type}")
-
-                                # Store this alkylation with the product as key
-                                if product not in piperazine_alkylations:
-                                    piperazine_alkylations[product] = []
-                                piperazine_alkylations[product].append((reaction_type, depth))
-                                print(
-                                    f"Added alkylation to product {product[:30]}... at depth {depth}"
-                                )
-                                break
-
-                        # If no specific reaction type was found, check if there's evidence of N-alkylation
-                        # by comparing secondary/tertiary amines in reactant vs product
-                        if product not in piperazine_alkylations:
-                            reactant_has_secondary = checker.check_fg(
-                                "Secondary amine", piperazine_reactant
-                            )
-                            reactant_has_tertiary = checker.check_fg(
-                                "Tertiary amine", piperazine_reactant
-                            )
-                            product_has_tertiary = checker.check_fg("Tertiary amine", product)
-
-                            if (reactant_has_secondary and product_has_tertiary) or (
-                                reactant_has_tertiary
-                                and not checker.check_fg("Secondary amine", product)
-                            ):
-                                print(f"Detected N-alkylation by functional group change")
-                                if product not in piperazine_alkylations:
-                                    piperazine_alkylations[product] = []
-                                piperazine_alkylations[product].append(
-                                    ("N-alkylation (detected by FG change)", depth)
-                                )
-                                print(
-                                    f"Added alkylation to product {product[:30]}... at depth {depth}"
-                                )
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Traverse children
+        # Traverse children (retrosynthetic direction)
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1, current_path)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Count unique alkylation reactions on the target scaffold
-    alkylation_count = 0
-    if target_mol:
-        target_smiles, _ = target_mol
-        print(f"Target molecule with piperazine: {target_smiles[:30]}...")
+    # Check if we found both formation and opening
+    has_formation = len(cyclopropane_molecules) > 0
+    has_opening = len(ring_opening_reactions) > 0
 
-        # Count alkylations in the synthetic path to the target
-        for product, alkylations in piperazine_alkylations.items():
-            # Check if this product is in the path to our target
-            if checker.check_ring("piperazine", product):
-                for alkylation_info in alkylations:
-                    alkylation_count += 1
-                    print(
-                        f"Counting alkylation: {alkylation_info[0]} at depth {alkylation_info[1]}"
-                    )
+    print(f"Found cyclopropane molecules: {len(cyclopropane_molecules)}")
+    print(f"Found ring opening reactions: {len(ring_opening_reactions)}")
 
-    print(f"Total N-alkylation count on piperazine scaffold: {alkylation_count}")
-    return alkylation_count >= 2
+    return has_formation and has_opening

@@ -2,8 +2,8 @@
 
 # Run `bash split_multifile.sh` from this directory
 
-FUNCTIONS="passing_functions_n1.py"
-ROOT_DATA="/home/andres/Documents/steerable_retro/data"
+FUNCTIONS="passing_functions.py"
+ROOT_DATA="/home/dparm/steerable_retro/data"
 
 echo '#!/bin/python
 

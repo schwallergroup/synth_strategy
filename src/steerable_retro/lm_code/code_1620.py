@@ -2,67 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves protection of an aniline via acetylation.
+    This function detects if the synthesis follows a linear strategy
+    (each reaction has only one non-starting material reactant).
     """
-    aniline_acetylation_found = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal aniline_acetylation_found
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # Check for aniline in reactants
-            aniline_pattern = Chem.MolFromSmarts("[c][NH2]")
-            aniline_found = False
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(aniline_pattern):
-                        aniline_found = True
-                        break
-                except:
-                    continue
+            # Count non-starting material reactants
+            non_starting_material_count = 0
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    non_starting_material_count += 1
 
-            # Check for acetanilide in product
-            acetanilide_pattern = Chem.MolFromSmarts("[c][NH]C(=O)[CH3]")
-            if aniline_found:
-                try:
-                    mol = Chem.MolFromSmiles(product)
-                    if mol and mol.HasSubstructMatch(acetanilide_pattern):
-                        aniline_acetylation_found = True
-                        print("Found aniline acetylation protection")
-                except:
-                    pass
+            # If more than one non-starting material, it's not linear
+            if non_starting_material_count > 1:
+                is_linear = False
+                print(f"Non-linear step detected: {rsmi}")
 
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    return aniline_acetylation_found
+    if is_linear:
+        print("Detected linear synthesis strategy")
+
+    return is_linear

@@ -2,55 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects an early-stage heterocycle transformation from pyran to pyridine.
+    Detects if the synthesis uses Boc protection strategy throughout most steps
     """
-    found_transformation = False
+    boc_protected_intermediates = 0
+    total_intermediates = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_transformation
+        nonlocal boc_protected_intermediates, total_intermediates
 
-        if node["type"] == "reaction" and depth >= 3:  # Early stage (high depth)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node and depth > 0:  # Skip final product
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                total_intermediates += 1
 
-                # Check for pyran pattern in reactants
-                pyran_pattern = Chem.MolFromSmarts("o1ccccc1=O")
-                # Check for pyridine pattern in product
-                pyridine_pattern = Chem.MolFromSmarts("n1ccccc1=O")
+                # Check for Boc group
+                boc_pattern = Chem.MolFromSmarts("[#6]([#6])([#6])([#6])[#8][#6](=[#8])[#7]")
+                if mol.HasSubstructMatch(boc_pattern):
+                    boc_protected_intermediates += 1
+                    print(f"Found Boc-protected intermediate at depth {depth}")
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(pyran_pattern):
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol and product_mol.HasSubstructMatch(pyridine_pattern):
-                            print(f"Found pyran to pyridine transformation at depth {depth}")
-                            found_transformation = True
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return found_transformation
+
+    # Return True if more than half of intermediates are Boc-protected
+    if total_intermediates > 0:
+        ratio = boc_protected_intermediates / total_intermediates
+        print(
+            f"Boc protection ratio: {ratio} ({boc_protected_intermediates}/{total_intermediates})"
+        )
+        return ratio >= 0.5
+
+    return False

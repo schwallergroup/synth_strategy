@@ -2,150 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects sulfilimine (S=N) formation from thioether.
-    Note: Despite the function name, this actually detects the oxidation of thioether to sulfilimine.
+    This function detects the use of TBDMS (tert-butyldimethylsilyl) protection
+    of alcohols in the synthetic route.
     """
-    sulfilimine_formation_detected = False
+    tbdms_pattern = Chem.MolFromSmarts("[#6]-[#14](-[#6])(-[#6])-[#8]-[#6]")
+    protection_found = False
 
     def dfs_traverse(node):
-        nonlocal sulfilimine_formation_detected
+        nonlocal protection_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            reactants = reactants_part.split(".")
-            product_part = rsmi.split(">")[-1]
-            products = product_part.split(".")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            print(f"Analyzing reaction: {rsmi}")
-
-            # Check for thioether pattern in reactants
-            thioether_reactant = None
-            for reactant in reactants:
-                if checker.check_fg("Monosulfide", reactant):
-                    thioether_reactant = reactant
-                    print(f"Found thioether in reactant: {reactant}")
-                    break
-
-            # If no thioether found, continue to next node
-            if not thioether_reactant:
-                print("No thioether found in reactants")
-                for child in node.get("children", []):
-                    dfs_traverse(child)
-                return
-
-            # Check for sulfilimine pattern in products
-            sulfilimine_product = None
-            for prod in products:
-                # Look for S=N pattern (sulfilimine)
-                mol = Chem.MolFromSmiles(prod)
-                if mol:
-                    for atom in mol.GetAtoms():
-                        if atom.GetSymbol() == "S":
-                            for bond in atom.GetBonds():
-                                other_atom = bond.GetOtherAtom(atom)
-                                if (
-                                    other_atom.GetSymbol() == "N"
-                                    and bond.GetBondType() == Chem.BondType.DOUBLE
-                                ):
-                                    sulfilimine_product = prod
-                                    print(f"Found sulfilimine in product: {prod}")
-                                    break
-                        if sulfilimine_product:
+                # Check if product contains TBDMS group but reactants don't
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(tbdms_pattern):
+                    # Check if this is a protection reaction (OH → OTBDMS)
+                    reactant_has_oh = False
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(
+                            Chem.MolFromSmarts("[#8H1]-[#6]")
+                        ):
+                            reactant_has_oh = True
                             break
 
-            # If no sulfilimine found, continue to next node
-            if not sulfilimine_product:
-                print("No sulfilimine found in products")
-                for child in node.get("children", []):
-                    dfs_traverse(child)
-                return
-
-            # Verify the S atom in thioether maps to S in sulfilimine using atom mapping
-            if thioether_reactant and sulfilimine_product:
-                thioether_mol = Chem.MolFromSmiles(thioether_reactant)
-                sulfilimine_mol = Chem.MolFromSmiles(sulfilimine_product)
-
-                if thioether_mol and sulfilimine_mol:
-                    # Look for mapped sulfur atoms
-                    thioether_s_maps = []
-                    for atom in thioether_mol.GetAtoms():
-                        if atom.GetSymbol() == "S" and atom.GetAtomMapNum() > 0:
-                            thioether_s_maps.append(atom.GetAtomMapNum())
-
-                    sulfilimine_s_maps = []
-                    for atom in sulfilimine_mol.GetAtoms():
-                        if atom.GetSymbol() == "S" and atom.GetAtomMapNum() > 0:
-                            sulfilimine_s_maps.append(atom.GetAtomMapNum())
-
-                    # Check if any sulfur atom is mapped between reactant and product
-                    common_maps = set(thioether_s_maps).intersection(set(sulfilimine_s_maps))
-                    if common_maps:
-                        print(f"Found common mapped S atoms: {common_maps}")
-                        sulfilimine_formation_detected = True
-                        print("Sulfilimine formation confirmed!")
-                    else:
-                        # If no atom mapping or common maps found, assume it's a valid transformation
-                        # This is a fallback for cases where atom mapping is not available
-                        if not thioether_s_maps or not sulfilimine_s_maps:
-                            print(
-                                "No atom mapping found, assuming valid transformation based on functional groups"
-                            )
-                            sulfilimine_formation_detected = True
-                            print("Sulfilimine formation assumed!")
+                    if reactant_has_oh:
+                        protection_found = True
+                        print("TBDMS protection detected")
 
         for child in node.get("children", []):
-            if not sulfilimine_formation_detected:  # Only continue if not yet found
-                dfs_traverse(child)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return sulfilimine_formation_detected
+    return protection_found

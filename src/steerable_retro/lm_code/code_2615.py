@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,129 +54,95 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route involves functionalization of heterocycles
-    (pyrazole, benzimidazole, and other nitrogen-containing heterocycles).
+    Detects if the synthesis route involves nitration of an aromatic or heterocyclic ring.
     """
-    heterocycle_functionalization = False
-
-    # List of heterocycles to check
-    heterocycles = [
-        "pyrazole",
-        "benzimidazole",
-        "imidazole",
-        "triazole",
-        "tetrazole",
-        "oxazole",
-        "thiazole",
-        "isoxazole",
-        "pyrrole",
-    ]
-
-    # List of functionalization reaction types
-    functionalization_reactions = [
-        "N-alkylation of primary amines with alkyl halides",
-        "N-alkylation of secondary amines with alkyl halides",
-        "Acylation of primary amines",
-        "Acylation of secondary amines",
-        "Suzuki coupling with boronic acids",
-        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
-        "Heck terminal vinyl",
-        "Sonogashira acetylene_aryl halide",
-        "Sonogashira alkyne_aryl halide",
-        "Michael addition",
-        "Methylation",
-    ]
+    has_nitration = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal heterocycle_functionalization
+        nonlocal has_nitration
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+        # If we already found nitration, no need to continue
+        if has_nitration:
+            return
 
-            # Extract reactants and product
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            try:
+                # Get reactants and product
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check if this is a functionalization reaction
-            is_functionalization_rxn = False
-            for rxn_type in functionalization_reactions:
-                if checker.check_reaction(rxn_type, rsmi):
-                    is_functionalization_rxn = True
-                    print(f"Found functionalization reaction: {rxn_type}")
-                    break
+                print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-            if is_functionalization_rxn:
-                # Check if product contains a heterocycle
-                product_has_heterocycle = False
-                product_heterocycle = None
-                for heterocycle in heterocycles:
-                    if checker.check_ring(heterocycle, product):
-                        product_has_heterocycle = True
-                        product_heterocycle = heterocycle
-                        print(f"Product contains {heterocycle}")
-                        break
+                # Check for nitration reactions directly
+                nitration_reactions = [
+                    "Aromatic nitration with HNO3",
+                    "Aromatic nitration with NO3 salt",
+                    "Aromatic nitration with NO2 salt",
+                    "Aromatic nitration with alkyl NO2",
+                    "Non-aromatic nitration with HNO3",
+                ]
 
-                if product_has_heterocycle:
-                    # Check if any reactant also contains the same heterocycle
-                    for reactant in reactants:
-                        if checker.check_ring(product_heterocycle, reactant):
-                            print(f"Reactant also contains {product_heterocycle}")
-                            print(f"Heterocycle functionalization detected at depth {depth}")
-                            print(f"Reaction SMILES: {rsmi}")
-                            heterocycle_functionalization = True
-                            break
+                for reaction_type in nitration_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(f"Detected {reaction_type} at depth {depth}")
+                        has_nitration = True
+                        return  # Exit early once nitration is found
 
-            # Alternative approach: check for heterocycle in both reactant and product
-            # even if we don't recognize the specific reaction type
-            if not heterocycle_functionalization:
-                for heterocycle in heterocycles:
-                    # Check if product contains the heterocycle
-                    if checker.check_ring(heterocycle, product):
-                        # Check if any reactant also contains the heterocycle
-                        for reactant in reactants:
-                            if checker.check_ring(heterocycle, reactant):
-                                # Check if there's a change in functional groups
-                                product_mol = Chem.MolFromSmiles(product)
-                                reactant_mol = Chem.MolFromSmiles(reactant)
+                # If no specific nitration reaction is found, check for nitro group addition
+                # In retrosynthetic direction: product = starting material, reactants = target compounds
+                has_nitro_in_target = any(
+                    [checker.check_fg("Nitro group", smi) for smi in reactants_smiles]
+                )
+                has_nitro_in_starting = checker.check_fg("Nitro group", product_smiles)
 
-                                if product_mol and reactant_mol:
-                                    # Count atoms as a simple way to detect modification
-                                    if product_mol.GetNumAtoms() != reactant_mol.GetNumAtoms():
-                                        print(
-                                            f"Heterocycle {heterocycle} modified (atom count changed)"
-                                        )
-                                        print(f"Reaction SMILES: {rsmi}")
-                                        heterocycle_functionalization = True
-                                        break
+                print(
+                    f"Nitro in target compounds: {has_nitro_in_target}, Nitro in starting material: {has_nitro_in_starting}"
+                )
 
-                                    # Check for specific functional group additions
-                                    for fg in [
-                                        "Nitrile",
-                                        "Ester",
-                                        "Amide",
-                                        "Halide",
-                                        "Nitro group",
-                                    ]:
-                                        if (
-                                            checker.check_fg(fg, product)
-                                            and not checker.check_fg(fg, reactant)
-                                        ) or (
-                                            not checker.check_fg(fg, product)
-                                            and checker.check_fg(fg, reactant)
-                                        ):
-                                            print(
-                                                f"Heterocycle {heterocycle} functionalization detected with {fg} change"
-                                            )
-                                            print(f"Reaction SMILES: {rsmi}")
-                                            heterocycle_functionalization = True
-                                            break
+                # In forward synthesis: nitro appears in product but not in reactants
+                # In retrosynthesis: nitro appears in reactants (target) but not in product (starting material)
+                if has_nitro_in_target and not has_nitro_in_starting:
+                    # Check if target compounds have aromatic or heterocyclic rings
+                    aromatic_rings = [
+                        "benzene",
+                        "pyridine",
+                        "pyrrole",
+                        "furan",
+                        "thiophene",
+                        "imidazole",
+                        "pyrazole",
+                        "oxazole",
+                        "thiazole",
+                        "triazole",
+                        "indole",
+                        "quinoline",
+                        "isoquinoline",
+                        "naphthalene",
+                        "anthracene",
+                        "benzimidazole",
+                        "benzoxazole",
+                        "benzothiazole",
+                        "purine",
+                    ]
 
-                        if heterocycle_functionalization:
-                            break
+                    for reactant_smiles in reactants_smiles:
+                        if checker.check_fg("Nitro group", reactant_smiles):
+                            for ring in aromatic_rings:
+                                if checker.check_ring(ring, reactant_smiles):
+                                    print(
+                                        f"Found {ring} with nitro group in target compound at depth {depth}"
+                                    )
+                                    # Verify nitro is attached to the ring (using checker instead of SMARTS)
+                                    has_nitration = True
+                                    return  # Exit early once nitration is found
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
 
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return heterocycle_functionalization
+    print(f"Final result: has_nitration = {has_nitration}")
+    return has_nitration

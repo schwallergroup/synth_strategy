@@ -2,79 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a late-stage amide formation
-    (in the last 40% of steps)
+    Detects if the synthesis route involves the formation of a pyrimidine ring.
     """
-    # Track amide formation reactions and their depths
-    amide_formation_depths = []
-    max_depth = 0
+    pyrimidine_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal pyrimidine_formation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if this is an amide formation reaction
-            product_mol = Chem.MolFromSmiles(product)
-            has_amide_product = product_mol and product_mol.HasSubstructMatch(
-                Chem.MolFromSmarts("[#6]C(=O)[N][#6]")
-            )
+                # Check if product contains pyrimidine but reactants don't
+                product_mol = Chem.MolFromSmiles(product)
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
 
-            # Check if reactants have carboxylic acid and amine
-            has_acid = False
-            has_amine = False
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol:
-                    if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]C(=O)[OH]")):
-                        has_acid = True
-                    if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2][#6]")):
-                        has_amine = True
+                pyrimidine_pattern = Chem.MolFromSmarts("[#6]1[#7][#6][#7][#6][#6]1")
 
-            # If this looks like amide formation, record the depth
-            if has_amide_product and (has_acid or has_amine):
-                amide_formation_depths.append(depth)
-                print(f"Found amide formation at depth {depth}")
+                if product_mol and product_mol.HasSubstructMatch(pyrimidine_pattern):
+                    has_pyrimidine_in_reactants = False
+                    for mol in reactant_mols:
+                        if mol and mol.HasSubstructMatch(pyrimidine_pattern):
+                            has_pyrimidine_in_reactants = True
+                            break
 
-        # Process children
+                    if not has_pyrimidine_in_reactants:
+                        print("Detected pyrimidine ring formation")
+                        pyrimidine_formation = True
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if amide formation occurs in the last 40% of steps
-    if amide_formation_depths and max_depth > 0:
-        # Lower depths are later in the synthesis (closer to final product)
-        late_stage_threshold = 0.4 * max_depth
-        is_late_stage = min(amide_formation_depths) <= late_stage_threshold
-        print(f"Late stage amide formation detected: {is_late_stage}")
-        return is_late_stage
-
-    print("No amide formation detected")
-    return False
+    return pyrimidine_formation

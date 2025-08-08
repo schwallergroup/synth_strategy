@@ -2,68 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes an amide bond formation step.
+    Detects if the synthesis involves a nitro reduction to amine.
     """
-    amide_pattern = Chem.MolFromSmarts("[#6]C(=O)[#7]")
-    amide_formation_found = False
+    has_nitro_reduction = False
 
     def dfs_traverse(node):
-        nonlocal amide_formation_found
+        nonlocal has_nitro_reduction
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if reactants contain carboxylic acid or derivative and amine
-            acid_pattern = Chem.MolFromSmarts("[#6]C(=O)[#8]")
-            amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
-
-            product_mol = Chem.MolFromSmiles(product)
-
-            has_acid = False
-            has_amine = False
-
+            # Check for nitro in reactant and amine in product
             for reactant in reactants:
                 reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol:
-                    if reactant_mol.HasSubstructMatch(acid_pattern):
-                        has_acid = True
-                    if reactant_mol.HasSubstructMatch(amine_pattern):
-                        has_amine = True
+                product_mol = Chem.MolFromSmiles(product)
 
-            if (
-                has_acid
-                and has_amine
-                and product_mol
-                and product_mol.HasSubstructMatch(amide_pattern)
-            ):
-                amide_formation_found = True
-                print("Amide bond formation detected")
+                if reactant_mol and product_mol:
+                    nitro_pattern = Chem.MolFromSmarts("[#6][N+](=[O])[O-]")
+                    amine_pattern = Chem.MolFromSmarts("[#6][NH2]")
+
+                    has_nitro = reactant_mol.HasSubstructMatch(nitro_pattern)
+                    has_amine = product_mol.HasSubstructMatch(amine_pattern)
+
+                    if has_nitro and has_amine:
+                        print(
+                            f"Found nitro reduction at depth {node.get('metadata', {}).get('depth', 'unknown')}"
+                        )
+                        has_nitro_reduction = True
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return amide_formation_found
+    return has_nitro_reduction

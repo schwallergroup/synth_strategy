@@ -2,62 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects convergent synthesis with late-stage etherification connecting two complex fragments.
+    This function detects if the synthesis route involves the construction of a complex
+    nitrogen-heterocyclic system.
     """
-    late_stage_etherification = False
+    heterocyclic_construction = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_etherification
+    def dfs_traverse(node):
+        nonlocal heterocyclic_construction
 
-        if node["type"] == "reaction" and depth <= 1:  # Late-stage reaction (depth 0 or 1)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if we have at least 2 reactants (convergent)
-                if len(reactants) >= 2:
-                    # Check for etherification (C-O-C formation)
-                    prod_mol = Chem.MolFromSmiles(product)
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+            # Check if product contains multiple nitrogen-containing rings
+            product_mol = Chem.MolFromSmiles(product)
 
-                    # Look for ether pattern in product
-                    ether_patt = Chem.MolFromSmarts("[#6][#8][#6]")
-                    if prod_mol and prod_mol.HasSubstructMatch(ether_patt):
-                        # Check if ether bond is newly formed
-                        ether_count_prod = len(prod_mol.GetSubstructMatches(ether_patt))
-                        ether_count_reactants = sum(
-                            len(r.GetSubstructMatches(ether_patt)) if r else 0
-                            for r in reactant_mols
-                        )
+            if product_mol:
+                # Count nitrogen atoms in rings
+                n_in_rings = 0
+                for atom in product_mol.GetAtoms():
+                    if atom.GetAtomicNum() == 7 and atom.IsInRing():
+                        n_in_rings += 1
 
-                        if ether_count_prod > ether_count_reactants:
-                            print(f"Found late-stage etherification at depth {depth}")
-                            late_stage_etherification = True
+                # If product has multiple nitrogens in rings, check if they were formed in this step
+                if n_in_rings >= 2:
+                    # Check if any reactant has fewer nitrogen-containing rings
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            reactant_n_in_rings = 0
+                            for atom in reactant_mol.GetAtoms():
+                                if atom.GetAtomicNum() == 7 and atom.IsInRing():
+                                    reactant_n_in_rings += 1
 
+                            if reactant_n_in_rings < n_in_rings:
+                                print(f"Heterocyclic construction detected: {rsmi}")
+                                heterocyclic_construction = True
+                                break
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return late_stage_etherification
+    return heterocyclic_construction

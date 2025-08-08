@@ -2,80 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a heterocyclic aromatic core (thiazole) is preserved throughout the synthesis.
+    Detects if the synthetic route involves sequential halogen manipulations,
+    such as halogen exchange or replacement with other functional groups.
     """
-    # Track if thiazole is present in all molecules
-    all_mols_have_thiazole = True
+    halogen_transformations = 0
 
     def dfs_traverse(node):
-        nonlocal all_mols_have_thiazole
+        nonlocal halogen_transformations
 
-        if node["type"] == "mol" and "smiles" in node:
-            # Skip starting materials
-            if not node.get("in_stock", False):
-                # Check if this molecule has a thiazole ring using the checker function
-                has_thiazole = checker.check_ring("thiazole", node["smiles"])
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                if not has_thiazole:
-                    # If any molecule doesn't have thiazole, set flag to False
-                    all_mols_have_thiazole = False
-                    print(f"Molecule without thiazole found: {node['smiles']}")
-                else:
-                    print(f"Molecule with thiazole found: {node['smiles']}")
+                # Check for halogen exchange or replacement
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    product_mol = Chem.MolFromSmiles(product)
 
-        # Continue traversing
+                    if reactant_mol and product_mol:
+                        # Check for aryl halide in reactant
+                        if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[Br,Cl,I]")):
+                            # Case 1: Halogen exchange (one halogen to another)
+                            if product_mol.HasSubstructMatch(
+                                Chem.MolFromSmarts("[c]-[Br,Cl,I]")
+                            ) and not reactant_mol.GetSubstructMatch(
+                                Chem.MolFromSmarts("[c]-[Br]")
+                            ) == product_mol.GetSubstructMatch(
+                                Chem.MolFromSmarts("[c]-[Br]")
+                            ):
+                                print("Found halogen exchange")
+                                halogen_transformations += 1
+
+                            # Case 2: Halogen replacement with other group (O, N, B, etc.)
+                            elif not product_mol.HasSubstructMatch(
+                                Chem.MolFromSmarts("[c]-[Br,Cl,I]")
+                            ) and (
+                                product_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[O,N,B,S]"))
+                                or product_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[c]"))
+                            ):
+                                print("Found halogen replacement")
+                                halogen_transformations += 1
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return all_mols_have_thiazole
+    return halogen_transformations >= 2  # At least two halogen transformations

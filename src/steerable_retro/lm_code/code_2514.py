@@ -2,62 +2,89 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves O-alkylation of a phenol.
+    Detects etherification via tosylate strategy in the synthetic route.
     """
-    o_alkylation_detected = False
+    etherification_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal o_alkylation_detected
+    def dfs(node, depth=0):
+        nonlocal etherification_found
+
+        if etherification_found:
+            return
 
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
+            try:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                try:
-                    prod_mol = Chem.MolFromSmiles(product)
-
-                    # Check for O-alkylation of phenol
-                    phenol_patt = Chem.MolFromSmarts("[OH]c1ccccc1")
-                    alkylated_phenol_patt = Chem.MolFromSmarts("[O]([CH2][CH])c1ccccc1")
-
+                # Check for Williamson ether synthesis or similar reactions
+                if checker.check_reaction("Williamson Ether Synthesis", rsmi):
+                    # Check if one of the reactants contains tosylate
                     for reactant in reactants:
-                        react_mol = Chem.MolFromSmiles(reactant)
-                        if react_mol and prod_mol:
-                            if react_mol.HasSubstructMatch(
-                                phenol_patt
-                            ) and prod_mol.HasSubstructMatch(alkylated_phenol_patt):
-                                print(f"O-alkylation of phenol detected at depth {depth}")
-                                o_alkylation_detected = True
-                except Exception as e:
-                    print(f"Error in SMILES processing: {e}")
+                        if checker.check_fg("Tosylate", reactant):
+                            print(f"Found etherification via tosylate: {rsmi}")
+                            etherification_found = True
+                            break
+            except Exception as e:
+                print(f"Error in etherification check: {e}")
 
-        # Traverse children
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs(child, depth + 1)
 
-    # Start traversal from root
-    dfs_traverse(route)
-    return o_alkylation_detected
+    dfs(route)
+    print(f"Etherification via tosylate strategy detected: {etherification_found}")
+    return etherification_found

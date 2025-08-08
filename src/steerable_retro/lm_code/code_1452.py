@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,55 +54,49 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route involves tetrazole-containing compounds.
+    This function detects a strategy involving oxidation of a primary alcohol
+    to a carboxylic acid.
     """
-    # Flag to track if we found the pattern
-    found_pattern = False
+    alcohol_to_acid_found = False
 
     def dfs_traverse(node):
-        nonlocal found_pattern
+        nonlocal alcohol_to_acid_found
 
-        # Check molecule nodes
-        if node["type"] == "mol" and "smiles" in node:
-            # Check for tetrazole in molecules
-            if checker.check_ring("tetrazole", node["smiles"]):
-                print(f"Found tetrazole-containing compound: {node['smiles']}")
-                found_pattern = True
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        # Check reaction nodes
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            try:
-                # Check for tetrazole-forming reactions
-                rsmi = node["metadata"]["rsmi"]
+            # Check if this is an oxidation of alcohol to carboxylic acid reaction
+            if checker.check_reaction("Oxidation of alcohol to carboxylic acid", rsmi):
+                print(f"Detected 'Oxidation of alcohol to carboxylic acid' reaction: {rsmi}")
+                alcohol_to_acid_found = True
+                return
 
-                # Check specific tetrazole-forming reactions
-                tetrazole_reactions = [
-                    "tetrazole_terminal",
-                    "tetrazole_connect_regioisomere_1",
-                    "tetrazole_connect_regioisomere_2",
-                    "Azide-nitrile click cycloaddition to tetrazole",
-                ]
-                if any(checker.check_reaction(rxn, rsmi) for rxn in tetrazole_reactions):
-                    print(f"Found specific tetrazole-forming reaction: {rsmi}")
-                    found_pattern = True
+            # If the specific reaction check fails, check for the functional group transformation
+            primary_alcohol_in_reactants = any(
+                checker.check_fg("Primary alcohol", r) for r in reactants
+            )
+            carboxylic_acid_in_product = checker.check_fg("Carboxylic acid", product)
+            carboxylic_acid_in_reactants = any(
+                checker.check_fg("Carboxylic acid", r) for r in reactants
+            )
 
-                # Check if tetrazole is formed in this reaction
-                product = rsmi.split(">")[-1]
-                if checker.check_ring("tetrazole", product):
-                    reactants = rsmi.split(">")[0].split(".")
-                    tetrazole_in_reactants = any(
-                        checker.check_ring("tetrazole", r) for r in reactants
-                    )
-                    if not tetrazole_in_reactants:
-                        print(f"Found tetrazole-forming reaction: {rsmi}")
-                        found_pattern = True
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+            # Ensure we have primary alcohol in reactants, carboxylic acid in product,
+            # and no carboxylic acid in reactants (to confirm it's a new formation)
+            if (
+                primary_alcohol_in_reactants
+                and carboxylic_acid_in_product
+                and not carboxylic_acid_in_reactants
+            ):
+                print(f"Detected primary alcohol oxidation to carboxylic acid: {rsmi}")
+                alcohol_to_acid_found = True
 
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-    return found_pattern
+
+    return alcohol_to_acid_found

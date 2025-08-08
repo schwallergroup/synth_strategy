@@ -2,78 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a sequence of sulfur oxidation and reduction
-    (thioether → sulfonyl → thioether or similar).
+    Detects a synthesis strategy involving sequential N-alkylation reactions,
+    particularly where multiple nitrogen-containing groups are alkylated in sequence.
     """
-    # Track sulfur transformations
-    transformations = []
+    n_alkylation_reactions = 0
+    n_alkylation_depths = []
 
-    def dfs_traverse(node):
+    def dfs_traverse(node, depth=0):
+        nonlocal n_alkylation_reactions, n_alkylation_depths
+
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            try:
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product = Chem.MolFromSmiles(product_smiles)
+                # Look for patterns indicating N-alkylation
+                # This is a simplified check - in practice, you would need more sophisticated analysis
+                try:
+                    # Check if any reactant contains a halogen (likely alkylating agent)
+                    has_halogen = any(re.search(r"Br|Cl|I", r) for r in reactants)
 
-                if product and all(r for r in reactants):
-                    # Check for thioether pattern
-                    thioether_pattern = Chem.MolFromSmarts("[#6]-[#16]-[#6]")
+                    # Check if any reactant contains nitrogen
+                    has_nitrogen = any("N" in r for r in reactants)
 
-                    # Check for sulfonyl pattern
-                    sulfonyl_pattern = Chem.MolFromSmarts("[#6]-[#16](=[#8])(=[#8])-[#6]")
+                    # Check if product contains nitrogen
+                    product_has_nitrogen = "N" in product
 
-                    has_thioether_reactant = any(
-                        r.HasSubstructMatch(thioether_pattern) for r in reactants if r
-                    )
-                    has_sulfonyl_reactant = any(
-                        r.HasSubstructMatch(sulfonyl_pattern) for r in reactants if r
-                    )
-
-                    has_thioether_product = product.HasSubstructMatch(thioether_pattern)
-                    has_sulfonyl_product = product.HasSubstructMatch(sulfonyl_pattern)
-
-                    # Record transformation type
-                    if has_thioether_reactant and has_sulfonyl_product:
-                        transformations.append("thioether_to_sulfonyl")
-                        print("Detected: thioether → sulfonyl")
-                    elif has_sulfonyl_reactant and has_thioether_product:
-                        transformations.append("sulfonyl_to_thioether")
-                        print("Detected: sulfonyl → thioether")
-            except:
-                print("Error processing reaction SMILES for sulfur transformation detection")
+                    if has_halogen and has_nitrogen and product_has_nitrogen:
+                        n_alkylation_reactions += 1
+                        n_alkylation_depths.append(depth)
+                        print(f"Found potential N-alkylation at depth {depth}")
+                except:
+                    print("Error processing SMILES in reaction")
 
         # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have both oxidation and reduction in the sequence
-    has_oxidation = "thioether_to_sulfonyl" in transformations
-    has_reduction = "sulfonyl_to_thioether" in transformations
+    # Check if we found sequential N-alkylations
+    sequential_alkylation = n_alkylation_reactions >= 2
 
-    return has_oxidation and has_reduction
+    # Check if the alkylations are in sequence (adjacent depths)
+    if sequential_alkylation and len(n_alkylation_depths) >= 2:
+        n_alkylation_depths.sort()
+        for i in range(len(n_alkylation_depths) - 1):
+            if n_alkylation_depths[i + 1] - n_alkylation_depths[i] == 1:
+                print("Found sequential N-alkylations at adjacent depths")
+                return True
+
+    print(f"Sequential N-alkylation strategy detected: {sequential_alkylation}")
+    print(f"N-alkylation reactions found: {n_alkylation_reactions}")
+    return sequential_alkylation

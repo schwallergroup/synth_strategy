@@ -2,68 +2,90 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route contains multiple nitro reduction steps.
+    Detects if the synthesis route involves multiple interconversions between
+    carboxylic acid derivatives (ester, acid, amide).
     """
-    nitro_reduction_count = 0
+    interconversion_count = 0
 
     def dfs_traverse(node):
-        nonlocal nitro_reduction_count
+        nonlocal interconversion_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0]
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if this is a nitro reduction reaction
-            reactant_mol = Chem.MolFromSmiles(".".join(reactants))
-            product_mol = Chem.MolFromSmiles(product)
+            # Define patterns for carboxylic acid derivatives
+            acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
+            ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]")
+            amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
 
-            if reactant_mol and product_mol:
-                nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                reactant_nitro_matches = len(reactant_mol.GetSubstructMatches(nitro_pattern))
-                product_nitro_matches = len(product_mol.GetSubstructMatches(nitro_pattern))
+            # Check for acid in reactants
+            acid_in_reactants = any(
+                r is not None and r.HasSubstructMatch(acid_pattern) for r in reactants
+            )
 
-                reactant_amine_matches = len(reactant_mol.GetSubstructMatches(amine_pattern))
-                product_amine_matches = len(product_mol.GetSubstructMatches(amine_pattern))
+            # Check for ester in reactants
+            ester_in_reactants = any(
+                r is not None and r.HasSubstructMatch(ester_pattern) for r in reactants
+            )
 
-                # If nitro groups decreased and amine groups increased, it's likely a reduction
-                if (
-                    reactant_nitro_matches > product_nitro_matches
-                    and product_amine_matches > reactant_amine_matches
-                ):
-                    nitro_reduction_count += 1
-                    print(f"Detected nitro reduction at depth {node.get('depth', 'unknown')}")
+            # Check for amide in reactants
+            amide_in_reactants = any(
+                r is not None and r.HasSubstructMatch(amide_pattern) for r in reactants
+            )
 
-        # Process children
+            # Check for acid in product
+            acid_in_product = product is not None and product.HasSubstructMatch(acid_pattern)
+
+            # Check for ester in product
+            ester_in_product = product is not None and product.HasSubstructMatch(ester_pattern)
+
+            # Check for amide in product
+            amide_in_product = product is not None and product.HasSubstructMatch(amide_pattern)
+
+            # Check for interconversions
+            if (
+                (acid_in_reactants and (ester_in_product or amide_in_product))
+                or (ester_in_reactants and (acid_in_product or amide_in_product))
+                or (amide_in_reactants and (acid_in_product or ester_in_product))
+            ):
+                interconversion_count += 1
+                print(
+                    f"Detected carboxylic acid derivative interconversion in reaction: {node.get('metadata', {}).get('ID', '')}"
+                )
+
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Return True if multiple nitro reductions were detected
-    result = nitro_reduction_count >= 2
-    print(f"Multiple nitro reductions strategy detected: {result} (count: {nitro_reduction_count})")
-    return result
+    return interconversion_count >= 2  # At least 2 interconversions

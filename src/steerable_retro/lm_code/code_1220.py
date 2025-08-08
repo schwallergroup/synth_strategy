@@ -2,49 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
-    """Check if the synthesis follows a predominantly linear strategy"""
-    # Count branching factors at each node
-    branching_factors = []
+    """
+    This function detects if the synthesis route follows a convergent approach
+    where multiple complex fragments are combined.
+    """
+    max_fragments_combined = 0
 
-    def dfs(node):
+    def dfs_traverse(node):
+        nonlocal max_fragments_combined
+
         if node["type"] == "reaction":
-            # Count number of reactants (children)
-            num_children = len(node.get("children", []))
-            if num_children > 0:
-                branching_factors.append(num_children)
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-        # Recursively check children
+            # Count non-trivial reactants (more than 5 heavy atoms)
+            complex_fragments = 0
+            for r in reactants_smiles:
+                mol = Chem.MolFromSmiles(r)
+                if mol is not None and mol.GetNumHeavyAtoms() > 5:
+                    complex_fragments += 1
+
+            if complex_fragments >= 2:
+                print(f"Found reaction combining {complex_fragments} complex fragments")
+                max_fragments_combined = max(max_fragments_combined, complex_fragments)
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs(child)
+            dfs_traverse(child)
 
-    dfs(route)
+    # Start traversal
+    dfs_traverse(route)
 
-    # Calculate average branching factor
-    if not branching_factors:
-        return False
-
-    avg_branching = sum(branching_factors) / len(branching_factors)
-    is_linear = avg_branching <= 1.7  # Allow more branching
-
-    print(f"Average branching factor: {avg_branching}, Linear synthesis: {is_linear}")
-    return is_linear
+    is_convergent = max_fragments_combined >= 2
+    print(f"Convergent synthesis strategy: {is_convergent}")
+    return is_convergent

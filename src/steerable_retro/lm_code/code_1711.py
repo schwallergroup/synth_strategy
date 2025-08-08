@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,133 +54,197 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a strategy involving late-stage heterocycle modification,
-    specifically the conversion of a saturated heterocycle to an aromatic one.
-    In retrosynthetic analysis, this means finding an aromatic heterocycle
-    that is converted to a saturated one.
+    Detects if the synthetic route follows a convergent synthesis strategy
+    with multiple fragment couplings rather than linear chain extension.
     """
-    found_late_stage_heterocycle_mod = False
+    multi_fragment_reactions = 0
+    debug = False  # Set to True to enable debug prints
 
-    # Define pairs of saturated and aromatic heterocycles to check
-    heterocycle_pairs = [
-        # Nitrogen-containing
-        ("piperidine", "pyridine"),
-        ("pyrrolidine", "pyrrole"),
-        ("piperazine", "pyrazine"),
-        # Oxygen-containing
-        ("tetrahydrofuran", "furan"),
-        ("tetrahydropyran", "pyran"),
-        ("dioxane", "dioxene"),
-        # Sulfur-containing
-        ("thiomorpholine", "thiopyran"),
-        ("thiolane", "thiophene"),
-        ("thiane", "thiopyran"),
-        # Mixed heterocycles
-        ("oxazolidine", "oxazole"),
-        ("thiazolidine", "thiazole"),
-        ("imidazolidine", "imidazole"),
-        ("pyrroline", "pyrrole"),
-        ("dihydropyridine", "pyridine"),
-        ("dihydropyrazine", "pyrazine"),
-        ("dihydropyrimidine", "pyrimidine"),
+    # Common reagents/catalysts/solvents to filter out as SMILES
+    common_reagents = [
+        "CCO",
+        "C[O-]",
+        "O=C(O)O",
+        "[Pd]",
+        "CC(=O)O",
+        "CN(C)C",
+        "CS(=O)(=O)O",
+        "O",
+        "N",
+        "CC(C)C",
+        "c1ccccc1",
+        "Cc1ccccc1",
+        "[Cs+]",
+        "[K+]",
+        "[Na+]",
+        "B(O)O",
+        "OB(O)O",
+        "CC(=O)[O-]",
+        "C1CCOC1",
+        "ClCCl",
+        "CN1CCCC1=O",
+        "CCN(CC)CC",
+        "CC#N",
+        "C1CCCCC1",
+        "O=S(=O)(O)O",
+        "N#N",
+        "C=O",
+        "C(=O)O",
     ]
 
-    # List of oxidation/dehydrogenation reaction types
-    oxidation_reactions = [
-        "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones",
-        "Arene hydrogenation",  # This works in reverse for dehydrogenation
-        "Oxidation of alcohol to carboxylic acid",
-        "Oxidation of aldehydes to carboxylic acids",
-        "Oxidation of ketone to carboxylic acid",
-        "Oxidation of alkene to carboxylic acid",
-        "Oxidation of nitrile to carboxylic acid",
-        "Oxidation of amide to carboxylic acid",
-        "Oxidation of alkene to aldehyde",
-        "Oxidative esterification of primary alcohols",
+    # Convert common reagents to molecules for substructure matching
+    common_reagent_mols = [
+        Chem.MolFromSmiles(smiles) for smiles in common_reagents if Chem.MolFromSmiles(smiles)
     ]
+
+    def is_common_reagent(smiles):
+        """Check if a SMILES string matches common reagents/catalysts/solvents using RDKit"""
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return False
+
+        # Check if it's a very small molecule (likely a reagent)
+        if mol.GetNumAtoms() < 3:
+            return True
+
+        # Check against our list of common reagents
+        for reagent_mol in common_reagent_mols:
+            if (
+                mol.HasSubstructMatch(reagent_mol)
+                and mol.GetNumAtoms() <= reagent_mol.GetNumAtoms() + 2
+            ):
+                return True
+
+        return False
+
+    def is_coupling_reaction(rsmi):
+        """Check if a reaction is a coupling reaction"""
+        # Check common coupling reactions
+        coupling_reactions = [
+            "Suzuki coupling with boronic acids",
+            "Suzuki coupling with boronic esters",
+            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
+            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
+            "Stille reaction_aryl",
+            "Stille reaction_vinyl",
+            "Negishi coupling",
+            "Sonogashira alkyne_aryl halide",
+            "Sonogashira acetylene_aryl halide",
+            "Heck terminal vinyl",
+            "Hiyama-Denmark Coupling",
+            "Kumada cross-coupling",
+            "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
+            "Ullmann condensation",
+        ]
+
+        for reaction in coupling_reactions:
+            if checker.check_reaction(reaction, rsmi):
+                if debug:
+                    print(f"Detected coupling reaction: {reaction}")
+                return True
+
+        return False
+
+    def assess_fragment_complexity(mol):
+        """Assess the complexity of a molecular fragment"""
+        if mol is None:
+            return 0
+
+        # Basic complexity metrics
+        atom_count = mol.GetNumAtoms()
+        ring_count = rdMolDescriptors.CalcNumRings(mol)
+
+        # Count functional groups as a measure of complexity
+        fg_count = 0
+        important_fgs = [
+            "Aromatic halide",
+            "Boronic acid",
+            "Boronic ester",
+            "Nitrile",
+            "Carboxylic acid",
+            "Ester",
+            "Amide",
+            "Amine",
+            "Alcohol",
+            "Ketone",
+            "Aldehyde",
+        ]
+
+        for fg in important_fgs:
+            if checker.check_fg(fg, Chem.MolToSmiles(mol)):
+                fg_count += 1
+
+        # Calculate complexity score
+        complexity_score = 0
+
+        # Size contribution
+        if atom_count > 15:
+            complexity_score += 2
+        elif atom_count > 10:
+            complexity_score += 1
+
+        # Ring contribution
+        complexity_score += min(ring_count, 3)
+
+        # Functional group contribution
+        complexity_score += min(fg_count, 2)
+
+        if debug and complexity_score >= 2:
+            print(
+                f"Complex fragment: {Chem.MolToSmiles(mol)} - Score: {complexity_score} (Atoms: {atom_count}, Rings: {ring_count}, FGs: {fg_count})"
+            )
+
+        return complexity_score
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_late_stage_heterocycle_mod
+        nonlocal multi_fragment_reactions
 
-        if node["type"] == "reaction" and depth <= 2:  # Check reactions up to depth 2 (late stage)
-            try:
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+                reactants_part = rsmi.split(">")[0]
                 product = rsmi.split(">")[-1]
+                reactants = reactants_part.split(".")
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+                # Filter out common reagents
+                significant_reactants = []
+                for r in reactants:
+                    if not is_common_reagent(r):
+                        mol = Chem.MolFromSmiles(r)
+                        if mol and mol.GetNumAtoms() > 3:  # Ensure it's not too small
+                            significant_reactants.append(r)
 
-                # In retrosynthesis, the product of the reaction is actually the reactant in forward synthesis
-                # and the reactants are the products in forward synthesis
-                for reactant in reactants:
-                    for sat_ring, arom_ring in heterocycle_pairs:
-                        # Check if reactant (product in forward synthesis) contains aromatic ring
-                        # and product (reactant in forward synthesis) contains saturated ring
-                        if checker.check_ring(arom_ring, reactant) and checker.check_ring(
-                            sat_ring, product
-                        ):
-                            print(
-                                f"Found potential heterocycle pair: {arom_ring} in reactant, {sat_ring} in product"
-                            )
+                # Check if this is a coupling reaction
+                is_coupling = is_coupling_reaction(rsmi)
 
-                            # Check for oxidation/dehydrogenation reaction types
-                            # In retrosynthesis, we're looking for the reverse of these reactions
-                            for rxn_type in oxidation_reactions:
-                                if checker.check_reaction(rxn_type, rsmi):
-                                    print(
-                                        f"Found late-stage heterocycle modification ({arom_ring} to {sat_ring}) with reaction type: {rxn_type}"
-                                    )
-                                    found_late_stage_heterocycle_mod = True
-                                    # Don't return, continue checking for other instances
+                # Count complex fragments
+                complex_reactants = 0
+                complex_fragments = []
 
-                            # If no specific reaction type matched but we have the right structural change
-                            if not found_late_stage_heterocycle_mod:
-                                # Check for general oxidation/dehydrogenation patterns
-                                reactant_mol = Chem.MolFromSmiles(reactant)
-                                product_mol = Chem.MolFromSmiles(product)
+                for reactant in significant_reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    complexity = assess_fragment_complexity(mol)
 
-                                if reactant_mol and product_mol:
-                                    # Count hydrogens in reactant vs product
-                                    reactant_h_count = sum(
-                                        [atom.GetTotalNumHs() for atom in reactant_mol.GetAtoms()]
-                                    )
-                                    product_h_count = sum(
-                                        [atom.GetTotalNumHs() for atom in product_mol.GetAtoms()]
-                                    )
+                    if complexity >= 2:  # Threshold for considering a fragment complex
+                        complex_reactants += 1
+                        complex_fragments.append(reactant)
 
-                                    # In retrosynthesis, the product (reactant in forward direction)
-                                    # should have more hydrogens than the reactant (product in forward direction)
-                                    if reactant_h_count < product_h_count and depth <= 1:
-                                        print(
-                                            f"Found late-stage heterocycle modification ({arom_ring} to {sat_ring}) based on hydrogen count difference"
-                                        )
-                                        print(
-                                            f"Hydrogen count: reactant={reactant_h_count}, product={product_h_count}"
-                                        )
-                                        found_late_stage_heterocycle_mod = True
-                                        # Don't return, continue checking for other instances
-
-                                    # Check specifically for arene hydrogenation in reverse
-                                    if (
-                                        checker.check_reaction("Arene hydrogenation", rsmi)
-                                        and depth <= 1
-                                    ):
-                                        # In retrosynthesis, this would be dehydrogenation in forward direction
-                                        print(
-                                            f"Found late-stage heterocycle modification ({arom_ring} to {sat_ring}) via arene hydrogenation (reverse)"
-                                        )
-                                        found_late_stage_heterocycle_mod = True
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                # If a reaction has 2+ complex reactants or is a coupling with at least one complex reactant
+                if complex_reactants >= 2 or (
+                    is_coupling and complex_reactants >= 1 and len(significant_reactants) >= 2
+                ):
+                    multi_fragment_reactions += 1
+                    if debug:
+                        print(
+                            f"Detected convergent synthesis step with {complex_reactants} complex fragments: {rsmi}"
+                        )
+                        print(f"Complex fragments: {complex_fragments}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(
-        f"Late-stage heterocycle modification strategy present: {found_late_stage_heterocycle_mod}"
-    )
-    return found_late_stage_heterocycle_mod
+    # Even one significant fragment coupling can indicate a convergent approach
+    return multi_fragment_reactions >= 1

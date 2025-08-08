@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,78 +54,124 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving sequential SNAr reactions
-    on a pyrazole scaffold with late-stage ether formation.
+    Detects a strategy where key functional groups (nitrile, halogens) are preserved
+    while the molecular scaffold undergoes significant modifications.
     """
-    # Track key features
-    has_pyrazole = False
-    snAr_reactions = 0
-    late_stage_ether_formation = False
-    has_halogen_intermediates = False
+    # Track functional groups across the synthesis
+    functional_groups = {
+        "nitrile": {"present_at_start": False, "preserved": True},
+        "halogen": {"present_at_start": False, "preserved": True},
+    }
+
+    # Track scaffold modifications
+    scaffold_modified = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_pyrazole, snAr_reactions, late_stage_ether_formation, has_halogen_intermediates
+        nonlocal scaffold_modified
 
         if node["type"] == "mol":
-            # Check for pyrazole scaffold
-            if node["smiles"]:
-                # Check for pyrazole ring using both the checker and a pattern-based approach
+            # Check for functional groups in the final product (depth 0)
+            if depth == 0 and node["smiles"]:
                 mol_smiles = node["smiles"]
-                if checker.check_ring("pyrazole", mol_smiles):
-                    has_pyrazole = True
-                    print(f"Pyrazole scaffold detected via checker in: {mol_smiles}")
-                # Backup check for pyrazole pattern in SMILES
-                elif "c1cnc" in mol_smiles and "n1" in mol_smiles:
-                    has_pyrazole = True
-                    print(f"Pyrazole scaffold detected via pattern in: {mol_smiles}")
-                # Another common pyrazole pattern
-                elif "c1nc" in mol_smiles and "cn1" in mol_smiles:
-                    has_pyrazole = True
-                    print(f"Pyrazole scaffold detected via alternate pattern in: {mol_smiles}")
+                print(f"Checking final product: {mol_smiles}")
 
-                # Check for halogen intermediates using functional group checker
-                if checker.check_fg("Aromatic halide", mol_smiles):
-                    has_halogen_intermediates = True
-                    print(f"Aromatic halide detected in molecule: {mol_smiles}")
+                # Check for nitrile in final product
+                if checker.check_fg("Nitrile", mol_smiles):
+                    functional_groups["nitrile"]["present_at_start"] = True
+                    print("Nitrile found in final product")
+
+                # Check for halogens in final product
+                halogen_groups = [
+                    "Aromatic halide",
+                    "Primary halide",
+                    "Secondary halide",
+                    "Tertiary halide",
+                    "Alkenyl halide",
+                    "Haloalkyne",
+                ]
+                for halogen_group in halogen_groups:
+                    if checker.check_fg(halogen_group, mol_smiles):
+                        functional_groups["halogen"]["present_at_start"] = True
+                        print(f"{halogen_group} found in final product")
+                        break
 
         elif node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            # Extract reactants and product
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for SNAr reactions using reaction checkers
-                is_snar = (
-                    checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
-                    or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
-                    or checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
-                )
+                print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                # If not directly identified, check for characteristic patterns
-                if not is_snar:
-                    # Check if any reactant has aromatic halide
-                    has_aromatic_halide = any(
-                        checker.check_fg("Aromatic halide", r) for r in reactants if r
-                    )
+                # Check for functional group preservation
+                # Check nitrile preservation
+                if any(r and checker.check_fg("Nitrile", r) for r in reactants_smiles):
+                    if not checker.check_fg("Nitrile", product_smiles):
+                        functional_groups["nitrile"]["preserved"] = False
+                        print(f"Nitrile not preserved in reaction at depth {depth}")
 
-                    # Check if product has new ether or amine where halogen was
-                    has_new_bond = (
-                        checker.check_fg("Ether", product)
-                        or checker.check_fg("Aniline", product)
-                        or checker.check_fg("Secondary amine", product)
-                        or checker.check_fg("Tertiary amine", product)
-                    )
+                # Check halogen preservation
+                halogen_groups = [
+                    "Aromatic halide",
+                    "Primary halide",
+                    "Secondary halide",
+                    "Tertiary halide",
+                    "Alkenyl halide",
+                    "Haloalkyne",
+                ]
+                if any(
+                    r and any(checker.check_fg(hg, r) for hg in halogen_groups)
+                    for r in reactants_smiles
+                ):
+                    if not any(checker.check_fg(hg, product_smiles) for hg in halogen_groups):
+                        functional_groups["halogen"]["preserved"] = False
+                        print(f"Halogen not preserved in reaction at depth {depth}")
 
-                    is_snar = has_aromatic_halide and has_new_bond
+                # Check for scaffold modifications
+                # Check for sulfone/sulfonamide modifications
+                sulfur_groups = ["Sulfone", "Sulfonamide", "Sulfonate", "Sulfoxide"]
+                for sg in sulfur_groups:
+                    if any(r and checker.check_fg(sg, r) for r in reactants_smiles):
+                        if not checker.check_fg(sg, product_smiles):
+                            scaffold_modified = True
+                            print(f"Detected scaffold modification at depth {depth}: {sg} removal")
 
-                if is_snar:
-                    snAr_reactions += 1
-                    print(f"SNAr reaction detected at depth {depth}: {rsmi}")
+                # Check for ring modifications
+                for reactant_smiles in reactants_smiles:
+                    if reactant_smiles and product_smiles:
+                        reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                        product_mol = Chem.MolFromSmiles(product_smiles)
+                        if reactant_mol and product_mol:
+                            reactant_ring_count = len(AllChem.GetSSSR(reactant_mol))
+                            product_ring_count = len(AllChem.GetSSSR(product_mol))
 
-                    # Check for late-stage ether formation (depth 0 or 1)
-                    if depth <= 1 and checker.check_fg("Ether", product):
-                        late_stage_ether_formation = True
-                        print(f"Late-stage ether formation detected at depth {depth}: {product}")
+                            if reactant_ring_count != product_ring_count:
+                                scaffold_modified = True
+                                print(
+                                    f"Detected scaffold modification at depth {depth}: ring count change ({reactant_ring_count} to {product_ring_count})"
+                                )
+                                break
+
+                # Check for reactions that typically modify scaffolds
+                scaffold_modifying_reactions = [
+                    "Diels-Alder",
+                    "Retro-Diels-Alder from oxazole",
+                    "Ring opening of epoxide with amine",
+                    "Acetal hydrolysis to diol",
+                    "Acetal hydrolysis to aldehyde",
+                    "Ketal hydrolysis to ketone",
+                    "Intramolecular transesterification/Lactone formation",
+                    "Formation of NOS Heterocycles",
+                ]
+
+                for reaction in scaffold_modifying_reactions:
+                    if checker.check_reaction(reaction, rsmi):
+                        scaffold_modified = True
+                        print(f"Detected scaffold modification at depth {depth}: {reaction}")
+
+            except Exception as e:
+                print(f"Error processing reaction at depth {depth}: {e}")
 
         # Process children
         for child in node.get("children", []):
@@ -131,15 +180,29 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Determine if this strategy is present
-    # Note: has_halogen_intermediates is redundant with SNAr reactions requirement
-    strategy_present = has_pyrazole and snAr_reactions >= 2 and late_stage_ether_formation
+    # Check if the strategy is present
+    nitrile_strategy = (
+        functional_groups["nitrile"]["present_at_start"]
+        and functional_groups["nitrile"]["preserved"]
+    )
 
-    print(f"Strategy detection results:")
-    print(f"  Pyrazole scaffold: {has_pyrazole}")
-    print(f"  SNAr reactions: {snAr_reactions}")
-    print(f"  Late-stage ether formation: {late_stage_ether_formation}")
-    print(f"  Halogen intermediates: {has_halogen_intermediates}")
-    print(f"  Strategy present: {strategy_present}")
+    halogen_strategy = (
+        functional_groups["halogen"]["present_at_start"]
+        and functional_groups["halogen"]["preserved"]
+    )
+
+    strategy_present = (nitrile_strategy or halogen_strategy) and scaffold_modified
+
+    if strategy_present:
+        print("Detected functional group preservation with scaffold modification strategy")
+        if nitrile_strategy:
+            print("- Nitrile group preserved throughout synthesis")
+        if halogen_strategy:
+            print("- Halogen group preserved throughout synthesis")
+    else:
+        if not (nitrile_strategy or halogen_strategy):
+            print("No preserved functional groups detected")
+        if not scaffold_modified:
+            print("No significant scaffold modifications detected")
 
     return strategy_present

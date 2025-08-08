@@ -2,56 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving multiple esterification steps for protecting carboxylic acids.
+    This function detects if the synthetic route involves transformation
+    of a chloride to an azide group.
     """
-    esterification_count = 0
+    transformation_found = False
 
     def dfs_traverse(node):
-        nonlocal esterification_count
+        nonlocal transformation_found
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0]
+                product = rsmi.split(">")[-1]
 
-            # Check for esterification pattern
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
-            product_mol = Chem.MolFromSmiles(product)
+                # Check for chloride in reactants
+                chloride_pattern = Chem.MolFromSmarts("[#6]-[Cl]")
+                # Check for azide in products
+                azide_pattern = Chem.MolFromSmarts("[#6]-[N]=[N+]=[N-]")
 
-            if product_mol and any(
-                r.HasSubstructMatch(Chem.MolFromSmarts("[C](=[O])[OH]")) for r in reactant_mols if r
-            ):
-                if product_mol.HasSubstructMatch(Chem.MolFromSmarts("[C](=[O])[O][C]")):
-                    esterification_count += 1
-                    print(f"Found esterification reaction, count: {esterification_count}")
+                try:
+                    reactant_mol = Chem.MolFromSmiles(reactants)
+                    product_mol = Chem.MolFromSmiles(product)
 
-        # Traverse children
+                    if reactant_mol and product_mol:
+                        if reactant_mol.HasSubstructMatch(
+                            chloride_pattern
+                        ) and product_mol.HasSubstructMatch(azide_pattern):
+                            print(f"Found chloride to azide transformation in reaction: {rsmi}")
+                            transformation_found = True
+                except:
+                    print(f"Error processing SMILES: {rsmi}")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return True if we found multiple esterification steps
-    return esterification_count >= 2
+    return transformation_found

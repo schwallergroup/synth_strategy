@@ -2,85 +2,105 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes a sequence of benzylic functionalization
-    steps (e.g., CH3 → CH2Br → CH2NH2).
+    Detects if the synthetic route involves multiple protection/deprotection steps,
+    indicating a protection group strategy.
     """
-    benzylic_steps = []
+    protection_count = 0
+    deprotection_count = 0
 
     def dfs_traverse(node):
-        nonlocal benzylic_steps
+        nonlocal protection_count, deprotection_count
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
-
-            # Patterns for benzylic transformations
-            benzylic_methyl_pattern = Chem.MolFromSmarts("[c][C]")
-            benzylic_bromomethyl_pattern = Chem.MolFromSmarts("[c][C][Br]")
-            benzylic_aminomethyl_pattern = Chem.MolFromSmarts("[c][C][N]")
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
             try:
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
-                product_mol = Chem.MolFromSmiles(product_part)
+                product_mol = Chem.MolFromSmiles(product)
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
 
-                # Check for CH3 → CH2Br transformation
-                if (
-                    any(
-                        r and r.HasSubstructMatch(benzylic_methyl_pattern)
-                        for r in reactant_mols
-                        if r
-                    )
-                    and product_mol
-                    and product_mol.HasSubstructMatch(benzylic_bromomethyl_pattern)
-                ):
-                    benzylic_steps.append("methyl_to_bromomethyl")
-                    print("Detected benzylic methyl to bromomethyl transformation")
+                # Common protection groups
+                protection_patterns = [
+                    (
+                        Chem.MolFromSmarts("[C][Si]([C])([C])[O][C]"),
+                        Chem.MolFromSmarts("[O][C]"),
+                    ),  # Silyl
+                    (Chem.MolFromSmarts("[C](=[O])[O][C]"), Chem.MolFromSmarts("[O][C]")),  # Ester
+                    (Chem.MolFromSmarts("[C][O][C]"), Chem.MolFromSmarts("[O][C]")),  # Ether
+                    (Chem.MolFromSmarts("[N]([C]=[O])[C]"), Chem.MolFromSmarts("[NH][C]")),  # Amide
+                ]
 
-                # Check for CH2Br → CH2NH2 transformation
-                if (
-                    any(
-                        r and r.HasSubstructMatch(benzylic_bromomethyl_pattern)
-                        for r in reactant_mols
-                        if r
-                    )
-                    and product_mol
-                    and product_mol.HasSubstructMatch(benzylic_aminomethyl_pattern)
-                ):
-                    benzylic_steps.append("bromomethyl_to_aminomethyl")
-                    print("Detected benzylic bromomethyl to aminomethyl transformation")
+                # Check for protection reactions
+                for protected_pattern, unprotected_pattern in protection_patterns:
+                    if (
+                        product_mol
+                        and protected_pattern
+                        and product_mol.HasSubstructMatch(protected_pattern)
+                    ):
+                        # Check if reactants have unprotected functional group
+                        for r_mol in reactant_mols:
+                            if (
+                                r_mol
+                                and unprotected_pattern
+                                and r_mol.HasSubstructMatch(unprotected_pattern)
+                            ):
+                                if not r_mol.HasSubstructMatch(protected_pattern):
+                                    protection_count += 1
+                                    print(f"Found protection reaction: {rsmi}")
+                                    break
+
+                # Check for deprotection reactions
+                for protected_pattern, unprotected_pattern in protection_patterns:
+                    if (
+                        product_mol
+                        and unprotected_pattern
+                        and product_mol.HasSubstructMatch(unprotected_pattern)
+                    ):
+                        # Check if reactants have protected functional group
+                        for r_mol in reactant_mols:
+                            if (
+                                r_mol
+                                and protected_pattern
+                                and r_mol.HasSubstructMatch(protected_pattern)
+                            ):
+                                deprotection_count += 1
+                                print(f"Found deprotection reaction: {rsmi}")
+                                break
             except:
-                pass
+                print(f"Error processing reaction SMILES: {rsmi}")
 
-        # Continue traversing
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have the complete sequence
-    return (
-        "methyl_to_bromomethyl" in benzylic_steps and "bromomethyl_to_aminomethyl" in benzylic_steps
-    )
+    # Return True if multiple protection/deprotection steps are found
+    return (protection_count + deprotection_count) >= 2

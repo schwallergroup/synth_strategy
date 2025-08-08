@@ -2,60 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy (as opposed to convergent).
+    This function detects if the final step (or one of the last steps) is a biaryl coupling.
     """
-    max_fragments_per_reaction = 0
+    biaryl_coupling_depth = -1
 
-    def dfs_traverse(node):
-        nonlocal max_fragments_per_reaction
+    def dfs_traverse(node, depth=0):
+        nonlocal biaryl_coupling_depth
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            # Extract reactants and products
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
+            reactants = rsmi.split(">")[0]
+            product = rsmi.split(">")[-1]
 
-            # Count the number of reactant fragments
-            reactants = reactants_part.split(".")
-            num_fragments = len(reactants)
+            # Check for biaryl coupling patterns
+            # Look for boronic acid/ester + aryl halide → biaryl
+            boronic_pattern = Chem.MolFromSmarts("[c]-[B]")
+            aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Cl,Br,I]")
+            biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
 
-            # Count only "complex" fragments (more than 10 atoms)
-            complex_fragments = 0
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.GetNumAtoms() > 10:
-                    complex_fragments += 1
+            reactants_mol = Chem.MolFromSmiles(reactants)
+            product_mol = Chem.MolFromSmiles(product)
 
-            max_fragments_per_reaction = max(max_fragments_per_reaction, complex_fragments)
+            if reactants_mol and product_mol:
+                if (
+                    reactants_mol.HasSubstructMatch(boronic_pattern)
+                    and reactants_mol.HasSubstructMatch(aryl_halide_pattern)
+                    and product_mol.HasSubstructMatch(biaryl_pattern)
+                ):
+                    biaryl_coupling_depth = depth
+                    print(f"Biaryl coupling found at depth {depth}")
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Linear synthesis typically has at most one complex fragment per reaction
-    result = max_fragments_per_reaction <= 1
-
-    print(
-        f"Linear synthesis strategy: {result} (max complex fragments: {max_fragments_per_reaction})"
-    )
-    return result
+    # Check if biaryl coupling was found at a low depth (late stage)
+    if biaryl_coupling_depth >= 0 and biaryl_coupling_depth <= 1:
+        print(f"Late-stage biaryl coupling strategy detected at depth {biaryl_coupling_depth}")
+        return True
+    return False

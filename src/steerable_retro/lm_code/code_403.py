@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,150 +54,95 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a synthetic strategy involving late-stage amide coupling with preceding
-    functional group activation (acid → acid chloride → amide) and protection/deprotection.
+    This function detects a strategy involving O-alkylation reactions,
+    particularly focusing on pyridine hydroxyl modifications.
     """
-    # Track if we found the key elements of the strategy
-    found_amide_coupling = False
-    found_acid_chloride_formation = False
-    found_ester_hydrolysis = False
-    found_acid_activation = False  # Track any acid activation method
+    # Track if we found the pattern
+    o_alkylation_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_amide_coupling, found_acid_chloride_formation, found_ester_hydrolysis, found_acid_activation
+    def dfs_traverse(node):
+        nonlocal o_alkylation_count
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                reactants = reactants_str.split(".")
+                # Check for various O-alkylation reactions
+                is_o_alkylation = (
+                    checker.check_reaction("Williamson Ether Synthesis", rsmi)
+                    or checker.check_reaction(
+                        "O-alkylation of carboxylic acids with diazo compounds", rsmi
+                    )
+                    or checker.check_reaction("O-alkylation of amides with diazo compounds", rsmi)
+                    or checker.check_reaction("Mitsunobu aryl ether", rsmi)
+                    or checker.check_reaction("Alcohol to ether", rsmi)
+                    or checker.check_reaction("{Williamson ether}", rsmi)
+                )
 
-                # Check for amide coupling at late stage (depth 0-2)
-                if depth <= 2:
-                    # Check if this is a Schotten-Baumann amide formation or similar reaction
-                    if (
-                        checker.check_reaction(
-                            "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
-                        )
-                        or checker.check_reaction("Schotten-Baumann_amide", rsmi)
-                        or checker.check_reaction(
-                            "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                            rsmi,
-                        )
-                        or checker.check_reaction(
-                            "Carboxylic acid with primary amine to amide", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
-                        )
+                # Look for hydroxyl pyridine in reactants
+                hydroxyl_pyridine_found = False
+                for reactant in reactants:
+                    if checker.check_ring("pyridine", reactant) and (
+                        checker.check_fg("Phenol", reactant)
+                        or checker.check_fg("Aromatic alcohol", reactant)
+                        or checker.check_fg("Primary alcohol", reactant)
+                        or checker.check_fg("Secondary alcohol", reactant)
+                        or checker.check_fg("Tertiary alcohol", reactant)
                     ):
-                        found_amide_coupling = True
-                        print(f"Found late-stage amide coupling at depth {depth}")
-                    else:
-                        # Fallback to functional group checking
-                        has_acid_halide = False
-                        has_carboxylic_acid = False
-                        has_amine = False
-                        for reactant in reactants:
-                            if checker.check_fg("Acyl halide", reactant):
-                                has_acid_halide = True
-                            if checker.check_fg("Carboxylic acid", reactant):
-                                has_carboxylic_acid = True
-                            if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                                "Secondary amine", reactant
-                            ):
-                                has_amine = True
+                        hydroxyl_pyridine_found = True
+                        print(f"Found hydroxyl pyridine in reactant: {reactant}")
+                        break
 
-                        has_amide_product = (
-                            checker.check_fg("Primary amide", product_str)
-                            or checker.check_fg("Secondary amide", product_str)
-                            or checker.check_fg("Tertiary amide", product_str)
-                        )
+                # Check for conversion to ether
+                if hydroxyl_pyridine_found and checker.check_ring("pyridine", product):
+                    # Verify the hydroxyl group was converted to an ether
+                    if checker.check_fg("Ether", product) and not (
+                        checker.check_fg("Phenol", product)
+                        or checker.check_fg("Aromatic alcohol", product)
+                        or checker.check_fg("Primary alcohol", product)
+                        or checker.check_fg("Secondary alcohol", product)
+                        or checker.check_fg("Tertiary alcohol", product)
+                    ):
+                        print(f"Confirmed O-alkylation on pyridine: {rsmi}")
+                        o_alkylation_count += 1
 
-                        if (
-                            (has_acid_halide or has_carboxylic_acid)
-                            and has_amine
-                            and has_amide_product
+                # Also check for general O-alkylation patterns even if not a specific named reaction
+                elif not is_o_alkylation:
+                    for reactant in reactants:
+                        if checker.check_ring("pyridine", reactant) and (
+                            checker.check_fg("Phenol", reactant)
+                            or checker.check_fg("Aromatic alcohol", reactant)
+                            or checker.check_fg("Primary alcohol", reactant)
+                            or checker.check_fg("Secondary alcohol", reactant)
+                            or checker.check_fg("Tertiary alcohol", reactant)
                         ):
-                            found_amide_coupling = True
-                            print(f"Found late-stage amide coupling (FG check) at depth {depth}")
-
-                # Check for acid chloride formation or other activation (depth 1-3)
-                if 1 <= depth <= 3:
-                    # Check for specific reaction types
-                    if checker.check_reaction(
-                        "Acyl chlorides from alcohols", rsmi
-                    ) or checker.check_reaction("Alcohol to chloride_SOCl2", rsmi):
-                        found_acid_chloride_formation = True
-                        found_acid_activation = True
-                        print(f"Found acid chloride formation at depth {depth}")
-                    else:
-                        # Fallback to functional group checking
-                        has_carboxylic_acid = False
-                        for reactant in reactants:
-                            if checker.check_fg("Carboxylic acid", reactant):
-                                has_carboxylic_acid = True
-
-                        has_acid_chloride_product = checker.check_fg("Acyl halide", product_str)
-
-                        if has_carboxylic_acid and has_acid_chloride_product:
-                            found_acid_chloride_formation = True
-                            found_acid_activation = True
-                            print(f"Found acid chloride formation (FG check) at depth {depth}")
-
-                # Check for ester hydrolysis (deprotection) or other acid generation (depth 2-4)
-                if 2 <= depth <= 4:
-                    # Check for specific reaction types
-                    if (
-                        checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
-                        or checker.check_reaction(
-                            "Ester saponification (methyl deprotection)", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-                        )
-                        or checker.check_reaction("COOH ethyl deprotection", rsmi)
-                        or checker.check_reaction("Deprotection of carboxylic acid", rsmi)
-                        or checker.check_reaction(
-                            "Oxidation of aldehydes to carboxylic acids", rsmi
-                        )
-                        or checker.check_reaction("Oxidation of nitrile to carboxylic acid", rsmi)
-                    ):
-                        found_ester_hydrolysis = True
-                        print(f"Found carboxylic acid generation at depth {depth}")
-                    else:
-                        # Fallback to functional group checking
-                        has_protected_acid = False
-                        for reactant in reactants:
                             if (
-                                checker.check_fg("Ester", reactant)
-                                or checker.check_fg("Nitrile", reactant)
-                                or checker.check_fg("Aldehyde", reactant)
+                                checker.check_ring("pyridine", product)
+                                and checker.check_fg("Ether", product)
+                                and not (
+                                    checker.check_fg("Phenol", product)
+                                    or checker.check_fg("Aromatic alcohol", product)
+                                    or checker.check_fg("Primary alcohol", product)
+                                    or checker.check_fg("Secondary alcohol", product)
+                                    or checker.check_fg("Tertiary alcohol", product)
+                                )
                             ):
-                                has_protected_acid = True
+                                print(f"Found general O-alkylation pattern on pyridine: {rsmi}")
+                                o_alkylation_count += 1
+                                break
 
-                        has_carboxylic_acid_product = checker.check_fg(
-                            "Carboxylic acid", product_str
-                        )
-
-                        if has_protected_acid and has_carboxylic_acid_product:
-                            found_ester_hydrolysis = True
-                            print(f"Found carboxylic acid generation (FG check) at depth {depth}")
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Print overall results for debugging
-    print(f"Amide coupling found: {found_amide_coupling}")
-    print(f"Acid chloride formation found: {found_acid_chloride_formation}")
-    print(f"Ester hydrolysis/acid generation found: {found_ester_hydrolysis}")
-
-    # Return True if we found amide coupling and either acid activation or ester hydrolysis
-    # This captures the essence of the strategy while allowing for variations
-    return found_amide_coupling and (found_acid_chloride_formation or found_ester_hydrolysis)
+    print(f"Total O-alkylation reactions found: {o_alkylation_count}")
+    # Return True if we found at least one O-alkylation
+    return o_alkylation_count >= 1

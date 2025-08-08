@@ -2,70 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a late-stage fragment coupling strategy where two complex fragments
-    are combined in the final steps of the synthesis.
+    This function detects if cyclopropyl ring formation occurs early in the synthesis.
     """
-    late_stage_coupling = False
+    early_ring_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_coupling
+        nonlocal early_ring_formation
 
-        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions (low depth)
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+        if node["type"] == "reaction" and depth >= 4:  # Early in synthesis (high depth)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0]
+                product = rsmi.split(">")[-1]
 
-            parts = rsmi.split(">")
-            if len(parts) < 3:
-                return
-
-            reactants = parts[0].split(".")
-            product = parts[-1]
-
-            # Check if we're combining two complex fragments
-            if len(reactants) >= 2:
-                complex_fragments = 0
-                for reactant in reactants:
-                    # Define complexity: contains at least one ring or has more than 10 atoms
+                # Check for cyclopropyl formation
+                if "Cl" in reactants and "Br" in reactants:
                     try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            ring_info = mol.GetRingInfo()
-                            if ring_info.NumRings() > 0 or mol.GetNumAtoms() > 10:
-                                complex_fragments += 1
+                        prod_mol = Chem.MolFromSmiles(product)
+                        cyclopropyl_patt = Chem.MolFromSmarts("[C]1[C][C]1")
+                        if prod_mol and prod_mol.HasSubstructMatch(cyclopropyl_patt):
+                            print("Found early cyclopropyl formation at depth", depth)
+                            early_ring_formation = True
                     except:
                         pass
 
-                if complex_fragments >= 2:
-                    late_stage_coupling = True
-                    print(f"Found late-stage coupling at depth {depth}")
-
-        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return late_stage_coupling
+    return early_ring_formation

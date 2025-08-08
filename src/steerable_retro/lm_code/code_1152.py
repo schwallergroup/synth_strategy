@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,79 +54,89 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a linear synthesis strategy with multiple fragment coupling steps.
+    Detects if the synthetic route uses amine alkylation as a key fragment coupling strategy.
     """
-    # Track fragment coupling reactions
-    fragment_coupling_reactions = 0
-    linear_synthesis = True
+    has_amine_alkylation = False
 
-    # List of common coupling reaction types
-    coupling_reaction_types = [
-        "Suzuki",
-        "Negishi",
-        "Stille",
-        "Heck",
-        "Sonogashira",
-        "Buchwald-Hartwig",
-        "Ullmann-Goldberg",
-        "N-arylation",
-    ]
+    def dfs_traverse(node):
+        nonlocal has_amine_alkylation
 
-    # Track the main synthesis path
-    main_path_nodes = {}
-
-    def dfs_traverse(node, depth=0):
-        nonlocal fragment_coupling_reactions, linear_synthesis, main_path_nodes
-
-        # For molecule nodes that aren't starting materials, track the main path
-        if node["type"] == "mol" and not node.get("in_stock", False):
-            if depth in main_path_nodes:
-                # If we've already seen a different molecule at this depth, we have a branching path
-                if main_path_nodes[depth]["smiles"] != node["smiles"]:
-                    linear_synthesis = False
-                    print(
-                        f"Branching path detected at depth {depth}: {node['smiles']} vs {main_path_nodes[depth]['smiles']}"
-                    )
-            else:
-                main_path_nodes[depth] = node
-
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # Check if this is a fragment coupling (more than one significant reactant)
-            significant_reactants = [
-                r for r in reactants_smiles if len(r) > 10
-            ]  # Filter out small molecules/reagents
+            # Check for amine alkylation reactions using the checker function
+            amine_alkylation_reactions = [
+                "N-alkylation of primary amines with alkyl halides",
+                "N-alkylation of secondary amines with alkyl halides",
+                "Alkylation of amines",
+                "Methylation with MeI_primary",
+                "Methylation with MeI_secondary",
+                "Methylation with MeI_tertiary",
+                "Eschweiler-Clarke Primary Amine Methylation",
+                "Eschweiler-Clarke Secondary Amine Methylation",
+                "Reductive methylation of primary amine with formaldehyde",
+                "N-methylation",
+            ]
 
-            if len(significant_reactants) > 1:
-                # Check if this is a known coupling reaction
-                is_coupling = False
-                for rxn_type in coupling_reaction_types:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        is_coupling = True
-                        print(f"Detected {rxn_type} coupling reaction")
-                        break
+            for reaction_type in amine_alkylation_reactions:
+                if checker.check_reaction(reaction_type, rsmi):
+                    print(f"Found amine alkylation coupling: {reaction_type}")
+                    has_amine_alkylation = True
+                    break
 
-                # If it's a significant reactant coupling or a known coupling reaction
-                if is_coupling or len([r for r in significant_reactants if len(r) > 20]) > 1:
-                    fragment_coupling_reactions += 1
-                    print(f"Fragment coupling detected: {rsmi}")
+            # If no specific reaction type matched, check for general pattern
+            if not has_amine_alkylation:
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        # Traverse children
+                # Check if reactants contain amine and alkyl halide
+                has_amine = False
+                has_alkyl_halide = False
+
+                for reactant in reactants:
+                    if (
+                        checker.check_fg("Primary amine", reactant)
+                        or checker.check_fg("Secondary amine", reactant)
+                        or checker.check_fg("Tertiary amine", reactant)
+                    ):
+                        has_amine = True
+                    if (
+                        checker.check_fg("Primary halide", reactant)
+                        or checker.check_fg("Secondary halide", reactant)
+                        or checker.check_fg("Tertiary halide", reactant)
+                    ):
+                        has_alkyl_halide = True
+
+                # If both amine and alkyl halide are present in reactants, check if product has a new C-N bond
+                if has_amine and has_alkyl_halide:
+                    try:
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol:
+                            # Check if the product has more C-N bonds than the reactants combined
+                            reactant_mols = [
+                                Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)
+                            ]
+
+                            # Count C-N bonds in reactants
+                            reactant_cn_bonds = sum(
+                                len(mol.GetSubstructMatches(Chem.MolFromSmarts("C-N")))
+                                for mol in reactant_mols
+                                if mol
+                            )
+
+                            # Count C-N bonds in product
+                            product_cn_bonds = len(
+                                product_mol.GetSubstructMatches(Chem.MolFromSmarts("C-N"))
+                            )
+
+                            if product_cn_bonds > reactant_cn_bonds:
+                                print("Found amine alkylation coupling (pattern-based detection)")
+                                has_amine_alkylation = True
+                    except Exception as e:
+                        print(f"Error in pattern-based detection: {e}")
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Strategy is present if it's a linear synthesis with at least 2 fragment couplings
-    strategy_present = linear_synthesis and fragment_coupling_reactions >= 2
-
-    print(f"Linear synthesis with fragment coupling strategy:")
-    print(f"  Linear synthesis: {linear_synthesis}")
-    print(f"  Fragment coupling reactions: {fragment_coupling_reactions}")
-    print(f"  Strategy present: {strategy_present}")
-
-    return strategy_present
+    return has_amine_alkylation

@@ -2,73 +2,106 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if a diaryl ether motif is preserved throughout the synthesis.
-    It checks if the diaryl ether motif is preserved in the target molecule and all intermediates
-    after it first appears in the synthesis route.
+    This function detects Grignard reactions forming secondary alcohols.
+    It looks for reactions where an aldehyde becomes a secondary alcohol.
     """
-    # Track if diaryl ether appears and is then preserved
-    motif_appeared = False
-    motif_preserved = True
+    grignard_found = False
 
-    def has_diaryl_ether(smiles):
-        """Check if a molecule has a diaryl ether motif"""
-        mol = Chem.MolFromSmiles(smiles)
-        if mol:
-            diaryl_ether_pattern = Chem.MolFromSmarts("[c][O][c]")
-            return mol.HasSubstructMatch(diaryl_ether_pattern)
-        return False
+    def dfs_traverse(node):
+        nonlocal grignard_found
 
-    def dfs_traverse(node, depth=0):
-        nonlocal motif_appeared, motif_preserved
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        if node["type"] == "mol" and node.get("smiles"):
-            # Skip starting materials (in_stock)
-            if node.get("in_stock", False):
+            # Check if this is a Grignard reaction from aldehyde to alcohol
+            if checker.check_reaction("Grignard from aldehyde to alcohol", rsmi):
+                print(f"Found Grignard alcohol formation using reaction checker: {rsmi}")
+                grignard_found = True
                 return
 
-            has_motif = has_diaryl_ether(node["smiles"])
+            # Fallback method: check for presence of required functional groups
+            has_aldehyde = False
+            has_grignard = False
+            has_secondary_alcohol = False
 
-            # If motif has appeared before, check if it's preserved
-            if motif_appeared and not has_motif:
-                motif_preserved = False
-                print(f"Diaryl ether motif lost in molecule: {node['smiles']}")
+            # Check for aldehyde in reactants
+            for reactant in reactants:
+                if checker.check_fg("Aldehyde", reactant):
+                    print(f"Found aldehyde in reactant: {reactant}")
+                    has_aldehyde = True
 
-            # If this is the first time we see the motif, mark it
-            if has_motif and not motif_appeared:
-                motif_appeared = True
-                print(f"Diaryl ether motif first appeared in: {node['smiles']}")
+                # Check for Grignard reagent (magnesium halide)
+                if checker.check_fg("Magnesium halide", reactant):
+                    print(f"Found Grignard reagent in reactant: {reactant}")
+                    has_grignard = True
 
-        # Traverse children
+            # Check for secondary alcohol in product
+            if checker.check_fg("Secondary alcohol", product):
+                print(f"Found secondary alcohol in product: {product}")
+                has_secondary_alcohol = True
+
+            # A Grignard reaction requires both an aldehyde and a Grignard reagent
+            if has_aldehyde and has_grignard and has_secondary_alcohol:
+                print(f"Found Grignard alcohol formation using functional group checks: {rsmi}")
+                grignard_found = True
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the target molecule
     dfs_traverse(route)
-
-    # If the motif never appeared, it can't be preserved
-    if not motif_appeared:
-        print("No diaryl ether motif found in any non-starting material molecule")
-        return False
-
-    return motif_preserved
+    print(f"Grignard alcohol formation found: {grignard_found}")
+    return grignard_found

@@ -2,62 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves N-alkylation of a pyrazole ring.
+    Detects if the synthesis involves an ether formation step.
     """
-    has_pyrazole_alkylation = False
+    result = False
 
     def dfs_traverse(node):
-        nonlocal has_pyrazole_alkylation
+        nonlocal result
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactants_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for alcohol/phenol in reactants
+                alcohol_pattern = Chem.MolFromSmarts("[OH]")
+                # Check for ether in product
+                ether_pattern = Chem.MolFromSmarts("[#6]-[O]-[#6]")
 
-            if product_mol and all(reactants_mols):
-                # Check for pyrazole in reactants
-                pyrazole_pattern = Chem.MolFromSmarts("[n]1[n]cc[c]1")
+                has_alcohol = sum(
+                    1
+                    for r in reactants
+                    if Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(alcohol_pattern)
+                )
+                has_ether = (
+                    Chem.MolFromSmiles(product).HasSubstructMatch(ether_pattern)
+                    if Chem.MolFromSmiles(product)
+                    else False
+                )
 
-                # Check for N-alkylation: pyrazole-NH to pyrazole-N-C
-                pyrazole_nh_pattern = Chem.MolFromSmarts("[nH]1[n]cc[c]1")
-                pyrazole_nc_pattern = Chem.MolFromSmarts("[n]1([C])[n]cc[c]1")
-
-                if any(
-                    mol.HasSubstructMatch(pyrazole_nh_pattern) for mol in reactants_mols
-                ) and product_mol.HasSubstructMatch(pyrazole_nc_pattern):
-                    has_pyrazole_alkylation = True
-                    print(f"Detected pyrazole N-alkylation in reaction: {rsmi}")
+                if has_alcohol >= 1 and has_ether:
+                    print("Detected ether formation step")
+                    result = True
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    return has_pyrazole_alkylation
+    return result

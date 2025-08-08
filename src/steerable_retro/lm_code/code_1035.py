@@ -2,58 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic route that includes tetrahydropyran (THP) deprotection of a nitrogen.
+    Detects preservation of complex aromatic systems (indole, sulfonamide) throughout synthesis.
     """
-    has_thp_deprotection = False
+    indole_depths = []
+    sulfonamide_depths = []
 
-    def dfs_traverse(node):
-        nonlocal has_thp_deprotection
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for indole
+                indole_pattern = Chem.MolFromSmarts("[c]1[c][n][c]2[c][c][c][c][c]21")
+                if mol.HasSubstructMatch(indole_pattern):
+                    indole_depths.append(depth)
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Check for sulfonamide
+                sulfonamide_pattern = Chem.MolFromSmarts("[S](=[O])(=[O])[c]")
+                if mol.HasSubstructMatch(sulfonamide_pattern):
+                    sulfonamide_depths.append(depth)
 
-            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
-
-            # Check for THP deprotection
-            thp_pattern = Chem.MolFromSmarts("[#7]C1CCCCO1")
-            nh_pattern = Chem.MolFromSmarts("[#7;H]")
-
-            if any(
-                mol.HasSubstructMatch(thp_pattern) for mol in reactants
-            ) and product.HasSubstructMatch(nh_pattern):
-                print("Found THP deprotection")
-                has_thp_deprotection = True
-
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(f"THP deprotection strategy detected: {has_thp_deprotection}")
-    return has_thp_deprotection
+    # Check if both motifs are preserved across multiple depths
+    indole_preserved = len(set(indole_depths)) >= 3
+    sulfonamide_preserved = len(set(sulfonamide_depths)) >= 3
+
+    if indole_preserved:
+        print(f"Indole preserved across depths: {sorted(set(indole_depths))}")
+    if sulfonamide_preserved:
+        print(f"Sulfonamide preserved across depths: {sorted(set(sulfonamide_depths))}")
+
+    return indole_preserved and sulfonamide_preserved

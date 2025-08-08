@@ -2,79 +2,135 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving multiple silyl protections and
-    phosphate ester formation.
+    This function detects a synthetic strategy featuring amide formation from an acyl chloride
+    and amine in the early stage of the synthesis.
     """
-    # Track if we found the key transformations
-    found_silyl_protection = False
-    found_phosphate_formation = False
+    has_amide_formation = False
 
-    def dfs_traverse(node):
-        nonlocal found_silyl_protection, found_phosphate_formation
+    def dfs_traverse(node, current_depth=0):
+        nonlocal has_amide_formation
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            # Try to get depth from metadata if available
+            depth = current_depth
+            if "metadata" in node and "ID" in node["metadata"]:
+                try:
+                    id_string = node["metadata"]["ID"]
+                    if "Depth: " in id_string:
+                        depth_str = id_string.split("Depth: ")[1].split()[0]
+                        depth = int(depth_str)
+                except Exception as e:
+                    print(f"Error extracting depth: {e}")
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            print(f"Checking reaction at depth {depth}: {rsmi}")
 
-            if not product or not all(reactants):
-                return
+            # Early stage is considered depth >= 2
+            if depth >= 2:
+                print(f"Checking early-stage reaction at depth {depth}: {rsmi}")
 
-            # Check for silyl protection
-            alcohol_pattern = Chem.MolFromSmarts("[#6]-[OH]")
-            silyl_ether_pattern = Chem.MolFromSmarts("[#6]-[#8]-[Si]")
-            tbdms_pattern = Chem.MolFromSmarts("[#6]-[#8]-[Si]([#6])([#6])[C]([#6])([#6])[#6]")
+                # Check if this is an amide formation from acyl chloride using reaction checkers
+                is_amide_formation = (
+                    checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                        rsmi,
+                    )
+                    or checker.check_reaction(
+                        "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+                    )
+                    or checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi)
+                    or checker.check_reaction("Acyl chloride with ammonia to amide", rsmi)
+                )
 
-            for reactant in reactants:
-                if reactant.HasSubstructMatch(alcohol_pattern):
-                    if product and (
-                        product.HasSubstructMatch(silyl_ether_pattern)
-                        or product.HasSubstructMatch(tbdms_pattern)
-                    ):
-                        print("Found silyl protection")
-                        found_silyl_protection = True
+                if is_amide_formation:
+                    print(f"Reaction checker identified amide formation: {rsmi}")
 
-            # Check for phosphate ester formation
-            phosphate_pattern = Chem.MolFromSmarts("[#6]-[#8]-P(=O)(-[#8]-[#6])-[#8]-[#6]")
-            if product and product.HasSubstructMatch(phosphate_pattern):
-                print("Found phosphate ester formation")
-                found_phosphate_formation = True
+                # Additional verification by checking functional groups
+                has_acyl_halide = any(checker.check_fg("Acyl halide", r) for r in reactants)
+                has_amine = any(
+                    checker.check_fg("Primary amine", r)
+                    or checker.check_fg("Secondary amine", r)
+                    or checker.check_fg("Tertiary amine", r)
+                    for r in reactants
+                )
+                has_amide = (
+                    checker.check_fg("Primary amide", product)
+                    or checker.check_fg("Secondary amide", product)
+                    or checker.check_fg("Tertiary amide", product)
+                )
+
+                print(
+                    f"FG checks - Acyl halide: {has_acyl_halide}, Amine: {has_amine}, Amide: {has_amide}"
+                )
+
+                if is_amide_formation and has_acyl_halide and has_amine and has_amide:
+                    print("Detected amide formation from acyl chloride in early step")
+                    has_amide_formation = True
+                elif has_acyl_halide and has_amine and has_amide:
+                    # Even if reaction checker failed, if we have the right FGs, it's likely an amide formation
+                    print("Detected likely amide formation based on functional groups")
+                    has_amide_formation = True
 
         # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, current_depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Return True if both key transformations were found
-    return found_silyl_protection and found_phosphate_formation
+    return has_amide_formation

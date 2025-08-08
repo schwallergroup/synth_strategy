@@ -2,115 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
-def main(route):
+def main(node, target_stereocenters):
     """
-    This function detects a synthetic strategy involving the synthesis of
-    a heterocycle containing trifluoromethyl groups.
+    Recursively track stereocenters through the synthesis route.
+    Returns True if at least one stereocenter is preserved throughout.
     """
-    has_trifluoromethyl = False
-    has_heterocycle = False
-    trifluoromethyl_preserved = False
+    # Base case: starting material
+    if node.get("in_stock", False):
+        return False  # We don't expect starting materials to preserve stereocenters
 
-    # List of common heterocyclic rings to check
-    heterocycle_rings = [
-        "pyrazole",
-        "pyrrole",
-        "furan",
-        "thiophene",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "triazole",
-        "tetrazole",
-        "pyridine",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-    ]
+    # If this is a molecule node, check for stereocenters
+    if node["type"] == "mol":
+        try:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol is None:
+                print(f"Could not parse molecule SMILES: {node['smiles']}")
+                return False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_trifluoromethyl, has_heterocycle, trifluoromethyl_preserved
+            stereocenters = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
+            print(f"Molecule {node['smiles']} stereocenters: {stereocenters}")
 
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+            # If no stereocenters, this branch doesn't preserve stereocenters
+            if not stereocenters:
+                return False
 
-            # Check for trifluoromethyl groups using the checker function
-            if checker.check_fg("Trifluoro group", mol_smiles):
-                has_trifluoromethyl = True
-                print(f"Found trifluoromethyl group in molecule: {mol_smiles}")
+            # Check if any of the target stereocenters are present in this molecule
+            # This is a simplified check - in a real implementation, you would need to
+            # track atom mappings through reactions to follow specific stereocenters
+            for center, chirality in target_stereocenters:
+                for mol_center, mol_chirality in stereocenters:
+                    if mol_chirality == chirality:  # Simple check for same chirality
+                        # For a more accurate check, we would need to track atom mappings
+                        return True
 
-            # Check for heterocycles using the checker function
-            for ring in heterocycle_rings:
-                if checker.check_ring(ring, mol_smiles):
-                    has_heterocycle = True
-                    print(f"Found heterocycle ({ring}) in molecule: {mol_smiles}")
-                    break
+            # If we have children, check if any branch preserves stereocenters
+            for child in node.get("children", []):
+                if track_stereocenters(child, stereocenters):
+                    return True
 
-            # Check if final product has trifluoromethyl
-            if depth == 0 and checker.check_fg("Trifluoro group", mol_smiles):
-                trifluoromethyl_preserved = True
-                print(f"Trifluoromethyl group preserved in final product: {mol_smiles}")
+            return False
 
-        # Traverse children
+        except Exception as e:
+            print(f"Error analyzing molecule {node.get('smiles', 'unknown')}: {e}")
+            return False
+
+    # If this is a reaction node, check if any reactant preserves stereocenters
+    elif node["type"] == "reaction":
+        # For reaction nodes, check if any child (reactant) preserves stereocenters
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if track_stereocenters(child, target_stereocenters):
+                return True
 
-    # Start traversal
-    dfs_traverse(route)
+        return False
 
-    # Check if required features are present
-    strategy_present = has_trifluoromethyl and has_heterocycle and trifluoromethyl_preserved
-
-    print(f"Trifluoromethyl-containing heterocycle synthesis strategy detected: {strategy_present}")
-    print(f"  - Has trifluoromethyl group: {has_trifluoromethyl}")
-    print(f"  - Has heterocycle: {has_heterocycle}")
-    print(f"  - Trifluoromethyl preserved in final product: {trifluoromethyl_preserved}")
-
-    return strategy_present
+    return False

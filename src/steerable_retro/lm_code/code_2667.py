@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,141 +54,66 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves formation of heterocyclic systems,
-    particularly thiophene-thiazole fused systems.
+    Detects if the synthesis involves conversion of a nitrile to a hydroxylamine derivative.
     """
-    forms_heterocycle = False
+    # Track if we found nitrile to hydroxylamine conversion
+    found_nitrile_conversion = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal forms_heterocycle
+    def dfs_traverse(node):
+        nonlocal found_nitrile_conversion
 
-        if node["type"] == "reaction" and depth >= 2:  # Early to middle stages
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-                # Check if this is a known heterocycle-forming reaction
-                heterocycle_reactions = [
-                    "benzimidazole_derivatives_carboxylic-acid/ester",
-                    "benzimidazole_derivatives_aldehyde",
-                    "benzothiazole",
-                    "benzoxazole_arom-aldehyde",
-                    "benzoxazole_carboxylic-acid",
-                    "thiazole",
-                    "tetrazole_terminal",
-                    "tetrazole_connect_regioisomere_1",
-                    "tetrazole_connect_regioisomere_2",
-                    "1,2,4-triazole_acetohydrazide",
-                    "1,2,4-triazole_carboxylic-acid/ester",
-                    "pyrazole",
-                    "Paal-Knorr pyrrole",
-                    "triaryl-imidazole",
-                    "Fischer indole",
-                    "Friedlaender chinoline",
-                    "benzofuran",
-                    "benzothiophene",
-                    "indole",
-                    "oxadiazole",
-                    "imidazole",
-                    "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-                    "Huisgen 1,3 dipolar cycloaddition",
-                    "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-                    "Pyrazole formation",
-                    "Azide-nitrile click cycloaddition to tetrazole",
-                    "Azide-nitrile click cycloaddition to triazole",
-                    "Intramolecular amination of azidobiphenyls (heterocycle formation)",
-                    "Intramolecular amination (heterocycle formation)",
-                    "Formation of NOS Heterocycles",
-                ]
+            # Check if reactants contain nitrile
+            reactants = reactants_part.split(".")
+            nitrile_present = False
+            nitrile_reactant = None
 
-                for reaction_type in heterocycle_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(
-                            f"Found heterocycle formation reaction: {reaction_type} at depth {depth}"
-                        )
-                        forms_heterocycle = True
-                        return
+            for reactant in reactants:
+                if checker.check_fg("Nitrile", reactant):
+                    nitrile_present = True
+                    nitrile_reactant = reactant
+                    print(f"Found nitrile in reactant: {reactant}")
 
-                # Check reactants and products for ring count
-                reactant_rings = 0
-                product_mol = Chem.MolFromSmiles(product)
-
-                if not product_mol:
-                    return
-
-                product_rings = product_mol.GetRingInfo().NumRings()
-
-                # Check for heterocyclic rings in the product
-                heterocyclic_rings = [
-                    "thiophene",
-                    "thiazole",
-                    "furan",
-                    "pyrrole",
-                    "pyridine",
-                    "pyrazole",
-                    "imidazole",
-                    "oxazole",
-                    "pyrimidine",
-                    "pyrazine",
-                    "triazole",
-                    "tetrazole",
-                    "indole",
-                    "benzimidazole",
-                    "benzothiazole",
-                    "benzoxazole",
-                    "isoxazole",
-                    "isothiazole",
-                    "oxadiazole",
-                    "thiadiazole",
-                ]
-
-                # Count rings in reactants
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        reactant_rings += mol.GetRingInfo().NumRings()
-
-                # Check if product has more rings than reactants (ring formation)
-                if product_rings > reactant_rings:
-                    # Check if any of the new rings are heterocycles
-                    for ring_type in heterocyclic_rings:
-                        if checker.check_ring(ring_type, product):
-                            # Verify this ring wasn't already in the reactants
-                            ring_in_reactants = False
+            # Check if product contains hydroxylamine derivative
+            if nitrile_present:
+                # Check for specific reaction types first
+                if checker.check_reaction(
+                    "N-hydroxyimidamide from nitrile and hydroxylamine", rsmi
+                ) or checker.check_reaction("Amidoxime from nitrile and hydroxylamine", rsmi):
+                    print(f"Found nitrile to hydroxylamine conversion reaction: {rsmi}")
+                    found_nitrile_conversion = True
+                else:
+                    # Fallback to checking product structure
+                    product_mol = Chem.MolFromSmiles(product_part)
+                    if product_mol:
+                        # Check for N-hydroxyimidamide structure
+                        if product_mol.HasSubstructMatch(
+                            Chem.MolFromSmarts("[C](=N)[N][O]")
+                        ) or checker.check_fg("Oxime", product_part):
+                            print(f"Found hydroxylamine derivative in product: {product_part}")
+                            # Verify this is a conversion from nitrile to hydroxylamine derivative
+                            # by checking that other reactants contain hydroxylamine or related compounds
                             for reactant in reactants:
-                                if checker.check_ring(ring_type, reactant):
-                                    ring_in_reactants = True
-                                    break
-
-                            if not ring_in_reactants:
-                                print(f"Found heterocycle formation: {ring_type} at depth {depth}")
-                                forms_heterocycle = True
-                                return
-
-                # Check specifically for thiophene-thiazole fused systems
-                if checker.check_ring("thiophene", product) and checker.check_ring(
-                    "thiazole", product
-                ):
-                    # Check if both rings were not present in reactants
-                    thiophene_in_reactants = False
-                    thiazole_in_reactants = False
-
-                    for reactant in reactants:
-                        if checker.check_ring("thiophene", reactant):
-                            thiophene_in_reactants = True
-                        if checker.check_ring("thiazole", reactant):
-                            thiazole_in_reactants = True
-
-                    if not (thiophene_in_reactants and thiazole_in_reactants):
-                        print(f"Found thiophene-thiazole system formation at depth {depth}")
-                        forms_heterocycle = True
-                        return
+                                if reactant != nitrile_reactant:
+                                    reactant_mol = Chem.MolFromSmiles(reactant)
+                                    if reactant_mol and reactant_mol.HasSubstructMatch(
+                                        Chem.MolFromSmarts("[N][O]")
+                                    ):
+                                        print(
+                                            f"Found hydroxylamine-like structure in reactant: {reactant}"
+                                        )
+                                        found_nitrile_conversion = True
+                                        break
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return forms_heterocycle
+
+    return found_nitrile_conversion

@@ -2,48 +2,52 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves an indole-containing compound.
+    Detects if the synthesis route involves compounds containing a fluorophenyl group.
     """
-    has_indole = False
+    result = False
 
-    def dfs_traverse(node):
-        nonlocal has_indole
+    def dfs_traverse(node, depth=0):
+        nonlocal result
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Indole pattern
-                indole_pattern = Chem.MolFromSmarts("c1cccc2c1nc[c]2")
-                if mol.HasSubstructMatch(indole_pattern):
-                    has_indole = True
-                    print("Indole scaffold detected")
+        if node["type"] == "mol" and "smiles" in node:
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                # Fluorophenyl SMARTS pattern
+                fluorophenyl_pattern = Chem.MolFromSmarts("c-[F]")
+                if mol and mol.HasSubstructMatch(fluorophenyl_pattern):
+                    print(f"Detected fluorophenyl group at depth {depth}")
+                    result = True
+            except:
+                pass
 
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    return has_indole
+    return result

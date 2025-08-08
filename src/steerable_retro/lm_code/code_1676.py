@@ -2,71 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects amide formation reactions in the synthesis route.
-    Looks for reactions where an amine and carboxylic acid/derivative form an amide.
+    This function detects a synthetic strategy involving protection/deprotection sequences,
+    specifically focusing on Boc protection of amines.
     """
-    result = False
+    has_protection = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal result
+    def dfs_traverse(node):
+        nonlocal has_protection
 
         if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
+            reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Parse reactants and product
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".") if r]
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
             product = Chem.MolFromSmiles(product_smiles)
 
-            if not all(reactants) or not product:
-                print("Warning: Could not parse all molecules in reaction")
-                return
+            if product and all(r for r in reactants):
+                # Check for Boc protection
+                boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")
+                boc_anhydride_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)OC(=O)O")
 
-            # Check for amine in reactants
-            amine_pattern = Chem.MolFromSmarts("[#6]-[NH2]")
-            has_amine = any(mol.HasSubstructMatch(amine_pattern) for mol in reactants)
+                has_boc_product = product.HasSubstructMatch(boc_pattern)
+                has_boc_reagent = any(
+                    r.HasSubstructMatch(boc_anhydride_pattern) for r in reactants if r
+                )
 
-            # Check for carboxylic acid or derivative in reactants
-            acid_pattern = Chem.MolFromSmarts("[#6]-C(=O)-[OH]")
-            ester_pattern = Chem.MolFromSmarts("[#6]-C(=O)-O-[#6]")
-            has_acid_or_ester = any(
-                mol.HasSubstructMatch(acid_pattern) or mol.HasSubstructMatch(ester_pattern)
-                for mol in reactants
-            )
+                if has_boc_product and has_boc_reagent:
+                    has_protection = True
+                    print("Detected Boc protection")
 
-            # Check for amide in product
-            amide_pattern = Chem.MolFromSmarts("[#6]-C(=O)-N")
-            has_amide_product = product.HasSubstructMatch(amide_pattern)
-
-            if has_amine and has_acid_or_ester and has_amide_product:
-                print(f"Found amide formation at depth {depth}")
-                result = True
-
-        # Continue traversing
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return result
+
+    return has_protection

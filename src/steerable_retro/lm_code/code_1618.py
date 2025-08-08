@@ -2,187 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the route includes a bromination step of a heterocycle,
-    particularly a thiophene.
+    This function detects a synthetic strategy involving late-stage urea formation.
     """
-    found = False
+    has_urea_formation = False
+    urea_formation_depth = None
+    max_depth = 0
 
-    # List of heterocycles to check
-    heterocycles = [
-        "thiophene",
-        "furan",
-        "pyrrole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyridine",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-    ]
+    def dfs_traverse(node, depth=0):
+        nonlocal has_urea_formation, urea_formation_depth, max_depth
 
-    def dfs_traverse(node):
-        nonlocal found
+        # Update max depth
+        max_depth = max(max_depth, depth)
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if this is a bromination reaction
-            is_bromination = (
-                checker.check_reaction("Aromatic bromination", rsmi)
-                or checker.check_reaction("Bromination", rsmi)
-                or checker.check_reaction("Wohl-Ziegler bromination benzyl primary", rsmi)
-                or checker.check_reaction("Wohl-Ziegler bromination benzyl secondary", rsmi)
-                or checker.check_reaction("Wohl-Ziegler bromination benzyl tertiary", rsmi)
-                or checker.check_reaction("Wohl-Ziegler bromination allyl primary", rsmi)
-                or checker.check_reaction("Wohl-Ziegler bromination allyl secondary", rsmi)
-                or checker.check_reaction("Wohl-Ziegler bromination allyl tertiary", rsmi)
-            )
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-            # If it's a bromination reaction, check for heterocycles
-            if is_bromination:
-                print(f"Found bromination reaction: {rsmi}")
+            if product and all(r for r in reactants):
+                # Check for urea formation
+                urea_pattern = Chem.MolFromSmarts("[#7]-[#6](=[#8])-[#7]")
+                product_has_urea = product and product.HasSubstructMatch(urea_pattern)
 
-                # Check for heterocycle in reactants
-                reactant_with_heterocycle = None
-                heterocycle_found = None
-
-                for reactant in reactants:
-                    if not reactant:
-                        continue
-
-                    for heterocycle in heterocycles:
-                        if checker.check_ring(heterocycle, reactant):
-                            heterocycle_found = heterocycle
-                            reactant_with_heterocycle = reactant
-                            print(f"Found {heterocycle} in reactant: {reactant}")
-                            break
-
-                    if heterocycle_found:
-                        break
-
-                # If a heterocycle was found in reactants, check if it was brominated
-                if heterocycle_found and reactant_with_heterocycle:
-                    # Check if product has the same heterocycle
-                    if checker.check_ring(heterocycle_found, product):
-                        # Check if product has aromatic halide with bromine
-                        if checker.check_fg("Aromatic halide", product) and "Br" in product:
-                            # Count bromines in heterocycle reactant and product
-                            reactant_br_count = reactant_with_heterocycle.count("Br")
-                            product_br_count = product.count("Br")
-
-                            # If product has more bromines than the heterocycle reactant
-                            if product_br_count > reactant_br_count:
-                                found = True
-                                print(f"Found bromination of {heterocycle_found}: {rsmi}")
-                                # Give special attention to thiophene as mentioned in function description
-                                if heterocycle_found == "thiophene":
-                                    print(f"Specifically found bromination of thiophene!")
-
-            # If not identified as bromination by reaction type, check for bromination patterns
-            elif not is_bromination:
-                # Look for heterocycle in reactants
-                reactant_with_heterocycle = None
-                heterocycle_found = None
-
-                for reactant in reactants:
-                    if not reactant:
-                        continue
-
-                    for heterocycle in heterocycles:
-                        if checker.check_ring(heterocycle, reactant):
-                            heterocycle_found = heterocycle
-                            reactant_with_heterocycle = reactant
-                            print(f"Found {heterocycle} in reactant: {reactant}")
-                            break
-
-                    if heterocycle_found:
-                        break
-
-                # If heterocycle found, check for bromination pattern
-                if heterocycle_found and reactant_with_heterocycle:
-                    # Check if any reactant contains bromine (potential brominating agent)
-                    has_bromine_reagent = any(
-                        "Br" in r for r in reactants if r != reactant_with_heterocycle
-                    )
-
-                    # Check if product has the same heterocycle
-                    if checker.check_ring(heterocycle_found, product) and has_bromine_reagent:
-                        # Check if product has aromatic halide with bromine
-                        if checker.check_fg("Aromatic halide", product) and "Br" in product:
-                            # Count bromines in heterocycle reactant and product
-                            reactant_br_count = reactant_with_heterocycle.count("Br")
-                            product_br_count = product.count("Br")
-
-                            # If product has more bromines than the heterocycle reactant
-                            if product_br_count > reactant_br_count:
-                                found = True
-                                print(
-                                    f"Found bromination of {heterocycle_found} by pattern matching: {rsmi}"
-                                )
-                                # Give special attention to thiophene as mentioned in function description
-                                if heterocycle_found == "thiophene":
-                                    print(f"Specifically found bromination of thiophene!")
+                if product_has_urea and not any(
+                    r and r.HasSubstructMatch(urea_pattern) for r in reactants if r
+                ):
+                    has_urea_formation = True
+                    urea_formation_depth = depth
+                    print(f"Found urea formation at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Bromination of heterocycle: {found}")
-    return found
+    # Check if the strategy is present
+    # For late-stage, the urea formation should be at a low depth (closer to the final product)
+    strategy_present = (
+        has_urea_formation and urea_formation_depth is not None and urea_formation_depth <= 1
+    )
+
+    print(f"Late-stage urea formation strategy detected: {strategy_present}")
+    return strategy_present

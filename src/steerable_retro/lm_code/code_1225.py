@@ -2,60 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving late-stage nitrogen functionalization,
-    specifically sulfonylation of indole nitrogen in the final steps.
+    This function detects if the synthesis involves reduction of an ester to an alcohol.
     """
-    late_stage_functionalization = False
+    found_pattern = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_functionalization
+    def dfs_traverse(node):
+        nonlocal found_pattern
 
-        if node["type"] == "reaction" and depth <= 1:  # Check only late-stage reactions (low depth)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-                product_mol = Chem.MolFromSmiles(product) if product else None
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                if product_mol:
-                    # Check for indole N-sulfonylation
-                    indole_sulfonyl_pattern = Chem.MolFromSmarts("c1ccc2c(c1)ccn2S(=O)(=O)[#6]")
-                    if product_mol.HasSubstructMatch(indole_sulfonyl_pattern):
-                        # Check if sulfonyl group is being added in this step
-                        reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                        if not any(
-                            r and r.HasSubstructMatch(indole_sulfonyl_pattern)
-                            for r in reactant_mols
-                        ):
-                            print(f"Detected late-stage indole N-sulfonylation at depth {depth}")
-                            late_stage_functionalization = True
+            # Ester pattern
+            ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])-[#6]")
+            alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
 
-        # Traverse children
+            has_ester = False
+            for reactant in reactants:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol and mol.HasSubstructMatch(ester_pattern):
+                    has_ester = True
+
+            product_mol = Chem.MolFromSmiles(product)
+            if has_ester and product_mol and product_mol.HasSubstructMatch(alcohol_pattern):
+                found_pattern = True
+                print("Ester reduction to alcohol detected")
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-    return late_stage_functionalization
+    return found_pattern

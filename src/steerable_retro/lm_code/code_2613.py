@@ -2,56 +2,50 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves borylation of an aryl halide
-    to prepare for a subsequent coupling reaction.
+    Detects if the synthesis route involves a benzyl ether linker between aromatic rings.
     """
-    borylation_detected = False
+    has_benzyl_ether = False
 
     def dfs_traverse(node):
-        nonlocal borylation_detected
+        nonlocal has_benzyl_ether
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            # Check for benzyl ether pattern
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                benzyl_ether_pattern = Chem.MolFromSmarts("c-[CH2]-[O]-c")
+                if mol.HasSubstructMatch(benzyl_ether_pattern):
+                    has_benzyl_ether = True
+                    print(f"Detected benzyl ether linker in molecule: {node['smiles']}")
 
-            # Check for borylation pattern
-            product_mol = Chem.MolFromSmiles(product)
-            boronate_patt = Chem.MolFromSmarts("[#6]-[B]([O][C])[O][C]")
-
-            if product_mol and product_mol.HasSubstructMatch(boronate_patt):
-                # Check if reactant had a halide
-                halide_patt = Chem.MolFromSmarts("[#6]-[Br,I,Cl]")
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(halide_patt):
-                        print("Borylation detected")
-                        borylation_detected = True
-                        break
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return borylation_detected
+    return has_benzyl_ether

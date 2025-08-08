@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,150 +54,168 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthetic route incorporates a cycloalkyl group via alkylation.
+    This function detects a convergent synthesis strategy where two heterocycle-forming
+    pathways converge before a final bond-forming step.
     """
-    cycloalkyl_incorporation_found = False
+    # Initialize tracking variables
+    heterocycle_formations = []  # (depth, branch, ring, mol_smiles)
+    convergent_reactions = []  # (depth, reaction_node, [branch_ids])
+    branch_paths = {}  # branch_id -> list of molecule smiles in the path
 
-    # List of cycloalkyl rings to check
-    cycloalkyl_rings = [
-        "cyclopropane",
-        "cyclobutane",
-        "cyclopentane",
-        "cyclohexane",
-        "cycloheptane",
-        "cyclooctane",
+    # List of heterocyclic rings to check
+    heterocycles = [
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "quinoline",
+        "isoquinoline",
+        "indole",
+        "purine",
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "furan",
+        "thiophene",
+        "isoxazole",
+        "isothiazole",
     ]
 
-    # List of alkylation reaction types
-    alkylation_reactions = [
-        "N-alkylation of primary amines with alkyl halides",
-        "N-alkylation of secondary amines with alkyl halides",
-        "S-alkylation of thiols",
-        "S-alkylation of thiols (ethyl)",
-        "S-alkylation of thiols with alcohols",
-        "S-alkylation of thiols with alcohols (ethyl)",
-        "Williamson Ether Synthesis",
-        "Alkylation of amines",
-        "Methylation with MeI_primary",
-        "Methylation with MeI_secondary",
-        "Methylation with MeI_tertiary",
-        "Methylation with MeI_aryl",
-        "Methylation with MeI_SH",
-        "Methylation",
-        "Methylation of OH with DMS",
-        "Methylation with DMS",
-        "Methylation with DMC",
-        "DMS COOH methylation",
-        "DMS Amine methylation",
-        "N-methylation",
-        "S-methylation",
-        "O-methylation",
-        "C-methylation",
-        "Friedel-Crafts alkylation",
-        "Friedel-Crafts alkylation with halide",
-    ]
+    # Track molecule nodes to their branch IDs
+    mol_to_branch = {}
+    next_branch_id = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal cycloalkyl_incorporation_found
+    def get_branch_id(mol_smiles):
+        nonlocal next_branch_id, mol_to_branch
+        if mol_smiles not in mol_to_branch:
+            mol_to_branch[mol_smiles] = next_branch_id
+            branch_paths[next_branch_id] = [mol_smiles]
+            next_branch_id += 1
+        return mol_to_branch[mol_smiles]
 
-        if cycloalkyl_incorporation_found:
-            return  # Early return if already found
+    def dfs_traverse(node, depth=0, parent_branch=None):
+        nonlocal heterocycle_formations, convergent_reactions
 
-        print(f"Examining node at depth {depth}: {node.get('type', 'unknown')}")
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            current_branch = get_branch_id(mol_smiles)
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            # If this is a continuation of a branch, update the branch path
+            if parent_branch is not None and parent_branch == current_branch:
+                if mol_smiles not in branch_paths[current_branch]:
+                    branch_paths[current_branch].append(mol_smiles)
+
+            # Check for heterocycles in this molecule
+            mol_heterocycles = []
+            for ring in heterocycles:
+                if checker.check_ring(ring, mol_smiles):
+                    mol_heterocycles.append(ring)
+
+            # Traverse children with the current branch ID
+            for child in node.get("children", []):
+                dfs_traverse(child, depth + 1, current_branch)
+
+        elif node["type"] == "reaction":
+            try:
+                # Extract reaction information
                 rsmi = node["metadata"]["rsmi"]
-                print(f"Reaction SMILES: {rsmi}")
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # In retrosynthetic direction:
-                # - The "product" is the starting material (forward direction)
-                # - The "reactants" are the retrosynthetic products
-                forward_product = rsmi.split(">")[-1]
-                forward_reactants = rsmi.split(">")[0].split(".")
+                # Get branch IDs of reactants
+                reactant_branches = []
+                for r_smiles in reactants_smiles:
+                    if r_smiles in mol_to_branch:
+                        reactant_branches.append(mol_to_branch[r_smiles])
+                    else:
+                        # If reactant not seen before, assign a new branch ID
+                        branch_id = get_branch_id(r_smiles)
+                        reactant_branches.append(branch_id)
 
-                # Check if this is an alkylation reaction
-                is_alkylation = False
-                for reaction_type in alkylation_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        is_alkylation = True
-                        print(f"Found alkylation reaction: {reaction_type}")
-                        break
+                # Check for heterocycle formation
+                for ring in heterocycles:
+                    # Check if product contains heterocycle
+                    if checker.check_ring(ring, product_smiles):
+                        # Check which reactants don't have the heterocycle
+                        for i, r_smiles in enumerate(reactants_smiles):
+                            if not checker.check_ring(ring, r_smiles):
+                                branch_id = (
+                                    reactant_branches[i]
+                                    if i < len(reactant_branches)
+                                    else get_branch_id(r_smiles)
+                                )
+                                print(
+                                    f"Detected {ring} formation at depth {depth} in branch {branch_id}"
+                                )
+                                heterocycle_formations.append(
+                                    (depth, branch_id, ring, product_smiles)
+                                )
 
-                # Special case for C-C bond formation reactions with organolithium or similar
-                if not is_alkylation and ("[Li]" in rsmi or "Li" in rsmi):
-                    print("Checking for organolithium-mediated alkylation")
-                    # Look for alkyl halide with cycloalkyl
-                    for reactant in forward_reactants:
-                        for ring in cycloalkyl_rings:
-                            if checker.check_ring(ring, reactant) and any(
-                                x in reactant for x in ["I", "Br", "Cl"]
-                            ):
-                                is_alkylation = True
-                                print(f"Found organolithium-mediated alkylation with {ring}")
-                                break
-                        if is_alkylation:
-                            break
+                # Check for convergent pattern - reaction with reactants from different branches
+                unique_branches = set(reactant_branches)
+                if len(unique_branches) >= 2:
+                    print(
+                        f"Detected convergent reaction at depth {depth} with branches {unique_branches}"
+                    )
+                    convergent_reactions.append((depth, node, list(unique_branches)))
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
 
-                # Special case for C-alkylation reactions not covered by standard types
-                if not is_alkylation:
-                    for reactant in forward_reactants:
-                        # Check for alkyl halide with cycloalkyl
-                        for ring in cycloalkyl_rings:
-                            if checker.check_ring(ring, reactant) and any(
-                                x in reactant for x in ["I", "Br", "Cl"]
-                            ):
-                                # Check if product has the cycloalkyl ring and a new C-C bond
-                                if checker.check_ring(ring, forward_product):
-                                    is_alkylation = True
-                                    print(f"Found C-C bond formation with {ring}")
-                                    break
-                        if is_alkylation:
-                            break
+            # Traverse children
+            for child in node.get("children", []):
+                dfs_traverse(child, depth + 1, parent_branch)
 
-                if is_alkylation:
-                    # Check for cycloalkyl group in forward reactants (alkylating agents)
-                    cycloalkyl_reactant = None
-                    cycloalkyl_ring_found = None
-
-                    for reactant in forward_reactants:
-                        for ring in cycloalkyl_rings:
-                            if checker.check_ring(ring, reactant):
-                                cycloalkyl_reactant = reactant
-                                cycloalkyl_ring_found = ring
-                                print(f"Found {ring} in reactant: {reactant}")
-                                break
-                        if cycloalkyl_reactant:
-                            break
-
-                    # Check if the cycloalkyl group is incorporated into the forward product
-                    if cycloalkyl_reactant and checker.check_ring(
-                        cycloalkyl_ring_found, forward_product
-                    ):
-                        # Verify this is an actual incorporation (not already present)
-                        # Check if any of the other reactants already had the cycloalkyl group
-                        other_reactants = [r for r in forward_reactants if r != cycloalkyl_reactant]
-
-                        # If there's at least one other reactant without the cycloalkyl group,
-                        # and the product has it, then it was incorporated
-                        if other_reactants:
-                            for other_reactant in other_reactants:
-                                if not checker.check_ring(cycloalkyl_ring_found, other_reactant):
-                                    print(
-                                        f"Found reactant without {cycloalkyl_ring_found}: {other_reactant}"
-                                    )
-                                    print(
-                                        f"Confirmed {cycloalkyl_ring_found} incorporation via alkylation"
-                                    )
-                                    cycloalkyl_incorporation_found = True
-                                    return
-
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
-
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-    print(f"Final result: {cycloalkyl_incorporation_found}")
 
-    return cycloalkyl_incorporation_found
+    # Get branches that form heterocycles
+    heterocycle_branches = set(branch for _, branch, _, _ in heterocycle_formations)
+    print(f"Branches with heterocycle formation: {heterocycle_branches}")
+
+    # Check if we have a convergent reaction that combines heterocycle-forming branches
+    convergent_heterocycle_synthesis = False
+    for depth, _, branches in convergent_reactions:
+        # Check if this convergent reaction combines at least two heterocycle-forming branches
+        heterocycle_branches_in_reaction = [b for b in branches if b in heterocycle_branches]
+        if len(heterocycle_branches_in_reaction) >= 2:
+            print(
+                f"Found convergent reaction at depth {depth} combining heterocycle branches: {heterocycle_branches_in_reaction}"
+            )
+            convergent_heterocycle_synthesis = True
+            break
+
+    # If no direct convergent reaction found, check if heterocycle-forming branches eventually converge
+    if not convergent_heterocycle_synthesis and len(heterocycle_branches) >= 2:
+        # Check if any convergent reaction has ancestors from different heterocycle-forming branches
+        for depth, node, branches in convergent_reactions:
+            # Check if branches in this convergent reaction have ancestors from heterocycle-forming branches
+            branch_ancestors = set()
+            for branch in branches:
+                # Check if this branch or any of its ancestors formed a heterocycle
+                if branch in heterocycle_branches:
+                    branch_ancestors.add(branch)
+                # Check branch path for molecules that are in heterocycle-forming branches
+                for mol_smiles in branch_paths.get(branch, []):
+                    for hc_depth, hc_branch, _, hc_mol in heterocycle_formations:
+                        if mol_smiles == hc_mol and hc_branch != branch:
+                            branch_ancestors.add(hc_branch)
+
+            if len(branch_ancestors.intersection(heterocycle_branches)) >= 2:
+                print(
+                    f"Found convergent reaction at depth {depth} with ancestors from heterocycle branches: {branch_ancestors}"
+                )
+                convergent_heterocycle_synthesis = True
+                break
+
+    print(f"Heterocycle formations: {heterocycle_formations}")
+    print(f"Convergent reactions: {convergent_reactions}")
+    print(f"Strategy detected: {convergent_heterocycle_synthesis}")
+
+    return convergent_heterocycle_synthesis

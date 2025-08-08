@@ -2,77 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects N-benzylation of a nitrogen heterocycle (like tetrahydroisoquinoline)
+    Detects if the synthetic route builds complex nitrogen-rich heterocyclic structures.
     """
-    found_n_benzylation = False
+    nitrogen_heterocycle_count = 0
+    morpholine_pattern = Chem.MolFromSmarts("[#7]1-[#6]-[#6]-[#8]-[#6]-[#6]-1")
+    piperazine_pattern = Chem.MolFromSmarts("[#7]1-[#6]-[#6]-[#7]-[#6]-[#6]-1")
+    piperidine_pattern = Chem.MolFromSmarts("[#7]1-[#6]-[#6]-[#6]-[#6]-[#6]-1")
 
     def dfs_traverse(node):
-        nonlocal found_n_benzylation
+        nonlocal nitrogen_heterocycle_count
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and node.get("smiles"):
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Count different nitrogen heterocycles
+                    if mol.HasSubstructMatch(morpholine_pattern):
+                        nitrogen_heterocycle_count += 1
+                        print(f"Found morpholine structure in: {node['smiles']}")
+                    if mol.HasSubstructMatch(piperazine_pattern):
+                        nitrogen_heterocycle_count += 1
+                        print(f"Found piperazine structure in: {node['smiles']}")
+                    if mol.HasSubstructMatch(piperidine_pattern):
+                        nitrogen_heterocycle_count += 1
+                        print(f"Found piperidine structure in: {node['smiles']}")
+            except:
+                print(f"Error processing molecule SMILES: {node['smiles']}")
 
-            # Check for N-benzylation pattern
-            if len(reactants) == 2:  # Typically two reactants for N-alkylation
-                product_mol = Chem.MolFromSmiles(product)
-
-                if product_mol:
-                    # SMARTS for N-benzylated heterocycle
-                    n_benzyl_pattern = Chem.MolFromSmarts("[#7;R]-[#6]-[c]1[c][c][c][c][c]1")
-
-                    # Check if the product has this pattern
-                    if product_mol.HasSubstructMatch(n_benzyl_pattern):
-                        # Check if one reactant has the heterocycle and one has the benzyl group
-                        heterocycle_found = False
-                        benzyl_found = False
-
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                # SMARTS for nitrogen heterocycle
-                                heterocycle_pattern = Chem.MolFromSmarts("[#7;R]")
-                                # SMARTS for benzyl halide
-                                benzyl_halide_pattern = Chem.MolFromSmarts(
-                                    "[#6]-[c]1[c][c][c][c][c]1"
-                                )
-
-                                if reactant_mol.HasSubstructMatch(heterocycle_pattern):
-                                    heterocycle_found = True
-                                if reactant_mol.HasSubstructMatch(benzyl_halide_pattern):
-                                    benzyl_found = True
-
-                        if heterocycle_found and benzyl_found:
-                            found_n_benzylation = True
-                            print("Found N-benzylation of nitrogen heterocycle")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return found_n_benzylation
+    print(f"Total nitrogen heterocycles detected: {nitrogen_heterocycle_count}")
+    return nitrogen_heterocycle_count >= 2

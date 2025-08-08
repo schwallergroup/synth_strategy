@@ -2,62 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves multiple amide bond formations.
+    This function detects a synthetic strategy involving activation of an alcohol
+    to a chloride (OH → Cl) as a leaving group.
     """
-    amide_formation_count = 0
+    alcohol_to_chloride_detected = False
 
     def dfs_traverse(node):
-        nonlocal amide_formation_count
+        nonlocal alcohol_to_chloride_detected
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for amide formation
+            # Check for alcohol to chloride conversion
+            alcohol_pattern = Chem.MolFromSmarts("[#8H1][#6]")
+            chloride_pattern = Chem.MolFromSmarts("[Cl][#6]")
+
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
             product_mol = Chem.MolFromSmiles(product) if product else None
 
-            if product_mol:
-                amide_pattern = Chem.MolFromSmarts("[#7][#6](=[#8])")
-                matches_in_product = len(product_mol.GetSubstructMatches(amide_pattern))
+            if (
+                product_mol
+                and any(r and r.HasSubstructMatch(alcohol_pattern) for r in reactant_mols)
+                and product_mol.HasSubstructMatch(chloride_pattern)
+            ):
+                # Additional check to confirm it's an alcohol to chloride conversion
+                # Look for OH disappearance and Cl appearance
+                if any(
+                    r and r.HasSubstructMatch(alcohol_pattern) for r in reactant_mols
+                ) and not any(r and r.HasSubstructMatch(chloride_pattern) for r in reactant_mols):
+                    print(f"Detected alcohol to chloride conversion: {rsmi}")
+                    alcohol_to_chloride_detected = True
 
-                # Count amide bonds in reactants
-                amide_in_reactants = 0
-                for r in reactants:
-                    reactant_mol = Chem.MolFromSmiles(r) if r else None
-                    if reactant_mol:
-                        amide_in_reactants += len(reactant_mol.GetSubstructMatches(amide_pattern))
-
-                # If product has more amide bonds than reactants combined, amide formation occurred
-                if matches_in_product > amide_in_reactants:
-                    print(
-                        f"Found amide formation: {matches_in_product - amide_in_reactants} new amide bonds"
-                    )
-                    amide_formation_count += matches_in_product - amide_in_reactants
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return amide_formation_count >= 2  # Return True if at least 2 amide formations
+
+    print(f"Alcohol activation to chloride strategy detected: {alcohol_to_chloride_detected}")
+    return alcohol_to_chloride_detected

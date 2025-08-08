@@ -2,66 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a Suzuki coupling reaction
-    (aryl halide + boronate ester → biaryl).
+    Detects if the synthesis route involves SNAr with morpholine as a nucleophile.
     """
-    suzuki_coupling_detected = False
+    has_snar_morpholine = False
 
-    def dfs_traverse(node):
-        nonlocal suzuki_coupling_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal has_snar_morpholine
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Get reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for Suzuki coupling pattern
-            boronate_patt = Chem.MolFromSmarts("[#6]-[B]([O][C])[O][C]")
-            halide_patt = Chem.MolFromSmarts("[#6]-[Br,I,Cl]")
+            # Check for morpholine in reactants
+            morpholine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#8][#6][#6]1")
 
-            has_boronate = False
-            has_halide = False
+            # Check for aryl halide in reactants
+            aryl_halide_pattern = Chem.MolFromSmarts("c-[#17,#35,#53]")
 
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if not reactant_mol:
-                    continue
+            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                if reactant_mol.HasSubstructMatch(boronate_patt):
-                    has_boronate = True
-                if reactant_mol.HasSubstructMatch(halide_patt):
-                    has_halide = True
+            if product_mol and all(reactant_mols):
+                has_morpholine = any(
+                    [mol and mol.HasSubstructMatch(morpholine_pattern) for mol in reactant_mols]
+                )
+                has_aryl_halide = any(
+                    [mol and mol.HasSubstructMatch(aryl_halide_pattern) for mol in reactant_mols]
+                )
 
-            if has_boronate and has_halide:
-                # Check if product has a new biaryl bond
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    print("Suzuki coupling detected")
-                    suzuki_coupling_detected = True
+                # Check if product has morpholine connected to aryl
+                aryl_morpholine_pattern = Chem.MolFromSmarts("c-[#7]1[#6][#6][#8][#6][#6]1")
+                has_aryl_morpholine = product_mol.HasSubstructMatch(aryl_morpholine_pattern)
 
+                if has_morpholine and has_aryl_halide and has_aryl_morpholine:
+                    has_snar_morpholine = True
+                    print(f"Detected SNAr with morpholine at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return suzuki_coupling_detected
+    return has_snar_morpholine

@@ -2,81 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving a sequence of functional group interconversions,
-    such as alkyne reduction and azide reduction.
+    Detects if the synthetic route includes an SNAr reaction with morpholine
+    as a nucleophile, typically on an electron-deficient aromatic ring.
     """
-    found_alkyne_reduction = False
-    found_azide_reduction = False
+    snar_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_alkyne_reduction, found_azide_reduction
+        nonlocal snar_found
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for alkyne reduction
-                alkyne_pattern = Chem.MolFromSmarts("[C]#[C]")
+                # Check for aryl fluoride or other halide (especially with electron-withdrawing groups)
+                aryl_halide_pattern = Chem.MolFromSmarts("[c][F,Cl,Br,I]")
+                # Check for morpholine
+                morpholine_pattern = Chem.MolFromSmarts("[NH]1CCOC[C]1")
+                # Check for aryl-morpholine in product
+                aryl_morpholine_pattern = Chem.MolFromSmarts("[c][N]1CCOC[C]1")
 
-                try:
-                    reactant_mol = Chem.MolFromSmiles(reactants_str)
-                    product_mol = Chem.MolFromSmiles(product_str)
+                aryl_halide_present = False
+                morpholine_present = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(aryl_halide_pattern):
+                            aryl_halide_present = True
+                        if mol.HasSubstructMatch(morpholine_pattern):
+                            morpholine_present = True
 
-                    if (
-                        reactant_mol
-                        and product_mol
-                        and reactant_mol.HasSubstructMatch(alkyne_pattern)
-                        and not product_mol.HasSubstructMatch(alkyne_pattern)
-                    ):
-                        found_alkyne_reduction = True
-                        print(f"Found alkyne reduction at depth {depth}")
-                except:
-                    pass
+                product_mol = Chem.MolFromSmiles(product)
+                aryl_morpholine_present = False
+                if product_mol:
+                    aryl_morpholine_present = product_mol.HasSubstructMatch(aryl_morpholine_pattern)
 
-                # Check for azide reduction
-                azide_pattern = Chem.MolFromSmarts("[N-]=[N+]=[N]")
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                if aryl_halide_present and morpholine_present and aryl_morpholine_present:
+                    print(f"Found SNAr with morpholine at depth {depth}")
+                    snar_found = True
 
-                try:
-                    for reactant in reactants_str.split("."):
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(azide_pattern):
-                            product_mol = Chem.MolFromSmiles(product_str)
-                            if product_mol and product_mol.HasSubstructMatch(amine_pattern):
-                                found_azide_reduction = True
-                                print(f"Found azide reduction at depth {depth}")
-                except:
-                    pass
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    # Return True if we found multiple functional group interconversions
-    return found_alkyne_reduction and found_azide_reduction
+    return snar_found

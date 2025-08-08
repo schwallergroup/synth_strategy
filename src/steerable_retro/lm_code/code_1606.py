@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,100 +54,117 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving amide coupling between a heterocyclic
-    carboxylic acid and an amine with a stereocenter.
+    This function detects synthesis involving quinolone heterocyclic systems.
     """
-    # Define heterocyclic rings to check
-    heterocyclic_rings = [
-        "furan",
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "benzimidazole",
-    ]
+    quinolone_detected = False
 
-    # Track if we've found the required components in a single reaction
-    found_valid_reaction = False
+    def dfs_traverse(node, depth=0):
+        nonlocal quinolone_detected
 
-    def dfs_traverse(node):
-        nonlocal found_valid_reaction
+        if node["type"] == "mol":
+            smiles = node["smiles"]
 
-        if node["type"] == "reaction" and not found_valid_reaction:
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+            try:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    print(f"Could not parse molecule: {smiles}")
+                    return
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Check for quinolone structure - a quinoline with a carbonyl group
+                if checker.check_ring("quinoline", smiles) or checker.check_ring(
+                    "isoquinoline", smiles
+                ):
+                    # Check for carbonyl group in the right position (quinolone)
+                    quinolone_pattern = Chem.MolFromSmarts("c1ccc2c(c1)c(=O)[nH]c2")
+                    isoquinolone_pattern = Chem.MolFromSmarts("c1ccc2c(c1)[nH]c(=O)c2")
 
-            # Check for amide coupling reaction
-            is_amide_coupling = (
-                checker.check_reaction(
-                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
-                )
-                or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
-                or checker.check_reaction("Schotten-Baumann_amide", rsmi)
-            )
+                    if mol.HasSubstructMatch(quinolone_pattern):
+                        print(f"Quinolone system detected in molecule: {smiles}")
+                        quinolone_detected = True
+                    elif mol.HasSubstructMatch(isoquinolone_pattern):
+                        print(f"Isoquinolone system detected in molecule: {smiles}")
+                        quinolone_detected = True
 
-            if not is_amide_coupling:
-                # Alternative check for amide formation
-                has_acid = any(checker.check_fg("Carboxylic acid", r) for r in reactants_smiles)
-                has_amine = any(
-                    checker.check_fg("Primary amine", r) or checker.check_fg("Secondary amine", r)
-                    for r in reactants_smiles
-                )
-                has_amide = checker.check_fg("Primary amide", product_smiles) or checker.check_fg(
-                    "Secondary amide", product_smiles
-                )
+                    # Additional check for N-substituted quinolones
+                    n_subst_quinolone = Chem.MolFromSmarts("c1ccc2c(c1)c(=O)nc2")
+                    n_subst_isoquinolone = Chem.MolFromSmarts("c1ccc2c(c1)nc(=O)c2")
 
-                is_amide_coupling = has_acid and has_amine and has_amide
+                    if mol.HasSubstructMatch(n_subst_quinolone):
+                        print(f"N-substituted quinolone detected in molecule: {smiles}")
+                        quinolone_detected = True
+                    elif mol.HasSubstructMatch(n_subst_isoquinolone):
+                        print(f"N-substituted isoquinolone detected in molecule: {smiles}")
+                        quinolone_detected = True
 
-            if is_amide_coupling:
-                print(f"Found amide coupling reaction: {rsmi}")
+            except Exception as e:
+                print(f"Error analyzing molecule: {e}")
 
-                # Check for heterocyclic acid
-                heterocyclic_acid_found = False
-                for reactant in reactants_smiles:
-                    if checker.check_fg("Carboxylic acid", reactant):
-                        # Check if it contains a heterocyclic ring
-                        for ring in heterocyclic_rings:
-                            if checker.check_ring(ring, reactant):
-                                print(f"Found heterocyclic acid with {ring} ring: {reactant}")
-                                heterocyclic_acid_found = True
-                                break
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for amine with stereocenter
-                stereocenter_amine_found = False
-                for reactant in reactants_smiles:
-                    if ("@H" in reactant or "@@H" in reactant) and (
-                        checker.check_fg("Primary amine", reactant)
-                        or checker.check_fg("Secondary amine", reactant)
+                # Check if this is a known quinoline/quinolone forming reaction
+                if checker.check_reaction("Friedlaender chinoline", rsmi):
+                    print(f"Friedlaender quinoline synthesis detected: {rsmi}")
+                    quinolone_detected = True
+
+                # Check if product contains quinolone but reactants don't
+                product_has_quinolone = False
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    quinolone_pattern = Chem.MolFromSmarts("c1ccc2c(c1)c(=O)[nH]c2")
+                    isoquinolone_pattern = Chem.MolFromSmarts("c1ccc2c(c1)[nH]c(=O)c2")
+                    n_subst_quinolone = Chem.MolFromSmarts("c1ccc2c(c1)c(=O)nc2")
+                    n_subst_isoquinolone = Chem.MolFromSmarts("c1ccc2c(c1)nc(=O)c2")
+
+                    if (
+                        product_mol.HasSubstructMatch(quinolone_pattern)
+                        or product_mol.HasSubstructMatch(isoquinolone_pattern)
+                        or product_mol.HasSubstructMatch(n_subst_quinolone)
+                        or product_mol.HasSubstructMatch(n_subst_isoquinolone)
                     ):
-                        print(f"Found amine with stereocenter: {reactant}")
-                        stereocenter_amine_found = True
+                        product_has_quinolone = True
 
-                # If both conditions are met in the same reaction
-                if heterocyclic_acid_found and stereocenter_amine_found:
-                    print("Found valid heterocyclic amide coupling with stereocenter")
-                    found_valid_reaction = True
+                reactants_have_quinolone = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        quinolone_pattern = Chem.MolFromSmarts("c1ccc2c(c1)c(=O)[nH]c2")
+                        isoquinolone_pattern = Chem.MolFromSmarts("c1ccc2c(c1)[nH]c(=O)c2")
+                        n_subst_quinolone = Chem.MolFromSmarts("c1ccc2c(c1)c(=O)nc2")
+                        n_subst_isoquinolone = Chem.MolFromSmarts("c1ccc2c(c1)nc(=O)c2")
 
-        # Traverse children
+                        if (
+                            reactant_mol.HasSubstructMatch(quinolone_pattern)
+                            or reactant_mol.HasSubstructMatch(isoquinolone_pattern)
+                            or reactant_mol.HasSubstructMatch(n_subst_quinolone)
+                            or reactant_mol.HasSubstructMatch(n_subst_isoquinolone)
+                        ):
+                            reactants_have_quinolone = True
+                            break
+
+                # If quinolone is formed in this reaction
+                if product_has_quinolone and not reactants_have_quinolone:
+                    print(f"Quinolone formation detected in reaction: {rsmi}")
+                    quinolone_detected = True
+
+                # Check for ring formation that might create quinoline structure
+                if not reactants_have_quinolone and (
+                    checker.check_ring("quinoline", product)
+                    or checker.check_ring("isoquinoline", product)
+                ):
+                    print(f"Quinoline/isoquinoline ring formation detected: {rsmi}")
+                    quinolone_detected = True
+
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-
-    return found_valid_reaction
+    return quinolone_detected

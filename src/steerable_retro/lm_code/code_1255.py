@@ -2,68 +2,120 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving piperazine ring formation.
+    Detects if an aldehyde functional group is maintained throughout the synthesis.
+    This means the aldehyde group must be present in the final product and preserved
+    through multiple reaction steps.
     """
-    has_piperazine_formation = False
+    # Track paths where aldehyde is maintained
+    aldehyde_paths = []
 
-    def dfs_traverse(node):
-        nonlocal has_piperazine_formation
+    def dfs_traverse(node, depth=0, path=None):
+        if path is None:
+            path = []
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"].get("rsmi", "")
-            if rsmi:
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+        current_path = path.copy()
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
-                product = Chem.MolFromSmiles(product_part) if product_part else None
+        # For molecule nodes, check if aldehyde is present
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            has_aldehyde = checker.check_fg("Aldehyde", mol_smiles)
 
-                if product and all(r for r in reactants):
-                    # Check for piperazine in product
-                    piperazine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#7][#6][#6]1")
+            if has_aldehyde:
+                current_path.append((depth, "mol", mol_smiles))
+                print(f"Found aldehyde in molecule at depth {depth}: {mol_smiles}")
+            elif current_path:  # If we had an aldehyde path but lost it
+                # Save the path if it's long enough
+                if len(current_path) >= 3:
+                    aldehyde_paths.append(current_path)
+                current_path = []  # Reset path since aldehyde is not maintained
 
-                    # Check for bis-chloroethylamine pattern in reactants
-                    bis_chloro_pattern = Chem.MolFromSmarts("Cl[#6][#6][#7][#6][#6]Cl")
+        # For reaction nodes, check if aldehyde is maintained through the reaction
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                    has_piperazine = product.HasSubstructMatch(piperazine_pattern)
-                    has_bis_chloro = any(r.HasSubstructMatch(bis_chloro_pattern) for r in reactants)
+            # Check if aldehyde is in both reactants and product
+            reactant_has_aldehyde = any(checker.check_fg("Aldehyde", r) for r in reactants)
+            product_has_aldehyde = checker.check_fg("Aldehyde", product)
 
-                    # Check for aniline in reactants
-                    aniline_pattern = Chem.MolFromSmarts("[c][NH2]")
-                    has_aniline = any(r.HasSubstructMatch(aniline_pattern) for r in reactants)
+            if reactant_has_aldehyde and product_has_aldehyde:
+                current_path.append((depth, "reaction", rsmi))
+                print(f"Aldehyde maintained through reaction at depth {depth}: {rsmi}")
+            elif current_path:  # If we had an aldehyde path but lost it
+                # Save the path if it's long enough
+                if len(current_path) >= 3:
+                    aldehyde_paths.append(current_path)
+                current_path = []  # Reset path since aldehyde is not maintained
 
-                    if has_piperazine and (has_bis_chloro or has_aniline):
-                        print("Detected piperazine ring formation")
-                        has_piperazine_formation = True
-
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1, current_path)
+
+        # If we're at the root and have a valid path, save it
+        if depth == 0 and current_path and len(current_path) >= 3:
+            aldehyde_paths.append(current_path)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Piperazine formation strategy detected: {has_piperazine_formation}")
-    return has_piperazine_formation
+    # Check if we found any valid paths where aldehyde is maintained
+    if aldehyde_paths:
+        longest_path = max(aldehyde_paths, key=len)
+        depths = [d for d, _, _ in longest_path]
+        print(f"Aldehyde maintained throughout synthesis at depths: {depths}")
+        return True
+
+    return False

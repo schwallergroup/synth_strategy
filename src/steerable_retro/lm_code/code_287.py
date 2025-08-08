@@ -2,153 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route uses late-stage amide formation
-    as the final step from a carboxylic acid.
+    This function detects synthesis routes that involve SNAr coupling (aromatic nucleophilic substitution)
+    where a halogen is replaced by a nitrogen nucleophile.
     """
-    late_stage_amide = False
+    has_snar_coupling = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_amide
+        nonlocal has_snar_coupling
 
-        print(f"Examining node at depth {depth}, type: {node['type']}")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        # Check if this is a reaction node at depth 0 or 1 (late stage)
-        if node["type"] == "reaction" and depth <= 1:
-            print(f"Examining potential late-stage reaction at depth {depth}")
-
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                try:
-                    rsmi = node["metadata"]["rsmi"]
-                    print(f"Reaction SMILES: {rsmi}")
-
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
-
-                    print(f"Reactants: {reactants}")
-                    print(f"Product: {product}")
-
-                    # Check if this is an amide formation reaction directly
-                    amide_reaction_types = [
-                        "Carboxylic acid with primary amine to amide",
-                        "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                        "Acyl chloride with secondary amine to amide",
-                        "Ester with primary amine to amide",
-                        "Ester with secondary amine to amide",
-                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                        "Acylation of primary amines",
-                        "Acylation of secondary amines",
-                        "Schotten-Baumann_amide",
-                        "Acyl chloride with ammonia to amide",
-                    ]
-
-                    is_amide_formation = False
-                    for reaction_type in amide_reaction_types:
-                        if checker.check_reaction(reaction_type, rsmi):
-                            is_amide_formation = True
-                            print(f"Detected amide formation reaction type: {reaction_type}")
-                            break
-
-                    # If direct reaction check failed, check for functional groups
-                    if not is_amide_formation:
-                        # Check if reactants contain carboxylic acid or acyl halide
-                        has_acid = False
-                        has_acyl_halide = False
-                        has_amine = False
-
-                        for reactant in reactants:
-                            if checker.check_fg("Carboxylic acid", reactant):
-                                has_acid = True
-                                print(f"Found carboxylic acid in reactant: {reactant}")
-
-                            if checker.check_fg("Acyl halide", reactant):
-                                has_acyl_halide = True
-                                print(f"Found acyl halide in reactant: {reactant}")
-
-                            if (
-                                checker.check_fg("Primary amine", reactant)
-                                or checker.check_fg("Secondary amine", reactant)
-                                or checker.check_fg("Aniline", reactant)
-                            ):
-                                has_amine = True
-                                print(f"Found amine in reactant: {reactant}")
-
-                        # Check if product contains amide
-                        has_amide = False
+            # Check for SNAr coupling
+            # Look for aromatic C-N bonds in product
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if product_mol:
+                # Find aromatic C-N bonds in product
+                aromatic_c_n_pattern = Chem.MolFromSmarts("c[N]")
+                if aromatic_c_n_pattern and product_mol.HasSubstructMatch(aromatic_c_n_pattern):
+                    # Check if any reactant has a halogen on aromatic carbon
+                    halogen_aromatic_pattern = Chem.MolFromSmarts("c[F,Cl,Br,I]")
+                    for r in reactants_smiles:
+                        r_mol = Chem.MolFromSmiles(r)
                         if (
-                            checker.check_fg("Primary amide", product)
-                            or checker.check_fg("Secondary amide", product)
-                            or checker.check_fg("Tertiary amide", product)
+                            r_mol
+                            and halogen_aromatic_pattern
+                            and r_mol.HasSubstructMatch(halogen_aromatic_pattern)
                         ):
-                            has_amide = True
-                            print(f"Found amide in product: {product}")
+                            # Check if another reactant has an amine
+                            amine_pattern = Chem.MolFromSmarts("[NH2]")
+                            for r2 in reactants_smiles:
+                                if r2 != r:
+                                    r2_mol = Chem.MolFromSmiles(r2)
+                                    if (
+                                        r2_mol
+                                        and amine_pattern
+                                        and r2_mol.HasSubstructMatch(amine_pattern)
+                                    ):
+                                        has_snar_coupling = True
+                                        print(f"Found SNAr coupling at depth {depth}")
+                                        break
 
-                        # If we have the right functional groups, check if this could be amide formation
-                        if has_amide and (
-                            (has_acid and has_amine) or (has_acyl_halide and has_amine)
-                        ):
-                            is_amide_formation = True
-                            print("Detected amide formation based on functional groups")
-
-                    if is_amide_formation:
-                        late_stage_amide = True
-                        print(f"Detected late-stage amide formation at depth {depth}")
-
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: {late_stage_amide}")
-    return late_stage_amide
+
+    return has_snar_coupling

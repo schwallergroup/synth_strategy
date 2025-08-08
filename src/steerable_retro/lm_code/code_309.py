@@ -2,89 +2,118 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if stereochemistry is preserved throughout the synthesis.
+    This function detects if the synthetic route involves a late-stage sulfonamide formation
+    between a sulfonyl chloride and an amine.
     """
-    has_stereocenter = False
-    stereocenter_preserved = True
+    sulfonamide_found = False
 
-    def dfs_traverse(node):
-        nonlocal has_stereocenter, stereocenter_preserved
+    def dfs_traverse(node, depth=0):
+        nonlocal sulfonamide_found
 
-        if node["type"] == "mol" and "smiles" in node:
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    # Check for presence of stereochemistry in the molecule
-                    chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
-                    if chiral_centers:
-                        has_stereocenter = True
-                        print(f"Detected stereocenter in molecule: {node['smiles']}")
-            except:
-                pass
-
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        # Check if this is a reaction node with metadata
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
 
-            try:
-                # Check if stereochemistry is preserved in this reaction
-                reactants = reactants_part.split(".")
-                product_mol = Chem.MolFromSmiles(product_part)
+            # Check if this is a late-stage reaction (depth 0 or 1)
+            if depth <= 1:
+                # Check if this is a sulfonamide synthesis reaction
+                if checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+                ) or checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
+                ):
+                    print(f"Detected sulfonamide formation at depth {depth}")
+                    sulfonamide_found = True
+                else:
+                    # Alternative check using functional groups
+                    reactants_str = rsmi.split(">")[0]
+                    product_str = rsmi.split(">")[-1]
 
-                # Check for stereocenters in reactants
-                reactant_has_stereocenter = False
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        chiral_centers = Chem.FindMolChiralCenters(
-                            reactant_mol, includeUnassigned=False
-                        )
-                        if chiral_centers:
-                            reactant_has_stereocenter = True
+                    # Check for sulfonyl chloride in reactants
+                    sulfonyl_chloride_in_reactants = False
+                    for reactant in reactants_str.split("."):
+                        if checker.check_fg("Sulfonyl halide", reactant):
+                            sulfonyl_chloride_in_reactants = True
                             break
 
-                # Check for stereocenters in product
-                product_has_stereocenter = False
-                if product_mol:
-                    chiral_centers = Chem.FindMolChiralCenters(product_mol, includeUnassigned=False)
-                    if chiral_centers:
-                        product_has_stereocenter = True
+                    # Check for amine in reactants
+                    amine_in_reactants = False
+                    for reactant in reactants_str.split("."):
+                        if checker.check_fg("Primary amine", reactant) or checker.check_fg(
+                            "Secondary amine", reactant
+                        ):
+                            amine_in_reactants = True
+                            break
 
-                # If reactant had stereocenter but product doesn't, stereochemistry was lost
-                if reactant_has_stereocenter and not product_has_stereocenter:
-                    stereocenter_preserved = False
-                    print(f"Stereochemistry lost in reaction: {rsmi}")
-            except:
-                pass
+                    # Check for sulfonamide in product
+                    sulfonamide_in_product = checker.check_fg("Sulfonamide", product_str)
 
-        # Continue traversing
+                    if (
+                        sulfonyl_chloride_in_reactants
+                        and amine_in_reactants
+                        and sulfonamide_in_product
+                    ):
+                        print(
+                            f"Detected sulfonamide formation at depth {depth} using functional group checks"
+                        )
+                        sulfonamide_found = True
+
+        # Traverse children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-
-    # Return True if we found stereocenters and they were preserved
-    return has_stereocenter and stereocenter_preserved
+    return sulfonamide_found

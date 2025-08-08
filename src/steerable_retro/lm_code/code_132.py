@@ -2,53 +2,53 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a predominantly linear strategy.
+    Detects if the synthesis uses an azide intermediate in the route.
     """
-    # Count branching points and total reactions in the synthesis route
-    branching_points = 0
-    total_reactions = 0
+    # Initialize tracking variable
+    has_azide_intermediate = False
 
-    def analyze_structure(node):
-        nonlocal branching_points, total_reactions
+    # SMARTS pattern for azide
+    azide_pattern = Chem.MolFromSmarts("[N-]=[N+]=[N]")
 
-        if node["type"] == "reaction":
-            total_reactions += 1
-            # If a reaction node has more than 2 children, it's a branching point
-            if len(node.get("children", [])) > 2:
-                branching_points += 1
+    def dfs_traverse(node):
+        nonlocal has_azide_intermediate
 
-        # Continue DFS traversal
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            # Check if this molecule is an intermediate (not a starting material)
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(azide_pattern):
+                has_azide_intermediate = True
+                print("Found azide intermediate:", node["smiles"])
+
         for child in node.get("children", []):
-            analyze_structure(child)
+            dfs_traverse(child)
 
-    # Start DFS traversal
-    analyze_structure(route)
+    # Traverse the route
+    dfs_traverse(route)
 
-    # A linear synthesis should have minimal branching and sufficient steps
-    is_linear = branching_points <= 1 and total_reactions >= 3
-    print(f"Synthesis has {branching_points} branching points and {total_reactions} reactions")
-    if is_linear:
-        print("Linear synthesis strategy detected")
-
-    return is_linear
+    return has_azide_intermediate

@@ -2,82 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the use of sulfonamide as a protection strategy for amines.
+    This function detects a linear synthesis strategy (as opposed to convergent).
+
+    A linear synthesis strategy builds the target molecule by adding one significant
+    building block at a time in a sequential manner. In contrast, a convergent strategy
+    combines multiple complex fragments in later stages.
     """
-    protection_found = False
-    deprotection_found = False
+    # Track if we have any convergent steps (reactions with multiple complex reactants)
+    has_convergent_steps = False
 
     def dfs_traverse(node):
-        nonlocal protection_found, deprotection_found
+        nonlocal has_convergent_steps
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "children" in node:
+            # Count significant non-in-stock reactants for this reaction
+            significant_reactants = 0
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            for child in node["children"]:
+                if child["type"] == "mol" and not child.get("in_stock", True):
+                    # Parse the molecule
+                    mol = Chem.MolFromSmiles(child["smiles"])
+                    if mol is None:
+                        print(f"Warning: Could not parse SMILES: {child['smiles']}")
+                        continue
 
-            # Check for sulfonamide formation (protection)
-            sulfonamide_pattern = Chem.MolFromSmarts("[NH]-[S](=O)(=O)[#6]")
-            amine_pattern = Chem.MolFromSmarts("[NH2]")
-            sulfonyl_pattern = Chem.MolFromSmarts("[#6]-[S](=O)(=O)[Cl]")
+                    # Consider a molecule significant if it has more than 7 atoms
+                    # and is not marked as in_stock
+                    atom_count = len(mol.GetAtoms())
+                    if atom_count > 7:
+                        significant_reactants += 1
 
-            if (
-                product_mol is not None
-                and product_mol.HasSubstructMatch(sulfonamide_pattern)
-                and any(r is not None and r.HasSubstructMatch(amine_pattern) for r in reactant_mols)
-                and any(
-                    r is not None and r.HasSubstructMatch(sulfonyl_pattern) for r in reactant_mols
-                )
-            ):
-                protection_found = True
-                print("Sulfonamide protection detected")
+            # If a reaction has more than one significant reactant, it's convergent
+            if significant_reactants > 1:
+                has_convergent_steps = True
+                print(f"Found convergent step with {significant_reactants} significant reactants")
 
-            # Check for sulfonamide cleavage (deprotection)
-            if (
-                any(
-                    r is not None and r.HasSubstructMatch(sulfonamide_pattern)
-                    for r in reactant_mols
-                )
-                and product_mol is not None
-                and product_mol.HasSubstructMatch(amine_pattern)
-            ):
-                deprotection_found = True
-                print("Sulfonamide deprotection detected")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Protection strategy involves both protection and deprotection
-    strategy_detected = protection_found or deprotection_found
+    # A synthesis is linear if it has no convergent steps
+    is_linear = not has_convergent_steps
+    print(f"Linear synthesis: {is_linear}")
 
-    if strategy_detected:
-        print("Protection/deprotection strategy with sulfonamide detected")
-
-    return strategy_detected
+    return is_linear

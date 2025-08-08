@@ -2,164 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects aldehyde reduction to alcohol as part of the synthetic strategy.
+    This function detects a synthetic strategy involving heterocycle elaboration
+    through Suzuki coupling (aryl-heteroaryl C-C bond formation).
     """
-    found_aldehyde_reduction = False
+    has_suzuki_coupling = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_aldehyde_reduction
+    def dfs_traverse(node):
+        nonlocal has_suzuki_coupling
 
-        if found_aldehyde_reduction:
-            return  # Early return if already found
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction":
-            try:
-                if "rsmi" in node.get("metadata", {}):
-                    rsmi = node["metadata"]["rsmi"]
-                    print(f"Examining reaction at depth {depth}: {rsmi}")
+            # Check for Suzuki coupling pattern
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                    reactants_part = rsmi.split(">")[0]
-                    product_part = rsmi.split(">")[-1]
-                    reactants = reactants_part.split(".")
-                    products = product_part.split(".")
+            # Look for boronic acid/ester in reactants
+            boronic_pattern = Chem.MolFromSmarts("[#6]B([O])[O]")
+            boronic_ester_pattern = Chem.MolFromSmarts("[#6]B1OC(C)(C)OC1(C)C")
 
-                    # Check for reduction reaction (forward direction)
-                    if checker.check_reaction(
-                        "Reduction of aldehydes and ketones to alcohols", rsmi
-                    ):
-                        print(
-                            f"Matched 'Reduction of aldehydes and ketones to alcohols' reaction type"
-                        )
+            # Look for aryl halide in reactants
+            aryl_halide_pattern = Chem.MolFromSmarts("c[Br,I,Cl]")
 
-                        # Check for aldehyde in reactants and primary alcohol in products
-                        for reactant in reactants:
-                            if checker.check_fg("Aldehyde", reactant):
-                                print(f"Found aldehyde in reactant: {reactant}")
-                                for product in products:
-                                    if checker.check_fg("Primary alcohol", product):
-                                        print(f"Found primary alcohol in product: {product}")
-                                        found_aldehyde_reduction = True
-                                        return
+            # Look for heterocycle pattern (imidazole)
+            imidazole_pattern = Chem.MolFromSmarts("c1ncnc1")
 
-                    # Check for oxidation reaction (reverse direction)
-                    elif checker.check_reaction(
-                        "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones", rsmi
-                    ):
-                        print(
-                            f"Matched 'Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones' reaction type"
-                        )
+            has_boronic = any(
+                mol
+                and (
+                    mol.HasSubstructMatch(boronic_pattern)
+                    or mol.HasSubstructMatch(boronic_ester_pattern)
+                )
+                for mol in reactant_mols
+            )
 
-                        # In retrosynthesis, this would be a reduction when traversing backward
-                        for reactant in reactants:
-                            if checker.check_fg("Primary alcohol", reactant):
-                                print(f"Found primary alcohol in reactant: {reactant}")
-                                for product in products:
-                                    if checker.check_fg("Aldehyde", product):
-                                        print(f"Found aldehyde in product: {product}")
-                                        found_aldehyde_reduction = True
-                                        return
+            has_aryl_halide = any(
+                mol and mol.HasSubstructMatch(aryl_halide_pattern) for mol in reactant_mols
+            )
 
-                    # Check for uncategorized reactions that might involve aldehyde reduction
-                    else:
-                        # Check for aldehyde in reactants and primary alcohol in products
-                        for reactant in reactants:
-                            if checker.check_fg("Aldehyde", reactant):
-                                print(f"Found aldehyde in reactant: {reactant}")
-                                for product in products:
-                                    if checker.check_fg(
-                                        "Primary alcohol", product
-                                    ) and not checker.check_fg("Aldehyde", product):
-                                        print(
-                                            f"Found potential aldehyde reduction to alcohol (uncategorized): {rsmi}"
-                                        )
+            has_imidazole = any(
+                mol and mol.HasSubstructMatch(imidazole_pattern) for mol in reactant_mols
+            )
 
-                                        # Exclude other types of reductions
-                                        if not (
-                                            checker.check_reaction(
-                                                "Reduction of carboxylic acid to primary alcohol",
-                                                rsmi,
-                                            )
-                                            or checker.check_reaction(
-                                                "Reduction of ester to primary alcohol", rsmi
-                                            )
-                                            or checker.check_reaction(
-                                                "Reduction of nitrile to amine", rsmi
-                                            )
-                                        ):
-                                            print(
-                                                f"Confirmed aldehyde reduction to alcohol: {rsmi}"
-                                            )
-                                            found_aldehyde_reduction = True
-                                            return
+            if has_boronic and has_aryl_halide and has_imidazole:
+                print("Detected Suzuki coupling for heterocycle elaboration")
+                has_suzuki_coupling = True
 
-                        # Check for primary alcohol in reactants and aldehyde in products (reverse direction)
-                        for reactant in reactants:
-                            if checker.check_fg("Primary alcohol", reactant):
-                                print(f"Found primary alcohol in reactant: {reactant}")
-                                for product in products:
-                                    if checker.check_fg(
-                                        "Aldehyde", product
-                                    ) and not checker.check_fg("Primary alcohol", product):
-                                        print(
-                                            f"Found potential alcohol oxidation to aldehyde (uncategorized): {rsmi}"
-                                        )
-                                        found_aldehyde_reduction = True
-                                        return
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Process children nodes (retrosynthetic direction)
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return found_aldehyde_reduction
+
+    return has_suzuki_coupling

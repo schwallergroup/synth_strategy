@@ -2,80 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route employs late-stage coupling of aromatic rings.
+    This function detects a strategy where halogenated aromatic systems (with F and Cl)
+    are maintained throughout the synthesis.
     """
-    late_stage_coupling_found = False
+    has_halogenated_aromatic_target = False
+    has_halogenated_aromatic_starting_material = False
 
-    def dfs_traverse(node):
-        nonlocal late_stage_coupling_found
+    def dfs_traverse(node, depth=0):
+        nonlocal has_halogenated_aromatic_target, has_halogenated_aromatic_starting_material
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-            depth = node["metadata"].get("depth", 10)  # Default high depth if not specified
+        if node["type"] == "mol":
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Check for halogenated aromatic pattern
+                    f_aromatic_pattern = Chem.MolFromSmarts("c-[F]")
+                    cl_aromatic_pattern = Chem.MolFromSmarts("c-[Cl]")
 
-            # Check if this is a late-stage reaction (depth 0 or 1)
-            if depth <= 1:
-                # Check if we're coupling aromatic rings
-                if product:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        # Count aromatic rings in product
-                        product_rings = Chem.GetSSSR(product_mol)
-                        product_aromatic_rings = sum(
-                            1
-                            for ring in product_rings
-                            if all(product_mol.GetAtomWithIdx(idx).GetIsAromatic() for idx in ring)
-                        )
+                    has_f = mol.HasSubstructMatch(f_aromatic_pattern)
+                    has_cl = mol.HasSubstructMatch(cl_aromatic_pattern)
 
-                        # Count aromatic rings in each reactant
-                        reactant_aromatic_rings = []
-                        for reactant in reactants:
-                            if reactant:
-                                reactant_mol = Chem.MolFromSmiles(reactant)
-                                if reactant_mol:
-                                    reactant_rings = Chem.GetSSSR(reactant_mol)
-                                    aromatic_count = sum(
-                                        1
-                                        for ring in reactant_rings
-                                        if all(
-                                            reactant_mol.GetAtomWithIdx(idx).GetIsAromatic()
-                                            for idx in ring
-                                        )
-                                    )
-                                    reactant_aromatic_rings.append(aromatic_count)
+                    if has_f and has_cl:
+                        if depth == 0:  # Target molecule
+                            has_halogenated_aromatic_target = True
+                            print(f"Target molecule has F and Cl substituted aromatic system")
+                        elif node.get("in_stock", False):  # Starting material
+                            has_halogenated_aromatic_starting_material = True
+                            print(f"Starting material has F and Cl substituted aromatic system")
+            except Exception as e:
+                print(f"Error processing molecule: {e}")
 
-                        # If product has more aromatic rings than any single reactant, rings were coupled
-                        if product_aromatic_rings > max(reactant_aromatic_rings, default=0):
-                            print(f"Late-stage aromatic coupling detected at depth {depth}")
-                            late_stage_coupling_found = True
-
-        # Continue traversing
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-    return late_stage_coupling_found
+
+    # Return True if both target and starting material have halogenated aromatics
+    return has_halogenated_aromatic_target and has_halogenated_aromatic_starting_material

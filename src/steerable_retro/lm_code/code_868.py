@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,170 +54,138 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis uses a late-stage amide coupling strategy
-    where two complex fragments are joined via amide bond formation in the final step.
+    Detects if the synthetic route involves amide formation as the final step.
     """
-    final_amide_coupling = False
+    final_step_amide = False
+    first_reaction_found = False
 
-    def dfs_traverse(node, current_depth=0):
-        nonlocal final_amide_coupling
+    def dfs_traverse(node):
+        nonlocal final_step_amide, first_reaction_found
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            # Get depth from metadata or use current_depth
-            depth = node.get("metadata", {}).get("depth")
-            if depth is None:
-                depth = current_depth
-            else:
-                try:
-                    depth = int(depth)
-                except:
-                    depth = current_depth
+        # If we already found the first reaction, no need to process further nodes
+        if first_reaction_found:
+            return
 
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Mark this as the first reaction encountered (final step in retrosynthesis)
+            first_reaction_found = True
             rsmi = node["metadata"]["rsmi"]
-            print(f"Checking reaction at depth {depth}: {rsmi}")
 
-            # Check if this is the final or near-final step (depth 0 or 1)
-            if depth <= 1:
-                print(f"Analyzing potential final reaction: {rsmi}")
+            print(f"Analyzing first reaction: {rsmi}")
 
-                # Check if this is an amide coupling reaction
-                amide_coupling_reactions = [
-                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                    "Carboxylic acid with primary amine to amide",
-                    "Acylation of primary amines",
-                    "Acylation of secondary amines",
-                    "Schotten-Baumann_amide",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
-                ]
+            try:
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                is_amide_coupling = False
-                for rxn_type in amide_coupling_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Detected amide coupling reaction: {rxn_type}")
-                        is_amide_coupling = True
-                        break
+                print(f"Product: {product}")
+                print(f"Reactants: {reactants}")
 
-                # If no specific reaction type matched, check for characteristic functional group changes
-                if not is_amide_coupling:
-                    try:
-                        reactants_part = rsmi.split(">")[0]
-                        product_part = rsmi.split(">")[-1]
+                # Check if this is an amide formation reaction using reaction checkers
+                is_amide_formation = (
+                    checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                        rsmi,
+                    )
+                    or checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                    )
+                    or checker.check_reaction(
+                        "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+                    )
+                    or checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi)
+                    or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
+                    or checker.check_reaction("Ester with primary amine to amide", rsmi)
+                    or checker.check_reaction("Ester with secondary amine to amide", rsmi)
+                    or checker.check_reaction("Acylation of primary amines", rsmi)
+                    or checker.check_reaction("Acylation of secondary amines", rsmi)
+                    or checker.check_reaction("Schotten-Baumann_amide", rsmi)
+                    or checker.check_reaction("Acyl chloride with ammonia to amide", rsmi)
+                    or checker.check_reaction("Ester with ammonia to amide", rsmi)
+                )
 
-                        # Check if reactants contain acid/acyl halide and amine, and product contains amide
-                        has_acid = any(
-                            checker.check_fg("Carboxylic acid", r)
-                            for r in reactants_part.split(".")
-                        )
-                        has_acyl_halide = any(
-                            checker.check_fg("Acyl halide", r) for r in reactants_part.split(".")
-                        )
-                        has_amine = any(
-                            checker.check_fg("Primary amine", r)
-                            or checker.check_fg("Secondary amine", r)
-                            or checker.check_fg("Aniline", r)
-                            for r in reactants_part.split(".")
-                        )
+                print(f"Is amide formation reaction: {is_amide_formation}")
 
-                        has_amide = (
-                            checker.check_fg("Primary amide", product_part)
-                            or checker.check_fg("Secondary amide", product_part)
-                            or checker.check_fg("Tertiary amide", product_part)
-                        )
+                # Check if product has amide
+                product_has_amide = (
+                    checker.check_fg("Primary amide", product)
+                    or checker.check_fg("Secondary amide", product)
+                    or checker.check_fg("Tertiary amide", product)
+                )
 
-                        if (has_acid or has_acyl_halide) and has_amine and has_amide:
-                            print("Detected amide coupling based on functional group changes")
-                            is_amide_coupling = True
-                    except Exception as e:
-                        print(f"Error in functional group analysis: {e}")
+                print(f"Product has amide: {product_has_amide}")
 
-                if is_amide_coupling:
-                    try:
-                        # Extract reactants and product
-                        reactants_part = rsmi.split(">")[0]
-                        product_part = rsmi.split(">")[-1]
-                        reactants = reactants_part.split(".")
+                # Check if reactants have necessary groups for amide formation
+                has_amine = False
+                has_acid_or_derivative = False
+                has_ammonia = False
 
-                        # Check for carboxylic acid and amine in reactants
-                        acid_found = False
-                        amine_found = False
+                for r in reactants:
+                    # Check for amines
+                    if checker.check_fg("Primary amine", r) or checker.check_fg(
+                        "Secondary amine", r
+                    ):
+                        has_amine = True
+                        print(f"Found amine in reactant: {r}")
 
-                        # Track fragment complexity
-                        acid_fragment_size = 0
-                        amine_fragment_size = 0
+                    # Check for ammonia specifically
+                    if "[NH3" in r or r.strip() == "N":
+                        has_ammonia = True
+                        has_amine = True
+                        print(f"Found ammonia in reactant: {r}")
 
-                        for reactant in reactants:
-                            try:
-                                # Check for carboxylic acid or acyl chloride (common in amide couplings)
-                                if checker.check_fg("Carboxylic acid", reactant):
-                                    acid_found = True
-                                    mol = Chem.MolFromSmiles(reactant)
-                                    if mol:
-                                        acid_fragment_size = mol.GetNumHeavyAtoms()
-                                        print(
-                                            f"Found carboxylic acid fragment with {acid_fragment_size} heavy atoms"
-                                        )
-                                elif checker.check_fg(
-                                    "Acyl chloride", reactant
-                                ) or checker.check_fg("Acyl halide", reactant):
-                                    acid_found = True
-                                    mol = Chem.MolFromSmiles(reactant)
-                                    if mol:
-                                        acid_fragment_size = mol.GetNumHeavyAtoms()
-                                        print(
-                                            f"Found acyl halide fragment with {acid_fragment_size} heavy atoms"
-                                        )
+                    # Check for acid derivatives
+                    if (
+                        checker.check_fg("Carboxylic acid", r)
+                        or checker.check_fg("Acyl halide", r)
+                        or checker.check_fg("Ester", r)
+                        or checker.check_fg("Anhydride", r)
+                        or "CO[C" in r
+                    ):  # Additional check for methyl ester
+                        has_acid_or_derivative = True
+                        print(f"Found acid/derivative in reactant: {r}")
 
-                                # Check for various amine types
-                                if (
-                                    checker.check_fg("Primary amine", reactant)
-                                    or checker.check_fg("Secondary amine", reactant)
-                                    or checker.check_fg("Aniline", reactant)
-                                ):
-                                    amine_found = True
-                                    mol = Chem.MolFromSmiles(reactant)
-                                    if mol:
-                                        amine_fragment_size = mol.GetNumHeavyAtoms()
-                                        print(
-                                            f"Found amine fragment with {amine_fragment_size} heavy atoms"
-                                        )
-                            except Exception as e:
-                                print(f"Error checking reactant {reactant}: {e}")
-                                continue
+                # Check if amide is newly formed (not present in reactants)
+                reactants_have_amide = False
+                for r in reactants:
+                    if (
+                        checker.check_fg("Primary amide", r)
+                        or checker.check_fg("Secondary amide", r)
+                        or checker.check_fg("Tertiary amide", r)
+                    ):
+                        reactants_have_amide = True
+                        print(f"Found amide in reactant: {r}")
 
-                        # Check for amide in product
-                        amide_found = False
-                        try:
-                            if (
-                                checker.check_fg("Primary amide", product_part)
-                                or checker.check_fg("Secondary amide", product_part)
-                                or checker.check_fg("Tertiary amide", product_part)
-                            ):
-                                amide_found = True
-                                print("Found amide in product")
-                        except Exception as e:
-                            print(f"Error checking product {product_part}: {e}")
+                # Check for ester to primary amide conversion (common with ammonia)
+                ester_to_amide = False
+                if has_ammonia and any("CO[C" in r for r in reactants) and product_has_amide:
+                    ester_to_amide = True
+                    print("Detected ester to primary amide conversion with ammonia")
 
-                        # Consider it late-stage coupling if both fragments are reasonably complex
-                        # (at least 4 heavy atoms each is a reasonable threshold for "complex")
-                        if acid_found and amine_found and amide_found:
-                            print(
-                                f"Acid fragment size: {acid_fragment_size}, Amine fragment size: {amine_fragment_size}"
-                            )
-                            if acid_fragment_size >= 4 and amine_fragment_size >= 4:
-                                print(
-                                    "Detected late-stage amide coupling in final step with complex fragments"
-                                )
-                                final_amide_coupling = True
-                    except Exception as e:
-                        print(f"Error analyzing amide coupling: {e}")
+                # Determine if this is an amide formation
+                if is_amide_formation:
+                    final_step_amide = True
+                    print(f"Confirmed amide formation via reaction type check: {rsmi}")
+                elif (
+                    product_has_amide
+                    and (has_amine or has_ammonia)
+                    and has_acid_or_derivative
+                    and not reactants_have_amide
+                ):
+                    final_step_amide = True
+                    print(f"Confirmed amide formation via functional group analysis: {rsmi}")
+                elif ester_to_amide:
+                    final_step_amide = True
+                    print(f"Confirmed ester to amide conversion: {rsmi}")
 
-        # Continue traversing with incremented depth
-        for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            except Exception as e:
+                print(f"Error processing reaction SMILES: {rsmi}, Error: {e}")
 
-    # Start traversal from the root
+        # Process children only if we haven't found the first reaction yet
+        if not first_reaction_found:
+            for child in node.get("children", []):
+                dfs_traverse(child)
+
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: {final_amide_coupling}")
-    return final_amide_coupling
+
+    return final_step_amide

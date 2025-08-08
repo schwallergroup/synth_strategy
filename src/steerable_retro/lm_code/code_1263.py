@@ -2,69 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage introduction of trifluoromethyl group.
+    This function detects if a nitrile group is maintained throughout the synthesis.
+    It checks if the final product and at least one early intermediate contain a nitrile group.
     """
-    cf3_introduced = False
-    introduction_depth = -1
+    # Track if we've found nitrile in final product and early intermediate
+    final_product_has_nitrile = False
+    early_intermediate_has_nitrile = False
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal cf3_introduced, introduction_depth
+    def dfs_traverse(node, depth=0):
+        nonlocal final_product_has_nitrile, early_intermediate_has_nitrile, max_depth
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        # Update max depth
+        max_depth = max(max_depth, depth)
 
-            # Extract depth from ID
-            depth_match = re.search(r"Depth: (\d+)", node.get("metadata", {}).get("ID", ""))
-            current_depth = int(depth_match.group(1)) if depth_match else -1
+        if node["type"] == "mol":
+            nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
+            mol = Chem.MolFromSmiles(node["smiles"]) if node["smiles"] else None
 
-            # Check for CF3 group
-            cf3_pattern = Chem.MolFromSmarts("[C]([F])([F])[F]")
-            product_mol = Chem.MolFromSmiles(product)
-
-            if product_mol and product_mol.HasSubstructMatch(cf3_pattern):
-                # Check if pattern is not in all reactants (meaning it was introduced)
-                cf3_in_all_reactants = True
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and not reactant_mol.HasSubstructMatch(cf3_pattern):
-                        cf3_in_all_reactants = False
-                        break
-
-                if not cf3_in_all_reactants:
-                    cf3_introduced = True
-                    introduction_depth = current_depth
-                    print(f"Detected CF3 introduction at depth {current_depth}")
+            if mol and mol.HasSubstructMatch(nitrile_pattern):
+                if depth == 0:  # Final product
+                    final_product_has_nitrile = True
+                    print("Final product has nitrile group")
+                elif depth >= 3:  # Early intermediate (depth >= 3)
+                    early_intermediate_has_nitrile = True
+                    print(f"Early intermediate at depth {depth} has nitrile group")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Consider it late introduction if it happens in the first half of the synthesis
-    # (remember depth 0 is the final step)
-    return cf3_introduced and introduction_depth <= 2
+    # Return True if nitrile is maintained from early intermediate to final product
+    return final_product_has_nitrile and early_intermediate_has_nitrile and max_depth >= 3

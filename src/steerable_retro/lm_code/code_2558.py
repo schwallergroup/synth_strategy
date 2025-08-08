@@ -2,66 +2,97 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects an SNAr transformation strategy where a chloro group
-    on a heterocycle is replaced with an amino group.
+    This function detects if the synthetic route employs a benzyl protection followed by
+    deprotection sequence for phenols.
     """
-    snar_found = False
+    # Track benzyl protection and deprotection events
+    benzyl_protection_found = False
+    benzyl_deprotection_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal snar_found
+    def dfs_traverse(node):
+        nonlocal benzyl_protection_found, benzyl_deprotection_found
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            # Extract reactants and product from reaction SMILES
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for chloro-heterocycle to amino-heterocycle transformation
-            chloro_pattern = "[c][Cl]"
-            amino_pattern = "[c][NH2]"
+            # Check for benzyl protection: phenol + benzyl source -> benzyl ether
+            phenol_pattern = Chem.MolFromSmarts("[OH]-c")
+            benzyl_ether_pattern = Chem.MolFromSmarts("[O]-[CH2]-c1ccccc1")
 
-            # Check if there's a chloro group in reactants and amino group in product
-            has_chloro_reactant = any(
-                Chem.MolFromSmiles(r)
-                and Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts(chloro_pattern))
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
+            # Check for protection
+            phenol_in_reactants = False
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(phenol_pattern):
+                        phenol_in_reactants = True
+                        break
+                except:
+                    continue
 
-            product_mol = Chem.MolFromSmiles(product)
-            has_amino_product = product_mol and product_mol.HasSubstructMatch(
-                Chem.MolFromSmarts(amino_pattern)
-            )
+            if phenol_in_reactants:
+                try:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol and product_mol.HasSubstructMatch(benzyl_ether_pattern):
+                        print("Found benzyl protection: phenol -> benzyl ether")
+                        benzyl_protection_found = True
+                except:
+                    pass
 
-            if has_chloro_reactant and has_amino_product:
-                print(f"Found SNAr transformation (Cl → NH2) at depth {depth}")
-                snar_found = True
+            # Check for deprotection: benzyl ether -> phenol
+            benzyl_in_reactants = False
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(benzyl_ether_pattern):
+                        benzyl_in_reactants = True
+                        break
+                except:
+                    continue
+
+            if benzyl_in_reactants:
+                try:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol and product_mol.HasSubstructMatch(phenol_pattern):
+                        print("Found benzyl deprotection: benzyl ether -> phenol")
+                        benzyl_deprotection_found = True
+                except:
+                    pass
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    return snar_found
+    # Return True if both protection and deprotection are found
+    return benzyl_protection_found and benzyl_deprotection_found

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,92 +54,115 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a synthesis involving heterocyclic compounds (thiophene and nitrogen heterocycles like imidazole, pyrimidine, etc.).
+    This function detects if the synthesis involves a morpholine group,
+    particularly focusing on C-N bond formation with morpholine.
     """
-    has_thiophene = False
-    has_nitrogen_heterocycle = False
+    morpholine_present = False
+    c_n_bond_formation = False
 
-    # List of nitrogen-containing heterocycles to check
-    nitrogen_heterocycles = [
-        "imidazole",
-        "pyrimidine",
-        "pyrazine",
-        "triazole",
-        "tetrazole",
-        "pyridine",
-        "pyridazine",
-        "purine",
-    ]
+    def dfs_traverse(node):
+        nonlocal morpholine_present, c_n_bond_formation
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_thiophene, has_nitrogen_heterocycle
+        if node["type"] == "mol":
+            # Check if molecule contains morpholine
+            if node["smiles"]:
+                try:
+                    if checker.check_ring("morpholine", node["smiles"]):
+                        morpholine_present = True
+                        print(f"Found morpholine in molecule: {node['smiles']}")
+                except Exception as e:
+                    print(f"Error checking for morpholine in molecule: {e}")
 
-        # Check molecules for heterocycles
-        if node["type"] == "mol" and node.get("smiles"):
-            mol_smiles = node["smiles"]
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for thiophene
-            if not has_thiophene and checker.check_ring("thiophene", mol_smiles):
-                has_thiophene = True
-                print(f"Detected thiophene in molecule at depth {depth}: {mol_smiles}")
+                # Check if any reactant contains morpholine
+                reactant_has_morpholine = any(
+                    checker.check_ring("morpholine", r) for r in reactants
+                )
+                product_has_morpholine = checker.check_ring("morpholine", product)
 
-            # Check for nitrogen heterocycles
-            if not has_nitrogen_heterocycle:
-                for heterocycle in nitrogen_heterocycles:
-                    if checker.check_ring(heterocycle, mol_smiles):
-                        has_nitrogen_heterocycle = True
-                        print(f"Detected {heterocycle} in molecule at depth {depth}: {mol_smiles}")
-                        break
+                # Check for C-N bond formation reactions involving morpholine
+                if reactant_has_morpholine or product_has_morpholine:
+                    # Check for N-arylation reactions (Buchwald-Hartwig, Ullmann-Goldberg)
+                    if (
+                        checker.check_reaction(
+                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
+                        )
+                        or checker.check_reaction(
+                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
+                        )
+                        or checker.check_reaction(
+                            "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
+                        )
+                        or checker.check_reaction("N-arylation_heterocycles", rsmi)
+                    ):
+                        c_n_bond_formation = True
+                        print(
+                            f"Found C-N bond formation (N-arylation) with morpholine in reaction: {rsmi}"
+                        )
 
-        # Check reactions that might form heterocycles
-        elif node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            product = rsmi.split(">")[-1]
+                    # Check for N-alkylation reactions
+                    elif (
+                        checker.check_reaction(
+                            "N-alkylation of primary amines with alkyl halides", rsmi
+                        )
+                        or checker.check_reaction(
+                            "N-alkylation of secondary amines with alkyl halides", rsmi
+                        )
+                        or checker.check_reaction("Alkylation of amines", rsmi)
+                    ):
+                        c_n_bond_formation = True
+                        print(
+                            f"Found C-N bond formation (N-alkylation) with morpholine in reaction: {rsmi}"
+                        )
 
-            # Check if the reaction product contains thiophene
-            if not has_thiophene and checker.check_ring("thiophene", product):
-                has_thiophene = True
-                print(f"Detected thiophene formation in reaction at depth {depth}")
+                    # Check for Williamson ether synthesis (might involve morpholine)
+                    elif checker.check_reaction("Williamson Ether Synthesis", rsmi):
+                        c_n_bond_formation = True
+                        print(
+                            f"Found C-N bond formation (Williamson) with morpholine in reaction: {rsmi}"
+                        )
 
-            # Check if the reaction product contains nitrogen heterocycles
-            if not has_nitrogen_heterocycle:
-                for heterocycle in nitrogen_heterocycles:
-                    if checker.check_ring(heterocycle, product):
-                        has_nitrogen_heterocycle = True
-                        print(f"Detected {heterocycle} formation in reaction at depth {depth}")
-                        break
+                    # Check for reductive amination
+                    elif (
+                        checker.check_reaction("Reductive amination with aldehyde", rsmi)
+                        or checker.check_reaction("Reductive amination with ketone", rsmi)
+                        or checker.check_reaction("reductive amination", rsmi)
+                    ):
+                        c_n_bond_formation = True
+                        print(
+                            f"Found C-N bond formation (reductive amination) with morpholine in reaction: {rsmi}"
+                        )
 
-                # Also check for specific reactions that form nitrogen heterocycles
-                nitrogen_heterocycle_reactions = [
-                    "imidazole",
-                    "triaryl-imidazole",
-                    "benzimidazole_derivatives_carboxylic-acid/ester",
-                    "benzimidazole_derivatives_aldehyde",
-                    "tetrazole_terminal",
-                    "tetrazole_connect_regioisomere_1",
-                    "tetrazole_connect_regioisomere_2",
-                    "1,2,4-triazole_acetohydrazide",
-                    "1,2,4-triazole_carboxylic-acid/ester",
-                ]
+                    # Check for nucleophilic substitution reactions
+                    elif "heteroaromatic_nuc_sub" in rsmi or "nucl_sub_aromatic" in rsmi:
+                        c_n_bond_formation = True
+                        print(
+                            f"Found C-N bond formation (nucleophilic substitution) with morpholine in reaction: {rsmi}"
+                        )
 
-                for rxn_type in nitrogen_heterocycle_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        has_nitrogen_heterocycle = True
-                        print(f"Detected {rxn_type} reaction at depth {depth}")
-                        break
+                    # Generic check for any reaction that might form C-N bonds
+                    elif not c_n_bond_formation:
+                        # Check if morpholine is in reactants and a halide is present (potential C-N bond formation)
+                        halide_present = any("Br" in r or "Cl" in r or "I" in r for r in reactants)
+                        if reactant_has_morpholine and halide_present:
+                            c_n_bond_formation = True
+                            print(
+                                f"Found potential C-N bond formation with morpholine in reaction: {rsmi}"
+                            )
+            except Exception as e:
+                print(f"Error analyzing reaction: {e}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Strategy is present if both heterocycles are involved
-    strategy_present = has_thiophene and has_nitrogen_heterocycle
-    print(f"Heterocycle-containing synthesis strategy detected: {strategy_present}")
-    print(
-        f"Found thiophene: {has_thiophene}, Found nitrogen heterocycle: {has_nitrogen_heterocycle}"
-    )
-
-    return strategy_present
+    # Return True if both conditions are met
+    return morpholine_present and c_n_bond_formation

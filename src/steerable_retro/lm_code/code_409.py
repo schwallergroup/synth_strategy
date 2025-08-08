@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,174 +54,87 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a convergent synthesis strategy where two or more
-    complex fragments are joined in the final steps of the synthesis.
+    Detects a strategy involving N-demethylation as one of the final steps
     """
-    is_convergent = False
+    found_demethylation = False
+    demethylation_depth = float("inf")
 
-    def calculate_depth(node):
-        """Calculate depth if not provided in metadata"""
-        max_depth = 0
-        for child in node.get("children", []):
-            if child["type"] == "reaction":
-                child_depth = child["metadata"].get("depth", calculate_depth(child))
-                max_depth = max(max_depth, child_depth + 1)
-            elif child["type"] == "mol" and not child.get("in_stock", False):
-                for grandchild in child.get("children", []):
-                    if grandchild["type"] == "reaction":
-                        grandchild_depth = grandchild["metadata"].get(
-                            "depth", calculate_depth(grandchild)
-                        )
-                        max_depth = max(max_depth, grandchild_depth + 1)
-        return max_depth
-
-    def has_complex_structure(mol):
-        """Check if molecule has complex structural features"""
-        mol_smiles = Chem.MolToSmiles(mol)
-
-        # Check for rings
-        ring_count = 0
-        for ring_name in [
-            "benzene",
-            "pyridine",
-            "piperidine",
-            "cyclohexane",
-            "furan",
-            "pyrrole",
-            "thiophene",
-            "morpholine",
-            "indole",
-            "pyrazole",
-        ]:
-            if checker.check_ring(ring_name, mol_smiles):
-                ring_count += 1
-                print(f"Found ring: {ring_name}")
-                if ring_count >= 1:  # Even one ring can indicate complexity
-                    return True
-
-        # Check for functional groups that indicate complexity
-        complex_fg_count = 0
-        for fg_name in [
-            "Ester",
-            "Amide",
-            "Ether",
-            "Alcohol",
-            "Amine",
-            "Nitrile",
-            "Carboxylic acid",
-            "Aromatic halide",
-            "Primary halide",
-            "Secondary halide",
-            "Tertiary halide",
-        ]:
-            if checker.check_fg(fg_name, mol_smiles):
-                complex_fg_count += 1
-                print(f"Found functional group: {fg_name}")
-                if complex_fg_count >= 1:  # Even one complex FG can indicate complexity
-                    return True
-
-        return False
-
-    def is_coupling_reaction(rsmi):
-        """Check if the reaction is a coupling reaction"""
-        coupling_reactions = [
-            "Suzuki coupling with boronic acids",
-            "Suzuki coupling with boronic esters",
-            "Negishi coupling",
-            "Stille reaction",
-            "Heck terminal vinyl",
-            "Sonogashira acetylene_aryl halide",
-            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-            "Ullmann condensation",
-            "Williamson Ether Synthesis",  # Added this important coupling reaction
-            "S-alkylation of thiols",
-            "N-alkylation of primary amines with alkyl halides",
-            "N-alkylation of secondary amines with alkyl halides",
-        ]
-
-        for rxn_name in coupling_reactions:
-            if checker.check_reaction(rxn_name, rsmi):
-                print(f"Detected coupling reaction: {rxn_name}")
-                return True
-
-        # Check for general etherification (which includes Williamson)
-        if "O" in rsmi and ("Br" in rsmi or "Cl" in rsmi or "I" in rsmi):
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check if product has an ether group
-            if checker.check_fg("Ether", product):
-                print("Detected potential etherification reaction")
-                return True
-
-        return False
-
-    def dfs_traverse(node, current_depth=0):
-        nonlocal is_convergent
+    def dfs_traverse(node, depth=0):
+        nonlocal found_demethylation, demethylation_depth
 
         if node["type"] == "reaction":
-            # Get or calculate depth
-            depth = node["metadata"].get("depth", current_depth)
+            # Extract reactants and product
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Focus on late-stage reactions (depth 0, 1, or 2)
-            if depth <= 2:
-                # Extract reaction SMILES
-                rsmi = node["metadata"].get("rsmi", "")
-                if not rsmi:
-                    return
+                prod_mol = Chem.MolFromSmiles(product)
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+                # Check for N-demethylation pattern
+                for reactant in reactants:
+                    react_mol = Chem.MolFromSmiles(reactant)
 
-                # Split into reactants and product
-                parts = rsmi.split(">")
-                if len(parts) < 3:
-                    return
+                    if react_mol and prod_mol:
+                        # Since we're traversing retrosynthetically, in a demethylation:
+                        # - The product (in rsmi) should have a tertiary amine
+                        # - The reactant (in rsmi) should have a secondary amine
+                        has_secondary_amine = checker.check_fg("Secondary amine", reactant)
+                        has_tertiary_amine = checker.check_fg("Tertiary amine", product)
 
-                reactants = parts[0].split(".")
+                        if has_secondary_amine and has_tertiary_amine:
+                            # Check if this is a methylation reaction (which means demethylation in retrosynthesis)
+                            is_demethylation = False
 
-                # Count complex reactants (those with significant structure)
-                complex_reactants = 0
-                total_atom_count = 0
+                            # Check for specific methylation reaction types
+                            methylation_reactions = [
+                                "N-methylation",
+                                "Eschweiler-Clarke Secondary Amine Methylation",
+                                "Eschweiler-Clarke Primary Amine Methylation",
+                                "Reductive methylation of primary amine with formaldehyde",
+                                "Methylation with MeI_primary",
+                                "Methylation with MeI_secondary",
+                                "Methylation with MeI_tertiary",
+                                "DMS Amine methylation",
+                                "Hydrogenolysis of tertiary amines",
+                                "Parnes methylation",
+                            ]
 
-                for r in reactants:
-                    if r:
-                        try:
-                            mol = Chem.MolFromSmiles(r)
-                            if mol:
-                                atom_count = mol.GetNumAtoms()
-                                total_atom_count += atom_count
+                            for reaction_type in methylation_reactions:
+                                if checker.check_reaction(reaction_type, rsmi):
+                                    is_demethylation = True
+                                    print(f"Detected {reaction_type} reaction")
+                                    break
 
-                                # Consider a molecule complex if it has >10 atoms or complex structure
-                                is_complex = atom_count > 10 or has_complex_structure(mol)
-                                print(f"Reactant: {r}, Atoms: {atom_count}, Complex: {is_complex}")
-                                if is_complex:
-                                    complex_reactants += 1
-                        except Exception as e:
-                            print(f"Error processing reactant {r}: {e}")
+                            # Additional structural check if reaction type check fails
+                            if not is_demethylation:
+                                # Check for methyl group attached to nitrogen in product but not in reactant
+                                methyl_n_patt = Chem.MolFromSmarts("[CH3]-[N]")
+                                if prod_mol.HasSubstructMatch(
+                                    methyl_n_patt
+                                ) and not react_mol.HasSubstructMatch(methyl_n_patt):
+                                    # Verify this is likely a demethylation by checking atom counts
+                                    if prod_mol.GetNumAtoms() > react_mol.GetNumAtoms():
+                                        is_demethylation = True
+                                        print("Detected structural pattern for N-demethylation")
 
-                # Check if this is a coupling reaction
-                is_coupling = is_coupling_reaction(rsmi)
+                            if is_demethylation:
+                                print(f"Found N-demethylation at depth {depth}, rsmi: {rsmi}")
+                                found_demethylation = True
+                                demethylation_depth = min(demethylation_depth, depth)
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
 
-                # Criteria for convergent synthesis:
-                # 1. At least 2 complex reactants
-                # 2. A coupling reaction with at least 1 complex reactant
-                # 3. A late-stage reaction (depth ≤ 1) with high total atom count
-                if (
-                    complex_reactants >= 2
-                    or (is_coupling and complex_reactants >= 1)
-                    or (depth <= 1 and total_atom_count > 30)
-                ):
-                    print(
-                        f"Detected convergent synthesis at depth {depth} with {complex_reactants} complex fragments"
-                    )
-                    print(f"Total atom count: {total_atom_count}")
-                    is_convergent = True
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Final result: {is_convergent}")
-    return is_convergent
+
+    # Check if demethylation occurs at a low depth (late in synthesis)
+    # Consider depths 0, 1, or 2 as late-stage
+    if found_demethylation and demethylation_depth <= 2:
+        print(f"Found late-stage demethylation strategy at depth {demethylation_depth}")
+        return True
+
+    return False

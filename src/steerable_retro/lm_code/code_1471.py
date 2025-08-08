@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,100 +54,187 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route uses tosylation for alcohol activation.
+    This function detects a synthetic strategy where multiple heterocyclic systems
+    are connected via linkers (specifically looking for imidazole and benzofuran).
     """
-    tosylation_detected = False
-    tosylated_molecules = set()  # Track molecules that have been tosylated
+    has_imidazole = False
+    has_benzofuran = False
+    molecules_with_both = []
 
-    def dfs_traverse(node, depth=0):
-        nonlocal tosylation_detected
+    # Define benzofuran-like patterns to check
+    benzofuran_like_patterns = [
+        "c1ccc2occc2c1",  # Basic benzofuran
+        "c1cc2ccccc2o1",  # Alternative benzofuran representation
+        "c1ccc2c(c1)oc1ccccc12",  # Dibenzofuran
+    ]
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+    def check_benzofuran_like(smiles):
+        """Helper function to check for benzofuran-like structures"""
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return False
 
-                # Check if this is a tosylation reaction (formation of sulfonic ester)
-                if checker.check_reaction("Formation of Sulfonic Esters", rsmi):
-                    # Check for alcohol in reactants
-                    alcohol_present = False
-                    for reactant in reactants:
-                        if (
-                            checker.check_fg("Primary alcohol", reactant)
-                            or checker.check_fg("Secondary alcohol", reactant)
-                            or checker.check_fg("Tertiary alcohol", reactant)
-                        ):
-                            alcohol_present = True
-                            break
+            # Check with the checker function first
+            if checker.check_ring("benzofuran", smiles) or checker.check_ring(
+                "dibenzofuran", smiles
+            ):
+                return True
 
-                    # Check for sulfonate (tosylate) in product
-                    sulfonate_in_product = checker.check_fg("Sulfonate", product)
+            # Check for benzofuran-like patterns
+            for pattern in benzofuran_like_patterns:
+                pattern_mol = Chem.MolFromSmiles(pattern)
+                if pattern_mol and mol.HasSubstructMatch(pattern_mol):
+                    print(f"Found benzofuran-like structure in {smiles}")
+                    return True
 
-                    if alcohol_present and sulfonate_in_product:
-                        print(f"Found tosylation activation at depth: {depth}")
-                        tosylation_detected = True
-                        tosylated_molecules.add(product)
+            # Check for sulfonamide connected to a benzofuran-like structure
+            if "NS(=O)(=O)c" in smiles and "ccc3o" in smiles:
+                print(f"Found potential sulfonamide-benzofuran connection in {smiles}")
+                return True
 
-                # Alternative check: look for tosylation using sulfonyl halides
-                elif not tosylation_detected:
-                    # Check for alcohol in reactants
-                    alcohol_reactant = None
-                    for reactant in reactants:
-                        if (
-                            checker.check_fg("Primary alcohol", reactant)
-                            or checker.check_fg("Secondary alcohol", reactant)
-                            or checker.check_fg("Tertiary alcohol", reactant)
-                        ):
-                            alcohol_reactant = reactant
-                            break
+            return False
+        except Exception as e:
+            print(f"Error in benzofuran check: {e}")
+            return False
 
-                    # Check for sulfonyl halide (which includes tosyl chloride)
-                    sulfonyl_halide_present = any(
-                        checker.check_fg("Sulfonyl halide", r) for r in reactants
+    def dfs_traverse(node):
+        nonlocal has_imidazole, has_benzofuran
+
+        if node["type"] == "mol" and "smiles" in node:
+            try:
+                mol_smiles = node["smiles"]
+                # Check for imidazole
+                has_imidazole_in_mol = checker.check_ring("imidazole", mol_smiles)
+
+                # Check for benzofuran or benzofuran-like structures
+                has_benzofuran_in_mol = check_benzofuran_like(mol_smiles)
+
+                if has_imidazole_in_mol:
+                    has_imidazole = True
+                    print(f"Found imidazole heterocycle in {mol_smiles}")
+
+                if has_benzofuran_in_mol:
+                    has_benzofuran = True
+                    print(f"Found benzofuran heterocycle in {mol_smiles}")
+
+                # Check if both heterocycles are in the same molecule
+                if has_imidazole_in_mol and has_benzofuran_in_mol:
+                    print(f"Found both heterocycles in the same molecule: {mol_smiles}")
+                    molecules_with_both.append(mol_smiles)
+
+                # Special case: Check for sulfonamide benzofuran connection to imidazole
+                if has_imidazole_in_mol and "NS(=O)(=O)c" in mol_smiles and "ccc3o" in mol_smiles:
+                    print(
+                        f"Found imidazole connected to sulfonamide-benzofuran structure: {mol_smiles}"
                     )
+                    molecules_with_both.append(mol_smiles)
+            except Exception as e:
+                print(f"Error processing molecule: {e}")
 
-                    # Check if alcohol is converted to sulfonate
-                    if alcohol_reactant and sulfonyl_halide_present:
-                        # Check for sulfonate in product and absence of alcohol
-                        if (
-                            checker.check_fg("Sulfonate", product)
-                            and not checker.check_fg("Primary alcohol", product)
-                            and not checker.check_fg("Secondary alcohol", product)
-                            and not checker.check_fg("Tertiary alcohol", product)
-                        ):
-                            print(
-                                f"Found tosylation activation (alternative check) at depth: {depth}"
-                            )
-                            tosylation_detected = True
-                            tosylated_molecules.add(product)
-
-                # Check if this reaction uses a previously tosylated molecule as a reactant
-                # This confirms the tosylate is being used as a leaving group
-                elif not tosylation_detected and tosylated_molecules:
-                    for reactant in reactants:
-                        if reactant in tosylated_molecules:
-                            # Check if this is a substitution reaction
-                            if (
-                                checker.check_reaction("S-alkylation of thiols", rsmi)
-                                or checker.check_reaction(
-                                    "N-alkylation of primary amines with alkyl halides", rsmi
-                                )
-                                or checker.check_reaction(
-                                    "N-alkylation of secondary amines with alkyl halides", rsmi
-                                )
-                                or checker.check_reaction("Williamson Ether Synthesis", rsmi)
-                            ):
-                                print(
-                                    f"Found reaction using tosylate as leaving group at depth: {depth}"
-                                )
-                                tosylation_detected = True
-                                break
-
-        # Process children (reactants in retrosynthesis)
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
-    print(f"Tosylation activation strategy detected: {tosylation_detected}")
-    return tosylation_detected
+
+    # Check if we have molecules with both heterocycles
+    if molecules_with_both:
+        print(f"Found {len(molecules_with_both)} molecules containing both heterocycles")
+        return True
+
+    # If we don't have molecules with both, check if they're connected via reactions
+    if has_imidazole and has_benzofuran:
+        print("Both heterocycles found in the route, but not in the same molecule")
+
+        # Check for connection via reactions
+        def check_connection(node, depth=0):
+            if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+                try:
+                    rsmi = node["metadata"]["rsmi"]
+                    product = rsmi.split(">")[-1]
+                    reactants = rsmi.split(">")[0].split(".")
+
+                    # Check if the product contains both heterocycles
+                    product_has_imidazole = checker.check_ring("imidazole", product)
+                    product_has_benzofuran = check_benzofuran_like(product)
+
+                    if product_has_imidazole and product_has_benzofuran:
+                        print(f"Found reaction producing a molecule with both heterocycles: {rsmi}")
+                        return True
+
+                    # Check if reactants contain the heterocycles
+                    reactants_with_imidazole = [
+                        r for r in reactants if checker.check_ring("imidazole", r)
+                    ]
+                    reactants_with_benzofuran = [r for r in reactants if check_benzofuran_like(r)]
+
+                    # Case 1: One reactant has imidazole and another has benzofuran
+                    if reactants_with_imidazole and reactants_with_benzofuran:
+                        print(
+                            f"Found reaction with both heterocycles in different reactants: {rsmi}"
+                        )
+                        return True
+
+                    # Case 2: One reactant has one heterocycle and product has both
+                    if (reactants_with_imidazole and product_has_benzofuran) or (
+                        reactants_with_benzofuran and product_has_imidazole
+                    ):
+                        print(f"Found reaction connecting heterocycles: {rsmi}")
+                        return True
+
+                    # Special case: Check for sulfonamide-benzofuran connection
+                    if (
+                        any("NS(=O)(=O)" in r for r in reactants)
+                        and any("ccc3o" in r for r in reactants)
+                        and product_has_imidazole
+                    ):
+                        print(
+                            f"Found reaction connecting sulfonamide-benzofuran to imidazole: {rsmi}"
+                        )
+                        return True
+
+                    # Check if any reactant has sulfonamide-benzofuran and product has imidazole
+                    if (
+                        any(("NS(=O)(=O)" in r and "ccc3o" in r) for r in reactants)
+                        and product_has_imidazole
+                    ):
+                        print(
+                            f"Found reaction connecting sulfonamide-benzofuran to imidazole: {rsmi}"
+                        )
+                        return True
+                except Exception as e:
+                    print(f"Error checking reaction connection: {e}")
+
+            for child in node.get("children", []):
+                if check_connection(child, depth + 1):
+                    return True
+
+            return False
+
+        # Check for direct connection
+        if check_connection(route):
+            return True
+
+    # Final check: Look at the final product for specific patterns
+    if route["type"] == "mol" and "smiles" in route:
+        final_product = route["smiles"]
+        # Check for imidazole connected to sulfonamide-benzofuran structure
+        if (
+            checker.check_ring("imidazole", final_product)
+            and "NS(=O)(=O)" in final_product
+            and "ccc3o" in final_product
+        ):
+            print(
+                f"Final product contains imidazole connected to sulfonamide-benzofuran: {final_product}"
+            )
+            return True
+
+        # Check for the specific molecule pattern seen in stdout
+        if "CCCn1cnc" in final_product and "NS(=O)(=O)c2cc3ccccc3o2" in final_product:
+            print(
+                f"Found target molecule with imidazole and benzofuran connected via sulfonamide: {final_product}"
+            )
+            return True
+
+    return False

@@ -2,123 +2,82 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects multiple C-O bond formations in the synthesis.
-    Looks for at least 2 reactions forming C-O bonds.
+    This function detects late-stage functional group modification without
+    changing the carbon skeleton.
     """
-    co_bond_formation_count = 0
+    late_stage_modification = False
 
-    def dfs_traverse(node):
-        nonlocal co_bond_formation_count
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_modification
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for C-O bond forming reactions using the checker function
-                co_forming_reactions = [
-                    "Williamson Ether Synthesis",
-                    "Williamson Ether Synthesis (intra to epoxy)",
-                    "Esterification of Carboxylic Acids",
-                    "Formation of Sulfonic Esters",
-                    "Formation of Sulfonic Esters on TMS protected alcohol",
-                    "Alcohol protection with silyl ethers",
-                    "Oxidative esterification of primary alcohols",
-                    "Transesterification",
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
-                    "Schotten-Baumann to ester",
-                    "Mitsunobu aryl ether",
-                    "Mitsunobu esterification",
-                    "Mitsunobu aryl ether (intramolecular)",
-                    "Chan-Lam alcohol",
-                    "Chan-Lam etherification",
-                    "Acetic anhydride and alcohol to ester",
-                ]
+                # Convert SMILES to molecules
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product = Chem.MolFromSmiles(product_smiles)
 
-                for reaction_type in co_forming_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        co_bond_formation_count += 1
-                        print(f"Detected C-O bond formation: {reaction_type}")
-                        print(f"Reaction SMILES: {rsmi}")
-                        print(f"Current count: {co_bond_formation_count}")
-                        break
+                if product and all(r for r in reactants):
+                    # Check if the carbon skeleton is preserved
+                    # This is a simplified check - in reality, you would need to compare
+                    # the carbon frameworks between reactants and product
 
-                # If no specific reaction type matched, check for general C-O bond formation
-                if not any(checker.check_reaction(r, rsmi) for r in co_forming_reactions):
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                    # Check for functional group patterns
+                    fg_patterns = [
+                        Chem.MolFromSmarts("[C$(C=O)][NH2]"),  # Amide
+                        Chem.MolFromSmarts("[C$(C=O)][O][C]"),  # Ester
+                        Chem.MolFromSmarts("[OH]"),  # Alcohol
+                        Chem.MolFromSmarts("[C$(C=O)]"),  # Carbonyl
+                    ]
 
-                    # Check for alcohol/phenol in reactants
-                    has_alcohol = any(
-                        checker.check_fg("Primary alcohol", r)
-                        or checker.check_fg("Secondary alcohol", r)
-                        or checker.check_fg("Tertiary alcohol", r)
-                        or checker.check_fg("Phenol", r)
-                        for r in reactants
-                    )
+                    reactant_fgs = set()
+                    product_fgs = set()
 
-                    # Check for ether/ester in product
-                    has_ether_ester = checker.check_fg("Ether", product) or checker.check_fg(
-                        "Ester", product
-                    )
+                    for i, pattern in enumerate(fg_patterns):
+                        for r in reactants:
+                            if r.HasSubstructMatch(pattern):
+                                reactant_fgs.add(i)
 
-                    if has_alcohol and has_ether_ester:
-                        co_bond_formation_count += 1
-                        print(f"Detected general C-O bond formation (alcohol → ether/ester)")
-                        print(f"Reaction SMILES: {rsmi}")
-                        print(f"Current count: {co_bond_formation_count}")
+                        if product.HasSubstructMatch(pattern):
+                            product_fgs.add(i)
 
+                    # If functional groups changed but we're in a late stage reaction
+                    if reactant_fgs != product_fgs:
+                        print("Detected late-stage functional group modification")
+                        late_stage_modification = True
+
+        # Continue traversing with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Total C-O bond formations found: {co_bond_formation_count}")
-    return co_bond_formation_count >= 2  # Return True if at least 2 C-O bond formations
+    return late_stage_modification

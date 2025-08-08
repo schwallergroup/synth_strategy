@@ -2,47 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis maintains halogenated aromatics throughout.
+    Detects if the synthesis maintains stereochemistry at the alpha carbon of an amino acid derivative.
     """
-    chloro_aromatic_pattern = Chem.MolFromSmarts("c[Cl]")
-    depths_with_chloro = set()
+    maintains_stereochemistry = False
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol and mol.HasSubstructMatch(chloro_aromatic_pattern):
-                depths_with_chloro.add(depth)
+    def dfs_traverse(node):
+        nonlocal maintains_stereochemistry
+
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            product_mol = Chem.MolFromSmiles(product)
+
+            if product_mol:
+                # Check for stereocenter in amino acid derivative
+                chiral_pattern = Chem.MolFromSmarts("[C@H,C@@H]([C](=[O])[O,OC])[CH2]c")
+
+                if product_mol.HasSubstructMatch(chiral_pattern):
+                    # If we find a stereocenter in any reaction product, it's maintained
+                    maintains_stereochemistry = True
+                    print(
+                        f"Found maintained stereochemistry at depth {node.get('metadata', {}).get('depth', 'unknown')}"
+                    )
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Check if chlorinated aromatics are present at multiple depths
-    if len(depths_with_chloro) >= 3:
-        print(
-            f"Halogenated aromatics maintained throughout synthesis at depths: {depths_with_chloro}"
-        )
-        return True
-    return False
+    return maintains_stereochemistry

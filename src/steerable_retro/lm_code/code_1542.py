@@ -2,71 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving amide formation from carboxylic acid and amine.
+    This function detects if the synthetic route follows a linear strategy (as opposed to convergent).
+    Linear synthesis typically has 1-2 reactants per step.
     """
-    # Initialize tracking variable
-    has_amide_formation = False
+    is_linear = True
+    reaction_count = 0
 
     def dfs_traverse(node):
-        nonlocal has_amide_formation
+        nonlocal is_linear, reaction_count
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reaction_count += 1
 
-            # Check for amide formation
-            carboxylic_acid_pattern = Chem.MolFromSmarts("C(=O)O")
-            amine_pattern = Chem.MolFromSmarts("[NH2]")
-            amide_pattern = Chem.MolFromSmarts("C(=O)N")
+            # If more than 2 reactants, it might be a convergent step
+            if len(reactants) > 2:
+                is_linear = False
+                print(f"Convergent step detected with {len(reactants)} reactants")
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-            product_mol = Chem.MolFromSmiles(product)
-
-            # Check if reactants include carboxylic acid and amine
-            has_carboxylic_acid = any(
-                mol is not None and mol.HasSubstructMatch(carboxylic_acid_pattern)
-                for mol in reactant_mols
-            )
-            has_amine = any(
-                mol is not None and mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols
-            )
-
-            # Check if product has amide
-            product_has_amide = product_mol is not None and product_mol.HasSubstructMatch(
-                amide_pattern
-            )
-
-            if has_carboxylic_acid and has_amine and product_has_amide:
-                has_amide_formation = True
-                print("Detected amide formation reaction")
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    return has_amide_formation
+    # Only consider routes with multiple reactions
+    if reaction_count >= 3:
+        print(
+            f"Route has {reaction_count} reactions and is {'linear' if is_linear else 'convergent'}"
+        )
+        return is_linear
+
+    return False

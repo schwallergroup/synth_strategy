@@ -2,63 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear fragment assembly pattern.
+    This function detects if the synthetic route employs a Suzuki coupling for biaryl formation.
     """
-    fragment_coupling_count = 0
-    linear_assembly = True
+    suzuki_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal fragment_coupling_count, linear_assembly
+    def dfs_traverse(node):
+        nonlocal suzuki_found
 
-        if node["type"] == "reaction":
-            # Get reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Count number of reactants
-            reactant_count = len(reactants_part.split("."))
+            # Check for boronic acid in reactants
+            boronic_acid_pattern = Chem.MolFromSmarts("[c][B]([OH])[OH]")
+            # Check for aryl halide in reactants
+            aryl_halide_pattern = Chem.MolFromSmarts("[c][Cl,Br,I]")
+            # Check for biaryl in product
+            biaryl_pattern = Chem.MolFromSmarts("[c](-[c])[c]")
 
-            if reactant_count > 1:
-                fragment_coupling_count += 1
+            boronic_acid_present = False
+            aryl_halide_present = False
 
-                # If we have more than one fragment coupling at the same depth level,
-                # it's not a strictly linear assembly
-                if (
-                    fragment_coupling_count > 1
-                    and node.get("children", [])
-                    and any(
-                        child["type"] == "reaction"
-                        and len(child["metadata"]["rsmi"].split(">")[0].split(".")) > 1
-                        for child in node.get("children", [])
-                    )
-                ):
-                    linear_assembly = False
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(boronic_acid_pattern):
+                        boronic_acid_present = True
+                    if mol and mol.HasSubstructMatch(aryl_halide_pattern):
+                        aryl_halide_present = True
+                except:
+                    continue
 
-        # Traverse children
+            try:
+                product_mol = Chem.MolFromSmiles(product)
+                biaryl_present = product_mol and product_mol.HasSubstructMatch(biaryl_pattern)
+            except:
+                biaryl_present = False
+
+            if boronic_acid_present and aryl_halide_present and biaryl_present:
+                print("Suzuki coupling detected")
+                suzuki_found = True
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return linear_assembly and fragment_coupling_count > 0
+    return suzuki_found

@@ -2,75 +2,148 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if a nitro reduction occurs before heterocycle formation
-    in the synthetic route.
-    """
-    # Define patterns
-    nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-    benzimidazole_pattern = Chem.MolFromSmarts("c1nc2ccccc2n1")
+    This function detects a sequence of nitrogen functional group interconversions:
+    nitro → amine → azide
 
-    # Track depths of transformations
-    nitro_reduction_depth = None
-    benzimidazole_formation_depth = None
+    In retrosynthesis, we're looking for: azide → amine → nitro
+    """
+    nitro_to_amine = False
+    amine_to_azide = False
+    nitro_depth = -1
+    amine_depth = -1
+    azide_depth = -1
+
+    # Track atom mappings to ensure same nitrogen atom is converted
+    nitro_n_mapping = None
+    amine_n_mapping = None
+    azide_n_mapping = None
 
     def dfs_traverse(node, depth=0):
-        nonlocal nitro_reduction_depth, benzimidazole_formation_depth
+        nonlocal nitro_to_amine, amine_to_azide, nitro_depth, amine_depth, azide_depth
+        nonlocal nitro_n_mapping, amine_n_mapping, azide_n_mapping
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
 
-            # Check for nitro reduction
-            reactant_has_nitro = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(nitro_pattern)
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
-            product_has_nitro = (
-                Chem.MolFromSmiles(product).HasSubstructMatch(nitro_pattern)
-                if Chem.MolFromSmiles(product)
-                else False
-            )
+            # Check for functional groups in molecules
+            if checker.check_fg("Nitro group", mol_smiles):
+                print(f"Molecule with nitro group found at depth {depth}: {mol_smiles}")
+                if nitro_depth == -1:
+                    nitro_depth = depth
 
-            if reactant_has_nitro and not product_has_nitro:
-                nitro_reduction_depth = depth
+            if checker.check_fg("Primary amine", mol_smiles):
+                print(f"Molecule with primary amine found at depth {depth}: {mol_smiles}")
+                if amine_depth == -1:
+                    amine_depth = depth
 
-            # Check for benzimidazole formation
-            reactants_have_benzimidazole = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(benzimidazole_pattern)
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
-            product_has_benzimidazole = (
-                Chem.MolFromSmiles(product).HasSubstructMatch(benzimidazole_pattern)
-                if Chem.MolFromSmiles(product)
-                else False
-            )
+            if checker.check_fg("Azide", mol_smiles):
+                print(f"Molecule with azide found at depth {depth}: {mol_smiles}")
+                if azide_depth == -1:
+                    azide_depth = depth
 
-            if not reactants_have_benzimidazole and product_has_benzimidazole:
-                benzimidazole_formation_depth = depth
+        elif node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
+
+                print(f"Examining reaction at depth {depth}: {rsmi}")
+
+                # Check for nitro to amine conversion (in forward direction)
+                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                    print(f"Found nitro reduction reaction at depth {depth}")
+                    nitro_to_amine = True
+                else:
+                    # Alternative check for nitro reduction
+                    reactant_has_nitro = any(
+                        checker.check_fg("Nitro group", r) for r in reactants if r
+                    )
+                    product_has_amine = (
+                        checker.check_fg("Primary amine", product) if product else False
+                    )
+
+                    if reactant_has_nitro and product_has_amine:
+                        print(f"Detected nitro to amine conversion at depth {depth}")
+                        nitro_to_amine = True
+
+                # Check for amine to azide conversion (in forward direction)
+                if (
+                    checker.check_reaction("Formation of Azides from halogens", rsmi)
+                    or checker.check_reaction("Amine to azide", rsmi)
+                    or checker.check_reaction("Alcohol to azide", rsmi)
+                ):
+
+                    # Verify amine is converted to azide
+                    reactant_has_amine = any(
+                        checker.check_fg("Primary amine", r) for r in reactants if r
+                    )
+                    product_has_azide = checker.check_fg("Azide", product) if product else False
+
+                    if reactant_has_amine and product_has_azide:
+                        print(f"Found amine to azide conversion at depth {depth}")
+                        amine_to_azide = True
+                else:
+                    # Alternative check for amine to azide conversion
+                    reactant_has_amine = any(
+                        checker.check_fg("Primary amine", r) for r in reactants if r
+                    )
+                    product_has_azide = checker.check_fg("Azide", product) if product else False
+
+                    if reactant_has_amine and product_has_azide:
+                        print(f"Detected amine to azide conversion at depth {depth}")
+                        amine_to_azide = True
 
         # Traverse children
         for child in node.get("children", []):
@@ -79,15 +152,23 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Check if nitro reduction occurs before heterocycle formation
-    sequence_detected = (
-        nitro_reduction_depth is not None
-        and benzimidazole_formation_depth is not None
-        and nitro_reduction_depth > benzimidazole_formation_depth
+    print(f"Conversion summary:")
+    print(f"Nitro to amine: {nitro_to_amine} at depth {nitro_depth}")
+    print(f"Amine to azide: {amine_to_azide} at depth {amine_depth}")
+    print(f"Azide found at depth: {azide_depth}")
+
+    # In retrosynthesis, the sequence should be: azide → amine → nitro
+    # This means azide_depth < amine_depth < nitro_depth
+    correct_order = (
+        azide_depth != -1
+        and amine_depth != -1
+        and nitro_depth != -1
+        and azide_depth < amine_depth
+        and amine_depth < nitro_depth
     )
 
-    print(f"Nitro reduction detected at depth: {nitro_reduction_depth}")
-    print(f"Benzimidazole formation detected at depth: {benzimidazole_formation_depth}")
-    print(f"Nitro reduction before heterocycle formation: {sequence_detected}")
+    print(f"Correct order (azide_depth < amine_depth < nitro_depth): {correct_order}")
+    print(f"Depths - Azide: {azide_depth}, Amine: {amine_depth}, Nitro: {nitro_depth}")
 
-    return sequence_detected
+    # Return True if both conversions were found and all three functional groups appear in the correct order
+    return nitro_to_amine and amine_to_azide and correct_order

@@ -2,144 +2,103 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the final product contains a trifluoromethyl group,
-    which is introduced via a coupling reaction.
+    This function detects a synthetic strategy involving borylation of an aryl bromide
+    for subsequent coupling.
     """
-    has_cf3_coupling = False
+    # Track if we found the patterns
+    found_borylation = False
+    found_bromination = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_cf3_coupling
+        nonlocal found_borylation, found_bromination
 
-        if node["type"] == "mol" and depth == 0:  # Final product
-            final_product_smiles = node["smiles"]
-            print(f"Analyzing final product: {final_product_smiles}")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if final product contains CF3 group
-            if not checker.check_fg("Trifluoro group", final_product_smiles):
-                print("Final product does not contain CF3 group")
-                return
+                # Check for borylation (aryl bromide to boronic acid)
+                if not found_borylation:
+                    aryl_bromide_pattern = Chem.MolFromSmarts("[c][Br]")
+                    boron_reagent_pattern = Chem.MolFromSmarts("[B;$(B(O)(O))]")
 
-            print("Final product contains CF3 group")
+                    aryl_bromide_found = False
+                    boron_reagent_found = False
 
-            # Check if any of the reactions leading to this product is a coupling reaction
-            # that introduced the CF3 group
-            for child in node.get("children", []):
-                if child["type"] == "reaction":
-                    try:
-                        rsmi = child["metadata"]["rsmi"]
-                        reactants = rsmi.split(">")[0].split(".")
-                        product = rsmi.split(">")[-1]
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.HasSubstructMatch(aryl_bromide_pattern):
+                                aryl_bromide_found = True
+                            if mol and mol.HasSubstructMatch(boron_reagent_pattern):
+                                boron_reagent_found = True
+                        except:
+                            continue
 
-                        print(f"Checking reaction: {rsmi}")
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        boronic_acid_pattern = Chem.MolFromSmarts("[c][B;$(B(O)(O))]")
+                        if product_mol.HasSubstructMatch(boronic_acid_pattern):
+                            if aryl_bromide_found and boron_reagent_found:
+                                print(f"Found borylation at depth {depth}")
+                                found_borylation = True
 
-                        # Check if this is a coupling reaction
-                        coupling_reactions = [
-                            "Suzuki coupling with boronic acids",
-                            "Suzuki coupling with boronic acids OTf",
-                            "Suzuki coupling with boronic esters",
-                            "Suzuki coupling with boronic esters OTf",
-                            "Suzuki coupling with sulfonic esters",
-                            "Negishi coupling",
-                            "Stille reaction_aryl",
-                            "Stille reaction_vinyl",
-                            "Stille reaction_benzyl",
-                            "Stille reaction_allyl",
-                            "Stille reaction_aryl OTf",
-                            "Stille reaction_vinyl OTf",
-                            "Sonogashira alkyne_aryl halide",
-                            "Sonogashira acetylene_aryl halide",
-                            "Sonogashira alkyne_aryl OTf",
-                            "Sonogashira acetylene_aryl OTf",
-                            "Hiyama-Denmark Coupling",
-                            "Kumada cross-coupling",
-                            "Buchwald-Hartwig",
-                            "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-                            "{Suzuki}",
-                        ]
+                # Check for bromination
+                if not found_bromination:
+                    brominating_agent_pattern = Chem.MolFromSmarts("[Br]")
+                    aryl_pattern = Chem.MolFromSmarts("[c]")
 
-                        is_coupling = False
-                        for rxn_type in coupling_reactions:
-                            if checker.check_reaction(rxn_type, rsmi):
-                                print(f"Detected coupling reaction: {rxn_type}")
-                                is_coupling = True
-                                break
+                    brominating_agent_found = False
+                    aryl_found = False
 
-                        if not is_coupling:
-                            # Check if it's a general coupling by looking for key patterns
-                            if "Pd" in rsmi or "Ni" in rsmi:
-                                print("Detected potential coupling reaction with Pd or Ni catalyst")
-                                is_coupling = True
-                            else:
-                                print("Not a coupling reaction")
-                                continue
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.HasSubstructMatch(brominating_agent_pattern):
+                                brominating_agent_found = True
+                            if mol and mol.HasSubstructMatch(aryl_pattern):
+                                aryl_found = True
+                        except:
+                            continue
 
-                        print("Found a coupling reaction")
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        aryl_bromide_pattern = Chem.MolFromSmarts("[c][Br]")
+                        if product_mol.HasSubstructMatch(aryl_bromide_pattern):
+                            if brominating_agent_found and aryl_found:
+                                print(f"Found bromination at depth {depth}")
+                                found_bromination = True
 
-                        # Check if any reactant contains CF3 group
-                        for i, reactant in enumerate(reactants):
-                            if checker.check_fg("Trifluoro group", reactant):
-                                print(f"Found CF3 group in reactant {i}: {reactant}")
-                                has_cf3_coupling = True
-                                return
-
-                        print("No reactant contains CF3 group")
-                    except Exception as e:
-                        print(f"Error analyzing reaction: {e}")
-
-        # Continue traversing
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-
-    return has_cf3_coupling
+    return found_borylation and found_bromination

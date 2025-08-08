@@ -2,198 +2,105 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves incorporation of
-    fluorinated aromatic groups, particularly via ether linkage.
+    Detects a synthetic strategy where a late-stage SNAr coupling follows an amine deprotection.
+    The strategy involves:
+    1. Deprotection of a Boc-protected amine
+    2. SNAr coupling of the resulting amine with a chloro-heteroaromatic system
     """
-    fluorinated_aromatic_detected = False
+    # Track if we found the required reactions
+    found_snar = False
+    found_deprotection = False
+    deprotection_depth = -1
+    snar_depth = -1
 
     def dfs_traverse(node, depth=0):
-        nonlocal fluorinated_aromatic_detected
+        nonlocal found_snar, found_deprotection, deprotection_depth, snar_depth
 
-        # Check for fluorinated aromatic ethers in molecule nodes
-        if node["type"] == "mol" and node["smiles"]:
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check if molecule contains both fluorinated aromatic and ether
-                has_fluorinated_aromatic = False
-                for atom in mol.GetAtoms():
-                    if atom.GetSymbol() == "F" and any(
-                        neigh.GetIsAromatic() for neigh in atom.GetNeighbors()
-                    ):
-                        has_fluorinated_aromatic = True
-                        break
-
-                if has_fluorinated_aromatic and checker.check_fg("Ether", node["smiles"]):
-                    print(
-                        f"Found molecule with fluorinated aromatic and ether at depth {depth}: {node['smiles']}"
-                    )
-                    fluorinated_aromatic_detected = True
-
-        # Check reaction nodes
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product from reaction SMILES
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+            reactants_part = rsmi.split(">")[0]
+            reactants = reactants_part.split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if any reactant contains fluorinated aromatic
-            reactant_has_fluorinated = False
-            fluorinated_reactant = None
-            for r in reactants:
-                if not r:
-                    continue
+            # Convert to RDKit molecules
+            product_mol = Chem.MolFromSmiles(product)
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
 
-                r_mol = Chem.MolFromSmiles(r)
-                if not r_mol:
-                    continue
+            # Check for SNAr reaction (amine + chloro-heteroaromatic)
+            if len(reactant_mols) == 2 and product_mol:
+                # Check if one reactant has a primary amine
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                # Check if one reactant has a chloro-heteroaromatic
+                chloro_pattern = Chem.MolFromSmarts("[n:1]~[c:2][Cl:3]")
 
-                # Check for fluorinated aromatic in reactant
-                for atom in r_mol.GetAtoms():
-                    if atom.GetSymbol() == "F" and any(
-                        neigh.GetIsAromatic() for neigh in atom.GetNeighbors()
-                    ):
-                        reactant_has_fluorinated = True
-                        fluorinated_reactant = r
-                        print(f"Found fluorinated aromatic in reactant: {r}")
-                        break
+                has_amine = False
+                has_chloro = False
 
-                if reactant_has_fluorinated:
-                    break
+                for r in reactant_mols:
+                    if r and r.HasSubstructMatch(amine_pattern):
+                        has_amine = True
+                    if r and r.HasSubstructMatch(chloro_pattern):
+                        has_chloro = True
 
-            # Check if product contains ether
-            if reactant_has_fluorinated and product:
-                product_mol = Chem.MolFromSmiles(product)
-                if not product_mol:
-                    # Skip this check but continue traversal
-                    pass
-                else:
-                    # Check if this is an ether formation reaction
-                    is_ether_formation = (
-                        checker.check_reaction("Williamson Ether Synthesis", rsmi)
-                        or checker.check_reaction(
-                            "Williamson Ether Synthesis (intra to epoxy)", rsmi
-                        )
-                        or checker.check_reaction("Chan-Lam etherification", rsmi)
-                        or checker.check_reaction("Mitsunobu aryl ether", rsmi)
-                        or checker.check_reaction(
-                            "Ullmann-Goldberg Substitution aryl alcohol", rsmi
-                        )
-                        or checker.check_reaction("Ullmann condensation", rsmi)
-                    )
+                # Check if product has a new C-N bond where the chlorine was
+                if has_amine and has_chloro:
+                    # This is a simplification - in a real implementation, we would need to
+                    # check that the amine replaced the chlorine specifically
+                    found_snar = True
+                    snar_depth = depth
+                    print(f"Found SNAr reaction at depth {depth}")
 
-                    # Also check for general nucleophilic substitution that might form ethers
-                    if not is_ether_formation:
-                        # Check if the reaction involves nucleophilic substitution with an alcohol
-                        alcohol_reactant = None
-                        for r in reactants:
-                            if not r:
-                                continue
+            # Check for Boc deprotection
+            if product_mol:
+                # Check if product has a primary amine
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                if product_mol.HasSubstructMatch(amine_pattern):
+                    # Check if reactant had a Boc group
+                    boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[NH]")
+                    for r_smiles in reactants:
+                        r_mol = Chem.MolFromSmiles(r_smiles)
+                        if r_mol and r_mol.HasSubstructMatch(boc_pattern):
+                            found_deprotection = True
+                            deprotection_depth = depth
+                            print(f"Found Boc deprotection at depth {depth}")
 
-                            if (
-                                checker.check_fg("Phenol", r)
-                                or checker.check_fg("Primary alcohol", r)
-                                or checker.check_fg("Secondary alcohol", r)
-                                or checker.check_fg("Tertiary alcohol", r)
-                            ):
-                                alcohol_reactant = r
-                                is_ether_formation = True
-                                break
-
-                    if is_ether_formation and checker.check_fg("Ether", product):
-                        # Verify that the fluorinated aromatic is connected to the ether in the product
-                        # Find fluorine atoms
-                        f_atoms = []
-                        for atom in product_mol.GetAtoms():
-                            if atom.GetSymbol() == "F" and any(
-                                neigh.GetIsAromatic() for neigh in atom.GetNeighbors()
-                            ):
-                                f_atoms.append(atom.GetIdx())
-
-                        # Find ether oxygen atoms
-                        o_atoms = []
-                        for atom in product_mol.GetAtoms():
-                            if atom.GetSymbol() == "O" and atom.GetDegree() == 2:
-                                # Verify it's an ether oxygen (connected to two carbons)
-                                carbon_neighbors = 0
-                                for neigh in atom.GetNeighbors():
-                                    if neigh.GetSymbol() == "C":
-                                        carbon_neighbors += 1
-                                if carbon_neighbors == 2:
-                                    o_atoms.append(atom.GetIdx())
-
-                        # Check if fluorinated aromatic is connected to ether
-                        for f_idx in f_atoms:
-                            f_atom = product_mol.GetAtomWithIdx(f_idx)
-                            # Get the aromatic carbon connected to fluorine
-                            for neigh in f_atom.GetNeighbors():
-                                if neigh.GetIsAromatic():
-                                    aromatic_carbon = neigh
-                                    # Check if this aromatic ring is connected to an ether oxygen
-                                    for o_idx in o_atoms:
-                                        path = Chem.GetShortestPath(
-                                            product_mol, aromatic_carbon.GetIdx(), o_idx
-                                        )
-                                        if (
-                                            path and len(path) <= 10
-                                        ):  # Allow for more complex connections
-                                            print(
-                                                f"Fluorinated aromatic incorporation via ether detected at depth {depth}"
-                                            )
-                                            print(f"Reaction: {rsmi}")
-                                            fluorinated_aromatic_detected = True
-                                            # Continue traversal to find all instances
-
-        # Continue traversal
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return fluorinated_aromatic_detected
+
+    # Check if we found both reactions in the correct order
+    # Remember: lower depth = later in synthesis (closer to final product)
+    if found_snar and found_deprotection and snar_depth < deprotection_depth:
+        print("Detected strategy: Late-stage SNAr coupling after amine deprotection")
+        return True
+
+    return False

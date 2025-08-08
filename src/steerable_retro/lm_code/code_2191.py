@@ -2,178 +2,136 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a specific sequence of functional group interconversions:
-    aldehyde → alcohol → mesylate → nitrile
+    Detects if the synthesis follows a convergent strategy with multiple fragments
+    being prepared separately and then combined.
     """
-    # Track transformations we've seen with their connected molecules
-    transformations = []
+    fragment_paths = []
+    max_depth = 0
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+    def dfs_traverse(node, path=None, depth=0):
+        nonlocal fragment_paths, max_depth
 
-            # Check for functional groups in this molecule (for debugging)
-            if checker.check_fg("Nitrile", mol_smiles):
-                print(f"Found molecule with nitrile at depth {depth}: {mol_smiles}")
+        if path is None:
+            path = []
 
-            if checker.check_fg("Mesylate", mol_smiles):
-                print(f"Found molecule with mesylate at depth {depth}: {mol_smiles}")
+        if depth > max_depth:
+            max_depth = depth
 
-            if checker.check_fg("Primary alcohol", mol_smiles) or checker.check_fg(
-                "Secondary alcohol", mol_smiles
-            ):
-                print(f"Found molecule with alcohol at depth {depth}: {mol_smiles}")
+        # Create a copy of the current path
+        current_path = path.copy()
 
-            if checker.check_fg("Aldehyde", mol_smiles):
-                print(f"Found molecule with aldehyde at depth {depth}: {mol_smiles}")
+        # Add current node to path if it's a reaction
+        if node.get("type") == "reaction":
+            # Store the reaction with a unique identifier if available
+            if "metadata" in node and "reaction_hash" in node["metadata"]:
+                reaction_info = {
+                    "node": node,
+                    "id": node["metadata"]["reaction_hash"],
+                    "depth": depth,
+                }
+            else:
+                # Create a simple identifier based on position in the tree
+                reaction_info = {
+                    "node": node,
+                    "id": f"reaction_at_depth_{depth}_{len(current_path)}",
+                    "depth": depth,
+                }
+            current_path.append(reaction_info)
 
-        elif node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                products = rsmi.split(">")[-1].split(".")
-
-                # Check for mesylate to nitrile transformation
-                mesylate_reactants = [r for r in reactants if checker.check_fg("Mesylate", r)]
-                nitrile_products = [p for p in products if checker.check_fg("Nitrile", p)]
-
-                if mesylate_reactants and nitrile_products:
-                    transformations.append(
-                        ("mesylate_to_nitrile", depth, mesylate_reactants[0], nitrile_products[0])
-                    )
-                    print(f"Found mesylate to nitrile transformation at depth {depth}: {rsmi}")
-
-                # Check for alcohol to mesylate transformation
-                alcohol_reactants = [
-                    r
-                    for r in reactants
-                    if checker.check_fg("Primary alcohol", r)
-                    or checker.check_fg("Secondary alcohol", r)
-                ]
-                mesylate_products = [p for p in products if checker.check_fg("Mesylate", p)]
-
-                if alcohol_reactants and mesylate_products:
-                    transformations.append(
-                        ("alcohol_to_mesylate", depth, alcohol_reactants[0], mesylate_products[0])
-                    )
-                    print(f"Found alcohol to mesylate transformation at depth {depth}: {rsmi}")
-
-                # Check for aldehyde to alcohol transformation
-                aldehyde_reactants = [r for r in reactants if checker.check_fg("Aldehyde", r)]
-                alcohol_products = [
-                    p
-                    for p in products
-                    if checker.check_fg("Primary alcohol", p)
-                    or checker.check_fg("Secondary alcohol", p)
-                ]
-
-                if aldehyde_reactants and alcohol_products:
-                    transformations.append(
-                        ("aldehyde_to_alcohol", depth, aldehyde_reactants[0], alcohol_products[0])
-                    )
-                    print(f"Found aldehyde to alcohol transformation at depth {depth}: {rsmi}")
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+        # If this is a leaf node (starting material)
+        if node.get("type") == "mol" and node.get("in_stock", False):
+            fragment_paths.append(current_path)
+            return
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, current_path, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Sort transformations by depth to check sequence
-    transformations.sort(key=lambda x: x[1], reverse=True)
-    print(f"Sorted transformations: {transformations}")
-
-    # Check if we have all three transformations
-    if len(transformations) < 3:
-        print("Not all transformations found")
+    # Check if we have multiple fragment paths
+    if len(fragment_paths) < 2:
+        print("Not a convergent synthesis: only one fragment path found")
         return False
 
-    # Expected sequence in synthetic order
-    expected_sequence = ["aldehyde_to_alcohol", "alcohol_to_mesylate", "mesylate_to_nitrile"]
+    print(f"Found {len(fragment_paths)} fragment paths")
 
-    # Extract just the transformation types
-    transformation_types = [t[0] for t in transformations]
-    print(f"Transformation types: {transformation_types}")
+    # Check if fragments are combined in the second half of synthesis
+    # Find the reaction where fragments are combined
+    fragment_combination_depths = []
 
-    # Check if all expected transformations exist
-    for expected in expected_sequence:
-        if expected not in transformation_types:
-            print(f"Missing transformation: {expected}")
-            return False
+    for i in range(len(fragment_paths)):
+        for j in range(i + 1, len(fragment_paths)):
+            path1 = fragment_paths[i]
+            path2 = fragment_paths[j]
 
-    # Check if they appear in the correct order
-    # In retrosynthetic traversal (higher depth = earlier in synthesis)
-    # we expect aldehyde_to_alcohol at highest depth, then alcohol_to_mesylate, then mesylate_to_nitrile
+            # Find common reactions between paths by comparing reaction IDs
+            path1_ids = [r["id"] for r in path1]
+            path2_ids = [r["id"] for r in path2]
+            common_ids = set(path1_ids).intersection(set(path2_ids))
 
-    # Get indices of transformations in our sorted list
-    aldehyde_to_alcohol_idx = transformation_types.index("aldehyde_to_alcohol")
-    alcohol_to_mesylate_idx = transformation_types.index("alcohol_to_mesylate")
-    mesylate_to_nitrile_idx = transformation_types.index("mesylate_to_nitrile")
+            if common_ids:
+                print(f"Found common reactions between path {i} and path {j}")
 
-    # Check correct order by depth
-    if not (
-        transformations[aldehyde_to_alcohol_idx][1]
-        >= transformations[alcohol_to_mesylate_idx][1]
-        >= transformations[mesylate_to_nitrile_idx][1]
-    ):
-        print("Transformations not in correct depth order")
-        print(f"Aldehyde→Alcohol depth: {transformations[aldehyde_to_alcohol_idx][1]}")
-        print(f"Alcohol→Mesylate depth: {transformations[alcohol_to_mesylate_idx][1]}")
-        print(f"Mesylate→Nitrile depth: {transformations[mesylate_to_nitrile_idx][1]}")
+                # Get the deepest common reaction (first combination point)
+                deepest_common = None
+                max_common_depth = -1
+
+                for reaction_id in common_ids:
+                    # Find the reaction in path1
+                    for r in path1:
+                        if r["id"] == reaction_id:
+                            depth = path1.index(r)
+                            if depth > max_common_depth:
+                                max_common_depth = depth
+                                deepest_common = r
+
+                if deepest_common:
+                    fragment_combination_depths.append(max_common_depth)
+                    print(f"Deepest common reaction at depth {max_common_depth}")
+
+    if not fragment_combination_depths:
+        print("No fragment combination points found")
         return False
 
-    print("Found complete sequence: aldehyde → alcohol → mesylate → nitrile")
+    # Calculate the relative position of fragment combination
+    avg_combination_depth = sum(fragment_combination_depths) / len(fragment_combination_depths)
+    relative_position = avg_combination_depth / max_depth
+
+    # If fragments are combined in the second half of synthesis (relative_position < 0.5)
+    # This means the combination happens closer to the target molecule
+    is_late_stage = relative_position < 0.5
+
+    print(f"Convergent synthesis detected with {len(fragment_paths)} fragment paths")
+    print(f"Fragment combination occurs at relative position: {relative_position:.2f}")
+    print(f"Late-stage combination: {is_late_stage}")
+
+    # Always return True if we've detected a convergent synthesis with multiple paths
+    # and at least one combination point
     return True

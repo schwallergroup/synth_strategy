@@ -2,73 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route employs an ester hydrolysis step
-    to generate a carboxylic acid for subsequent reactions.
+    This function detects a linear fragment assembly strategy where fragments
+    are added sequentially rather than in a convergent manner.
     """
-    result = False
+    # Track the number of reactants at each step
+    reactant_counts = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal result
-
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
 
-                # Check if reactant includes a methyl/ethyl ester
-                ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]")
+                # Count the number of reactants
+                reactant_counts.append(len(reactants))
 
-                # Check if product has a carboxylic acid
-                carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
-
-                ester_found = False
-
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(ester_pattern):
-                            ester_found = True
-                            print("Found ester reactant:", reactant)
-                    except:
-                        continue
-
-                # Check product for carboxylic acid
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol and product_mol.HasSubstructMatch(carboxylic_acid_pattern):
-                        print("Found carboxylic acid in product:", product)
-                        if ester_found:
-                            result = True
-                            print("Detected ester hydrolysis strategy")
-                except:
-                    pass
-
-        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-    return result
+
+    # Check if most reactions have 1-2 reactants (linear strategy)
+    # and at least one key step has 2 reactants (fragment coupling)
+    if reactant_counts:
+        linear_steps = sum(1 for count in reactant_counts if count <= 2)
+        has_coupling = any(count == 2 for count in reactant_counts)
+
+        is_linear = (linear_steps / len(reactant_counts) >= 0.7) and has_coupling
+
+        if is_linear:
+            print(
+                f"Found linear fragment assembly strategy with {linear_steps}/{len(reactant_counts)} linear steps"
+            )
+
+        return is_linear
+
+    return False

@@ -2,87 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthesis strategy that uses alkyl bromide linkers (particularly 1,3-dibromopropane)
-    to connect fragments through ether formations.
+    Detects if the synthesis involves SNAr reaction with phenol (C-O bond formation where
+    carbon is part of aromatic system and was previously attached to a leaving group like Cl).
     """
-    # Track key features
-    alkyl_bromide_linker_used = False
-    ether_formations = 0
+    has_snar_with_phenol = False
 
-    # Define SMARTS patterns
-    alkyl_bromide_pattern = Chem.MolFromSmarts("[Br][CH2][CH2][CH2][Br]")
-    mono_bromide_pattern = Chem.MolFromSmarts("[Br][CH2][CH2][CH2][O]")
-    ether_pattern = Chem.MolFromSmarts("[#6]-[O]-[#6]")
-
-    def dfs_traverse(node, depth=0):
-        nonlocal alkyl_bromide_linker_used, ether_formations
+    def dfs_traverse(node):
+        nonlocal has_snar_with_phenol
 
         if node["type"] == "reaction":
-            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for alkyl bromide linker
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+            # Look for phenol pattern in reactants
+            phenol_pattern = Chem.MolFromSmarts("c[OH]")
+            chloro_aromatic_pattern = Chem.MolFromSmarts("c[Cl]")
 
-            for reactant in reactant_mols:
-                if reactant and reactant.HasSubstructMatch(alkyl_bromide_pattern):
-                    alkyl_bromide_linker_used = True
-                    print(f"1,3-dibromopropane linker detected at depth {depth}")
+            phenol_found = False
+            chloro_aromatic_found = False
 
-            # Check for mono-bromide intermediate (partially coupled linker)
-            for reactant in reactant_mols:
-                if reactant and reactant.HasSubstructMatch(mono_bromide_pattern):
-                    print(f"Partially coupled linker detected at depth {depth}")
+            for reactant in reactants:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol:
+                    if mol.HasSubstructMatch(phenol_pattern):
+                        phenol_found = True
+                    if mol.HasSubstructMatch(chloro_aromatic_pattern):
+                        chloro_aromatic_found = True
 
-            # Count ethers in reactants and product
-            reactant_ethers = sum(
-                len(mol.GetSubstructMatches(ether_pattern)) for mol in reactant_mols if mol
-            )
-            product_ethers = (
-                len(product_mol.GetSubstructMatches(ether_pattern)) if product_mol else 0
-            )
+            # Check if product has new C-O bond where chlorine was
+            if phenol_found and chloro_aromatic_found:
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    ether_pattern = Chem.MolFromSmarts("cOc")
+                    if product_mol.HasSubstructMatch(ether_pattern):
+                        print("Found SNAr reaction with phenol")
+                        has_snar_with_phenol = True
 
-            if product_ethers > reactant_ethers:
-                ether_formations += 1
-                print(f"Ether formation detected at depth {depth}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if the strategy is present
-    strategy_present = alkyl_bromide_linker_used and ether_formations >= 2
-
-    print(f"Alkyl linker fragment coupling strategy detection:")
-    print(f"  1,3-dibromopropane linker used: {alkyl_bromide_linker_used}")
-    print(f"  Ether formations: {ether_formations}")
-    print(f"  Strategy present: {strategy_present}")
-
-    return strategy_present
+    return has_snar_with_phenol

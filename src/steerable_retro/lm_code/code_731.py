@@ -2,62 +2,104 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage alcohol activation via mesylation.
+    This function detects multiple heteroatom functionalization steps in the synthesis,
+    including sulfonamide formation, N-methylation, and amide formation.
     """
-    found_mesylation = False
+    functionalization_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_mesylation
+    def dfs_traverse(node):
+        nonlocal functionalization_count
 
-        if (
-            node["type"] == "reaction" and depth <= 1
-        ):  # Check only late-stage reactions (depth 0 or 1)
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0]
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants.split(".")]
-                product_mol = Chem.MolFromSmiles(product)
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                if product_mol:
-                    # Define SMARTS patterns
-                    alcohol_pattern = Chem.MolFromSmarts("[OX2H]")
-                    mesylate_pattern = Chem.MolFromSmarts("[SX4](=[OX1])(=[OX1])([OX2])[#6]")
+            # Check for sulfonamide formation
+            sulfonamide_pattern = Chem.MolFromSmarts("[#7]-[#16](=[#8])(=[#8])")
+            sulfonyl_chloride_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])-[Cl]")
 
-                    # Check for mesylation (alcohol → mesylate)
-                    alcohol_in_reactants = any(
-                        r and r.HasSubstructMatch(alcohol_pattern) for r in reactants_mols if r
-                    )
-                    mesylate_in_product = product_mol.HasSubstructMatch(mesylate_pattern)
+            # Check for N-methylation
+            n_methyl_pattern = Chem.MolFromSmarts("[#7]-[#6]")
 
-                    if alcohol_in_reactants and mesylate_in_product:
-                        print(f"Detected late-stage mesylation at depth {depth}")
-                        found_mesylation = True
+            # Check for amide formation
+            amide_pattern = Chem.MolFromSmarts("[#7]-[#6](=[#8])")
+            acyl_chloride_pattern = Chem.MolFromSmarts("[#6](=[#8])-[Cl]")
 
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                # Check for sulfonamide formation
+                if product_mol.HasSubstructMatch(sulfonamide_pattern):
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(sulfonyl_chloride_pattern):
+                            functionalization_count += 1
+                            print(f"Detected sulfonamide formation: {rsmi}")
+                            break
+
+                # Check for N-methylation
+                if product_mol.HasSubstructMatch(n_methyl_pattern):
+                    methyl_iodide_found = False
+                    amine_found = False
+                    for reactant in reactants:
+                        if "CI" in reactant or "IC" in reactant:
+                            methyl_iodide_found = True
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[#7;H1,H2]")):
+                            amine_found = True
+
+                    if methyl_iodide_found and amine_found:
+                        functionalization_count += 1
+                        print(f"Detected N-methylation: {rsmi}")
+
+                # Check for amide formation
+                if product_mol.HasSubstructMatch(amide_pattern):
+                    acyl_chloride_found = False
+                    amine_found = False
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            if mol.HasSubstructMatch(acyl_chloride_pattern):
+                                acyl_chloride_found = True
+                            if mol.HasSubstructMatch(Chem.MolFromSmarts("[#7;H1,H2]")):
+                                amine_found = True
+
+                    if acyl_chloride_found and amine_found:
+                        functionalization_count += 1
+                        print(f"Detected amide formation: {rsmi}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return found_mesylation
+    return functionalization_count >= 2

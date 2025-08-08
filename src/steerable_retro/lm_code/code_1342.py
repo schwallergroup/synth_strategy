@@ -2,75 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes that involve multiple heterocyclic systems,
-    specifically thiophene, pyrimidine, morpholine, and piperazine.
+    This function detects a synthetic strategy involving N-arylation of a heterocycle.
     """
-    # Count of different heterocycles found
-    heterocycle_count = 0
-    found_thiophene = False
-    found_pyrimidine = False
-    found_morpholine = False
-    found_piperazine = False
+    found_n_arylation = False
 
     def dfs_traverse(node):
-        nonlocal heterocycle_count, found_thiophene, found_pyrimidine, found_morpholine, found_piperazine
+        nonlocal found_n_arylation
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for each heterocycle
-                thiophene = Chem.MolFromSmarts("[#6]1[#6][#6][#16][#6]1")
-                pyrimidine = Chem.MolFromSmarts("[#6]1[#7][#6][#7][#6][#6]1")
-                morpholine = Chem.MolFromSmarts("[#6]1[#6][#8][#6][#6][#7]1")
-                piperazine = Chem.MolFromSmarts("[#6]1[#6][#7][#6][#6][#7]1")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                if not found_thiophene and mol.HasSubstructMatch(thiophene):
-                    found_thiophene = True
-                    heterocycle_count += 1
-                    print("Found thiophene heterocycle")
+            # Check for N-arylation pattern
+            if len(reactants) >= 2 and product:
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-                if not found_pyrimidine and mol.HasSubstructMatch(pyrimidine):
-                    found_pyrimidine = True
-                    heterocycle_count += 1
-                    print("Found pyrimidine heterocycle")
+                if all(mol is not None for mol in reactant_mols) and product_mol is not None:
+                    # Look for aryl halide in reactants
+                    aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,Cl,I]")
+                    nh_heterocycle_pattern = Chem.MolFromSmarts("[nH]")
+                    n_aryl_pattern = Chem.MolFromSmarts("[n][c]")
 
-                if not found_morpholine and mol.HasSubstructMatch(morpholine):
-                    found_morpholine = True
-                    heterocycle_count += 1
-                    print("Found morpholine heterocycle")
+                    has_aryl_halide = any(
+                        len(mol.GetSubstructMatches(aryl_halide_pattern)) > 0
+                        for mol in reactant_mols
+                    )
+                    has_nh_heterocycle = any(
+                        len(mol.GetSubstructMatches(nh_heterocycle_pattern)) > 0
+                        for mol in reactant_mols
+                    )
+                    has_n_aryl_product = len(product_mol.GetSubstructMatches(n_aryl_pattern)) > 0
 
-                if not found_piperazine and mol.HasSubstructMatch(piperazine):
-                    found_piperazine = True
-                    heterocycle_count += 1
-                    print("Found piperazine heterocycle")
+                    if has_aryl_halide and has_nh_heterocycle and has_n_aryl_product:
+                        found_n_arylation = True
+                        print(f"Detected N-arylation of heterocycle: {rsmi}")
 
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if at least 3 different heterocycles are found
-    return heterocycle_count >= 3
+    print(f"N-arylation of heterocycle detected: {found_n_arylation}")
+    return found_n_arylation

@@ -2,72 +2,82 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving sequential modifications of a piperazine scaffold.
+    Detects if the synthetic route uses chloro displacement strategy
+    for attaching heterocycles.
     """
-    # Initialize tracking variables
-    piperazine_present = False
-    modifications_count = 0
+    found_pattern = False
 
-    # SMARTS patterns
-    piperazine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#7][#6][#6]1")
+    def dfs_traverse(node):
+        nonlocal found_pattern
 
-    def dfs_traverse(node, depth=0):
-        nonlocal piperazine_present, modifications_count
-
-        if node["type"] == "reaction":
-            # Extract reactants and products
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            try:
+                # Check for chloro-substituted aromatic in reactants
+                cl_aromatic_pattern = Chem.MolFromSmarts("[c]-[Cl]")
 
-            if product and reactants:
-                # Check if piperazine is present
-                if product.HasSubstructMatch(piperazine_pattern):
-                    piperazine_present = True
+                # Check for heterocycle in reactants
+                indole_pattern = Chem.MolFromSmarts("[c]1[c][c][c]2[nH][c][c][c]2[c]1")
 
-                    # Check if this is a modification of the piperazine scaffold
-                    reactants_with_piperazine = [
-                        r for r in reactants if r and r.HasSubstructMatch(piperazine_pattern)
-                    ]
+                # Check if one reactant has chloro group and another has heterocycle
+                has_cl_aromatic = False
+                has_heterocycle = False
 
-                    if reactants_with_piperazine:
-                        # This is a modification of an existing piperazine scaffold
-                        modifications_count += 1
-                        print(f"Piperazine scaffold modification detected at depth {depth}")
+                for reactant in reactants_smiles:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if not reactant_mol:
+                        continue
 
-        # Traverse children
+                    if reactant_mol.HasSubstructMatch(cl_aromatic_pattern):
+                        has_cl_aromatic = True
+
+                    if reactant_mol.HasSubstructMatch(indole_pattern):
+                        has_heterocycle = True
+
+                # Check if product has C-O bond where chloro was
+                if has_cl_aromatic and has_heterocycle:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    co_pattern = Chem.MolFromSmarts("[c]-[O]-[c]")
+
+                    if product_mol and product_mol.HasSubstructMatch(co_pattern):
+                        print("Found chloro displacement for heterocycle attachment")
+                        found_pattern = True
+            except:
+                pass
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-
-    # Strategy is present if piperazine scaffold is present and modified at least twice
-    strategy_present = piperazine_present and modifications_count >= 2
-    print(f"Piperazine scaffold modification strategy detected: {strategy_present}")
-    return strategy_present
+    return found_pattern

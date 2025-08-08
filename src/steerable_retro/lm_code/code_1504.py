@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,116 +54,245 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a linear synthesis strategy with early bromination followed by
-    functional group transformations and ring formation.
+    Detects if the synthesis uses a late-stage heterocycle formation strategy,
+    specifically forming a heterocyclic ring in the final step.
     """
-    # Track key transformations and their depths
-    bromination_depth = None
-    acetylation_depth = None
-    o_methylation_depth = None
-    ring_formation_depth = None
+    # List of heterocyclic rings to check
+    heterocycle_rings = [
+        "furan",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "oxolane",
+        "oxane",
+        "dioxolane",
+        "dioxolene",
+        "trioxane",
+        "dioxepane",
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "thiomorpholine",
+        "aziridine",
+        "azetidine",
+        "azepane",
+        "diazepane",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "carbazole",
+        "acridine",
+        "thiophene",
+        "thiopyran",
+        "thiirane",
+        "thietane",
+        "thiolane",
+        "thiane",
+        "dithiane",
+        "dithiolane",
+        "benzothiophene",
+        "oxathiolane",
+        "dioxathiolane",
+        "thiazolidine",
+        "oxazolidine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "pteridin",
+        "phenothiazine",
+        "phenoxazine",
+        "dibenzofuran",
+        "dibenzothiophene",
+        "xanthene",
+        "thioxanthene",
+        "pyrroline",
+        "pyrrolidone",
+        "imidazolidine",
+        "porphyrin",
+        "indazole",
+        "benzotriazole",
+    ]
 
-    print("Starting analysis of synthesis route...")
+    # List of heterocycle-forming reactions
+    heterocycle_forming_reactions = [
+        "Formation of NOS Heterocycles",
+        "Paal-Knorr pyrrole synthesis",
+        "benzimidazole_derivatives_carboxylic-acid/ester",
+        "benzimidazole_derivatives_aldehyde",
+        "benzothiazole",
+        "benzoxazole_arom-aldehyde",
+        "benzoxazole_carboxylic-acid",
+        "thiazole",
+        "Niementowski_quinazoline",
+        "tetrazole_terminal",
+        "tetrazole_connect_regioisomere_1",
+        "tetrazole_connect_regioisomere_2",
+        "1,2,4-triazole_acetohydrazide",
+        "1,2,4-triazole_carboxylic-acid/ester",
+        "3-nitrile-pyridine",
+        "spiro-chromanone",
+        "pyrazole",
+        "phthalazinone",
+        "Paal-Knorr pyrrole",
+        "triaryl-imidazole",
+        "Fischer indole",
+        "Friedlaender chinoline",
+        "benzofuran",
+        "benzothiophene",
+        "indole",
+        "oxadiazole",
+        "piperidine_indole",
+        "imidazole",
+        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
+        "Huisgen 1,3 dipolar cycloaddition",
+        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
+        "Pyrazole formation",
+        "Azide-nitrile click cycloaddition to tetrazole",
+        "Azide-nitrile click cycloaddition to triazole",
+        "Intramolecular amination of azidobiphenyls (heterocycle formation)",
+        "Intramolecular amination (heterocycle formation)",
+        "Huisgen 1,3,4-oxadiazoles from COOH and tetrazole",
+    ]
 
-    def dfs_traverse(node, current_depth=0):
-        nonlocal bromination_depth, acetylation_depth, o_methylation_depth, ring_formation_depth
-
-        if node["type"] == "reaction":
-            # Get metadata
-            metadata = node.get("metadata", {})
-            depth = metadata.get("depth", current_depth)
-            rsmi = metadata.get("rsmi", "")
-
-            if not rsmi:
-                print(f"No reaction SMILES found at depth {depth}")
-                return
-
-            print(f"Analyzing reaction at depth {depth}: {rsmi}")
-
-            # Extract reactants and product
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
-
-            try:
-                # Check for bromination
-                if checker.check_reaction("Aromatic bromination", rsmi) or (
-                    checker.check_fg("Aromatic halide", product_smiles)
-                    and "Br" in product_smiles
-                    and not any(
-                        checker.check_fg("Aromatic halide", r) and "Br" in r
-                        for r in reactants_smiles
-                    )
-                ):
-                    print(f"Bromination detected at depth: {depth}")
-                    bromination_depth = depth
-
-                # Check for acetylation (NH2 → NHAc)
-                if checker.check_reaction("Acylation of primary amines", rsmi) or (
-                    any(checker.check_fg("Primary amine", r) for r in reactants_smiles)
-                    and checker.check_fg("Primary amide", product_smiles)
-                ):
-                    print(f"Acetylation detected at depth: {depth}")
-                    acetylation_depth = depth
-
-                # Check for O-methylation (OH → OCH3)
-                if checker.check_reaction("O-methylation", rsmi) or (
-                    any(checker.check_fg("Phenol", r) for r in reactants_smiles)
-                    and not checker.check_fg("Phenol", product_smiles)
-                    and checker.check_fg("Ether", product_smiles)
-                ):
-                    print(f"O-Methylation detected at depth: {depth}")
-                    o_methylation_depth = depth
-
-                # Check for benzoxazole formation
-                if checker.check_reaction("Benzoxazole formation from aldehyde", rsmi) or (
-                    checker.check_ring("benzoxazole", product_smiles)
-                    and not any(checker.check_ring("benzoxazole", r) for r in reactants_smiles)
-                ):
-                    print(f"Benzoxazole formation detected at depth: {depth}")
-                    ring_formation_depth = depth
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Process children
-        for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
-
-    # Start traversal from the root
-    dfs_traverse(route)
-
-    print(
-        f"Transformation depths - Bromination: {bromination_depth}, Acetylation: {acetylation_depth}, O-Methylation: {o_methylation_depth}, Ring Formation: {ring_formation_depth}"
-    )
-
-    # Check if bromination is detected and occurs early (higher depth)
-    if bromination_depth is not None:
-        # Check if bromination occurs before other transformations
-        # Note: Higher depth means earlier in the synthesis (retrosynthetic perspective)
-        early_bromination = True
-
-        if acetylation_depth is not None and bromination_depth <= acetylation_depth:
-            early_bromination = False
-
-        if o_methylation_depth is not None and bromination_depth <= o_methylation_depth:
-            early_bromination = False
-
-        if ring_formation_depth is not None and bromination_depth <= ring_formation_depth:
-            early_bromination = False
-
-        # We need at least one other transformation after bromination
-        has_subsequent_transformations = (
-            acetylation_depth is not None
-            or o_methylation_depth is not None
-            or ring_formation_depth is not None
-        )
-
-        if early_bromination and has_subsequent_transformations:
-            print("Linear synthesis with early bromination strategy detected")
+    def is_final_reaction(node, depth):
+        """Check if this is the final reaction in the synthesis route"""
+        # If depth is 0 and node is a reaction, it's the final reaction
+        if depth == 0 and node["type"] == "reaction":
             return True
-        else:
-            print("Bromination detected but not in the expected pattern")
-    else:
-        print("No bromination detected in the synthesis route")
 
-    return False
+        # If depth is 1, node is a molecule, and it has no parent reaction, it could be the final product
+        if depth == 1 and node["type"] == "mol" and len(node.get("children", [])) == 1:
+            child = node["children"][0]
+            if child["type"] == "reaction":
+                return True
+
+        return False
+
+    def check_heterocycle_formation(rsmi, reactants_smiles, product_smiles):
+        """Check if the reaction forms a heterocycle"""
+        print(f"Checking reaction: {rsmi}")
+
+        # 1. Check if this is a known heterocycle-forming reaction
+        for reaction_type in heterocycle_forming_reactions:
+            if checker.check_reaction(reaction_type, rsmi):
+                print(f"Late-stage heterocycle formation detected: {reaction_type}")
+                return True
+
+        # Parse molecules
+        try:
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if not product_mol:
+                print(f"Could not parse product SMILES: {product_smiles}")
+                return False
+
+            reactant_mols = []
+            for r_smiles in reactants_smiles:
+                mol = Chem.MolFromSmiles(r_smiles)
+                if mol:
+                    reactant_mols.append(mol)
+                else:
+                    print(f"Could not parse reactant SMILES: {r_smiles}")
+
+            if not reactant_mols:
+                print("No valid reactant molecules found")
+                return False
+
+            # 2. Check if product contains heterocycles not present in reactants
+            for ring_name in heterocycle_rings:
+                if checker.check_ring(ring_name, product_smiles):
+                    print(f"Product contains {ring_name}")
+
+                    # Check if this ring is new (not in any reactant)
+                    ring_in_reactants = False
+                    for reactant in reactants_smiles:
+                        if checker.check_ring(ring_name, reactant):
+                            print(f"Reactant also contains {ring_name}: {reactant}")
+                            ring_in_reactants = True
+                            break
+
+                    if not ring_in_reactants:
+                        print(
+                            f"Late-stage heterocycle formation detected: {ring_name} formed in final step"
+                        )
+                        return True
+
+            # 3. Check if there's an increase in ring count
+            product_ring_info = product_mol.GetRingInfo()
+            product_ring_count = product_ring_info.NumRings()
+
+            max_reactant_ring_count = max([mol.GetRingInfo().NumRings() for mol in reactant_mols])
+
+            print(
+                f"Product ring count: {product_ring_count}, Max reactant ring count: {max_reactant_ring_count}"
+            )
+
+            if product_ring_count > max_reactant_ring_count:
+                # Check if any of the new rings contains heteroatoms
+                for ring_idx in range(product_ring_info.NumRings()):
+                    ring_atoms = product_ring_info.AtomRings()[ring_idx]
+                    has_heteroatom = False
+                    for atom_idx in ring_atoms:
+                        atom = product_mol.GetAtomWithIdx(atom_idx)
+                        if atom.GetAtomicNum() not in [1, 6]:  # Not H or C
+                            has_heteroatom = True
+                            break
+
+                    if has_heteroatom:
+                        print(
+                            "Late-stage heterocycle formation detected: New heterocycle formed in final step"
+                        )
+                        return True
+
+            return False
+
+        except Exception as e:
+            print(f"Error in check_heterocycle_formation: {e}")
+            return False
+
+    def dfs_traverse(node, depth=0):
+        """Traverse the synthesis route to find late-stage heterocycle formation"""
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
+
+        # Check if this is a reaction node
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Check if this is the final or near-final reaction
+            if depth <= 1:
+                print(f"Examining potential final reaction at depth {depth}")
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
+
+                if check_heterocycle_formation(rsmi, reactants_smiles, product_smiles):
+                    return True
+
+        # Continue traversing
+        for child in node.get("children", []):
+            if dfs_traverse(child, depth + 1):
+                return True
+
+        return False
+
+    # Start traversal
+    result = dfs_traverse(route)
+    print(f"Final result: {result}")
+    return result

@@ -2,69 +2,108 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis route has a late-stage amide coupling reaction
-    (depth 0 or 1) that forms a key C-N bond.
+    Detects if the route contains a Williamson ether synthesis
+    (alcohol + alkyl halide → ether).
     """
-    found_amide_coupling = False
+    ether_synthesis_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_amide_coupling
+    def dfs_traverse(node):
+        nonlocal ether_synthesis_found
 
-        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
 
-                # Check for acid chloride or similar activated carboxylic acid
-                acid_pattern = Chem.MolFromSmarts("[C](=[O])[Cl,Br,I,O]")
-                # Check for amine nucleophile
-                amine_pattern = Chem.MolFromSmarts("[N;H1,H2]")
-                # Check for amide in product
-                amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+            # First, directly check if this is a Williamson ether synthesis reaction
+            if checker.check_reaction("Williamson Ether Synthesis", rsmi):
+                print(f"Found Williamson ether synthesis via reaction check: {rsmi}")
+                ether_synthesis_found = True
+                return
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".")]
-                product = Chem.MolFromSmiles(product_str)
+            # If direct check fails, perform more detailed analysis
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if reactants contain acid chloride and amine
-                has_acid = any(
-                    r is not None and r.HasSubstructMatch(acid_pattern) for r in reactants
-                )
-                has_amine = any(
-                    r is not None and r.HasSubstructMatch(amine_pattern) for r in reactants
-                )
+            # Check for alcohol in reactants
+            alcohol_present = any(
+                checker.check_fg("Primary alcohol", r)
+                or checker.check_fg("Secondary alcohol", r)
+                or checker.check_fg("Tertiary alcohol", r)
+                or checker.check_fg("Phenol", r)
+                for r in reactants
+            )
 
-                # Check if product contains amide
-                has_amide_product = product is not None and product.HasSubstructMatch(amide_pattern)
+            # Check for alkyl halide in reactants
+            halide_present = any(
+                checker.check_fg("Primary halide", r)
+                or checker.check_fg("Secondary halide", r)
+                or checker.check_fg("Tertiary halide", r)
+                for r in reactants
+            )
 
-                if has_acid and has_amine and has_amide_product:
-                    print(f"Found late-stage amide coupling at depth {depth}")
-                    found_amide_coupling = True
+            # Check for ether in product
+            ether_formed = checker.check_fg("Ether", product)
 
-        # Continue traversal
+            if alcohol_present and halide_present and ether_formed:
+                # Additional verification that this is indeed a Williamson ether synthesis
+                # by checking the reaction pattern more broadly
+                if "O" in product and any("Br" in r or "Cl" in r or "I" in r for r in reactants):
+                    print(f"Found Williamson ether synthesis via functional group analysis: {rsmi}")
+                    ether_synthesis_found = True
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return found_amide_coupling
+    return ether_synthesis_found

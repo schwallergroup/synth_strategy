@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,124 +54,121 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if a synthesis route includes a sequence of
-    primary amine → azide → carbamate transformations.
+    This function detects a bidirectional functional group manipulation strategy
+    involving an ester → acid → ester sequence.
     """
-    # Track molecules and their transformations with atom mapping and depth
-    azide_to_amine_transformations = []  # Store (product_mol, azide_reactant, depth)
-    amine_to_carbamate_transformations = []  # Store (amine_reactant, carbamate_product, depth)
+    # Track transformations in sequence with molecule information
+    transformations = []
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            reactants = reactants_part.split(".")
-            product = rsmi.split(">")[-1]
-
-            print(f"Depth {depth}, Examining reaction: {rsmi}")
-
+        if node["type"] == "reaction":
             try:
-                # Check for azide→amine transformation (azide in reactant, amine in product)
-                for reactant in reactants:
-                    if checker.check_fg("Azide", reactant):
-                        print(f"Found azide in reactant: {reactant}")
-                        if checker.check_fg("Primary amine", product):
-                            print(f"Found primary amine in product: {product}")
-                            # Store the transformation with atom mapping and depth
-                            azide_to_amine_transformations.append((product, reactant, depth))
-                            print(
-                                f"Recorded azide→amine transformation at depth {depth}: {reactant} → {product}"
-                            )
+                # Extract reactants and product
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for amine→carbamate transformation (amine in reactant, carbamate in product)
-                for reactant in reactants:
-                    if checker.check_fg("Primary amine", reactant):
-                        print(f"Found primary amine in reactant: {reactant}")
-                        if checker.check_fg("Carbamic ester", product):
-                            print(f"Found carbamate in product: {product}")
-                            # Store the transformation with atom mapping and depth
-                            amine_to_carbamate_transformations.append((reactant, product, depth))
-                            print(
-                                f"Recorded amine→carbamate transformation at depth {depth}: {reactant} → {product}"
-                            )
+                print(f"Depth {depth}, Reaction: {rsmi}")
+
+                # Check for ester hydrolysis (ester → acid)
+                if (
+                    checker.check_reaction("Ester saponification (methyl deprotection)", rsmi)
+                    or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
+                    or checker.check_reaction(
+                        "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+                    )
+                ):
+
+                    # Check if reactants contain ester and product contains carboxylic acid
+                    reactant_has_ester = any(checker.check_fg("Ester", r) for r in reactants_smiles)
+                    product_has_acid = checker.check_fg("Carboxylic acid", product_smiles)
+
+                    print(
+                        f"Ester hydrolysis check - Reactant has ester: {reactant_has_ester}, Product has acid: {product_has_acid}"
+                    )
+
+                    if reactant_has_ester and product_has_acid:
+                        print(f"Detected ester to acid transformation at depth {depth}")
+                        transformations.append(("ester_to_acid", product_smiles, depth))
+
+                # Check for esterification (acid → ester)
+                if (
+                    checker.check_reaction("Esterification of Carboxylic Acids", rsmi)
+                    or checker.check_reaction("Protection of carboxylic acid", rsmi)
+                    or checker.check_reaction(
+                        "O-alkylation of carboxylic acids with diazo compounds", rsmi
+                    )
+                ):
+
+                    # Check if reactants contain carboxylic acid and product contains ester
+                    reactant_has_acid = any(
+                        checker.check_fg("Carboxylic acid", r) for r in reactants_smiles
+                    )
+                    product_has_ester = checker.check_fg("Ester", product_smiles)
+
+                    print(
+                        f"Esterification check - Reactant has acid: {reactant_has_acid}, Product has ester: {product_has_ester}"
+                    )
+
+                    if reactant_has_acid and product_has_ester:
+                        print(f"Detected acid to ester transformation at depth {depth}")
+                        transformations.append(("acid_to_ester", product_smiles, depth))
+
+                # Additional check for any reaction that converts ester to acid
+                if not transformations or transformations[-1][0] != "ester_to_acid":
+                    reactant_has_ester = any(checker.check_fg("Ester", r) for r in reactants_smiles)
+                    product_has_acid = checker.check_fg("Carboxylic acid", product_smiles)
+
+                    if reactant_has_ester and product_has_acid:
+                        print(f"Detected generic ester to acid transformation at depth {depth}")
+                        transformations.append(("ester_to_acid", product_smiles, depth))
+
+                # Additional check for any reaction that converts acid to ester
+                if not transformations or transformations[-1][0] != "acid_to_ester":
+                    reactant_has_acid = any(
+                        checker.check_fg("Carboxylic acid", r) for r in reactants_smiles
+                    )
+                    product_has_ester = checker.check_fg("Ester", product_smiles)
+
+                    if reactant_has_acid and product_has_ester:
+                        print(f"Detected generic acid to ester transformation at depth {depth}")
+                        transformations.append(("acid_to_ester", product_smiles, depth))
+
             except Exception as e:
                 print(f"Error processing reaction: {e}")
 
-        # Traverse children (moving backward in synthesis)
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
 
-    print(f"Azide→amine transformations: {len(azide_to_amine_transformations)}")
-    print(f"Amine→carbamate transformations: {len(amine_to_carbamate_transformations)}")
+    # Sort transformations by depth to ensure correct sequence analysis
+    transformations.sort(key=lambda x: x[2])
 
-    # Check if we have the sequence on the same molecule
-    sequence_found = False
+    print(f"All transformations: {transformations}")
 
-    # For each azide→amine transformation
-    for amine_product, azide_reactant, azide_depth in azide_to_amine_transformations:
-        # For each amine→carbamate transformation
-        for (
-            amine_reactant,
-            carbamate_product,
-            carbamate_depth,
-        ) in amine_to_carbamate_transformations:
-            # Check if the amine product from azide reduction is used as reactant in carbamate formation
-            # and ensure the azide→amine happens before amine→carbamate (higher depth means earlier in synthesis)
-            if azide_depth > carbamate_depth:
-                try:
-                    # Extract atom mapping numbers to track the same nitrogen atom
-                    amine_product_mol = Chem.MolFromSmiles(amine_product)
-                    amine_reactant_mol = Chem.MolFromSmiles(amine_reactant)
+    # Check for the sequence ester→acid→ester in the synthetic route
+    for i in range(len(transformations) - 1):
+        if (
+            transformations[i][0] == "ester_to_acid"
+            and transformations[i + 1][0] == "acid_to_ester"
+        ):
+            print(
+                f"Found ester→acid→ester sequence at depths {transformations[i][2]} and {transformations[i+1][2]}"
+            )
+            return True
 
-                    if amine_product_mol and amine_reactant_mol:
-                        # Use MCS to check if they're the same core structure
-                        mcs = rdFMCS.FindMCS(
-                            [amine_product_mol, amine_reactant_mol],
-                            atomCompare=rdFMCS.AtomCompare.CompareElements,
-                            bondCompare=rdFMCS.BondCompare.CompareOrder,
-                            ringMatchesRingOnly=True,
-                            completeRingsOnly=True,
-                        )
+    # Also check for the reverse sequence (acid→ester→acid)
+    for i in range(len(transformations) - 1):
+        if (
+            transformations[i][0] == "acid_to_ester"
+            and transformations[i + 1][0] == "ester_to_acid"
+        ):
+            print(
+                f"Found acid→ester→acid sequence at depths {transformations[i][2]} and {transformations[i+1][2]}"
+            )
+            return True
 
-                        mcs_match_ratio = mcs.numAtoms / min(
-                            amine_product_mol.GetNumAtoms(), amine_reactant_mol.GetNumAtoms()
-                        )
-                        print(
-                            f"MCS match ratio: {mcs_match_ratio:.2f} between {amine_product} and {amine_reactant}"
-                        )
-
-                        if mcs_match_ratio >= 0.8:
-                            print(
-                                f"Found matching molecules in sequence: {amine_product} and {amine_reactant}"
-                            )
-                            print(
-                                f"Sequence found: azide→amine at depth {azide_depth}, amine→carbamate at depth {carbamate_depth}"
-                            )
-                            sequence_found = True
-                            break
-                except Exception as e:
-                    print(f"Error comparing molecules: {e}")
-
-        if sequence_found:
-            break
-
-    # Alternative check: look for a reaction that directly converts azide to carbamate
-    for node in route.get("children", []):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            reactants = reactants_part.split(".")
-            product = rsmi.split(">")[-1]
-
-            for reactant in reactants:
-                if checker.check_fg("Azide", reactant) and checker.check_fg(
-                    "Carbamic ester", product
-                ):
-                    print(f"Found direct azide→carbamate transformation: {reactant} → {product}")
-                    sequence_found = True
-
-    print(f"Azide → amine → carbamate sequence detected: {sequence_found}")
-    return sequence_found
+    return False

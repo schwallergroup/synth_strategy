@@ -2,47 +2,47 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy
-    (as opposed to convergent) by checking if most reactions have only 1-2 reactants.
+    Detects if an iodine atom is preserved throughout the entire synthesis.
     """
-    reaction_count = 0
-    linear_reaction_count = 0
+    all_mols_have_iodine = True
+    mol_count = 0
 
     def dfs_traverse(node):
-        nonlocal reaction_count, linear_reaction_count
+        nonlocal all_mols_have_iodine, mol_count
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            if rsmi:
-                reaction_count += 1
-                reactants = rsmi.split(">")[0].split(".")
-                # Count non-empty reactants
-                reactant_count = sum(1 for r in reactants if r.strip())
-
-                # Linear reactions typically have 1-2 reactants
-                if reactant_count <= 2:
-                    linear_reaction_count += 1
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            if node["smiles"]:
+                mol_count += 1
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    iodine_pattern = Chem.MolFromSmarts("[#53]")
+                    if not mol.HasSubstructMatch(iodine_pattern):
+                        all_mols_have_iodine = False
 
         # Traverse children
         for child in node.get("children", []):
@@ -51,10 +51,6 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # If at least 80% of reactions are linear, consider it a linear synthesis
-    if reaction_count > 0 and (linear_reaction_count / reaction_count) >= 0.8:
-        print(
-            f"Linear synthesis detected: {linear_reaction_count}/{reaction_count} reactions are linear"
-        )
-        return True
-    return False
+    result = all_mols_have_iodine and mol_count > 0
+    print(f"Iodine preservation throughout synthesis: {result}")
+    return result

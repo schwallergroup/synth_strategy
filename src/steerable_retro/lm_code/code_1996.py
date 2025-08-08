@@ -2,109 +2,134 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy (as opposed to convergent),
-    by checking if each reaction has only one complex reactant.
+    Detects if the synthetic route follows a linear synthesis approach
+    (as opposed to convergent synthesis).
+
+    Linear synthesis: Each reaction step adds one significant building block
+    Convergent synthesis: At least one step combines multiple significant building blocks
     """
     is_linear = True
+
+    def is_significant_reactant(smiles):
+        """Helper function to determine if a reactant is significant (building block)
+        rather than a reagent, catalyst, or solvent"""
+
+        # Skip empty or invalid SMILES
+        if not smiles or len(smiles) < 3:
+            return False
+
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return False
+
+        # Count heavy atoms (non-hydrogen)
+        heavy_atom_count = mol.GetNumHeavyAtoms()
+
+        # Common reagents to exclude (regardless of size)
+        common_reagents = [
+            # Protecting groups and their reagents
+            "CC(C)(C)OC(=O)",  # Boc anhydride or Boc-containing reagents
+            "CC(=O)O",  # Acetate
+            "CS(=O)(=O)",  # Mesyl group
+            "CC(C)(C)Si",  # TMS or TBDMS groups
+            # Common bases
+            "CN(C)C",  # TEA, DIPEA, etc.
+            "CC(C)N",  # Amines
+            "CN",  # Simple amines
+            # Common acids
+            "OS(=O)(=O)O",  # Sulfuric acid
+            "O=C(O)",  # Carboxylic acids
+            # Reducing/oxidizing agents
+            "B",  # Boron-containing (NaBH4, etc.)
+            "OS(=O)",  # DMSO
+            "O=N",  # Nitro compounds
+            "Cl",  # Chlorides
+            "Br",  # Bromides
+            "I",  # Iodides
+            # Coupling reagents
+            "P(=O)",  # Phosphorus reagents
+            "N=[N+]=[N-]",  # Azide
+            # Solvents
+            "CCO",  # Ethanol
+            "CO",  # Methanol
+            "CC(=O)",  # Acetone
+            "ClCCl",  # DCM
+            "c1ccccc1",  # Benzene
+        ]
+
+        # Check if the molecule contains any common reagent patterns
+        for reagent in common_reagents:
+            if reagent in smiles:
+                return False
+
+        # Consider molecules with more than 8 heavy atoms as significant
+        # This threshold can be adjusted based on the specific chemistry
+        if heavy_atom_count > 8:
+            return True
+
+        # For smaller molecules, check if they're likely building blocks
+        # rather than reagents by looking at functional groups
+
+        # If it has complex structure but small size, it might still be a building block
+        if heavy_atom_count > 5 and ("c1" in smiles or "C1" in smiles):  # Contains a ring
+            return True
+
+        return False
 
     def dfs_traverse(node, depth=0):
         nonlocal is_linear
 
+        if not is_linear:  # Early return if we already know it's not linear
+            return
+
         if node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            # Extract reactants
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-                # Count complex reactants (more than 6 atoms)
-                complex_reactant_count = 0
-                simple_reagent_count = 0
+            # Count significant reactants (excluding reagents)
+            significant_reactants = []
+            for r in reactants_smiles:
+                if is_significant_reactant(r):
+                    significant_reactants.append(r)
 
-                for reactant in reactants:
-                    try:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            # Consider a reactant complex if it has more than 6 atoms and is not a common reagent
-                            is_common_reagent = (
-                                checker.check_fg("Primary alcohol", reactant)
-                                or checker.check_fg("Secondary alcohol", reactant)
-                                or checker.check_fg("Tertiary alcohol", reactant)
-                                or checker.check_fg("Primary amine", reactant)
-                                or checker.check_fg("Secondary amine", reactant)
-                                or checker.check_fg("Tertiary amine", reactant)
-                                or checker.check_fg("Carboxylic acid", reactant)
-                            )
+            # If more than one significant reactant, it's not a linear synthesis
+            if len(significant_reactants) > 1:
+                is_linear = False
+                print(
+                    f"Found convergent step with multiple significant reactants: {significant_reactants}"
+                )
 
-                            if reactant_mol.GetNumAtoms() > 6 and not is_common_reagent:
-                                complex_reactant_count += 1
-                                print(f"Complex reactant found: {reactant}")
-                            else:
-                                simple_reagent_count += 1
-                                print(f"Simple reagent found: {reactant}")
-                    except Exception as e:
-                        print(f"Error processing reactant SMILES {reactant}: {e}")
-
-                # A reaction is convergent if it has more than one complex reactant
-                # We allow multiple simple reagents in a linear synthesis
-                if complex_reactant_count > 1:
-                    print(
-                        f"Convergent step detected at depth {depth}: {complex_reactant_count} complex reactants"
-                    )
-                    is_linear = False
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
-
-        # Continue traversal
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
+
     return is_linear

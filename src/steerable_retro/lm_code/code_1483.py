@@ -2,66 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving multiple carbonyl reduction steps
-    in the synthesis route.
+    Detects if the synthesis route contains and preserves a trifluoromethyl group.
     """
-    carbonyl_reduction_count = 0
+    # Check if the final product contains a trifluoromethyl group
+    if route["type"] != "mol" or not checker.check_fg("Trifluoro group", route["smiles"]):
+        return False
 
-    def dfs_traverse(node):
-        nonlocal carbonyl_reduction_count
+    # Track if we find a trifluoromethyl group in any starting material
+    trifluoro_in_starting_material = False
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+    def dfs(node, depth=0):
+        nonlocal trifluoro_in_starting_material
 
-                # Check if this is a carbonyl reduction reaction
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            # Look for carbonyl pattern in reactant
-                            carbonyl_pattern = Chem.MolFromSmarts("[C;!$(C=C)]=O")
-                            if reactant_mol.HasSubstructMatch(carbonyl_pattern):
-                                # Check if product has methyl or methylene where carbonyl was
-                                methyl_pattern = Chem.MolFromSmarts("[C;!$(C=C)][C;H2,H3]")
-                                if product_mol.HasSubstructMatch(methyl_pattern):
-                                    carbonyl_reduction_count += 1
-                                    print(
-                                        f"Found carbonyl reduction at depth: {node.get('depth', 'unknown')}"
-                                    )
-                except Exception as e:
-                    print(f"Error in carbonyl reduction detection: {e}")
+        if node["type"] == "mol" and node.get("in_stock", False) and node["smiles"]:
+            if checker.check_fg("Trifluoro group", node["smiles"]):
+                trifluoro_in_starting_material = True
+                print(f"Found trifluoromethyl in starting material: {node['smiles']}")
 
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs(child, depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
+    dfs(route)
 
-    print(f"Total carbonyl reductions found: {carbonyl_reduction_count}")
-    return carbonyl_reduction_count >= 2
+    return trifluoro_in_starting_material

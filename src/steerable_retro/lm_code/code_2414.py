@@ -2,70 +2,48 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the use of diverse linkers (ether and sulfonate ester) in the synthesis.
+    This function detects if the synthesis follows a linear strategy (not convergent).
+    Linear synthesis is defined as having no more than 2 reactants per step.
     """
-    ether_linker_found = False
-    sulfonate_linker_found = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal ether_linker_found, sulfonate_linker_found
+        nonlocal is_linear
 
         if node["type"] == "reaction":
-            # Extract reactants and product
+            # Extract reactants from reaction SMILES
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
 
-            # Check for linker formation
-            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
-
-            # Ether linker pattern (aryl-O-alkyl)
-            ether_pattern = Chem.MolFromSmarts("c-O-[#6]-[#6]")
-
-            # Sulfonate ester pattern
-            sulfonate_pattern = Chem.MolFromSmarts("[#6]-O-S(=O)(=O)-[#6]")
-
-            # Check if linkers are in product but not in reactants
-            if product_mol:
-                if product_mol.HasSubstructMatch(ether_pattern):
-                    reactants_have_ether = any(
-                        mol and mol.HasSubstructMatch(ether_pattern) for mol in reactant_mols if mol
-                    )
-                    if not reactants_have_ether:
-                        print("Ether linker formation detected")
-                        ether_linker_found = True
-
-                if product_mol.HasSubstructMatch(sulfonate_pattern):
-                    reactants_have_sulfonate = any(
-                        mol and mol.HasSubstructMatch(sulfonate_pattern)
-                        for mol in reactant_mols
-                        if mol
-                    )
-                    if not reactants_have_sulfonate:
-                        print("Sulfonate ester linker formation detected")
-                        sulfonate_linker_found = True
+            # If more than 2 reactants, it's not a simple linear synthesis
+            if len(reactants) > 2:
+                is_linear = False
+                print(f"Found non-linear step with {len(reactants)} reactants")
 
         # Traverse children
         for child in node.get("children", []):
@@ -73,4 +51,4 @@ def main(route):
 
     # Start traversal
     dfs_traverse(route)
-    return ether_linker_found and sulfonate_linker_found
+    return is_linear

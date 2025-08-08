@@ -2,88 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route employs a Boc protection strategy
-    for an amine group.
+    This function detects a strategy where stereochemistry is preserved
+    throughout the synthesis (no changes to existing stereocenters).
     """
-    # Track if we found Boc protection
-    found_boc_protection = False
+    preserves_stereochemistry = True
 
-    def is_boc_protection(reaction_smiles):
-        """Check if a reaction is a Boc protection of an amine"""
-        # Split into reactants and product
-        parts = reaction_smiles.split(">")
-        if len(parts) < 3:
-            return False
+    def dfs_traverse(node, depth=0):
+        nonlocal preserves_stereochemistry
 
-        reactants = parts[0].split(".")
-        product = parts[2]
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-        # Check for amine in reactants
-        amine_pattern = Chem.MolFromSmarts("[#7;H2]")
+            reactants = reactants_part.split(".")
+            product = product_part
 
-        # Check for Boc group in product
-        boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[#7]")
-
-        has_amine = False
-        for reactant in reactants:
+            # Convert to RDKit molecules
             try:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(amine_pattern):
-                    has_amine = True
-                    break
+                product_mol = Chem.MolFromSmiles(product)
+                reactant_mols = [
+                    Chem.MolFromSmiles(r) for r in reactants if not r.startswith("CCOC")
+                ]  # Ignore reagents
+
+                if product_mol and len(reactant_mols) > 0:
+                    main_reactant = reactant_mols[0]  # Assuming the first reactant is the main one
+
+                    # Count chiral centers
+                    reactant_chiral_centers = len(
+                        Chem.FindMolChiralCenters(main_reactant, includeUnassigned=False)
+                    )
+                    product_chiral_centers = len(
+                        Chem.FindMolChiralCenters(product_mol, includeUnassigned=False)
+                    )
+
+                    # If the number of chiral centers changes, stereochemistry is not preserved
+                    if reactant_chiral_centers != product_chiral_centers:
+                        print(
+                            f"Stereochemistry changed at depth {depth}: {reactant_chiral_centers} → {product_chiral_centers} chiral centers"
+                        )
+                        preserves_stereochemistry = False
             except:
-                continue
+                print(f"Error processing reaction at depth {depth}")
 
-        has_boc = False
-        try:
-            prod_mol = Chem.MolFromSmiles(product)
-            if prod_mol and prod_mol.HasSubstructMatch(boc_pattern):
-                has_boc = True
-        except:
-            pass
-
-        return has_amine and has_boc
-
-    def dfs_traverse(node):
-        nonlocal found_boc_protection
-
-        # Check if this is a reaction node
-        if node.get("type") == "reaction":
-            # Get reaction SMILES from metadata
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-
-                # Check if this is a Boc protection
-                if is_boc_protection(rsmi):
-                    found_boc_protection = True
-                    print("Found Boc protection reaction")
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return found_boc_protection
+    if preserves_stereochemistry:
+        print("Detected stereochemistry preservation strategy")
+
+    return preserves_stereochemistry

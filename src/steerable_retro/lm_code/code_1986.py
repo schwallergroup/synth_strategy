@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,113 +54,104 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route involves borylation of an aryl compound for cross-coupling.
+    Detects a nitro reduction to amine followed by sulfonamide formation sequence.
+
+    In retrosynthetic traversal, we'll encounter sulfonamide formation first,
+    then nitro reduction.
     """
-    # Track borylation reactions and their products
-    borylation_reactions = []
+    # Track if we found the sequence
+    sequence_found = False
 
-    def dfs_traverse(node, depth=0, path=None):
-        if path is None:
-            path = []
+    # Track the reactions in sequence (in retrosynthetic order)
+    sulfonamide_formation_found = False
+    nitro_reduction_found = False
 
-        current_path = path + [node]
+    # Track the molecule containing the amine that links the two reactions
+    amine_containing_mol = None
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal sequence_found, sulfonamide_formation_found, nitro_reduction_found, amine_containing_mol
 
-            # Check for borylation reactions
-            is_borylation = False
+        if sequence_found:
+            return  # Stop traversal if sequence already found
 
-            # Check for specific borylation reaction types
-            if (
-                checker.check_reaction("Preparation of boronic acids", rsmi)
-                or checker.check_reaction(
-                    "Preparation of boronic acids without boronic ether", rsmi
-                )
-                or checker.check_reaction(
-                    "Preparation of boronic acids from trifluoroborates", rsmi
-                )
-                or checker.check_reaction("Preparation of boronic ethers", rsmi)
-            ):
-                is_borylation = True
-                print(f"Detected borylation reaction at depth {depth}: {rsmi}")
-
-            # Alternative check: product has boronic acid/ester but reactants don't
-            if not is_borylation:
-                has_boronic_in_product = checker.check_fg(
-                    "Boronic acid", product
-                ) or checker.check_fg("Boronic ester", product)
-
-                has_boronic_in_reactants = False
-                has_aromatic_halide_in_reactants = False
-
-                for reactant in reactants:
-                    if checker.check_fg("Boronic acid", reactant) or checker.check_fg(
-                        "Boronic ester", reactant
-                    ):
-                        has_boronic_in_reactants = True
-                    if checker.check_fg("Aromatic halide", reactant):
-                        has_aromatic_halide_in_reactants = True
-
-                if (
-                    has_boronic_in_product
-                    and not has_boronic_in_reactants
-                    and has_aromatic_halide_in_reactants
-                ):
-                    is_borylation = True
-                    print(f"Detected borylation pattern at depth {depth}: {rsmi}")
-
-            # If borylation detected, store the reaction and product for later checking
-            if is_borylation:
-                borylation_reactions.append((product, depth, current_path))
-
-            # Check if this is a coupling reaction using a previously formed boronic compound
-            if (
-                checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
-            ):
-
-                # Check if any reactant was produced by a previous borylation
-                for reactant in reactants:
-                    for borylation_product, _, _ in borylation_reactions:
-                        if reactant == borylation_product:
-                            print(
-                                f"Found coupling reaction using borylated compound at depth {depth}"
-                            )
-                            return True
-
-        # Traverse children
-        for child in node.get("children", []):
-            if dfs_traverse(child, depth + 1, current_path):
-                return True
-
-        return False
-
-    # Start DFS traversal
-    if dfs_traverse(route):
-        return True
-
-    # If we found borylation reactions but didn't confirm coupling use,
-    # check if any borylation product appears in a later reaction
-    for borylation_product, depth, path in borylation_reactions:
-        # Check if this product is used in any subsequent reaction
-        for i, node in enumerate(path):
-            if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Skip reactions that come before this borylation in the path
-                if i <= depth:
-                    continue
+                print(f"Depth {depth}, Examining reaction: {rsmi}")
 
-                # Check if the borylated product is used in this reaction
-                for reactant in reactants:
-                    if reactant == borylation_product:
-                        print(f"Borylated compound used in subsequent reaction")
-                        return True
+                # In retrosynthetic traversal, we encounter sulfonamide formation first
+                if not sulfonamide_formation_found:
+                    # Check if this is a sulfonamide formation reaction
+                    is_sulfonamide_reaction = checker.check_reaction(
+                        "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+                    ) or checker.check_reaction(
+                        "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
+                    )
 
-    return len(borylation_reactions) > 0
+                    # Alternative check: look for amine reactant and sulfonamide product
+                    has_amine_reactant = any(
+                        checker.check_fg("Primary amine", r)
+                        or checker.check_fg("Secondary amine", r)
+                        for r in reactants
+                    )
+                    has_sulfonamide_product = checker.check_fg("Sulfonamide", product)
+
+                    if is_sulfonamide_reaction or (has_amine_reactant and has_sulfonamide_product):
+                        print(f"Found sulfonamide formation at depth {depth}")
+                        sulfonamide_formation_found = True
+
+                        # Find which reactant contains the amine
+                        for reactant in reactants:
+                            if checker.check_fg("Primary amine", reactant) or checker.check_fg(
+                                "Secondary amine", reactant
+                            ):
+                                amine_containing_mol = reactant
+                                print(f"Amine-containing molecule: {amine_containing_mol}")
+                                break
+
+                # After finding sulfonamide formation, look for nitro reduction
+                elif (
+                    sulfonamide_formation_found
+                    and not nitro_reduction_found
+                    and amine_containing_mol is not None
+                ):
+                    # Check if this is a nitro reduction reaction
+                    is_nitro_reduction = checker.check_reaction(
+                        "Reduction of nitro groups to amines", rsmi
+                    )
+
+                    # Alternative check: look for nitro reactant and amine product
+                    has_nitro_reactant = any(checker.check_fg("Nitro group", r) for r in reactants)
+                    has_amine_product = checker.check_fg(
+                        "Primary amine", product
+                    ) or checker.check_fg("Secondary amine", product)
+
+                    if is_nitro_reduction or (has_nitro_reactant and has_amine_product):
+                        print(f"Found potential nitro reduction at depth {depth}")
+
+                        # Check if the product of this reaction is the same as the amine used in sulfonamide formation
+                        # This can be a direct string comparison or a more flexible check
+                        if product == amine_containing_mol or (
+                            checker.check_fg("Primary amine", product)
+                            and checker.check_fg("Primary amine", amine_containing_mol)
+                        ):
+                            print("Confirmed nitro reduction to the same amine")
+                            nitro_reduction_found = True
+                            sequence_found = True
+
+        # Continue traversing
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
+
+    # Start traversal
+    dfs_traverse(route)
+
+    print(f"Sequence found: {sequence_found}")
+    print(f"Sulfonamide formation found: {sulfonamide_formation_found}")
+    print(f"Nitro reduction found: {nitro_reduction_found}")
+
+    return sequence_found

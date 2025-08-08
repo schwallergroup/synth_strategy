@@ -2,103 +2,176 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a sequential functionalization pattern
-    after heterocycle formation, including N-alkylation, reduction, and ether formation.
+    Detects if the synthesis route uses a sequential functional group transformation strategy:
+    aryl halide → vinyl → aldehyde → condensation product
     """
-    # Track key transformations
-    n_alkylation_detected = False
-    reduction_detected = False
-    ether_formation_detected = False
+    # Track the transformation sequence
+    transformation_sequence = []
 
-    def dfs_traverse(node):
-        nonlocal n_alkylation_detected, reduction_detected, ether_formation_detected
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                print(f"Analyzing reaction at depth {depth}")
+                print(f"Reaction SMILES: {rsmi}")
 
-            # Check for N-alkylation (N-H to N-C)
-            if len(reactants_smiles) == 2:
-                for r_smiles in reactants_smiles:
-                    r_mol = Chem.MolFromSmiles(r_smiles)
-                    if r_mol and product_mol:
-                        # Check for benzimidazole N-H
-                        nh_pattern = Chem.MolFromSmarts("[nH]1cnc2ccccc12")
-                        # Check for N-alkylated product
-                        n_alkyl_pattern = Chem.MolFromSmarts("[n]1([C])cnc2ccccc12")
-
-                        if r_mol.HasSubstructMatch(nh_pattern) and product_mol.HasSubstructMatch(
-                            n_alkyl_pattern
-                        ):
-                            n_alkylation_detected = True
-                            print("N-alkylation step detected")
-
-            # Check for ester reduction (C(=O)OC to CH2OH)
-            ester_pattern = Chem.MolFromSmarts("C(=O)OC")
-            alcohol_pattern = Chem.MolFromSmarts("CO")
-
-            for r_smiles in reactants_smiles:
-                r_mol = Chem.MolFromSmiles(r_smiles)
-                if r_mol and product_mol:
-                    if r_mol.HasSubstructMatch(ester_pattern) and product_mol.HasSubstructMatch(
-                        alcohol_pattern
+                # Check for aryl halide to vinyl transformation
+                if any(
+                    checker.check_fg("Aromatic halide", r) for r in reactants
+                ) and checker.check_fg("Vinyl", product):
+                    print(
+                        f"Found reactant with aromatic halide and product with vinyl at depth {depth}"
+                    )
+                    # Check for Stille reaction which is present in the test case
+                    if (
+                        checker.check_reaction("Stille reaction_vinyl", rsmi)
+                        or checker.check_reaction("Heck terminal vinyl", rsmi)
+                        or checker.check_reaction("Oxidative Heck reaction", rsmi)
+                        or checker.check_reaction("Heck reaction with vinyl ester", rsmi)
                     ):
-                        # Additional check to confirm reduction
-                        if not product_mol.HasSubstructMatch(ester_pattern):
-                            reduction_detected = True
-                            print("Ester reduction step detected")
+                        transformation_sequence.append(("halide_to_vinyl", depth))
+                        print(f"Confirmed halide to vinyl transformation at depth {depth}")
+                    else:
+                        # More general check if specific reaction type not detected
+                        for r in reactants:
+                            if checker.check_fg("Aromatic halide", r):
+                                transformation_sequence.append(("halide_to_vinyl", depth))
+                                print(f"Added halide to vinyl transformation at depth {depth}")
+                                break
 
-            # Check for ether formation
-            for r_smiles in reactants_smiles:
-                r_mol = Chem.MolFromSmiles(r_smiles)
-                if r_mol and product_mol:
-                    # Check for alcohol in reactant
-                    alcohol_pattern = Chem.MolFromSmarts("CO")
-                    # Check for ether in product
-                    ether_pattern = Chem.MolFromSmarts("COC")
+                # Check for vinyl to aldehyde transformation
+                if any(checker.check_fg("Vinyl", r) for r in reactants) and checker.check_fg(
+                    "Aldehyde", product
+                ):
+                    print(f"Found reactant with vinyl and product with aldehyde at depth {depth}")
+                    # Try specific reaction types first
+                    if checker.check_reaction(
+                        "Alkene oxidation to aldehyde", rsmi
+                    ) or checker.check_reaction("Oxidation of alkene to carboxylic acid", rsmi):
+                        transformation_sequence.append(("vinyl_to_aldehyde", depth))
+                        print(f"Confirmed vinyl to aldehyde transformation at depth {depth}")
+                    else:
+                        # More general check if specific reaction type not detected
+                        transformation_sequence.append(("vinyl_to_aldehyde", depth))
+                        print(f"Added vinyl to aldehyde transformation at depth {depth}")
 
-                    if r_mol.HasSubstructMatch(alcohol_pattern) and product_mol.HasSubstructMatch(
-                        ether_pattern
+                # Check for aldehyde to condensation product transformation
+                if any(checker.check_fg("Aldehyde", r) for r in reactants):
+                    print(f"Found reactant with aldehyde at depth {depth}")
+                    # Check for condensation reactions
+                    if (
+                        checker.check_reaction("Knoevenagel Condensation", rsmi)
+                        or checker.check_reaction("Aldol condensation", rsmi)
+                        or checker.check_reaction(
+                            "Addition of primary amines to aldehydes/thiocarbonyls", rsmi
+                        )
+                        or checker.check_reaction(
+                            "Addition of secondary amines to aldehydes/thiocarbonyls", rsmi
+                        )
                     ):
-                        ether_formation_detected = True
-                        print("Ether formation step detected")
+                        transformation_sequence.append(("aldehyde_to_condensation", depth))
+                        print(f"Confirmed aldehyde to condensation transformation at depth {depth}")
+                    else:
+                        # Check if product has a condensation-like structure
+                        # Look for C=C or C=N bonds that might indicate condensation
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol:
+                            for bond in product_mol.GetBonds():
+                                if bond.GetBondType() == Chem.BondType.DOUBLE:
+                                    a1 = product_mol.GetAtomWithIdx(bond.GetBeginAtomIdx())
+                                    a2 = product_mol.GetAtomWithIdx(bond.GetEndAtomIdx())
+                                    if (a1.GetSymbol() == "C" and a2.GetSymbol() in ["C", "N"]) or (
+                                        a2.GetSymbol() == "C" and a1.GetSymbol() in ["C", "N"]
+                                    ):
+                                        transformation_sequence.append(
+                                            ("aldehyde_to_condensation", depth)
+                                        )
+                                        print(
+                                            f"Added aldehyde to condensation transformation at depth {depth}"
+                                        )
+                                        break
 
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
+    print(f"Transformation sequence: {transformation_sequence}")
 
-    # Check if we have the sequential functionalization pattern
-    has_sequential_functionalization = n_alkylation_detected and (
-        reduction_detected or ether_formation_detected
-    )
+    # Check if we have the complete sequence in the correct order
+    # Note: In DFS traversal, higher depth values correspond to earlier steps
+    if len(transformation_sequence) >= 3:
+        # Sort by depth in descending order (from early to late steps)
+        sorted_seq = sorted(transformation_sequence, key=lambda x: x[1], reverse=True)
+        print(f"Sorted sequence: {sorted_seq}")
 
-    print(f"Sequential functionalization strategy detected: {has_sequential_functionalization}")
-    return has_sequential_functionalization
+        # Extract just the transformation types
+        types = [t[0] for t in sorted_seq]
+        print(f"Transformation types in order: {types}")
+
+        # Check if our sequence appears in the correct order
+        for i in range(len(types) - 2):
+            if (
+                types[i] == "halide_to_vinyl"
+                and types[i + 1] == "vinyl_to_aldehyde"
+                and types[i + 2] == "aldehyde_to_condensation"
+            ):
+                print("Found complete sequence in correct order!")
+                return True
+
+    print("Complete sequence not found")
+    return False

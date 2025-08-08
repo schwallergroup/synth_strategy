@@ -2,58 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves reduction of an alkene (C=C to C-C).
+    This function detects if the synthesis route involves N-Boc protection strategy.
     """
-    alkene_pattern = Chem.MolFromSmarts("C=C")
-    has_alkene_reduction = False
+    boc_protection_detected = False
 
     def dfs_traverse(node):
-        nonlocal has_alkene_reduction
+        nonlocal boc_protection_detected
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                try:
-                    reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check for primary/secondary amine in reactants
+            amine_pattern = Chem.MolFromSmarts("[N;H1,H2]")
+            # Check for Boc-protected amine in product
+            boc_pattern = Chem.MolFromSmarts("[N][C](=[O])[O][C]([C])([C])[C]")
 
-                    # Check if reactants have alkene but product doesn't
-                    if (
-                        reactants_mol
-                        and reactants_mol.HasSubstructMatch(alkene_pattern)
-                        and (not product_mol or not product_mol.HasSubstructMatch(alkene_pattern))
-                    ):
-                        print(f"Detected alkene reduction in reaction: {rsmi}")
-                        has_alkene_reduction = True
-                except:
-                    print(f"Error processing reaction SMILES: {rsmi}")
+            for reactant in reactants:
+                if reactant and Chem.MolFromSmiles(reactant) and amine_pattern:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(amine_pattern):
+                        if product and Chem.MolFromSmiles(product) and boc_pattern:
+                            product_mol = Chem.MolFromSmiles(product)
+                            if product_mol and product_mol.HasSubstructMatch(boc_pattern):
+                                boc_protection_detected = True
+                                print("Detected N-Boc protection")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return has_alkene_reduction
+    return boc_protection_detected

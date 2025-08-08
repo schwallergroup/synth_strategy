@@ -2,58 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy that includes an alkene reduction step.
+    Detects a convergent synthesis strategy where two or more complex fragments
+    are joined in a late-stage reaction.
     """
-    has_alkene_reduction = False
+    found_convergent_step = False
 
-    def dfs_traverse(node):
-        nonlocal has_alkene_reduction
+    def dfs_traverse(node, depth=0):
+        nonlocal found_convergent_step
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_str = rsmi.split(">")[0]
 
-            # For alkene reduction, we expect one reactant
-            if len(reactants_smiles) == 1:
-                reactant = Chem.MolFromSmiles(reactants_smiles[0])
-                product = Chem.MolFromSmiles(product_smiles)
+                # Count number of distinct reactants
+                reactants = reactants_str.split(".")
 
-                if reactant and product:
-                    alkene_pattern = Chem.MolFromSmarts("[#6]=[#6]")
-                    reactant_alkenes = len(reactant.GetSubstructMatches(alkene_pattern))
-                    product_alkenes = len(product.GetSubstructMatches(alkene_pattern))
+                # Filter out small molecules/reagents (less than 10 atoms)
+                complex_reactants = []
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.GetNumAtoms() > 10:  # Consider only substantial fragments
+                            complex_reactants.append(reactant)
+                    except:
+                        continue
 
-                    # If reactant has more alkenes than product, it's a reduction
-                    if reactant_alkenes > product_alkenes:
-                        has_alkene_reduction = True
-                        print("Alkene reduction detected")
+                if len(complex_reactants) >= 2:
+                    found_convergent_step = True
+                    print(
+                        f"Found convergent step at depth {depth} with {len(complex_reactants)} complex fragments"
+                    )
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
 
-    print(f"Has alkene reduction strategy: {has_alkene_reduction}")
-    return has_alkene_reduction
+    return found_convergent_step

@@ -2,59 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes an epoxide opening reaction.
+    This function detects if a nitrogen heterocycle (specifically indazole) is formed
+    in the late stage of the synthesis (first half of the synthesis tree).
     """
-    found_epoxide_opening = False
+    # Track if we found heterocycle formation
+    heterocycle_formation_found = False
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal found_epoxide_opening
+    def dfs_traverse(node, depth=0):
+        nonlocal heterocycle_formation_found, max_depth
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        max_depth = max(max_depth, depth)
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+        if node["type"] == "reaction" and depth <= 3:  # Focus on late-stage reactions (low depth)
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check for epoxide opening
-            epoxide_pattern = Chem.MolFromSmarts("[C]1[O][C]1")
-            opened_pattern = Chem.MolFromSmarts("[C][C][O]")
+                # Check if reactants contain indazole pattern
+                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+                if reactants_mol:
+                    reactants_has_indazole = reactants_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts("[#6]1[#6][#6][#7][#7][#6]1")
+                    )
+                else:
+                    reactants_has_indazole = False
 
-            if any(
-                r.HasSubstructMatch(epoxide_pattern) for r in reactants
-            ) and product.HasSubstructMatch(opened_pattern):
-                found_epoxide_opening = True
-                print("Found epoxide opening")
+                # Check if product contains indazole pattern
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol:
+                    product_has_indazole = product_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts("[#6]1[#6][#6][#7][#7][#6]1")
+                    )
+                else:
+                    product_has_indazole = False
 
-        # Traverse children
+                # If indazole is formed in this reaction
+                if not reactants_has_indazole and product_has_indazole:
+                    print(f"Detected indazole formation at depth {depth}")
+                    heterocycle_formation_found = True
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return found_epoxide_opening
+    # Consider it late-stage if it happens in first half of synthesis
+    if heterocycle_formation_found:
+        print(f"Heterocycle formation found in late stage (max depth: {max_depth})")
+
+    return heterocycle_formation_found

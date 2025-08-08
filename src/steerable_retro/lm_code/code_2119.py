@@ -2,67 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves sulfonamide formation.
+    This function detects if the synthetic route uses Sonogashira coupling reactions
+    to form C-C bonds between aryl halides and terminal alkynes.
     """
-    sulfonamide_formation_detected = False
+    sonogashira_count = 0
 
     def dfs_traverse(node):
-        nonlocal sulfonamide_formation_detected
+        nonlocal sonogashira_count
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for sulfonyl chloride in reactants
-            sulfonyl_chloride_pattern = Chem.MolFromSmarts("[#6]-[S](=O)(=O)Cl")
+                # Check for aryl halide and alkyne in reactants
+                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[#9,#17,#35,#53]")
+                alkyne_pattern = Chem.MolFromSmarts("[C]#[C]")
 
-            # Check for sulfonamide in product
-            sulfonamide_pattern = Chem.MolFromSmarts("[#7]-[S](=O)(=O)-[#6]")
+                has_aryl_halide = False
+                has_alkyne = False
 
-            # Check if any reactant has a sulfonyl chloride
-            sulfonyl_chloride_present = False
-            for reactant_smiles in reactants_smiles:
-                reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                if reactant_mol and reactant_mol.HasSubstructMatch(sulfonyl_chloride_pattern):
-                    sulfonyl_chloride_present = True
-                    break
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(aryl_halide_pattern):
+                            has_aryl_halide = True
+                        if mol and mol.HasSubstructMatch(alkyne_pattern):
+                            has_alkyne = True
+                    except:
+                        continue
 
-            # Check if product has a sulfonamide
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if (
-                sulfonyl_chloride_present
-                and product_mol
-                and product_mol.HasSubstructMatch(sulfonamide_pattern)
-            ):
-                sulfonamide_formation_detected = True
-                print(f"Detected sulfonamide formation: {rsmi}")
+                # Check for aryl-alkyne in product
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol and product_mol.HasSubstructMatch(alkyne_pattern):
+                        if has_aryl_halide and has_alkyne:
+                            sonogashira_count += 1
+                            print(f"Detected Sonogashira coupling: {rsmi}")
+                except:
+                    pass
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    print(f"Sulfonamide formation detected: {sulfonamide_formation_detected}")
-    return sulfonamide_formation_detected
+    return sonogashira_count >= 1

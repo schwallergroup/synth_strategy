@@ -2,122 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves formation of sulfonamide
-    functional groups from amines.
+    This function detects a late-stage N-alkylation strategy where an amine attacks
+    an activated alcohol (typically as mesylate or similar leaving group).
     """
-    sulfonamide_formation_found = False
+    n_alkylation_detected = False
 
-    def dfs_traverse(node):
-        nonlocal sulfonamide_formation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal n_alkylation_detected
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if the reaction is a known sulfonamide formation reaction
-            if checker.check_reaction(
-                "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
-            ) or checker.check_reaction(
-                "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
-            ):
-                print(f"Detected sulfonamide formation via Schotten-Baumann reaction: {rsmi}")
-                sulfonamide_formation_found = True
-                return
+                # Check for mesylate or similar leaving group in reactants
+                mesylate_pattern = Chem.MolFromSmarts("[C]-[O]-[S](=[O])(=[O])-[C]")
+                amine_pattern = Chem.MolFromSmarts("[N;H2,H1;!$(NC=O)]")
 
-            # If not a known reaction type, check for the transformation manually
-            product_mol = Chem.MolFromSmiles(product)
+                has_mesylate = False
+                has_amine = False
 
-            # Check if product contains sulfonamide
-            if product_mol and checker.check_fg("Sulfonamide", product):
-                print(f"Product contains sulfonamide: {product}")
-
-                # Check if any reactant contains sulfonyl chloride
-                sulfonyl_chloride_present = False
                 for reactant in reactants:
-                    if checker.check_fg("Sulfonyl halide", reactant):
-                        print(f"Reactant contains sulfonyl halide: {reactant}")
-                        sulfonyl_chloride_present = True
-                        break
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(mesylate_pattern):
+                            has_mesylate = True
+                        if mol.HasSubstructMatch(amine_pattern):
+                            has_amine = True
 
-                # Check if any reactant contains amine (primary or secondary)
-                amine_present = False
-                for reactant in reactants:
-                    if (
-                        checker.check_fg("Primary amine", reactant)
-                        or checker.check_fg("Secondary amine", reactant)
-                        or checker.check_fg("Aniline", reactant)
-                    ):
-                        print(f"Reactant contains amine: {reactant}")
-                        amine_present = True
-                        break
+                # Check if product has a new C-N bond that wasn't in reactants
+                if has_mesylate and has_amine:
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        # This is a simplified check - in practice would need more sophisticated analysis
+                        n_alkylation_detected = True
+                        print("Late-stage N-alkylation detected at depth", depth)
 
-                # Verify that the sulfonamide is formed in this reaction
-                if sulfonyl_chloride_present and amine_present:
-                    # Check if sulfonamide is not present in any reactant
-                    sulfonamide_in_reactants = False
-                    for reactant in reactants:
-                        if checker.check_fg("Sulfonamide", reactant):
-                            sulfonamide_in_reactants = True
-                            break
-
-                    if not sulfonamide_in_reactants:
-                        print(f"Sulfonamide formation detected in reaction: {rsmi}")
-                        sulfonamide_formation_found = True
-
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-
-    print(f"Sulfonamide formation strategy detected: {sulfonamide_formation_found}")
-    return sulfonamide_formation_found
+    return n_alkylation_detected

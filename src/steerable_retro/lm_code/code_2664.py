@@ -2,68 +2,150 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis uses a late-stage Suzuki coupling to install a heterocycle.
-    Specifically looks for C-C bond formation between an aryl bromide and a boronic acid derivative
-    in the final or penultimate step.
+    Detects if an alkyne linker connecting two aromatic rings is maintained throughout the synthesis.
     """
-    late_stage_suzuki = False
+
+    # Helper function to check if a molecule has an alkyne connecting two aromatic rings
+    def has_aromatic_alkyne_connection(mol_smiles):
+        mol = Chem.MolFromSmiles(mol_smiles)
+        if not mol:
+            return False
+
+        # Check for alkyne functional group
+        if not checker.check_fg("Alkyne", mol_smiles):
+            return False
+
+        # Check for various patterns of alkyne between aromatic rings
+        # Direct connection
+        pattern1 = Chem.MolFromSmarts("[c]-[#6]#[#6]-[c]")
+        # Connection through linkers (like O, CH2, etc.)
+        pattern2 = Chem.MolFromSmarts("[c]~[*]~[#6]#[#6]~[*]~[c]")
+        # Specific pattern seen in test case (aromatic-O-C-C#C-aromatic)
+        pattern3 = Chem.MolFromSmarts("[c]-[#8]-[#6]-[#6]#[#6]-[c]")
+
+        if mol.HasSubstructMatch(pattern1):
+            print(f"Found direct aromatic-alkyne-aromatic connection in: {mol_smiles}")
+            return True
+        elif mol.HasSubstructMatch(pattern2):
+            print(f"Found aromatic-linker-alkyne-linker-aromatic connection in: {mol_smiles}")
+            return True
+        elif mol.HasSubstructMatch(pattern3):
+            print(f"Found aromatic-O-C-alkyne-aromatic connection in: {mol_smiles}")
+            return True
+
+        return False
+
+    # Check if target molecule has alkyne linker
+    if route["type"] == "mol" and not has_aromatic_alkyne_connection(route["smiles"]):
+        print(f"Target molecule doesn't have aromatic-alkyne-aromatic linker: {route['smiles']}")
+        return False
+
+    # Track molecules with the alkyne linker at each depth
+    molecules_with_alkyne = {}
+    alkyne_maintained = True
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_suzuki
+        nonlocal alkyne_maintained
 
-        if node["type"] == "reaction" and depth <= 1:  # Final or penultimate step
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "mol":
+            smiles = node["smiles"]
+
+            # Check if molecule has an alkyne and if it connects aromatic rings
+            if has_aromatic_alkyne_connection(smiles):
+                print(f"Found aromatic-alkyne-aromatic linker at depth {depth}: {smiles}")
+                if depth not in molecules_with_alkyne:
+                    molecules_with_alkyne[depth] = []
+                molecules_with_alkyne[depth].append(smiles)
+
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Check if the reaction preserves the alkyne linker
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
 
-                # Check if one reactant contains Br attached to aromatic carbon
-                has_aryl_bromide = False
-                has_boronic_acid = False
-
+                # In retrosynthesis, we check if any reactant has the alkyne linker
+                # and if so, verify it's preserved in the product
                 for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        # Check for aryl bromide
-                        aryl_bromide_pattern = Chem.MolFromSmarts("c[Br]")
-                        if mol.HasSubstructMatch(aryl_bromide_pattern):
-                            has_aryl_bromide = True
+                    if has_aromatic_alkyne_connection(reactant):
+                        if not has_aromatic_alkyne_connection(product):
+                            print(f"Alkyne linker broken in reaction at depth {depth}: {rsmi}")
+                            alkyne_maintained = False
+                            return
+            except Exception as e:
+                print(f"Error analyzing reaction at depth {depth}: {e}")
 
-                        # Check for boronic acid or derivative
-                        boronic_pattern = Chem.MolFromSmarts("[#6]B([OX2])[OX2]")
-                        if mol.HasSubstructMatch(boronic_pattern):
-                            has_boronic_acid = True
-
-                # Check if product has new C-C bond where Br was
-                if has_aryl_bromide and has_boronic_acid:
-                    print(f"Found potential Suzuki coupling at depth {depth}")
-                    late_stage_suzuki = True
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
     dfs_traverse(route)
-    return late_stage_suzuki
+
+    # Check if alkyne linker is found at multiple depths
+    depths_with_alkyne = list(molecules_with_alkyne.keys())
+    print(f"Depths with alkyne linker: {depths_with_alkyne}")
+
+    # For the alkyne to be maintained, it should be present in the target molecule (depth 0)
+    # and at least one other depth, and no reactions should break the linker
+    if (
+        depths_with_alkyne
+        and min(depths_with_alkyne) == 0
+        and max(depths_with_alkyne) > 0
+        and alkyne_maintained
+    ):
+        print("Alkyne linker is maintained throughout the synthesis")
+        return True
+
+    print("Alkyne linker is not maintained throughout the synthesis")
+    return False

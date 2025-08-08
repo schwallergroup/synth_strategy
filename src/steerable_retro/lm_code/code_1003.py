@@ -2,63 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects aromatic bromination as a key functionalization step
+    Detects if the synthetic route uses a linear fragment assembly strategy rather than convergent.
     """
-    found_aromatic_bromination = False
+    # Track the number of reactions with multiple complex reactants
+    convergent_reactions = 0
+    total_reactions = 0
 
     def dfs_traverse(node):
-        nonlocal found_aromatic_bromination
+        nonlocal convergent_reactions, total_reactions
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
+            reactants = reactants_part.split(".")
+            total_reactions += 1
 
-            # Check for aromatic bromination pattern
-            product_mol = Chem.MolFromSmiles(product)
+            # Count complex reactants (those with more than 10 atoms)
+            complex_reactants = 0
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.GetNumAtoms() > 10:
+                        complex_reactants += 1
+                except:
+                    print(f"Error processing reactant SMILES: {reactant}")
 
-            if product_mol:
-                # SMARTS for aromatic bromide
-                aromatic_bromide_pattern = Chem.MolFromSmarts("[c]-[Br]")
+            # If there are multiple complex reactants, it's likely a convergent step
+            if complex_reactants >= 2:
+                convergent_reactions += 1
+                print(f"Found convergent reaction step: {rsmi}")
 
-                if product_mol.HasSubstructMatch(aromatic_bromide_pattern):
-                    # Check if bromine is being added (not already present in all reactants)
-                    all_reactants_have_br = True
-                    for reactant in reactants:
-                        if "Br" not in reactant:
-                            all_reactants_have_br = False
-                            break
-
-                    if not all_reactants_have_br:
-                        found_aromatic_bromination = True
-                        print("Found aromatic bromination step")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return found_aromatic_bromination
+    # Calculate the ratio of convergent to total reactions
+    if total_reactions > 0:
+        convergent_ratio = convergent_reactions / total_reactions
+        print(f"Convergent ratio: {convergent_ratio} ({convergent_reactions}/{total_reactions})")
+        # If less than 30% of reactions are convergent, consider it a linear strategy
+        return convergent_ratio < 0.3
+
+    return False

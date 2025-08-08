@@ -2,72 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves a late-stage N-oxidation
-    (N-oxidation in the final or penultimate step).
+    This function detects a linear synthesis strategy with multiple ring transformations
+    (at least one ring formation and one ring opening).
     """
-    n_oxidation_detected = False
-    depth_of_n_oxidation = float("inf")
+    # Track ring transformations
+    ring_formations = 0
+    ring_openings = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal n_oxidation_detected, depth_of_n_oxidation
+    def dfs_traverse(node):
+        nonlocal ring_formations, ring_openings
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            try:
+                # Extract reactants and product
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check for N-oxidation: presence of N+-O- in product but not in reactants
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            n_oxide_pattern = Chem.MolFromSmarts("[#7+]-[O-]")
+                # Convert to RDKit molecules
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product = Chem.MolFromSmiles(product_smiles)
 
-            if product_mol and product_mol.HasSubstructMatch(n_oxide_pattern):
-                # Check if N-oxide was not present in reactants
-                n_oxide_in_reactants = False
-                for reactant in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(n_oxide_pattern):
-                        n_oxide_in_reactants = True
-                        break
+                # Check if all molecules were parsed correctly
+                if product and all(r is not None for r in reactants):
+                    # Count rings in reactants and product
+                    product_ring_count = product.GetRingInfo().NumRings()
+                    reactant_ring_count = sum(r.GetRingInfo().NumRings() for r in reactants)
 
-                if not n_oxide_in_reactants:
-                    n_oxidation_detected = True
-                    depth_of_n_oxidation = depth
-                    print(f"N-oxidation detected at depth {depth}")
+                    if product_ring_count > reactant_ring_count:
+                        print(f"Detected ring formation: {rsmi}")
+                        print(
+                            f"  Product rings: {product_ring_count}, Reactant rings: {reactant_ring_count}"
+                        )
+                        ring_formations += 1
+                    elif product_ring_count < reactant_ring_count:
+                        print(f"Detected ring opening: {rsmi}")
+                        print(
+                            f"  Product rings: {product_ring_count}, Reactant rings: {reactant_ring_count}"
+                        )
+                        ring_openings += 1
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if N-oxidation occurred in the first two steps (late stage)
-    # Remember: depth 0 or 1 means late in the synthesis
-    is_late_stage = depth_of_n_oxidation <= 1
-
-    if n_oxidation_detected and is_late_stage:
-        print("Late-stage N-oxidation strategy detected")
-        return True
-    return False
+    # Check if there's at least one ring formation and one ring opening
+    result = ring_formations >= 1 and ring_openings >= 1
+    print(f"Ring formations: {ring_formations}, Ring openings: {ring_openings}")
+    return result

@@ -2,132 +2,117 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a linear sequence of carbonyl transformations:
-    carboxylic acid → acid chloride → amide → nitrile
+    Detects a strategy involving protection and subsequent deprotection
+    of an indazole N-H, particularly with a tetrahydropyran group.
     """
-    # Track the transformations we find
-    transformations = {
-        "acid_to_acid_chloride": False,
-        "acid_chloride_to_amide": False,
-        "amide_to_nitrile": False,
-    }
+    protection_found = False
+    deprotection_found = False
+    protection_depth = float("inf")
+    deprotection_depth = float("inf")
 
-    def dfs_traverse(node):
+    def dfs_traverse(node, depth=0):
+        nonlocal protection_found, deprotection_found, protection_depth, deprotection_depth
+
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                reactants = reactants_part.split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for acid to acid chloride
-            reactant_has_acid = False
-            product_has_acid_chloride = False
+                # Check for indazole N-protection (N-H to N-THP)
+                reactants_have_indazole = any(checker.check_ring("indazole", r) for r in reactants)
+                product_has_indazole = checker.check_ring("indazole", product)
+                reactants_have_thp = any(
+                    checker.check_ring("tetrahydropyran", r) for r in reactants
+                )
+                product_has_thp = checker.check_ring("tetrahydropyran", product)
 
-            for reactant in reactants_smiles:
-                if reactant:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX3](=O)[OH]")):
-                            reactant_has_acid = True
-                            break
-                    except:
-                        continue
+                # Protection: Indazole in reactants, indazole+THP in product
+                if (
+                    reactants_have_indazole
+                    and product_has_indazole
+                    and not reactants_have_thp
+                    and product_has_thp
+                ):
+                    # Check if this is likely an N-protection (not perfect but reasonable heuristic)
+                    protection_found = True
+                    protection_depth = min(protection_depth, depth)
+                    print(f"Indazole N-protection detected at depth {depth}")
+                    print(f"  Reaction: {rsmi}")
 
-            if product_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(product_smiles)
-                    if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX3](=O)[Cl]")):
-                        product_has_acid_chloride = True
-                except:
-                    pass
+                # Deprotection: Indazole+THP in reactants, indazole (no THP) in product
+                if (
+                    reactants_have_indazole
+                    and product_has_indazole
+                    and reactants_have_thp
+                    and not product_has_thp
+                ):
+                    deprotection_found = True
+                    deprotection_depth = min(deprotection_depth, depth)
+                    print(f"Indazole N-deprotection detected at depth {depth}")
+                    print(f"  Reaction: {rsmi}")
 
-            if reactant_has_acid and product_has_acid_chloride:
-                transformations["acid_to_acid_chloride"] = True
-                print("Found acid to acid chloride transformation")
-
-            # Check for acid chloride to amide
-            reactant_has_acid_chloride = False
-            product_has_amide = False
-
-            for reactant in reactants_smiles:
-                if reactant:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX3](=O)[Cl]")):
-                            reactant_has_acid_chloride = True
-                            break
-                    except:
-                        continue
-
-            if product_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(product_smiles)
-                    if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX3](=O)[NX3]")):
-                        product_has_amide = True
-                except:
-                    pass
-
-            if reactant_has_acid_chloride and product_has_amide:
-                transformations["acid_chloride_to_amide"] = True
-                print("Found acid chloride to amide transformation")
-
-            # Check for amide to nitrile
-            reactant_has_amide = False
-            product_has_nitrile = False
-
-            for reactant in reactants_smiles:
-                if reactant:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX3](=O)[NX3]")):
-                            reactant_has_amide = True
-                            break
-                    except:
-                        continue
-
-            if product_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(product_smiles)
-                    if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX2]#[NX1]")):
-                        product_has_nitrile = True
-                except:
-                    pass
-
-            if reactant_has_amide and product_has_nitrile:
-                transformations["amide_to_nitrile"] = True
-                print("Found amide to nitrile transformation")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if we found all transformations in the sequence
-    return (
-        transformations["acid_to_acid_chloride"]
-        and transformations["acid_chloride_to_amide"]
-        and transformations["amide_to_nitrile"]
-    )
+    print(f"Protection found: {protection_found} at depth {protection_depth}")
+    print(f"Deprotection found: {deprotection_found} at depth {deprotection_depth}")
+
+    # Ensure protection happens before deprotection (higher depth number)
+    # In retrosynthetic analysis, protection should be at higher depth than deprotection
+    return protection_found and deprotection_found and protection_depth > deprotection_depth

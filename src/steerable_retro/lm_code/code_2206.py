@@ -2,70 +2,109 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves formation of a heterocyclic system,
-    particularly focusing on reactions that increase the ring count.
+    This function detects if the synthesis involves late-stage incorporation of a pyrrolidine ring.
     """
-    heterocycle_formation_detected = False
+    late_stage_pyrrolidine = False
 
-    def dfs_traverse(node):
-        nonlocal heterocycle_formation_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_pyrrolidine
 
-        if node["type"] == "reaction":
+        if (
+            node["type"] == "reaction" and depth <= 2
+        ):  # Consider only reactions in the first 3 levels (late stage)
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                try:
-                    # Count rings in reactants
-                    reactant_ring_count = 0
-                    for r_smiles in reactants_smiles:
-                        r_mol = Chem.MolFromSmiles(r_smiles)
-                        if r_mol:
-                            reactant_ring_count += r_mol.GetRingInfo().NumRings()
+                # Check if product contains pyrrolidine
+                has_pyrrolidine_product = checker.check_ring("pyrrolidine", product)
 
-                    # Count rings in product
-                    p_mol = Chem.MolFromSmiles(product_smiles)
-                    if p_mol:
-                        product_ring_count = p_mol.GetRingInfo().NumRings()
+                # Check if any reactant contains pyrrolidine
+                pyrrolidine_reactants = [
+                    r for r in reactants if checker.check_ring("pyrrolidine", r)
+                ]
 
-                        # Check if product has more rings than reactants combined
-                        if product_ring_count > reactant_ring_count:
-                            # Check if any of the new rings contains a heteroatom
-                            for atom in p_mol.GetAtoms():
-                                if atom.IsInRing() and atom.GetAtomicNum() not in [
-                                    1,
-                                    6,
-                                ]:  # Not H or C
-                                    heterocycle_formation_detected = True
-                                    print(f"Heterocycle formation detected: {rsmi}")
-                                    break
-                except:
-                    pass
+                # Check for pyrrolidine-forming reactions
+                pyrrolidine_forming_reaction = (
+                    checker.check_reaction("Paal-Knorr pyrrole synthesis", rsmi)
+                    or checker.check_reaction(
+                        "N-alkylation of secondary amines with alkyl halides", rsmi
+                    )
+                    or checker.check_reaction(
+                        "N-alkylation of primary amines with alkyl halides", rsmi
+                    )
+                    or checker.check_reaction("reductive amination with aldehyde", rsmi)
+                    or checker.check_reaction("reductive amination with ketone", rsmi)
+                )
+
+                # Check for direct incorporation of pyrrolidine
+                pyrrolidine_incorporation = (
+                    has_pyrrolidine_product and len(pyrrolidine_reactants) > 0
+                )
+
+                # Check if the pyrrolidine is actually being incorporated (not just present in both)
+                if pyrrolidine_incorporation or (
+                    has_pyrrolidine_product and pyrrolidine_forming_reaction
+                ):
+                    print(f"Detected late-stage pyrrolidine incorporation at depth {depth}")
+                    print(f"Reaction SMILES: {rsmi}")
+                    late_stage_pyrrolidine = True
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return heterocycle_formation_detected
+    return late_stage_pyrrolidine

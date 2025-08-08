@@ -2,54 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis preserves nitrile groups throughout
-    the synthetic route.
+    Detects if the synthesis includes a late-stage nitrile hydrolysis to form an amide.
     """
-    nitrile_pattern = Chem.MolFromSmarts("[#6]#[#7]")
-    steps_with_nitrile = 0
-    total_steps = 0
+    # Track if we found the transformation
+    found_nitrile_hydrolysis = False
 
-    def dfs_traverse(node):
-        nonlocal steps_with_nitrile, total_steps
+    # SMARTS patterns
+    nitrile_pattern = Chem.MolFromSmarts("[#6]C#N")  # Nitrile group
+    amide_pattern = Chem.MolFromSmarts("[#6]C(=O)[NH2]")  # Primary amide group
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal found_nitrile_hydrolysis
 
-            total_steps += 1
-            product_mol = Chem.MolFromSmiles(product)
+        if node["type"] == "reaction" and depth <= 1:  # Check only late-stage reactions (low depth)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            if product_mol and product_mol.HasSubstructMatch(nitrile_pattern):
-                steps_with_nitrile += 1
-                print(f"Found nitrile group in step {total_steps}")
+                # Check for nitrile hydrolysis
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+                product_mol = Chem.MolFromSmiles(product)
 
-        # Continue traversing
+                # Look for nitrile in reactants and amide in product
+                has_nitrile_reactant = any(
+                    mol and mol.HasSubstructMatch(nitrile_pattern) for mol in reactant_mols
+                )
+                has_amide_product = product_mol and product_mol.HasSubstructMatch(amide_pattern)
+
+                if has_nitrile_reactant and has_amide_product:
+                    found_nitrile_hydrolysis = True
+                    print(f"Found nitrile hydrolysis at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # If nitriles are present in most steps (>75%), consider it a preservation strategy
-    return total_steps > 0 and steps_with_nitrile / total_steps > 0.75
+    return found_nitrile_hydrolysis

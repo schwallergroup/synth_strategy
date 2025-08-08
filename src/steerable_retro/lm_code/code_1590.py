@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,91 +54,59 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route employs aromatic halogenation,
-    specifically looking for halogenation of aromatic rings.
+    This function detects a synthesis strategy involving late-stage nitro reduction.
     """
-    result = False
+    has_nitro_reduction = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal result
+        nonlocal has_nitro_reduction
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for aromatic halogenation reactions
-            halogenation_reactions = [
-                "Aromatic fluorination",
-                "Aromatic chlorination",
-                "Aromatic bromination",
-                "Aromatic iodination",
-            ]
+            # Check for nitro reduction reaction
+            if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                print(f"Found nitro reduction reaction at depth {depth}: {rsmi}")
 
-            # First try to directly identify the reaction type
-            for reaction_type in halogenation_reactions:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Found {reaction_type} at depth {depth}")
-                    result = True
-                    return
+                # Verify reactants have nitro groups and product has primary amines
+                nitro_in_reactants = any(
+                    checker.check_fg("Nitro group", reactant) for reactant in reactants
+                )
+                amine_in_product = checker.check_fg("Primary amine", product)
 
-            # If specific reaction check fails, try to detect by analyzing reactants and products
-            try:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                if nitro_in_reactants and amine_in_product:
+                    # Check if this is a late-stage reaction (depth 0, 1, or 2)
+                    if depth <= 2:
+                        print(f"Confirmed late-stage nitro reduction at depth {depth}")
+                        has_nitro_reduction = True
+                else:
+                    print(
+                        f"Reaction is nitro reduction but functional groups don't match: nitro={nitro_in_reactants}, amine={amine_in_product}"
+                    )
 
-                # Check if product has aromatic halide
-                if checker.check_fg("Aromatic halide", product):
-                    # Define common halogenation reagents to exclude
-                    common_reagents = [
-                        "Cl2",
-                        "Br2",
-                        "I2",
-                        "F2",
-                        "NCl",
-                        "NBr",
-                        "NI",
-                        "NF",
-                        "HCl",
-                        "HBr",
-                        "HI",
-                        "HF",
-                        "ICl",
-                        "IBr",
-                    ]
-
-                    # Find main reactant (excluding common reagents)
-                    main_reactant = None
-                    for r in reactants:
-                        # Skip common reagents
-                        if len(r) > 5 and not any(reagent in r for reagent in common_reagents):
-                            main_reactant = r
-                            break
-
-                    if main_reactant:
-                        # If main reactant doesn't have aromatic halide, it's likely a halogenation
-                        if not checker.check_fg("Aromatic halide", main_reactant):
-                            print(f"Found aromatic halogenation (FG analysis) at depth {depth}")
-                            result = True
-                            return
-                        else:
-                            # Count aromatic halides in both using the checker function
-                            product_halide_indices = checker.get_fg_atom_indices(
-                                "Aromatic halide", product
+            # Alternative check in case the reaction checker fails
+            elif not has_nitro_reduction:
+                for reactant in reactants:
+                    if checker.check_fg("Nitro group", reactant) and checker.check_fg(
+                        "Primary amine", product
+                    ):
+                        print(
+                            f"Potential nitro reduction detected at depth {depth} (not confirmed by reaction checker)"
+                        )
+                        # Only set to true if late-stage and we're confident it's a nitro reduction
+                        if depth <= 2 and not any(
+                            checker.check_fg("Primary amine", r) for r in reactants
+                        ):
+                            print(
+                                f"Setting as late-stage nitro reduction based on functional group analysis"
                             )
-                            reactant_halide_indices = checker.get_fg_atom_indices(
-                                "Aromatic halide", main_reactant
-                            )
-
-                            if len(product_halide_indices) > len(reactant_halide_indices):
-                                print(
-                                    f"Found aromatic halogenation (count analysis) at depth {depth}"
-                                )
-                                result = True
-                                return
-            except Exception as e:
-                print(f"Error analyzing reaction at depth {depth}: {e}")
+                            has_nitro_reduction = True
 
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return result
+    print(f"Final result: has_nitro_reduction = {has_nitro_reduction}")
+    return has_nitro_reduction

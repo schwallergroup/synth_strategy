@@ -2,153 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving late-stage formation of a sulfonamide group.
-    Late-stage means in the second half of the synthesis (higher depth values in retrosynthesis).
+    This function detects a strategy involving indole ring formation via
+    nitro group reduction.
     """
-    found_sulfonamide_formation = False
-    sulfonamide_formation_depth = float("inf")  # Initialize to infinity
-    max_depth = -1
+    has_nitro_group = False
+    has_indole_formation = False
+    nitro_depth = None
+    indole_depth = None
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_sulfonamide_formation, sulfonamide_formation_depth, max_depth
+        nonlocal has_nitro_group, has_indole_formation, nitro_depth, indole_depth
 
-        # Track maximum depth to determine synthesis length
-        max_depth = max(max_depth, depth)
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            reactants = reactants_part.split(".")
+            # Check for nitro group in reactants
+            nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
+            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants]
 
-            # Check if product has sulfonamide
-            product_has_sulfonamide = checker.check_fg("Sulfonamide", product_part)
+            if any(r and r.HasSubstructMatch(nitro_pattern) for r in reactants_mols if r):
+                has_nitro_group = True
+                nitro_depth = depth
+                print(f"Nitro group detected at depth {depth}")
 
-            # Check if this is a sulfonamide formation reaction
-            is_sulfonamide_reaction = (
-                checker.check_reaction(
-                    "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+            # Check for indole formation
+            product_mol = Chem.MolFromSmiles(product)
+            indole_pattern = Chem.MolFromSmarts("[c]1[c][c][c][c]2[c]1[nH][c][c]2")
+
+            if product_mol and product_mol.HasSubstructMatch(indole_pattern):
+                # Check if indole is formed in this reaction (not present in reactants)
+                indole_in_reactants = any(
+                    r and r.HasSubstructMatch(indole_pattern) for r in reactants_mols if r
                 )
-                or checker.check_reaction(
-                    "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
-                )
-                or checker.check_reaction("sulfon_amide", rsmi)
-                or checker.check_reaction("Schotten-Baumann to ester", rsmi)
-            )
+                if not indole_in_reactants:
+                    has_indole_formation = True
+                    indole_depth = depth
+                    print(f"Indole formation detected at depth {depth}")
 
-            if is_sulfonamide_reaction and product_has_sulfonamide:
-                # Check if any reactant doesn't have the sulfonamide
-                has_reactant_without_sulfonamide = any(
-                    not checker.check_fg("Sulfonamide", reactant) for reactant in reactants
-                )
-
-                if has_reactant_without_sulfonamide:
-                    # If we find a sulfonamide formation at a lower depth (later stage),
-                    # or if this is the first one we've found, record it
-                    if not found_sulfonamide_formation or depth < sulfonamide_formation_depth:
-                        found_sulfonamide_formation = True
-                        sulfonamide_formation_depth = depth
-                        print(f"Found sulfonamide formation at depth {depth}, reaction: {rsmi}")
-
-            # Additional check for sulfonamide formation by looking at functional groups
-            elif product_has_sulfonamide:
-                # Check if any reactant doesn't have the sulfonamide
-                has_reactant_without_sulfonamide = any(
-                    not checker.check_fg("Sulfonamide", reactant) for reactant in reactants
-                )
-
-                if has_reactant_without_sulfonamide:
-                    # Check if reactants have sulfonyl chloride and amine
-                    has_sulfonyl_chloride = any(
-                        checker.check_fg("Sulfonyl halide", reactant) for reactant in reactants
-                    )
-                    has_amine = any(
-                        checker.check_fg("Primary amine", reactant)
-                        or checker.check_fg("Secondary amine", reactant)
-                        or checker.check_fg("Aniline", reactant)
-                        for reactant in reactants
-                    )
-
-                    if has_sulfonyl_chloride and has_amine:
-                        # This is likely a sulfonamide formation reaction not captured by the reaction checks
-                        if not found_sulfonamide_formation or depth < sulfonamide_formation_depth:
-                            found_sulfonamide_formation = True
-                            sulfonamide_formation_depth = depth
-                            print(
-                                f"Found sulfonamide formation via functional groups at depth {depth}"
-                            )
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if sulfonamide formation is late-stage (in the second half of synthesis)
-    # In retrosynthesis, higher depth values are later in the forward synthesis
-    late_stage = False
-    if found_sulfonamide_formation and max_depth > 0:
-        midpoint = max_depth / 2
-        # Late stage means depth is greater than or equal to midpoint (deeper in the tree)
-        late_stage = sulfonamide_formation_depth >= midpoint
-        print(
-            f"Max depth: {max_depth}, Midpoint: {midpoint}, Sulfonamide formation depth: {sulfonamide_formation_depth}"
-        )
-        print(
-            f"Is late stage? {late_stage} (depth {sulfonamide_formation_depth} >= midpoint {midpoint})"
-        )
-    else:
-        print(f"Max depth: {max_depth}, Sulfonamide formation not found or max_depth is 0")
+    # Check if nitro group is present and then indole is formed
+    if has_nitro_group and has_indole_formation:
+        if nitro_depth is not None and indole_depth is not None:
+            if nitro_depth >= indole_depth:  # Same or higher depth means earlier or same step
+                print("Strategy detected: Indole formation via nitro reduction")
+                return True
 
-    return late_stage
+    return False

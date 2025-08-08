@@ -2,183 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves modifications to heterocyclic cores,
-    particularly focusing on quinoline/quinolone transformations.
+    Detects a strategy involving coupling of fragments where at least one contains
+    a stereocenter that is preserved throughout the synthesis.
     """
-    has_heterocycle_modification = False
+    found_stereocenter = False
+    found_coupling_with_stereocenter = False
 
-    # List of common heterocyclic rings to check
-    heterocycles = [
-        "quinoline",
-        "isoquinoline",
-        "pyridine",
-        "pyrrole",
-        "furan",
-        "thiophene",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrazole",
-        "pyrimidine",
-        "pyrazine",
-        "indole",
-        "benzimidazole",
-        "benzoxazole",
-        "benzothiazole",
-        "purine",
-        "piperidine",
-        "piperazine",
-        "morpholine",
-        "thiomorpholine",
-    ]
+    def has_stereocenter(smiles):
+        """Check if molecule contains a stereocenter"""
+        mol = Chem.MolFromSmiles(smiles)
+        if mol:
+            return "@" in smiles  # Simple check for @ symbol in SMILES
+        return False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_heterocycle_modification
+        nonlocal found_stereocenter, found_coupling_with_stereocenter
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            try:
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for heterocycle modifications
-                for reactant_smiles in reactants_smiles:
-                    # Skip if reactant or product is invalid
-                    if not reactant_smiles or not product_smiles:
-                        continue
+                # Check for stereocenter in reactants and product
+                stereo_reactant = False
+                for r in reactants:
+                    if has_stereocenter(r):
+                        stereo_reactant = True
+                        found_stereocenter = True
 
-                    # Check for heterocycle transformations
-                    reactant_heterocycles = []
-                    product_heterocycles = []
+                product_has_stereo = has_stereocenter(product)
 
-                    # Identify heterocycles in reactant
-                    for ring in heterocycles:
-                        if checker.check_ring(ring, reactant_smiles):
-                            reactant_heterocycles.append(ring)
-                            print(f"Found {ring} in reactant: {reactant_smiles}")
+                # Check for coupling reaction (multiple reactants) where stereocenter is preserved
+                if len(reactants) >= 2 and stereo_reactant and product_has_stereo:
+                    print(f"Found stereoselective coupling at depth {depth}")
+                    found_coupling_with_stereocenter = True
 
-                    # Identify heterocycles in product
-                    for ring in heterocycles:
-                        if checker.check_ring(ring, product_smiles):
-                            product_heterocycles.append(ring)
-                            print(f"Found {ring} in product: {product_smiles}")
-
-                    # Check for specific heterocycle transformations
-                    if reactant_heterocycles and product_heterocycles:
-                        # Case 1: Different heterocycles in reactant and product
-                        if set(reactant_heterocycles) != set(product_heterocycles):
-                            has_heterocycle_modification = True
-                            print(
-                                f"Heterocycle transformation detected: {reactant_heterocycles} → {product_heterocycles}"
-                            )
-
-                        # Case 2: Same heterocycle but with functional group modifications
-                        else:
-                            reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                            product_mol = Chem.MolFromSmiles(product_smiles)
-
-                            if reactant_mol and product_mol:
-                                # Check for common functional group modifications on heterocycles
-                                fg_groups = ["Carbonyl", "Hydroxyl", "Amine", "Halide", "Nitro"]
-
-                                reactant_fgs = []
-                                product_fgs = []
-
-                                for fg in fg_groups:
-                                    if checker.check_fg(fg, reactant_smiles):
-                                        reactant_fgs.append(fg)
-                                    if checker.check_fg(fg, product_smiles):
-                                        product_fgs.append(fg)
-
-                                if set(reactant_fgs) != set(product_fgs):
-                                    # Check if the reaction involves a known heterocycle modification
-                                    if (
-                                        checker.check_reaction("Friedel-Crafts acylation", rsmi)
-                                        or checker.check_reaction("Aromatic nitration", rsmi)
-                                        or checker.check_reaction("Aromatic halogenation", rsmi)
-                                        or checker.check_reaction("N-arylation", rsmi)
-                                    ):
-                                        has_heterocycle_modification = True
-                                        print(
-                                            f"Functional group modification on heterocycle detected: {rsmi}"
-                                        )
-
-                # Specific check for quinoline/quinolone transformations
-                if (
-                    checker.check_ring("quinoline", reactants_smiles[0])
-                    and not checker.check_ring("quinoline", product_smiles)
-                    and checker.check_fg("Carbonyl", product_smiles)
-                ):
-                    has_heterocycle_modification = True
-                    print(f"Quinoline to quinolone transformation detected: {rsmi}")
-
-                elif (
-                    not checker.check_ring("quinoline", reactants_smiles[0])
-                    and checker.check_fg("Carbonyl", reactants_smiles[0])
-                    and checker.check_ring("quinoline", product_smiles)
-                ):
-                    has_heterocycle_modification = True
-                    print(f"Quinolone to quinoline transformation detected: {rsmi}")
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Traverse children
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    print(f"Heterocycle modification strategy: {has_heterocycle_modification}")
-    return has_heterocycle_modification
+    # Return True if strategy criteria are met
+    return found_stereocenter and found_coupling_with_stereocenter

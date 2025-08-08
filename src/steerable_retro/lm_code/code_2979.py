@@ -2,93 +2,121 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a nitration followed by reduction to amine
-    followed by halogenation sequence.
+    Detects a synthetic strategy involving amide bond disconnection.
     """
-    # Track the sequence of transformations
-    transformations = []
+    has_amide_disconnection = False
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node):
+        nonlocal has_amide_disconnection
+
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            metadata = node.get("metadata", {})
+            rsmi = metadata.get("rsmi", "")
+            if not rsmi:
+                return
 
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            # In retrosynthesis, products (in rsmi) are the starting materials
+            # and reactants (in rsmi) are the target molecules
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                if product_mol and reactant_mols:
-                    # Check for nitration: product has nitro group that reactants don't have
-                    nitro_pattern = Chem.MolFromSmarts("[#6]-[#7+](=[#8])[#8-]")
-                    if product_mol.HasSubstructMatch(nitro_pattern) and not any(
-                        r.HasSubstructMatch(nitro_pattern) for r in reactant_mols if r
-                    ):
-                        transformations.append(("nitration", depth))
-                        print(f"Found nitration at depth {depth}")
+            # Check for amide formation reactions directly
+            if (
+                checker.check_reaction(
+                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                )
+                or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
+                or checker.check_reaction("Ester with primary amine to amide", rsmi)
+                or checker.check_reaction(
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+                )
+                or checker.check_reaction(
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    rsmi,
+                )
+            ):
+                print(f"Detected amide formation reaction: {rsmi}")
+                has_amide_disconnection = True
+                return
 
-                    # Check for reduction: reactant has nitro group, product has amine
-                    amine_pattern = Chem.MolFromSmarts("[c]-[#7H2]")
-                    if any(
-                        r.HasSubstructMatch(nitro_pattern) for r in reactant_mols if r
-                    ) and product_mol.HasSubstructMatch(amine_pattern):
-                        transformations.append(("reduction", depth))
-                        print(f"Found nitro reduction at depth {depth}")
+            # Alternative check: look for amide in product and carboxylic acid in reactants
+            has_amide = (
+                checker.check_fg("Primary amide", product_smiles)
+                or checker.check_fg("Secondary amide", product_smiles)
+                or checker.check_fg("Tertiary amide", product_smiles)
+            )
 
-                    # Check for halogenation of amine: reactant has amine, product has halide
-                    bromo_pattern = Chem.MolFromSmarts("[c]-[#35]")
-                    if any(
-                        r.HasSubstructMatch(amine_pattern) for r in reactant_mols if r
-                    ) and product_mol.HasSubstructMatch(bromo_pattern):
-                        transformations.append(("halogenation", depth))
-                        print(f"Found halogenation at depth {depth}")
+            has_carboxylic_acid = any(
+                checker.check_fg("Carboxylic acid", r) for r in reactants_smiles
+            )
+            has_amine = any(checker.check_fg("Primary amine", r) for r in reactants_smiles) or any(
+                checker.check_fg("Secondary amine", r) for r in reactants_smiles
+            )
 
+            if has_amide and (has_carboxylic_acid or has_amine):
+                print(
+                    f"Detected amide disconnection pattern: amide in product, acid/amine in reactants"
+                )
+                print(f"Reaction SMILES: {rsmi}")
+                has_amide_disconnection = True
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if the sequence exists in the correct order
-    # Note: In retrosynthetic direction, the sequence would be halogenation -> reduction -> nitration
-    has_nitration = any(t[0] == "nitration" for t in transformations)
-    has_reduction = any(t[0] == "reduction" for t in transformations)
-    has_halogenation = any(t[0] == "halogenation" for t in transformations)
-
-    # Get the depths to check order
-    nitration_depth = next((t[1] for t in transformations if t[0] == "nitration"), -1)
-    reduction_depth = next((t[1] for t in transformations if t[0] == "reduction"), -1)
-    halogenation_depth = next((t[1] for t in transformations if t[0] == "halogenation"), -1)
-
-    # Check if all transformations exist and are in the correct order (higher depth = earlier in synthesis)
-    sequence_present = (
-        has_nitration
-        and has_reduction
-        and has_halogenation
-        and nitration_depth > reduction_depth > halogenation_depth
-    )
-
-    if sequence_present:
-        print("Found complete nitration-reduction-halogenation sequence")
-
-    return sequence_present
+    return has_amide_disconnection

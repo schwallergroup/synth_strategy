@@ -2,82 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving preservation of a trifluoromethyl group
-    throughout the synthesis while modifying other functional groups.
+    This function detects a strategy involving hydrogenation of an alkene (C=C) to an alkane (C-C).
     """
-    has_cf3_throughout = True
-    modification_count = 0
+    found_hydrogenation = False
 
-    def dfs_traverse(node):
-        nonlocal has_cf3_throughout, modification_count
+    def dfs_traverse(node, depth=0):
+        nonlocal found_hydrogenation
 
-        if node["type"] == "mol" and node.get("in_stock", False) == False:
-            # Check if molecule has CF3 group
-            mol = Chem.MolFromSmiles(node["smiles"])
-            cf3_pattern = Chem.MolFromSmarts("[c]-[C]([F])([F])[F]")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            if mol and not mol.HasSubstructMatch(cf3_pattern):
-                has_cf3_throughout = False
-                print(f"Molecule without CF3 group: {node['smiles']}")
+                # Check for alkene pattern in reactants
+                reactant_mol = Chem.MolFromSmiles(reactants[0])
+                if reactant_mol:
+                    alkene_pattern = Chem.MolFromSmarts("[#6]=[#6]")
+                    if reactant_mol.HasSubstructMatch(alkene_pattern):
+                        # Check if the alkene is reduced to alkane in the product
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol:
+                            # Look for the absence of the alkene in the product
+                            if not product_mol.HasSubstructMatch(alkene_pattern):
+                                # This is a simplification - ideally we would check that the specific
+                                # alkene was converted to an alkane, not just disappeared
+                                found_hydrogenation = True
+                                print(f"Found alkene hydrogenation at depth {depth}")
 
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check if a functional group modification occurred
-            r_mol = Chem.MolFromSmiles(reactants[0])
-            p_mol = Chem.MolFromSmiles(product)
-
-            if r_mol and p_mol:
-                # Patterns for functional groups
-                patterns = [
-                    Chem.MolFromSmarts("[C;H1](=O)"),  # aldehyde
-                    Chem.MolFromSmarts("[C;H1,H2]([OH])"),  # alcohol
-                    Chem.MolFromSmarts("[C](=O)[OH]"),  # carboxylic acid
-                    Chem.MolFromSmarts("[c]-[#9,#17,#35,#53]"),  # aryl halide
-                    Chem.MolFromSmarts("[c]-[N;H2]"),  # aniline
-                    Chem.MolFromSmarts("[c]-[N+](=O)[O-]"),  # nitro
-                ]
-
-                for pattern in patterns:
-                    r_has_pattern = r_mol.HasSubstructMatch(pattern)
-                    p_has_pattern = p_mol.HasSubstructMatch(pattern)
-
-                    if r_has_pattern != p_has_pattern:
-                        modification_count += 1
-                        print(
-                            f"Detected functional group modification: {reactants[0]} -> {product}"
-                        )
-                        break
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return True if CF3 is preserved throughout and at least one modification occurred
-    return has_cf3_throughout and modification_count > 0
+    return found_hydrogenation

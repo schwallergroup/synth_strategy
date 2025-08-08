@@ -2,120 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes construction of a heterocyclic system.
+    This function detects a synthetic strategy involving multiple S-N and C-N bond
+    manipulations in a linear sequence.
     """
-    heterocycle_formation_detected = False
-
-    # List of heterocyclic rings to check
-    heterocycles = [
-        "indazole",
-        "furan",
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "triazole",
-        "tetrazole",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
-        "thiophene",
-        "isoxazole",
-        "isothiazole",
-        "oxadiazole",
-        "thiadiazole",
-    ]
+    # Initialize counters
+    sn_bond_changes = 0
+    cn_bond_changes = 0
 
     def dfs_traverse(node):
-        nonlocal heterocycle_formation_detected
+        nonlocal sn_bond_changes, cn_bond_changes
 
-        if node["type"] == "reaction":
-            try:
-                # Get reaction SMILES
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
 
-                # Split reactants
-                reactants = reactants_part.split(".")
+            # Check for S-N bond changes
+            if re.search(r"\[S.*\].*\[N", rsmi) or re.search(r"\[N.*\].*\[S", rsmi):
+                sn_bond_changes += 1
+                print(f"Found S-N bond manipulation in reaction: {rsmi}")
 
-                # Check for heterocycle formation
-                for heterocycle in heterocycles:
-                    # Check if heterocycle is in product
-                    if checker.check_ring(heterocycle, product):
-                        # Check if heterocycle is not in any reactant
-                        reactant_has_heterocycle = any(
-                            checker.check_ring(heterocycle, r) for r in reactants
-                        )
+            # Check for C-N bond changes
+            if re.search(r"\[C.*\].*\[N", rsmi) or re.search(r"\[N.*\].*\[C", rsmi):
+                cn_bond_changes += 1
+                print(f"Found C-N bond manipulation in reaction: {rsmi}")
 
-                        if not reactant_has_heterocycle:
-                            print(f"Detected heterocycle ({heterocycle}) formation")
-                            heterocycle_formation_detected = True
-                            break
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    return heterocycle_formation_detected
+    # Strategy is present if we have at least one S-N and one C-N bond manipulation
+    strategy_present = sn_bond_changes >= 1 and cn_bond_changes >= 1
+
+    print(f"S-N and C-N bond manipulation strategy detected: {strategy_present}")
+    print(f"S-N bond manipulations: {sn_bond_changes}")
+    print(f"C-N bond manipulations: {cn_bond_changes}")
+
+    return strategy_present

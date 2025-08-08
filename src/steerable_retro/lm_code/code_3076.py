@@ -2,63 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic route with late-stage coupling of two complex fragments.
+    This function detects if the synthesis involves amide bond formation as a key step.
     """
-    has_late_stage_coupling = False
+    amide_formation_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_late_stage_coupling
+        nonlocal amide_formation_detected
 
-        if node["type"] == "reaction" and depth <= 1:  # Late-stage (depth 0 or 1)
-            if "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Count number of significant fragments (complex molecules)
-                reactants = reactants_str.split(".")
-                significant_fragments = 0
+                # Check for amide bond formation (or cleavage in retrosynthesis)
+                if len(reactants) >= 2:  # Multiple reactants could indicate a disconnection
+                    product_mol = Chem.MolFromSmiles(product)
 
-                for r in reactants:
-                    if r:
-                        mol = Chem.MolFromSmiles(r)
-                        if mol:
-                            # Consider a fragment significant if it has at least 10 atoms
-                            if mol.GetNumAtoms() >= 10:
-                                significant_fragments += 1
+                    if product_mol:
+                        # SMARTS for amide bond
+                        amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
 
-                if significant_fragments >= 2:
-                    has_late_stage_coupling = True
-                    print(
-                        f"Found late-stage coupling of {significant_fragments} complex fragments at depth {depth}"
-                    )
+                        if product_mol.HasSubstructMatch(amide_pattern):
+                            # In retrosynthesis, amide formation appears as cleavage
+                            print(f"Amide bond formation detected at depth {depth}")
+                            amide_formation_detected = True
 
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-
-    print(f"Late-stage fragment coupling strategy detection result: {has_late_stage_coupling}")
-    return has_late_stage_coupling
+    return amide_formation_detected

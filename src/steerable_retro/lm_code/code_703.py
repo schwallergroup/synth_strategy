@@ -2,88 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving Suzuki coupling to install a vinyl group
-    on an aromatic ring.
+    This function detects if the synthesis follows a linear strategy
+    where each reaction builds upon a single product from the previous step.
     """
-    suzuki_vinyl_found = False
+    is_linear = True
+    reaction_count = 0
+    max_reactants_per_reaction = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal suzuki_vinyl_found
+        nonlocal is_linear, reaction_count, max_reactants_per_reaction
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+            reaction_count += 1
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                num_reactants = len(reactants)
+                max_reactants_per_reaction = max(max_reactants_per_reaction, num_reactants)
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # If any reaction has more than 2 reactants, it's likely not a linear synthesis
+                if num_reactants > 2:
+                    is_linear = False
+                    print(
+                        f"Found non-linear reaction with {num_reactants} reactants at depth {depth}"
+                    )
 
-            # Check for aryl bromide in reactants
-            aryl_bromide_pattern = Chem.MolFromSmarts("c-Br")
-            has_aryl_bromide = False
-
-            # Check for vinyl boronic acid or derivative in reactants
-            vinyl_boron_pattern = Chem.MolFromSmarts("C=C-[B]")
-            has_vinyl_boron = False
-
-            for reactant in reactants_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(aryl_bromide_pattern):
-                            has_aryl_bromide = True
-                        if (
-                            mol.HasSubstructMatch(vinyl_boron_pattern)
-                            or "B" in reactant
-                            and "C=C" in reactant
-                        ):
-                            has_vinyl_boron = True
-                except:
-                    continue
-
-            # Check if product has a vinyl group attached to an aromatic ring
-            aryl_vinyl_pattern = Chem.MolFromSmarts("c-C=C")
-            has_aryl_vinyl_product = False
-
-            try:
-                mol = Chem.MolFromSmiles(product_smiles)
-                if mol and mol.HasSubstructMatch(aryl_vinyl_pattern):
-                    has_aryl_vinyl_product = True
-            except:
-                pass
-
-            # If all conditions are met, we have a Suzuki coupling for vinyl installation
-            if has_aryl_bromide and has_vinyl_boron and has_aryl_vinyl_product:
-                suzuki_vinyl_found = True
-                print("Found Suzuki coupling: vinyl group installed on aromatic ring")
-
-        # Continue traversing
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    return suzuki_vinyl_found
+    # A linear synthesis should have multiple reactions and mostly 1-2 reactants per reaction
+    if reaction_count < 2:
+        is_linear = False
+
+    print(
+        f"Synthesis has {reaction_count} reactions with max {max_reactants_per_reaction} reactants per reaction"
+    )
+    return is_linear

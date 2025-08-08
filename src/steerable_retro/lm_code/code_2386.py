@@ -2,48 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if one of the key fragments in the synthesis contains a sulfonamide group.
+    Detects if the synthesis route has no ring formation steps.
     """
-    sulfonamide_found = False
+    ring_formation_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal sulfonamide_found
+    def dfs_traverse(node):
+        nonlocal ring_formation_found
 
-        if node["type"] == "mol":
-            # Check if molecule contains sulfonamide group
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])[#7]")
-                if mol.HasSubstructMatch(sulfonamide_pattern):
-                    print("Sulfonamide group detected in molecule at depth", depth)
-                    sulfonamide_found = True
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        # Traverse children
+            # Count rings in reactants and product
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
+            product_mol = Chem.MolFromSmiles(product)
+
+            if product_mol and reactant_mols:
+                total_reactant_rings = sum(len(Chem.GetSSSR(mol)) for mol in reactant_mols)
+                product_rings = len(Chem.GetSSSR(product_mol))
+
+                if product_rings > total_reactant_rings:
+                    ring_formation_found = True
+                    print("Ring formation detected")
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return sulfonamide_found
+    return not ring_formation_found

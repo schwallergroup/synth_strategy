@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,118 +54,170 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis concludes with an ester formation
-    from a carboxylic acid (depth 0 or 1).
-
-    Note: Since we're traversing retrosynthetically, we're actually looking for
-    ester hydrolysis reactions (ester → acid) which represent ester formation
-    in the forward direction.
+    This function detects if the synthesis uses a late-stage amide coupling strategy
+    where two complex fragments are joined via amide bond formation in the final step.
     """
-    has_late_stage_ester_formation = False
+    final_amide_coupling = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_late_stage_ester_formation
+    def dfs_traverse(node, current_depth=0):
+        nonlocal final_amide_coupling
 
-        # Check if this is a reaction node with metadata
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-
-            # Only check reactions at late stage (depth 0 or 1)
-            if depth <= 1:
-                print(f"Examining reaction at depth {depth}: {rsmi}")
-
-                # Parse reaction components
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            # Get depth from metadata or use current_depth
+            depth = node.get("metadata", {}).get("depth")
+            if depth is None:
+                depth = current_depth
+            else:
                 try:
-                    reactants_part = rsmi.split(">")[0]
-                    product_part = rsmi.split(">")[-1]
-                    reactants = reactants_part.split(".")
-                    product = product_part
+                    depth = int(depth)
+                except:
+                    depth = current_depth
 
-                    # Check if this is an ester hydrolysis reaction (retrosynthetically represents ester formation)
-                    is_ester_hydrolysis = any(
-                        [
-                            checker.check_reaction(
-                                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
-                                rsmi,
-                            ),
-                            checker.check_reaction(
-                                "Ester saponification (methyl deprotection)", rsmi
-                            ),
-                            checker.check_reaction(
-                                "Ester saponification (alkyl deprotection)", rsmi
-                            ),
-                            checker.check_reaction("COOH ethyl deprotection", rsmi),
-                        ]
-                    )
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Checking reaction at depth {depth}: {rsmi}")
 
-                    # Also check for forward esterification reactions (in case the reaction is stored in reverse)
-                    is_esterification = any(
-                        [
-                            checker.check_reaction("Esterification of Carboxylic Acids", rsmi),
-                            checker.check_reaction("Schotten-Baumann to ester", rsmi),
-                            checker.check_reaction(
-                                "O-alkylation of carboxylic acids with diazo compounds", rsmi
-                            ),
-                            checker.check_reaction(
-                                "Oxidative esterification of primary alcohols", rsmi
-                            ),
-                            checker.check_reaction("Transesterification", rsmi),
-                            checker.check_reaction("Acetic anhydride and alcohol to ester", rsmi),
-                        ]
-                    )
+            # Check if this is the final or near-final step (depth 0 or 1)
+            if depth <= 1:
+                print(f"Analyzing potential final reaction: {rsmi}")
 
-                    print(f"  Is recognized ester hydrolysis reaction: {is_ester_hydrolysis}")
-                    print(f"  Is recognized esterification reaction: {is_esterification}")
+                # Check if this is an amide coupling reaction
+                amide_coupling_reactions = [
+                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                    "Carboxylic acid with primary amine to amide",
+                    "Acylation of primary amines",
+                    "Acylation of secondary amines",
+                    "Schotten-Baumann_amide",
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
+                ]
 
-                    # If it's a recognized reaction type, we've found what we're looking for
-                    if is_ester_hydrolysis or is_esterification:
-                        print(f"Found late-stage ester formation at depth {depth}")
-                        has_late_stage_ester_formation = True
-                        return
+                is_amide_coupling = False
+                for rxn_type in amide_coupling_reactions:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        print(f"Detected amide coupling reaction: {rxn_type}")
+                        is_amide_coupling = True
+                        break
 
-                    # If not a recognized reaction type, check for functional group transformation
-                    # In retrosynthetic direction: check if reactants contain ester and product contains acid
-                    reactant_has_ester = False
-                    for reactant in reactants:
-                        if checker.check_fg("Ester", reactant):
-                            reactant_has_ester = True
-                            break
+                # If no specific reaction type matched, check for characteristic functional group changes
+                if not is_amide_coupling:
+                    try:
+                        reactants_part = rsmi.split(">")[0]
+                        product_part = rsmi.split(">")[-1]
 
-                    product_has_acid = checker.check_fg("Carboxylic acid", product)
-
-                    # Also check the forward direction in case the reaction is stored that way
-                    reactant_has_acid = False
-                    for reactant in reactants:
-                        if checker.check_fg("Carboxylic acid", reactant):
-                            reactant_has_acid = True
-                            break
-
-                    product_has_ester = checker.check_fg("Ester", product)
-
-                    print(f"  Reactant has ester: {reactant_has_ester}")
-                    print(f"  Product has carboxylic acid: {product_has_acid}")
-                    print(f"  Reactant has carboxylic acid: {reactant_has_acid}")
-                    print(f"  Product has ester: {product_has_ester}")
-
-                    # Verify the transformation by checking both directions
-                    if (reactant_has_ester and product_has_acid) or (
-                        reactant_has_acid and product_has_ester
-                    ):
-                        print(
-                            f"Found late-stage ester formation (by functional group analysis) at depth {depth}"
+                        # Check if reactants contain acid/acyl halide and amine, and product contains amide
+                        has_acid = any(
+                            checker.check_fg("Carboxylic acid", r)
+                            for r in reactants_part.split(".")
                         )
-                        has_late_stage_ester_formation = True
-                        return
+                        has_acyl_halide = any(
+                            checker.check_fg("Acyl halide", r) for r in reactants_part.split(".")
+                        )
+                        has_amine = any(
+                            checker.check_fg("Primary amine", r)
+                            or checker.check_fg("Secondary amine", r)
+                            or checker.check_fg("Aniline", r)
+                            for r in reactants_part.split(".")
+                        )
 
-                except Exception as e:
-                    print(f"Error analyzing reaction: {e}")
+                        has_amide = (
+                            checker.check_fg("Primary amide", product_part)
+                            or checker.check_fg("Secondary amide", product_part)
+                            or checker.check_fg("Tertiary amide", product_part)
+                        )
 
-        # Recursively traverse children
+                        if (has_acid or has_acyl_halide) and has_amine and has_amide:
+                            print("Detected amide coupling based on functional group changes")
+                            is_amide_coupling = True
+                    except Exception as e:
+                        print(f"Error in functional group analysis: {e}")
+
+                if is_amide_coupling:
+                    try:
+                        # Extract reactants and product
+                        reactants_part = rsmi.split(">")[0]
+                        product_part = rsmi.split(">")[-1]
+                        reactants = reactants_part.split(".")
+
+                        # Check for carboxylic acid and amine in reactants
+                        acid_found = False
+                        amine_found = False
+
+                        # Track fragment complexity
+                        acid_fragment_size = 0
+                        amine_fragment_size = 0
+
+                        for reactant in reactants:
+                            try:
+                                # Check for carboxylic acid or acyl chloride (common in amide couplings)
+                                if checker.check_fg("Carboxylic acid", reactant):
+                                    acid_found = True
+                                    mol = Chem.MolFromSmiles(reactant)
+                                    if mol:
+                                        acid_fragment_size = mol.GetNumHeavyAtoms()
+                                        print(
+                                            f"Found carboxylic acid fragment with {acid_fragment_size} heavy atoms"
+                                        )
+                                elif checker.check_fg(
+                                    "Acyl chloride", reactant
+                                ) or checker.check_fg("Acyl halide", reactant):
+                                    acid_found = True
+                                    mol = Chem.MolFromSmiles(reactant)
+                                    if mol:
+                                        acid_fragment_size = mol.GetNumHeavyAtoms()
+                                        print(
+                                            f"Found acyl halide fragment with {acid_fragment_size} heavy atoms"
+                                        )
+
+                                # Check for various amine types
+                                if (
+                                    checker.check_fg("Primary amine", reactant)
+                                    or checker.check_fg("Secondary amine", reactant)
+                                    or checker.check_fg("Aniline", reactant)
+                                ):
+                                    amine_found = True
+                                    mol = Chem.MolFromSmiles(reactant)
+                                    if mol:
+                                        amine_fragment_size = mol.GetNumHeavyAtoms()
+                                        print(
+                                            f"Found amine fragment with {amine_fragment_size} heavy atoms"
+                                        )
+                            except Exception as e:
+                                print(f"Error checking reactant {reactant}: {e}")
+                                continue
+
+                        # Check for amide in product
+                        amide_found = False
+                        try:
+                            if (
+                                checker.check_fg("Primary amide", product_part)
+                                or checker.check_fg("Secondary amide", product_part)
+                                or checker.check_fg("Tertiary amide", product_part)
+                            ):
+                                amide_found = True
+                                print("Found amide in product")
+                        except Exception as e:
+                            print(f"Error checking product {product_part}: {e}")
+
+                        # Consider it late-stage coupling if both fragments are reasonably complex
+                        # (at least 4 heavy atoms each is a reasonable threshold for "complex")
+                        if acid_found and amine_found and amide_found:
+                            print(
+                                f"Acid fragment size: {acid_fragment_size}, Amine fragment size: {amine_fragment_size}"
+                            )
+                            if acid_fragment_size >= 4 and amine_fragment_size >= 4:
+                                print(
+                                    "Detected late-stage amide coupling in final step with complex fragments"
+                                )
+                                final_amide_coupling = True
+                    except Exception as e:
+                        print(f"Error analyzing amide coupling: {e}")
+
+        # Continue traversing with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, current_depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-
-    print(f"Has late-stage ester formation: {has_late_stage_ester_formation}")
-    return has_late_stage_ester_formation
+    print(f"Final result: {final_amide_coupling}")
+    return final_amide_coupling

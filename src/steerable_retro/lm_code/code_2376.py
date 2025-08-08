@@ -2,56 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a convergent approach where
-    multiple fragments are prepared separately and then joined.
+    Detects the use of acid chloride formation from carboxylic acid
+    as part of the overall synthetic strategy.
     """
-    fragment_count = 0
-    joining_reactions = 0
+    found_acid_chloride_formation = False
 
     def dfs_traverse(node):
-        nonlocal fragment_count, joining_reactions
+        nonlocal found_acid_chloride_formation
 
         if node["type"] == "reaction":
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Count distinct fragments in reactants
-                if len(reactants) > 1:
-                    fragment_count += len(reactants) - 1
-                    joining_reactions += 1
-                    print(f"Found joining reaction with {len(reactants)} fragments")
+                # Check for acid chloride formation
+                carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
+                acid_chloride_pattern = Chem.MolFromSmarts("[C](=O)[Cl]")
 
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+                product_mol = Chem.MolFromSmiles(product)
+
+                if (
+                    product_mol
+                    and any(
+                        m and m.HasSubstructMatch(carboxylic_acid_pattern) for m in reactant_mols
+                    )
+                    and product_mol.HasSubstructMatch(acid_chloride_pattern)
+                ):
+                    print("Found acid chloride formation")
+                    found_acid_chloride_formation = True
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # A convergent synthesis typically has multiple fragments and joining reactions
-    result = fragment_count >= 2 and joining_reactions >= 1
-    print(
-        f"Convergent synthesis strategy detected: {result} (fragments: {fragment_count}, joining reactions: {joining_reactions})"
-    )
-    return result
+    return found_acid_chloride_formation

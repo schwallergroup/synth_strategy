@@ -2,58 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects pyrazole ring formation using hydrazine as a reagent.
-    Looks for a reaction where hydrazine (NH2-NH2) is used to form a 5-membered heterocyclic ring.
+    This function detects if the synthetic route involves halogen-containing
+    intermediates throughout the synthesis.
     """
-    pyrazole_formation_detected = False
+    has_halogen_intermediates = False
+    halogen_count = 0
 
     def dfs_traverse(node):
-        nonlocal pyrazole_formation_detected
+        nonlocal has_halogen_intermediates, halogen_count
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check if hydrazine is a reactant
-                hydrazine_pattern = Chem.MolFromSmarts("[NH2][NH2]")
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(hydrazine_pattern):
-                            # Check if product has a pyrazole ring
-                            product_mol = Chem.MolFromSmiles(product)
-                            pyrazole_pattern = Chem.MolFromSmarts("c1nn[c,n]c1")
-                            if product_mol and product_mol.HasSubstructMatch(pyrazole_pattern):
-                                print("Detected pyrazole formation using hydrazine")
-                                pyrazole_formation_detected = True
-                    except:
-                        continue
+        if node["type"] == "mol" and "smiles" in node and not node.get("in_stock", False):
+            # Check for halogens in intermediates
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                halogen_pattern = Chem.MolFromSmarts("[F,Cl,Br,I]")
+                if mol.HasSubstructMatch(halogen_pattern):
+                    halogen_count += 1
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return pyrazole_formation_detected
+
+    # If multiple intermediates contain halogens
+    if halogen_count >= 2:
+        print(f"Detected {halogen_count} halogen-containing intermediates")
+        has_halogen_intermediates = True
+
+    return has_halogen_intermediates

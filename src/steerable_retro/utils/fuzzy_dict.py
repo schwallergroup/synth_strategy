@@ -44,21 +44,19 @@ class FuzzyDict(UserDict):
 
             # Find best match above threshold
             best_match = None
-            best_ratio = self.threshold
+            best_ratio = self.threshold - 0.001  # Use slightly less than threshold for comparison
 
             for k in self.data:
                 if not isinstance(k, str):
                     continue
-                if key in k:
-                    return self.data[k]
 
                 ratio = self._get_similarity(key, k)
-                if ratio > best_ratio:
+                if ratio >= self.threshold and ratio > best_ratio:
                     best_match = k
                     best_ratio = ratio
 
             if best_match is None:
-                return []
+                raise KeyError(f"No fuzzy match found for '{key}' with threshold {self.threshold}")
 
             return self.data[best_match]
 
@@ -74,19 +72,19 @@ class FuzzyDict(UserDict):
 
             # Find best match above threshold
             best_match = None
-            best_ratio = self.threshold
+            best_ratio = self.threshold - 0.001
 
             for k in self.data:
                 if not isinstance(k, str):
                     continue
 
                 ratio = self._get_similarity(key, k)
-                if ratio > best_ratio:
+                if ratio >= self.threshold and ratio > best_ratio:
                     best_match = k
                     best_ratio = ratio
 
             if best_match is None:
-                raise KeyError(f"No fuzzy match found for '{key}'")
+                raise KeyError(f"No fuzzy match found for '{key}' with threshold {self.threshold}")
 
             return best_match, self.data[best_match]
 
@@ -194,3 +192,31 @@ class FuzzyDict(UserDict):
 
         # Create and return a new FuzzyDict with the loaded data
         return cls(data, threshold=threshold)
+
+
+# Test the fix with your example
+if __name__ == "__main__":
+    # Test case to demonstrate the fix
+    fd = FuzzyDict(threshold=0.4)
+    fd["Mitsunobu aryl ether"] = ["some_smarts_pattern"]
+    
+    print(f"Stored key: 'Mitsunobu aryl ether'")
+    print(f"Threshold: {fd.threshold}")
+    
+    # Calculate similarity
+    from difflib import SequenceMatcher
+    similarity = SequenceMatcher(None, "mitsunobu aryl", "mitsunobu aryl ether").ratio()
+    print(f"Similarity between 'Mitsunobu aryl' and 'Mitsunobu aryl ether': {similarity:.3f}")
+    
+    try:
+        result = fd["Mitsunobu aryl"]
+        print(f"Result for 'Mitsunobu aryl': {result}")
+    except KeyError as e:
+        print(f"KeyError: {e}")
+        
+    # Also test the get_with_match method
+    try:
+        matched_key, value = fd.get_with_match("Mitsunobu aryl")
+        print(f"Matched key: '{matched_key}', Value: {value}")
+    except KeyError as e:
+        print(f"KeyError in get_with_match: {e}")

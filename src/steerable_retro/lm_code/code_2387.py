@@ -2,50 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if one of the key fragments in the synthesis contains a dimethoxy-substituted aromatic system.
+    This function detects if the synthesis uses a persistent Boc protecting group
+    that remains on a nitrogen throughout multiple steps.
     """
-    dimethoxy_found = False
+    boc_protected_depths = []
 
-    def dfs_traverse(node, depth=0):
-        nonlocal dimethoxy_found
+    def dfs_traverse(node):
+        if node["type"] == "reaction":
+            depth = node.get("metadata", {}).get("depth", 0)
+            rsmi = node.get("metadata", {}).get("rsmi", "")
 
-        if node["type"] == "mol":
-            # Check if molecule contains dimethoxy aromatic pattern
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                dimethoxy_pattern = Chem.MolFromSmarts(
-                    "[#6]1:[#6]:[#6]([#8][#6]):[#6]:[#6]([#8][#6]):[#6]:1"
-                )
-                if mol.HasSubstructMatch(dimethoxy_pattern):
-                    print("Dimethoxy aromatic pattern detected in molecule at depth", depth)
-                    dimethoxy_found = True
+            if not rsmi:
+                return
 
-        # Traverse children
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Check for Boc group in product
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                boc_pattern = Chem.MolFromSmarts("[N][C](=[O])[O][C]([CH3])([CH3])[CH3]")
+                if product_mol.HasSubstructMatch(boc_pattern):
+                    boc_protected_depths.append(depth)
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return dimethoxy_found
+    # Check if Boc protection spans multiple consecutive steps
+    if len(boc_protected_depths) >= 3:
+        print(f"Found persistent Boc protection across depths: {boc_protected_depths}")
+        return True
+    return False

@@ -2,100 +2,101 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthetic route employs a Weinreb amide formation
-    followed by conversion to ketone.
+    Detects a synthesis that maintains an indole core throughout the route.
+
+    This function checks if the indole structure is preserved in the main synthetic pathway,
+    excluding starting materials and reagents.
     """
-    # Track Weinreb amide formation and conversion
-    weinreb_amide_formed = False
-    weinreb_to_ketone = False
+    # Track molecules in the main synthetic pathway
+    main_pathway_molecules = []
 
-    def dfs_traverse(node):
-        nonlocal weinreb_amide_formed, weinreb_to_ketone
+    def find_main_pathway(node, depth=0):
+        """Identify molecules in the main synthetic pathway"""
+        if node["type"] == "mol":
+            # Skip starting materials (in_stock)
+            if not node.get("in_stock", False):
+                main_pathway_molecules.append((node["smiles"], depth))
 
-        if node["type"] == "reaction":
-            # Extract reactants and product from reaction SMILES
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
-
-            # Check for Weinreb amide formation
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
-            weinreb_amine_pattern = Chem.MolFromSmarts("[N]([CH3])[O][CH3]")
-            weinreb_amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]([CH3])[O][CH3]")
-
-            # Check for Weinreb amide formation
-            acid_in_reactants = False
-            weinreb_in_reactants = False
-
-            for reactant in reactants_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(carboxylic_acid_pattern):
-                            acid_in_reactants = True
-                        if mol.HasSubstructMatch(weinreb_amine_pattern):
-                            weinreb_in_reactants = True
-                except:
-                    continue
-
-            if acid_in_reactants and weinreb_in_reactants:
-                try:
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-                    if product_mol and product_mol.HasSubstructMatch(weinreb_amide_pattern):
-                        print("Found Weinreb amide formation")
-                        weinreb_amide_formed = True
-                except:
-                    pass
-
-            # Check for Weinreb amide to ketone conversion
-            ketone_pattern = Chem.MolFromSmarts("[C](=[O])[#6]")
-
-            weinreb_in_reactants = False
-            for reactant in reactants_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(weinreb_amide_pattern):
-                        weinreb_in_reactants = True
-                        break
-                except:
-                    continue
-
-            if weinreb_in_reactants:
-                try:
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-                    if product_mol and product_mol.HasSubstructMatch(ketone_pattern):
-                        print("Found Weinreb amide to ketone conversion")
-                        weinreb_to_ketone = True
-                except:
-                    pass
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            find_main_pathway(child, depth + 1)
 
-    # Start traversal from the root
-    dfs_traverse(route)
+    # Start traversal to find main pathway
+    find_main_pathway(route)
 
-    # Return True if both Weinreb amide formation and conversion to ketone are found
-    return weinreb_amide_formed and weinreb_to_ketone
+    # Sort by depth (ascending) to get the synthetic pathway from late to early stage
+    main_pathway_molecules.sort(key=lambda x: x[1])
+
+    # Check if indole is present in all main pathway molecules
+    indole_present_in_all = True
+
+    for mol_smiles, depth in main_pathway_molecules:
+        try:
+            if not checker.check_ring("indole", mol_smiles):
+                indole_present_in_all = False
+                print(f"Molecule without indole found in main pathway: {mol_smiles}")
+                break
+        except Exception as e:
+            print(f"Error checking indole in molecule: {e}")
+            indole_present_in_all = False
+            break
+
+    if indole_present_in_all and main_pathway_molecules:
+        print("Indole core is preserved throughout the main synthetic pathway")
+    elif not main_pathway_molecules:
+        print("No main pathway molecules found to check")
+        indole_present_in_all = False
+
+    return indole_present_in_all

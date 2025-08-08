@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,74 +54,95 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a strategy involving late-stage oxidation (alcohol to ketone).
-    In retrosynthetic analysis, this appears as a reduction of ketone to alcohol.
+    Detects a convergent synthesis strategy where an indole derivative is coupled with a diarylmethanol
+    in a late-stage reaction.
     """
-    found_late_oxidation = False
+    # Initialize tracking variables
+    has_indole = False
+    has_diarylmethanol = False
+    has_late_coupling = False
+    has_boc_protection = False
+
+    def is_diarylmethanol(smiles):
+        """Check if molecule is a diarylmethanol (secondary alcohol with two aromatic rings)"""
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return False
+
+        # Check for secondary alcohol
+        if not checker.check_fg("Secondary alcohol", smiles):
+            return False
+
+        # Find the carbon attached to OH and check if it's connected to two aromatic rings
+        pattern = Chem.MolFromSmarts("[OH][C]")
+        matches = mol.GetSubstructMatches(pattern)
+
+        for match in matches:
+            oh_idx, c_idx = match
+            c_atom = mol.GetAtomWithIdx(c_idx)
+
+            # Count aromatic ring connections to this carbon
+            aromatic_ring_count = 0
+            for neighbor in c_atom.GetNeighbors():
+                if neighbor.GetIdx() != oh_idx and neighbor.GetIsAromatic():
+                    aromatic_ring_count += 1
+
+            if aromatic_ring_count >= 2:
+                return True
+
+        return False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_late_oxidation
+        nonlocal has_indole, has_diarylmethanol, has_late_coupling, has_boc_protection
 
-        if node["type"] == "reaction" and depth <= 2:  # Late stage (within first few reactions)
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            if "smiles" in node:
+                # Check for indole substructure
+                if checker.check_ring("indole", node["smiles"]):
+                    has_indole = True
+                    print(f"Found indole in molecule: {node['smiles']}")
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+                # Check for diarylmethanol
+                if is_diarylmethanol(node["smiles"]):
+                    has_diarylmethanol = True
+                    print(f"Found diarylmethanol in molecule: {node['smiles']}")
 
-                # In retrosynthesis, we're looking for ketone reduction (appears as alcohol oxidation in forward direction)
-                # Check if this is a reduction reaction (ketone to alcohol in retrosynthesis)
-                if checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi):
-                    print(f"Found ketone reduction reaction at depth {depth}")
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                    # Verify reactant has ketone and product has secondary alcohol (retrosynthetic perspective)
-                    reactant_has_ketone = any(
-                        checker.check_fg("Ketone", reactant) for reactant in reactants
-                    )
-                    product_has_alcohol = checker.check_fg("Secondary alcohol", product)
+            # Check for Boc protection
+            if checker.check_reaction("Boc amine protection", rsmi) or checker.check_reaction(
+                "Boc amine protection explicit", rsmi
+            ):
+                has_boc_protection = True
+                print(f"Found Boc protection reaction: {rsmi}")
 
-                    if reactant_has_ketone and product_has_alcohol:
-                        print(
-                            f"Confirmed: Ketone in reactant reduced to secondary alcohol in product (retrosynthetic)"
-                        )
-                        found_late_oxidation = True
-                        return
+            # Check for late-stage coupling (depth 0 or 1)
+            if depth <= 1:
+                # Check if one reactant has indole and another has diarylmethanol
+                has_indole_reactant = False
+                has_diarylmethanol_reactant = False
 
-                # Check for oxidation reaction (will appear as reduction in retrosynthesis)
-                if checker.check_reaction(
-                    "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones", rsmi
+                for reactant in reactants:
+                    if checker.check_ring("indole", reactant):
+                        has_indole_reactant = True
+                    if is_diarylmethanol(reactant):
+                        has_diarylmethanol_reactant = True
+
+                # Check if product has both features
+                product_has_indole = checker.check_ring("indole", product)
+                product_has_diarylmethanol = is_diarylmethanol(product)
+
+                # If reactants have separate features and product has both, it's a coupling
+                if (
+                    (has_indole_reactant and has_diarylmethanol_reactant)
+                    or (has_indole_reactant and product_has_diarylmethanol)
+                    or (has_diarylmethanol_reactant and product_has_indole)
                 ):
-                    print(f"Found oxidation reaction at depth {depth}")
-
-                    # In forward direction: alcohol → ketone
-                    # In retrosynthesis: product has alcohol, reactant has ketone
-                    reactant_has_ketone = any(
-                        checker.check_fg("Ketone", reactant) for reactant in reactants
-                    )
-                    product_has_alcohol = checker.check_fg("Secondary alcohol", product)
-
-                    if reactant_has_ketone and product_has_alcohol:
-                        print(
-                            f"Confirmed: Ketone in reactant transformed to secondary alcohol in product (retrosynthetic)"
-                        )
-                        found_late_oxidation = True
-                        return
-
-                # Alternative check: look for the functional group transformation directly
-                # In retrosynthesis: ketone (reactant) → secondary alcohol (product)
-                reactant_has_ketone = any(
-                    checker.check_fg("Ketone", reactant) for reactant in reactants
-                )
-                product_has_alcohol = checker.check_fg("Secondary alcohol", product)
-
-                if reactant_has_ketone and product_has_alcohol:
-                    print(f"Found potential ketone to alcohol transformation at depth {depth}")
-                    # Try to verify this is a reduction reaction
-                    if not found_late_oxidation:  # Only check if we haven't found it yet
-                        found_late_oxidation = True
-                        print(f"Confirmed functional group transformation at depth {depth}")
-                        return
+                    has_late_coupling = True
+                    print(f"Detected late-stage coupling of indole with diarylmethanol: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -127,4 +151,19 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    return found_late_oxidation
+    # Check if all required elements are present
+    result = has_indole and has_diarylmethanol and has_late_coupling
+
+    # Make Boc protection optional since it might not be necessary in all cases
+    if has_boc_protection:
+        print("Boc protection step found, which is typical for this strategy")
+    else:
+        print("No Boc protection found, but this might be an alternative approach")
+
+    print(f"Indole detected: {has_indole}")
+    print(f"Diarylmethanol detected: {has_diarylmethanol}")
+    print(f"Late-stage coupling detected: {has_late_coupling}")
+    print(f"Boc protection detected: {has_boc_protection}")
+    print(f"Overall strategy detected: {result}")
+
+    return result

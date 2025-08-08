@@ -2,64 +2,47 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
-def main(route):
+def main(route, min_steps=5):
     """
-    This function detects if the synthetic route involves amide bond formation.
+    Detects if the synthesis route is a linear sequence with at least min_steps steps
     """
-    amide_formation_found = False
+    step_count = 0
 
     def dfs_traverse(node):
-        nonlocal amide_formation_found
+        nonlocal step_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            step_count += 1
 
-            # Check if reactants contain a carboxylic acid and an amine, and product contains an amide
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
-
-            if product_mol and len(reactant_mols) >= 2:
-                # Check for carboxylic acid in reactants
-                acid_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2H]")
-                has_acid = any(mol.HasSubstructMatch(acid_pattern) for mol in reactant_mols if mol)
-
-                # Check for amine in reactants
-                amine_pattern = Chem.MolFromSmarts("[NX3;H2,H1]")
-                has_amine = any(
-                    mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols if mol
-                )
-
-                # Check for amide in product
-                amide_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[NX3;H1,H0]")
-                has_amide = product_mol.HasSubstructMatch(amide_pattern) if product_mol else False
-
-                if has_acid and has_amine and has_amide:
-                    print("Amide formation detected")
-                    amide_formation_found = True
-
+        # Continue traversal - for linear synthesis, we expect only one child per reaction
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return amide_formation_found
+
+    print(f"Found {step_count} linear synthesis steps")
+    return step_count >= min_steps

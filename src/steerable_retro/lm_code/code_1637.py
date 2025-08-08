@@ -2,106 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the final step involves reduction of a nitro group to an amine.
+    This function detects if the synthetic route involves a late-stage Boc deprotection.
+    Late-stage means the deprotection occurs in the final step or penultimate step.
     """
-    final_step_has_nitro_reduction = False
+    boc_deprotection_found = False
+    depth_of_deprotection = None
+    max_depth = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal final_step_has_nitro_reduction
+        nonlocal boc_deprotection_found, depth_of_deprotection, max_depth
 
-        # If we already found a nitro reduction in the final step, no need to continue
-        if final_step_has_nitro_reduction:
-            return
+        max_depth = max(max_depth, depth)
 
-        # Check if this is a reaction node
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0]
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if this is the final step (depth 0 in retrosynthetic analysis)
-            if depth == 0:
-                print(f"Examining final step reaction: {rsmi}")
+            # Check for Boc group in reactants
+            reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                # Check if this is a nitro reduction reaction
-                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
-                    print(f"Detected nitro reduction reaction in final step: {rsmi}")
-                    final_step_has_nitro_reduction = True
-                    return
+            if reactants_mol and product_mol:
+                # Boc group SMARTS pattern
+                boc_pattern = Chem.MolFromSmarts("[C;H3][C]([C;H3])([C;H3])[O][C](=[O])[N]")
 
-                # Fallback: Check functional groups manually
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                # Check if Boc is in reactants but not in product
+                if reactants_mol.HasSubstructMatch(
+                    boc_pattern
+                ) and not product_mol.HasSubstructMatch(boc_pattern):
+                    boc_deprotection_found = True
+                    depth_of_deprotection = depth
+                    print(f"Boc deprotection found at depth {depth}")
 
-                # Check if any reactant has a nitro group
-                has_nitro_reactant = any(
-                    checker.check_fg("Nitro group", reactant) for reactant in reactants
-                )
-
-                # Check if product has a primary amine
-                has_primary_amine_product = checker.check_fg("Primary amine", product)
-
-                if has_nitro_reactant and has_primary_amine_product:
-                    print(f"Detected nitro group in reactant and primary amine in product: {rsmi}")
-                    final_step_has_nitro_reduction = True
-                    return
-
-        # Continue DFS traversal
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the target molecule
-    if route["type"] == "mol":
-        for child in route.get("children", []):
-            dfs_traverse(child, 0)
-    else:
-        dfs_traverse(route, 0)
+    # Start traversal
+    dfs_traverse(route)
 
-    return final_step_has_nitro_reduction
+    # Check if deprotection is late-stage (at depth 0 or 1)
+    is_late_stage = boc_deprotection_found and depth_of_deprotection <= 1
+
+    if is_late_stage:
+        print("Late-stage Boc deprotection strategy detected")
+
+    return is_late_stage

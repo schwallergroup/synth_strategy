@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,152 +54,92 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy without convergent steps.
-    This is indicated by each reaction having only one non-reagent reactant.
-
-    A linear synthesis is characterized by:
-    1. Each reaction node has exactly one non-starting material molecule child
-    2. No convergent reaction types (e.g., coupling reactions)
+    This function detects if the synthetic route involves O-alkylation of a piperidine ring.
     """
-    is_linear = True
-
-    def is_likely_reagent(smiles):
-        """Helper function to identify common reagents/solvents/catalysts"""
-        mol = Chem.MolFromSmiles(smiles)
-        if not mol:
-            return False
-
-        # Small molecules are likely reagents
-        if mol.GetNumHeavyAtoms() < 6:
-            return True
-
-        # Check for common solvents and reagents
-        common_reagents = ["C1CCOC1", "O=C(O)O", "[K+]", "CC(=O)O", "CCO", "CCOC(=O)O"]
-        if smiles in common_reagents:
-            return True
-
-        return False
-
-    def is_heterocycle_formation(rsmi):
-        """Check if the reaction is a heterocycle formation which appears convergent but is considered linear"""
-        # Check for imidazole formation
-        if checker.check_reaction("imidazole", rsmi) or checker.check_reaction("{imidazole}", rsmi):
-            return True
-
-        # Check for benzimidazole formation
-        if (
-            checker.check_reaction("benzimidazole formation from aldehyde", rsmi)
-            or checker.check_reaction("benzimidazole formation from acyl halide", rsmi)
-            or checker.check_reaction("benzimidazole formation from ester/carboxylic acid", rsmi)
-            or checker.check_reaction("{benzimidazole_derivatives_carboxylic-acid/ester}", rsmi)
-            or checker.check_reaction("{benzimidazole_derivatives_aldehyde}", rsmi)
-        ):
-            return True
-
-        # Check for other heterocycle formations that are considered linear
-        linear_heterocycles = [
-            "Paal-Knorr pyrrole synthesis",
-            "{Paal-Knorr pyrrole}",
-            "{benzoxazole_arom-aldehyde}",
-            "{benzoxazole_carboxylic-acid}",
-            "{thiazole}",
-            "{pyrazole}",
-            "pyrazole formation",
-        ]
-
-        for rxn_type in linear_heterocycles:
-            if checker.check_reaction(rxn_type, rsmi):
-                return True
-
-        return False
+    o_alkylation_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+        nonlocal o_alkylation_detected
 
-        # If we've already determined it's not linear, no need to continue
-        if not is_linear:
-            return
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction":
-            # Check reaction type for inherently convergent reactions
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
+            print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                # Skip heterocycle formation reactions which appear convergent but are considered linear
-                if is_heterocycle_formation(rsmi):
-                    print(f"Detected heterocycle formation (considered linear): {rsmi}")
-                    return
+            # Check if product contains piperidine ring
+            if checker.check_ring("piperidine", product):
+                print(f"Piperidine ring found in product at depth {depth}")
 
-                # Check for coupling reactions which are inherently convergent
-                convergent_reactions = [
-                    "Suzuki coupling with boronic acids",
-                    "Negishi coupling",
-                    "Stille reaction_aryl",
-                    "Heck terminal vinyl",
-                    "Sonogashira alkyne_aryl halide",
-                    "Buchwald-Hartwig",
-                    "{Buchwald-Hartwig}",
-                    "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-                    "Ugi reaction",
-                ]
+                # Check if this is an O-alkylation reaction
+                is_o_alkylation_reaction = (
+                    checker.check_reaction("Williamson Ether Synthesis", rsmi)
+                    or checker.check_reaction("Mitsunobu aryl ether", rsmi)
+                    or checker.check_reaction("Mitsunobu_phenole", rsmi)
+                    or checker.check_reaction("Williamson ether", rsmi)
+                    or checker.check_reaction("Mitsunobu_imide", rsmi)
+                    or checker.check_reaction("Williamson Ether Synthesis (intra to epoxy)", rsmi)
+                )
 
-                for rxn_type in convergent_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Detected convergent reaction type: {rxn_type} in {rsmi}")
-                        is_linear = False
-                        return
+                if is_o_alkylation_reaction:
+                    print(f"O-alkylation reaction detected at depth {depth}")
 
-                # Count non-starting material molecule children
-                non_starting_material_count = 0
-                for child in node.get("children", []):
-                    if child["type"] == "mol" and not child.get("in_stock", False):
-                        non_starting_material_count += 1
-
-                # In a linear synthesis, each reaction should have exactly one
-                # non-starting material molecule child
-                if non_starting_material_count > 1:
-                    print(
-                        f"Detected convergent step with {non_starting_material_count} non-starting material reactants"
+                    # Check if piperidine was in reactants
+                    piperidine_in_reactants = any(
+                        checker.check_ring("piperidine", r) for r in reactants
                     )
-                    is_linear = False
-                    return
 
-                # Additional check: if there are multiple complex reactants in the RSMI
-                reactants = rsmi.split(">")[0].split(".")
-                complex_reactant_count = 0
-
-                for reactant in reactants:
-                    if is_likely_reagent(reactant):
-                        continue
-
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.GetNumHeavyAtoms() > 12:  # Increased threshold
-                        complex_reactant_count += 1
-
-                # Check if this is a convergent step but exclude certain reaction types
-                # that appear convergent but are considered linear in synthesis planning
-                if complex_reactant_count > 1:
-                    # Check if this is a common linear reaction type that might appear convergent
-                    linear_reaction_types = [
-                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                        "Esterification of Carboxylic Acids",
-                        "Acylation of primary amines",
-                        "Acylation of secondary amines",
-                        "Schotten-Baumann to ester",
-                        "{Schotten-Baumann_amide}",
-                    ]
-
-                    if not any(checker.check_reaction(rxn, rsmi) for rxn in linear_reaction_types):
-                        print(
-                            f"Detected convergent step with multiple complex reactants in RSMI: {rsmi}"
-                        )
-                        is_linear = False
+                    if piperidine_in_reactants:
+                        print(f"Piperidine was present in reactants at depth {depth}")
+                        o_alkylation_detected = True
                         return
 
-        # Traverse children
+                # Check for ether formation
+                if checker.check_fg("Ether", product):
+                    print(f"Ether found in product at depth {depth}")
+
+                    # Check if piperidine was in reactants
+                    piperidine_in_reactants = False
+                    alcohol_in_reactants = False
+
+                    for reactant in reactants:
+                        if checker.check_ring("piperidine", reactant):
+                            piperidine_in_reactants = True
+                            # Check if this piperidine has an alcohol group
+                            if (
+                                checker.check_fg("Primary alcohol", reactant)
+                                or checker.check_fg("Secondary alcohol", reactant)
+                                or checker.check_fg("Tertiary alcohol", reactant)
+                                or checker.check_fg("Aromatic alcohol", reactant)
+                                or checker.check_fg("Phenol", reactant)
+                            ):
+                                alcohol_in_reactants = True
+                                print(
+                                    f"Piperidine with alcohol found in reactants at depth {depth}"
+                                )
+                                break
+
+                    if piperidine_in_reactants and alcohol_in_reactants:
+                        # Check if the alcohol was converted to an ether
+                        # This is a key step in O-alkylation
+                        print(f"Potential piperidine O-alkylation detected at depth {depth}")
+
+                        # Additional check for common O-alkylation reagents
+                        reagents = rsmi.split(">")[1].split(".")
+                        mitsunobu_reagents = any(
+                            "P(" in r or "DEAD" in r or "DIAD" in r for r in reagents
+                        )
+
+                        if mitsunobu_reagents or is_o_alkylation_reaction:
+                            print(f"Confirmed piperidine O-alkylation at depth {depth}")
+                            o_alkylation_detected = True
+                            return
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return is_linear
+    print(f"Final result: Piperidine O-alkylation detected = {o_alkylation_detected}")
+
+    return o_alkylation_detected

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,29 +54,31 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if a cyclopropane ring is present throughout the synthesis,
-    excluding starting materials (in_stock=True).
+    This function detects if a heterocyclic aromatic core (thiazole) is preserved throughout the synthesis.
     """
-    all_nodes_have_cyclopropane = True
+    # Track if thiazole is present in all molecules
+    all_mols_have_thiazole = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal all_nodes_have_cyclopropane
+    def dfs_traverse(node):
+        nonlocal all_mols_have_thiazole
 
-        # Process molecule nodes that are not starting materials
-        if node["type"] == "mol" and "smiles" in node and not node.get("in_stock", False):
-            smiles = node["smiles"]
+        if node["type"] == "mol" and "smiles" in node:
+            # Skip starting materials
+            if not node.get("in_stock", False):
+                # Check if this molecule has a thiazole ring using the checker function
+                has_thiazole = checker.check_ring("thiazole", node["smiles"])
 
-            # Check if this molecule has a cyclopropane ring
-            has_cyclopropane = checker.check_ring("cyclopropane", smiles)
+                if not has_thiazole:
+                    # If any molecule doesn't have thiazole, set flag to False
+                    all_mols_have_thiazole = False
+                    print(f"Molecule without thiazole found: {node['smiles']}")
+                else:
+                    print(f"Molecule with thiazole found: {node['smiles']}")
 
-            if not has_cyclopropane:
-                print(f"Intermediate/product without cyclopropane found at depth {depth}: {smiles}")
-                all_nodes_have_cyclopropane = False
-
-        # Continue traversal for all child nodes
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return all_nodes_have_cyclopropane
+    return all_mols_have_thiazole

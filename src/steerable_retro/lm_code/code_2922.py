@@ -2,63 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves an SNAr reaction with a
-    halogenated aromatic compound.
+    Detects if the synthesis follows a linear strategy (no convergent steps).
+    Linear synthesis means each reaction has only one non-reagent reactant.
     """
-    snar_detected = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal snar_detected
+        nonlocal is_linear
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
 
-                try:
-                    # Check for SNAr pattern: halogenated aromatic + amine → C-N bond formation
-                    halo_aromatic_pattern = Chem.MolFromSmarts("c-[F,Cl,Br,I]")
-                    amine_pattern = Chem.MolFromSmarts("[#7;H2]-c")
-                    c_n_bond_pattern = Chem.MolFromSmarts("c-[#7]-c")
+            # Count non-reagent reactants (approximation: consider molecules with >15 atoms)
+            non_reagent_count = 0
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.GetNumAtoms() > 15:
+                    non_reagent_count += 1
 
-                    reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+            if non_reagent_count > 1:
+                is_linear = False
+                print("Found convergent step with multiple non-reagent reactants")
 
-                    if reactants_mol and product_mol:
-                        if (
-                            reactants_mol.HasSubstructMatch(halo_aromatic_pattern)
-                            and reactants_mol.HasSubstructMatch(amine_pattern)
-                            and product_mol.HasSubstructMatch(c_n_bond_pattern)
-                        ):
-                            print("Detected SNAr with halogenated aromatic")
-                            snar_detected = True
-                except Exception as e:
-                    print(f"Error in SNAr analysis: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return snar_detected
+    return is_linear

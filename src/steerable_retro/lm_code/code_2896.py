@@ -2,64 +2,130 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis involves oxidation of a thioether to a sulfoxide.
+    This function detects if the synthesis route includes a late-stage nitration
+    of an aromatic amine (conversion of -NH2 to -NO2 group).
+
+    Note: In retrosynthesis, this appears as a reduction of nitro to amine.
     """
-    sulfur_oxidation_found = False
+    nitration_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal sulfur_oxidation_found
+        nonlocal nitration_found
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 2:  # Late stage reactions
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                reactants = reactants_part.split(".")
+                product_part = rsmi.split(">")[-1]
+                products = product_part.split(".")
 
-            # Check for sulfur oxidation
-            product_mol = Chem.MolFromSmiles(product)
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
+                print(f"Examining reaction at depth {depth}: {rsmi}")
 
-            if not product_mol or not reactant_mols:
-                return
+                # In retrosynthesis, we're looking for nitro reduction (nitro in reactants, amine in products)
+                # This corresponds to nitration in forward synthesis
 
-            # Check if product has sulfoxide but reactant has thioether
-            sulfoxide_pattern = Chem.MolFromSmarts("[#16](=[#8])")
-            thioether_pattern = Chem.MolFromSmarts("[#6]-[#16]-[#6]")
-
-            if product_mol.HasSubstructMatch(sulfoxide_pattern):
-                for reactant_mol in reactant_mols:
-                    if reactant_mol.HasSubstructMatch(
-                        thioether_pattern
-                    ) and not reactant_mol.HasSubstructMatch(sulfoxide_pattern):
-                        sulfur_oxidation_found = True
-                        print(f"Found sulfur oxidation at depth {depth}")
+                # Check if any reactant has a nitro group
+                nitro_reactant = None
+                for reactant in reactants:
+                    if checker.check_fg("Nitro group", reactant):
+                        print(f"Nitro group found in reactant: {reactant}")
+                        nitro_reactant = reactant
                         break
 
-        # Traverse children
+                if nitro_reactant:
+                    # Check if any product has an aromatic amine
+                    for product in products:
+                        if checker.check_fg("Aniline", product) or checker.check_fg(
+                            "Primary amine", product
+                        ):
+                            print(f"Amine found in product: {product}")
+
+                            # Verify this is a reduction reaction (nitro to amine)
+                            # Check if the reaction is consistent with nitro reduction
+                            # In retrosynthesis, this would be the reverse of nitration
+
+                            # Get atom mapping of nitro group in reactant
+                            nitro_mol = Chem.MolFromSmiles(nitro_reactant)
+                            product_mol = Chem.MolFromSmiles(product)
+
+                            if nitro_mol and product_mol:
+                                # Check if this is a valid nitration/reduction by examining the reaction type
+                                # or by checking if the reaction involves conversion between nitro and amine groups
+
+                                # Since we're in retrosynthesis, we're looking for reduction reactions
+                                # that would correspond to nitration in forward synthesis
+                                if checker.check_reaction(
+                                    "Reduction of nitro groups to amines", rsmi
+                                ) or (
+                                    checker.check_fg("Nitro group", nitro_reactant)
+                                    and checker.check_fg("Aniline", product)
+                                    or checker.check_fg("Primary amine", product)
+                                ):
+
+                                    print(
+                                        f"Late-stage nitration of aromatic amine detected at depth {depth}"
+                                    )
+                                    nitration_found = True
+                                    return  # Exit early once found
+
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if not nitration_found:  # Only continue if we haven't found a match yet
+                dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return sulfur_oxidation_found
+    print(f"Final result: {nitration_found}")
+    return nitration_found

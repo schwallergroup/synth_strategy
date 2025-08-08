@@ -2,74 +2,82 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves a protection-deprotection sequence,
-    specifically looking for carboxylic acid → tert-butyl ester → carboxylic acid pattern.
+    Detects if the synthesis route involves multiple steps of alcohol manipulations
+    (protection, functionalization, etc.)
     """
-    protection_steps = []
-    deprotection_steps = []
+    alcohol_steps = 0
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node):
+        nonlocal alcohol_steps
+
         if node["type"] == "reaction":
             # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            # Check for alcohol-related transformations
+            alcohol_pattern = Chem.MolFromSmarts("[O;!H0]")
+            silyl_ether_pattern = Chem.MolFromSmarts("[O]-[Si]")
+            ester_pattern = Chem.MolFromSmarts("[C](=[O])[O]")
+            thiocarbamate_pattern = Chem.MolFromSmarts("[O]-[C](=[S])-[O]")
 
-            if all(reactant_mols) and product_mol:
-                # Check for carboxylic acid in reactants
-                carboxylic_acid_pattern = Chem.MolFromSmarts("[#8]-[#6](=[#8])-[#6]")
-                # Check for tert-butyl ester in product
-                tbutyl_ester_pattern = Chem.MolFromSmarts(
-                    "[#6]C([#6])([#6])[#6]-[#8]-[#6](=[#8])-[#6]"
-                )
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                # Protection: acid → tert-butyl ester
-                if any(
-                    mol.HasSubstructMatch(carboxylic_acid_pattern) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(tbutyl_ester_pattern):
-                    protection_steps.append(depth)
-                    print(f"Detected protection (acid → tert-butyl ester) at depth {depth}")
+            for reactant in reactants_smiles:
+                reactant_mol = Chem.MolFromSmiles(reactant)
 
-                # Deprotection: tert-butyl ester → acid
-                if any(
-                    mol.HasSubstructMatch(tbutyl_ester_pattern) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(carboxylic_acid_pattern):
-                    deprotection_steps.append(depth)
-                    print(f"Detected deprotection (tert-butyl ester → acid) at depth {depth}")
+                if reactant_mol and product_mol:
+                    # Check for various alcohol transformations
+                    if reactant_mol.HasSubstructMatch(alcohol_pattern) and (
+                        product_mol.HasSubstructMatch(silyl_ether_pattern)
+                        or product_mol.HasSubstructMatch(thiocarbamate_pattern)
+                    ):
+                        alcohol_steps += 1
+                        print("Alcohol protection or functionalization detected")
+
+                    if reactant_mol.HasSubstructMatch(
+                        ester_pattern
+                    ) and product_mol.HasSubstructMatch(alcohol_pattern):
+                        alcohol_steps += 1
+                        print("Ester to alcohol transformation detected")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if both protection and deprotection occurred
-    has_protection_deprotection = len(protection_steps) > 0 and len(deprotection_steps) > 0
+    # Multiple alcohol manipulations (at least 2)
+    multiple_manipulations = alcohol_steps >= 2
 
-    return has_protection_deprotection
+    if multiple_manipulations:
+        print(f"Multiple alcohol manipulations detected: {alcohol_steps} steps")
+
+    return multiple_manipulations

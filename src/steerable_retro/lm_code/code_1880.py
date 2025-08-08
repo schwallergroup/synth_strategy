@@ -2,160 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves nucleophilic aromatic substitution.
+    This function detects if the synthetic route incorporates a trifluoromethyl aryl group
+    and maintains it throughout the synthesis.
     """
-    has_snar = False
+    cf3_present = False
+    cf3_depth = -1
 
-    def dfs_traverse(node):
-        nonlocal has_snar
+    def dfs_traverse(node, depth=0):
+        nonlocal cf3_present, cf3_depth
 
-        if node["type"] == "reaction" and not has_snar:
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for trifluoromethyl group
+                cf3_pattern = Chem.MolFromSmarts("[#6][C]([F])([F])[F]")
+                if mol.HasSubstructMatch(cf3_pattern):
+                    cf3_present = True
+                    if cf3_depth == -1 or depth > cf3_depth:
+                        cf3_depth = depth
+                        print(f"CF3 group detected at depth {depth}")
 
-                # First check if this is a known SNAr reaction type
-                if (
-                    checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
-                    or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
-                    or checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
-                ):
-                    print(f"Found nucleophilic aromatic substitution via reaction check: {rsmi}")
-                    has_snar = True
-                    return
-
-                # If not a known reaction type, check for characteristic patterns
-                reactant_mols = []
-                for r in reactants_smiles:
-                    try:
-                        mol = Chem.MolFromSmiles(r)
-                        if mol:
-                            reactant_mols.append(mol)
-                    except:
-                        continue
-
-                try:
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-                except:
-                    product_mol = None
-
-                if not product_mol or not reactant_mols:
-                    return
-
-                # Check for aromatic halides in reactants
-                has_aromatic_halide = False
-                for r_smiles in reactants_smiles:
-                    if checker.check_fg("Aromatic halide", r_smiles):
-                        has_aromatic_halide = True
-                        break
-
-                # Check for activating groups in reactants
-                has_activating_group = False
-                for r_smiles in reactants_smiles:
-                    if (
-                        checker.check_fg("Nitro group", r_smiles)
-                        or checker.check_fg("Nitrile", r_smiles)
-                        or checker.check_fg("Ester", r_smiles)
-                        or checker.check_fg("Ketone", r_smiles)
-                        or checker.check_ring("pyridine", r_smiles)
-                        or checker.check_ring("pyrimidine", r_smiles)
-                        or checker.check_ring("pyrazine", r_smiles)
-                    ):
-                        has_activating_group = True
-                        break
-
-                # Check for nucleophiles in reactants
-                has_nucleophile = False
-                for r_smiles in reactants_smiles:
-                    if (
-                        checker.check_fg("Primary amine", r_smiles)
-                        or checker.check_fg("Secondary amine", r_smiles)
-                        or checker.check_fg("Phenol", r_smiles)
-                        or checker.check_fg("Primary alcohol", r_smiles)
-                        or checker.check_fg("Secondary alcohol", r_smiles)
-                        or checker.check_fg("Tertiary alcohol", r_smiles)
-                        or checker.check_fg("Aromatic thiol", r_smiles)
-                        or checker.check_fg("Aliphatic thiol", r_smiles)
-                    ):
-                        has_nucleophile = True
-                        break
-
-                # Check if the product has a new C-N, C-O, or C-S bond
-                # This is a simplification - ideally we would use atom mapping to track the exact substitution
-                has_new_bond = False
-                for r_smiles in reactants_smiles:
-                    if checker.check_fg("Aromatic halide", r_smiles) and not checker.check_fg(
-                        "Aromatic halide", product_smiles
-                    ):
-                        has_new_bond = True
-                        break
-
-                if (
-                    has_aromatic_halide
-                    and has_activating_group
-                    and has_nucleophile
-                    and has_new_bond
-                ):
-                    print(f"Found nucleophilic aromatic substitution via pattern matching: {rsmi}")
-                    has_snar = True
-
-            except Exception as e:
-                print(f"Error in SNAr detection: {e}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return has_snar
+    # CF3 is incorporated early (higher depth) and maintained throughout
+    print(f"Trifluoromethyl aryl incorporation detected: {cf3_present and cf3_depth > 1}")
+    return cf3_present and cf3_depth > 1

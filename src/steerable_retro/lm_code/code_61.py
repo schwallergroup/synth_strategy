@@ -2,68 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves an amide bond disconnection.
+    This function detects if the synthetic route employs a biaryl formation strategy.
+    It looks for reactions forming C-C bonds between two aromatic rings.
     """
-    amide_disconnection_detected = False
+    found_biaryl = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_disconnection_detected
+    def dfs_traverse(node):
+        nonlocal found_biaryl
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            product_mol = Chem.MolFromSmiles(product)
+            # Check for aromatic rings in reactants
+            aromatic_pattern = Chem.MolFromSmarts("[c]")
+            # Check for biaryl bond in product
+            biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
 
-            if product_mol:
-                # Check for amide pattern in product
-                amide_pattern = Chem.MolFromSmarts("[NH][C](=[O])")
-                if product_mol.HasSubstructMatch(amide_pattern):
-                    # Check if reactants contain acid/acid derivative and amine
-                    acid_pattern = Chem.MolFromSmarts("[C](=[O])[O,Cl,Br,I]")
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
+            aromatic_reactants = 0
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(aromatic_pattern):
+                        aromatic_reactants += 1
+                except:
+                    continue
 
-                    has_acid = any(
-                        Chem.MolFromSmiles(r)
-                        and Chem.MolFromSmiles(r).HasSubstructMatch(acid_pattern)
-                        for r in reactants
-                        if r
-                    )
-                    has_amine = any(
-                        Chem.MolFromSmiles(r)
-                        and Chem.MolFromSmiles(r).HasSubstructMatch(amine_pattern)
-                        for r in reactants
-                        if r
-                    )
-
-                    if has_acid and has_amine:
-                        amide_disconnection_detected = True
-                        print(f"Amide disconnection detected at depth {depth}")
+            try:
+                prod_mol = Chem.MolFromSmiles(product)
+                if (
+                    aromatic_reactants >= 2
+                    and prod_mol
+                    and prod_mol.HasSubstructMatch(biaryl_pattern)
+                ):
+                    print("Found biaryl formation reaction:", rsmi)
+                    found_biaryl = True
+            except:
+                pass
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return amide_disconnection_detected
+    return found_biaryl

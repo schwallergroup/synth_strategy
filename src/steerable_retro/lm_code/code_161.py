@@ -2,115 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route contains a reductive amination step (primary amine + aldehyde -> secondary amine).
+    This function detects if the synthesis involves carbamate protection of an amine.
     """
-    has_reductive_amination = False
+    carbamate_pattern = Chem.MolFromSmarts("[#7][#6](=[#8])[#8]")
+    amine_to_carbamate = False
 
-    def dfs_traverse(node):
-        nonlocal has_reductive_amination
+    def dfs_traverse(node, depth=0):
+        nonlocal amine_to_carbamate
 
-        if node["type"] == "reaction" and not has_reductive_amination:
-            try:
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Direct check for reductive amination reaction
-                if checker.check_reaction("Reductive amination with aldehyde", rsmi):
-                    print(f"Found reductive amination via reaction check: {rsmi}")
-                    has_reductive_amination = True
-                    return
+                # Check for amine in reactants
+                amine_in_reactants = any("N" in r and not "[N+]" in r for r in reactants)
 
-                # If direct check fails, perform more detailed analysis
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
-                reactant_fragments = reactants_part.split(".")
+                # Check for carbamate in product
+                product_mol = Chem.MolFromSmiles(product)
+                carbamate_in_product = product_mol and product_mol.HasSubstructMatch(
+                    carbamate_pattern
+                )
 
-                # Check if we have multiple reactants
-                if len(reactant_fragments) > 1:
-                    # Check for primary amine in reactants
-                    primary_amine_fragments = [
-                        frag
-                        for frag in reactant_fragments
-                        if checker.check_fg("Primary amine", frag)
-                    ]
-
-                    # Check for aldehyde in reactants
-                    aldehyde_fragments = [
-                        frag for frag in reactant_fragments if checker.check_fg("Aldehyde", frag)
-                    ]
-
-                    # Check for secondary amine in product
-                    has_secondary_amine = checker.check_fg("Secondary amine", product_part)
-
-                    # Verify we have both primary amine and aldehyde in different fragments
-                    # and the product contains a secondary amine
-                    if (
-                        primary_amine_fragments
-                        and aldehyde_fragments
-                        and has_secondary_amine
-                        and set(primary_amine_fragments) != set(aldehyde_fragments)
-                    ):
-
-                        print(f"Found reductive amination via fragment analysis: {rsmi}")
-                        print(f"Primary amine fragments: {primary_amine_fragments}")
-                        print(f"Aldehyde fragments: {aldehyde_fragments}")
-                        print(f"Product with secondary amine: {product_part}")
-                        has_reductive_amination = True
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
+                if amine_in_reactants and carbamate_in_product:
+                    amine_to_carbamate = True
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
 
-    print(f"Reductive amination strategy detected: {has_reductive_amination}")
-    return has_reductive_amination
+    print(f"Carbamate protection strategy: {amine_to_carbamate}")
+    return amine_to_carbamate

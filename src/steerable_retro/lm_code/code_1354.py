@@ -2,64 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving cyclization of a terminal alkene to form a ring.
+    This function detects a synthetic strategy involving late-stage introduction
+    of a morpholine-containing fragment.
     """
-    found_cyclization = False
+    morpholine_introduction = False
 
-    def dfs_traverse(node):
-        nonlocal found_cyclization
+    def dfs_traverse(node, depth=0):
+        nonlocal morpholine_introduction
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Late-stage reaction
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for terminal alkene in reactants
-            try:
-                reactant = Chem.MolFromSmiles(reactants_smiles)
-                product = Chem.MolFromSmiles(product_smiles)
+                # Check for morpholine in reactants
+                morpholine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#8][#6][#6]1")
 
-                if reactant and product:
-                    # Check for terminal alkene
-                    terminal_alkene_pattern = Chem.MolFromSmarts("C=C[#1,C]")
-                    has_terminal_alkene = reactant.HasSubstructMatch(terminal_alkene_pattern)
+                has_morpholine_reactant = False
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(morpholine_pattern):
+                            has_morpholine_reactant = True
+                            break
+                    except:
+                        continue
 
-                    # Count rings in reactants and product
-                    reactant_rings = len(Chem.GetSSSR(reactant))
-                    product_rings = len(Chem.GetSSSR(product))
-
-                    if has_terminal_alkene and product_rings > reactant_rings:
-                        print("Found terminal alkene cyclization")
-                        found_cyclization = True
-            except:
-                pass
+                # Check if product also has morpholine
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    if (
+                        has_morpholine_reactant
+                        and product_mol
+                        and product_mol.HasSubstructMatch(morpholine_pattern)
+                    ):
+                        print(f"Morpholine introduction detected at depth {depth}")
+                        morpholine_introduction = True
+                except:
+                    pass
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return found_cyclization
+    return morpholine_introduction

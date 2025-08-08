@@ -2,139 +2,101 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects ester hydrolysis as part of the synthetic strategy.
+    Detects a strategy involving multiple heteroatom alkylations (O-alkylation and N-alkylation).
     """
-    # Track if we found the pattern
-    found_pattern = False
+    o_alkylation_count = 0
+    n_alkylation_count = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
+        nonlocal o_alkylation_count, n_alkylation_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_str = rsmi.split(">")[0]
+                product_str = rsmi.split(">")[-1]
 
-            # Check for all possible hydrolysis reaction types
-            hydrolysis_reactions = [
-                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
-                "Ester saponification (methyl deprotection)",
-                "Ester saponification (alkyl deprotection)",
-                "COOH ethyl deprotection",
-            ]
+                try:
+                    # Check for O-alkylation
+                    if "[OH]" in reactants_str and "[O][C]" in product_str:
+                        o_alkylation_count += 1
+                        print(f"Detected O-alkylation at depth {depth}")
 
-            if any(checker.check_reaction(rxn, rsmi) for rxn in hydrolysis_reactions):
-                found_pattern = True
-                print(f"Found ester hydrolysis reaction at depth {depth}: {rsmi}")
-                return
+                    # Check for N-alkylation
+                    if "[NH]" in reactants_str and "[N][C]" in product_str:
+                        n_alkylation_count += 1
+                        print(f"Detected N-alkylation at depth {depth}")
 
-            # If specific reaction checks fail, check for functional group changes
-            try:
-                reactants = rsmi.split(">")[0].split(".")
-                products = rsmi.split(">")[2].split(".")
+                    # Alternative detection using SMARTS
+                    reactants = reactants_str.split(".")
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        product_mol = Chem.MolFromSmiles(product_str)
 
-                # Define functional groups to check
-                alcohol_types = [
-                    "Primary alcohol",
-                    "Secondary alcohol",
-                    "Tertiary alcohol",
-                    "Aromatic alcohol",
-                ]
-                ester_types = ["Ester", "Carbo-thioester"]
+                        if reactant_mol and product_mol:
+                            # O-alkylation patterns
+                            phenol_pattern = Chem.MolFromSmarts("[OH]c")
+                            alkoxy_pattern = Chem.MolFromSmarts("[O][CH2]")
 
-                # Check for functional groups in reactants and products
-                has_ester_in_reactants = any(
-                    any(checker.check_fg(est, r) for est in ester_types) for r in reactants
-                )
-                has_carboxylic_acid_in_reactants = any(
-                    checker.check_fg("Carboxylic acid", r) for r in reactants
-                )
-                has_alcohol_in_reactants = any(
-                    any(checker.check_fg(alc, r) for alc in alcohol_types) for r in reactants
-                )
+                            # N-alkylation patterns
+                            amine_pattern = Chem.MolFromSmarts("[NH]")
+                            alkyl_amine_pattern = Chem.MolFromSmarts("[N][CH2]")
 
-                has_ester_in_products = any(
-                    any(checker.check_fg(est, p) for est in ester_types) for p in products
-                )
-                has_carboxylic_acid_in_products = any(
-                    checker.check_fg("Carboxylic acid", p) for p in products
-                )
-                has_alcohol_in_products = any(
-                    any(checker.check_fg(alc, p) for alc in alcohol_types) for p in products
-                )
+                            if reactant_mol.HasSubstructMatch(
+                                phenol_pattern
+                            ) and product_mol.HasSubstructMatch(alkoxy_pattern):
+                                o_alkylation_count += 1
+                                print(f"Detected O-alkylation at depth {depth} using SMARTS")
 
-                # Forward direction: ester → carboxylic acid
-                if has_ester_in_reactants and has_carboxylic_acid_in_products:
-                    found_pattern = True
-                    print(f"Found ester hydrolysis pattern (forward) at depth {depth}: {rsmi}")
-                    return
-
-                # Retrosynthetic direction: carboxylic acid → ester
-                # This is the reverse of hydrolysis (esterification) but in retrosynthesis
-                # it represents a hydrolysis step in the forward synthesis
-                if has_carboxylic_acid_in_reactants and has_ester_in_products:
-                    found_pattern = True
-                    print(
-                        f"Found ester hydrolysis pattern (retrosynthetic) at depth {depth}: {rsmi}"
-                    )
-                    return
-
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
+                            if reactant_mol.HasSubstructMatch(
+                                amine_pattern
+                            ) and product_mol.HasSubstructMatch(alkyl_amine_pattern):
+                                n_alkylation_count += 1
+                                print(f"Detected N-alkylation at depth {depth} using SMARTS")
+                except:
+                    print(f"Error processing alkylation detection at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    print(f"Ester hydrolysis in synthesis: {found_pattern}")
-    return found_pattern
+    # Check if we have multiple heteroatom alkylations
+    total_alkylations = o_alkylation_count + n_alkylation_count
+    has_multiple_heteroatom_alkylations = total_alkylations >= 2
+
+    print(
+        f"Multiple heteroatom alkylation strategy detected: {has_multiple_heteroatom_alkylations}"
+    )
+    print(f"- O-alkylations: {o_alkylation_count}")
+    print(f"- N-alkylations: {n_alkylation_count}")
+    print(f"- Total alkylations: {total_alkylations}")
+
+    return has_multiple_heteroatom_alkylations

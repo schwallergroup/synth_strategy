@@ -2,50 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route follows a linear strategy
-    rather than a convergent one.
+    This function detects a linear fragment assembly strategy as opposed to convergent.
     """
-    max_reactants_per_step = 0
+    # Track reaction depths and branching
+    reaction_depths = []
+    max_children_per_node = 0
 
-    def dfs_traverse(node):
-        nonlocal max_reactants_per_step
+    def dfs_traverse(node, depth=0):
+        nonlocal max_children_per_node
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+            reaction_depths.append(depth)
 
-            # Count number of reactants in this step
-            num_reactants = len(reactants)
-            max_reactants_per_step = max(max_reactants_per_step, num_reactants)
+            # Count number of reactants
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                num_reactants = len(reactants)
+                max_children_per_node = max(max_children_per_node, num_reactants)
 
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # If no step has more than 2 reactants, it's likely a linear synthesis
-    is_linear = max_reactants_per_step <= 2
-    print(f"Maximum reactants per step: {max_reactants_per_step}, Is linear: {is_linear}")
-    return is_linear
+    # Analyze reaction pattern
+    # Linear synthesis typically has:
+    # 1. Monotonically increasing depths
+    # 2. Few reactants per step (usually 2)
+
+    is_monotonic = all(
+        reaction_depths[i] <= reaction_depths[i + 1] for i in range(len(reaction_depths) - 1)
+    )
+    few_reactants = max_children_per_node <= 2
+
+    print(f"Reaction depths: {reaction_depths}")
+    print(f"Max reactants per step: {max_children_per_node}")
+    print(f"Is monotonic: {is_monotonic}")
+
+    return is_monotonic and few_reactants and len(reaction_depths) >= 3

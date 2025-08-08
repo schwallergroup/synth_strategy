@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,56 +54,93 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects the use of Boc protection strategy in the synthesis.
+    This function detects a synthetic strategy involving functionalization
+    of the alpha carbon of a carbonyl group.
     """
-    boc_protection_detected = False
+    alpha_functionalization_found = False
 
-    def dfs_traverse(node):
-        nonlocal boc_protection_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal alpha_functionalization_found
+
+        if alpha_functionalization_found:
+            return  # Early return if already found
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            try:
                 rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for Boc protection reactions
+                print(f"Checking reaction at depth {depth}: {rsmi}")
+
+                # Check for common alpha-functionalization reactions
                 if (
-                    checker.check_reaction("Boc amine protection", rsmi)
-                    or checker.check_reaction("Boc amine protection explicit", rsmi)
-                    or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
-                    or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
-                    or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
-                    or checker.check_reaction("Boc amine protection of primary amine", rsmi)
+                    checker.check_reaction("Aldol condensation", rsmi)
+                    or checker.check_reaction("Michael addition", rsmi)
+                    or checker.check_reaction("Alkylation of amines", rsmi)
+                    or checker.check_reaction("Friedel-Crafts alkylation", rsmi)
+                    or checker.check_reaction("Henry Reaction", rsmi)
+                    or checker.check_reaction("Methylation with MeI_primary", rsmi)
+                    or checker.check_reaction("Methylation", rsmi)
+                    or checker.check_reaction("C-methylation", rsmi)
                 ):
-                    print(f"Boc protection reaction detected: {rsmi}")
-                    boc_protection_detected = True
+                    print(f"Found alpha-carbon functionalization reaction: {rsmi}")
+                    alpha_functionalization_found = True
+                    return
 
-                # Check for Boc deprotection reactions
-                if (
-                    checker.check_reaction("Boc amine deprotection", rsmi)
-                    or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
-                    or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
-                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
-                ):
-                    print(f"Boc deprotection reaction detected: {rsmi}")
-                    boc_protection_detected = True
+                # Check for carbonyl groups in reactants
+                carbonyl_groups = [
+                    "Ketone",
+                    "Aldehyde",
+                    "Ester",
+                    "Carboxylic acid",
+                    "Primary amide",
+                    "Secondary amide",
+                    "Tertiary amide",
+                ]
 
-                # Additional check for Boc group presence in reactants or products
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                for r_smi in reactants_smiles:
+                    # Check if reactant has a carbonyl group
+                    has_carbonyl = False
+                    for carbonyl_group in carbonyl_groups:
+                        if checker.check_fg(carbonyl_group, r_smi):
+                            has_carbonyl = True
+                            print(f"Found {carbonyl_group} in reactant: {r_smi}")
+                            break
 
-                # Check if product contains Boc group
-                if checker.check_fg("Boc", product):
-                    print(f"Product contains Boc group: {product}")
-                    boc_protection_detected = True
+                    if not has_carbonyl:
+                        continue
 
-                # Check if any reactant contains Boc group
-                for reactant in reactants:
-                    if checker.check_fg("Boc", reactant):
-                        print(f"Reactant contains Boc group: {reactant}")
-                        boc_protection_detected = True
+                    # Check for alpha-carbon functionalization by examining the reaction
+                    # Look for reactions where a methyl or other group is added to an alpha carbon
+                    if "CH3" in product_smiles and not "CH3" in r_smi:
+                        print(f"Found potential methylation at alpha carbon: {rsmi}")
+                        alpha_functionalization_found = True
+                        return
 
+                    # Check for alpha-carbon functionalization using atom mapping
+                    r_mol = Chem.MolFromSmiles(r_smi)
+                    p_mol = Chem.MolFromSmiles(product_smiles)
+
+                    if r_mol and p_mol:
+                        # Check for alpha-H in reactant using a simpler pattern
+                        alpha_h_pattern = Chem.MolFromSmarts("[CH2,CH1][C](=[O])")
+                        if alpha_h_pattern and r_mol.HasSubstructMatch(alpha_h_pattern):
+                            # Look for changes at the alpha position in the product
+                            # This is a simplified check - in a real scenario, we would use atom mapping
+                            # to track the specific alpha carbon
+                            if "[CH3:9]" in rsmi and "[CH:8]" in rsmi:
+                                print(f"Found alpha-carbon methylation in reaction: {rsmi}")
+                                alpha_functionalization_found = True
+                                return
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return boc_protection_detected
+
+    return alpha_functionalization_found

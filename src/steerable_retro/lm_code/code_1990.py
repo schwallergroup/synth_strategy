@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,196 +54,77 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a convergent synthesis strategy where multiple heterocyclic fragments
-    are coupled together, specifically looking for indole-pyrimidine coupling or key transformations
-    on connected heterocycles.
+    Detects if the synthesis route includes a late-stage ester hydrolysis
+    (conversion of ester to carboxylic acid in the final step)
     """
-    has_heterocycle_coupling = False
+    ester_hydrolysis_found = False
 
-    def dfs_traverse(node, current_depth=0):
-        nonlocal has_heterocycle_coupling
+    def dfs_traverse(node, depth=0):
+        nonlocal ester_hydrolysis_found
+
+        # Set depth for the current node
+        node["depth"] = depth
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            try:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Extract depth information - try multiple formats
-                depth = None
-                # Try to extract from ID field
-                id_str = node.get("metadata", {}).get("ID", "")
-                depth_match = re.search(r"Depth:?\s*(\d+)", id_str)
-                if depth_match:
-                    depth = int(depth_match.group(1))
+            # Check if this is a late-stage reaction (depth 0 or 1)
+            if depth <= 1:
+                print(f"Checking reaction at depth {depth}: {rsmi}")
+
+                # Check for various ester hydrolysis reaction types
+                is_hydrolysis = checker.check_reaction(
+                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+                )
+                is_saponification_methyl = checker.check_reaction(
+                    "Ester saponification (methyl deprotection)", rsmi
+                )
+                is_saponification_alkyl = checker.check_reaction(
+                    "Ester saponification (alkyl deprotection)", rsmi
+                )
+
+                if is_hydrolysis or is_saponification_methyl or is_saponification_alkyl:
+                    reaction_type = "hydrolysis" if is_hydrolysis else "saponification"
+                    print(f"Found {reaction_type} reaction: {rsmi}")
+
+                    # Verify ester in reactants and carboxylic acid in product
+                    ester_in_reactants = False
+                    for reactant in reactants:
+                        if checker.check_fg("Ester", reactant):
+                            ester_in_reactants = True
+                            print(f"Found ester in reactant: {reactant}")
+                            break
+
+                    acid_in_product = checker.check_fg("Carboxylic acid", product)
+                    if acid_in_product:
+                        print(f"Found carboxylic acid in product: {product}")
+
+                    if ester_in_reactants and acid_in_product:
+                        print("Confirmed late-stage ester hydrolysis")
+                        ester_hydrolysis_found = True
                 else:
-                    # Use traversal depth as fallback
-                    depth = current_depth
+                    # Manual check for ester to acid conversion if reaction type check failed
+                    print("Standard reaction checks failed, performing manual verification")
+                    ester_in_reactants = any(
+                        checker.check_fg("Ester", reactant) for reactant in reactants
+                    )
+                    acid_in_product = checker.check_fg("Carboxylic acid", product)
 
-                # Focus on early to mid-synthesis (depth 3-4)
-                if depth in [3, 4]:
-                    print(f"Checking reaction at depth {depth}: {rsmi}")
+                    # Additional check: look for sodium or other bases in reagents
+                    reagents = rsmi.split(">")[1].split(".")
+                    has_base = any("[Na+]" in reagent for reagent in reagents)
+                    has_water = any(reagent.strip() == "O" for reagent in reagents)
 
-                    # Check for indole and pyrimidine in reactants and product
-                    try:
-                        product_has_indole = checker.check_ring("indole", product)
-                        product_has_pyrimidine = checker.check_ring("pyrimidine", product)
+                    if ester_in_reactants and acid_in_product and (has_base or has_water):
+                        print("Manually confirmed ester hydrolysis with base/water present")
+                        ester_hydrolysis_found = True
 
-                        # Only proceed if product has both heterocycles
-                        if product_has_indole and product_has_pyrimidine:
-                            print(f"Product contains both indole and pyrimidine")
-
-                            # Check which reactants contain which heterocycles
-                            reactants_with_indole = []
-                            reactants_with_pyrimidine = []
-
-                            for i, reactant in enumerate(reactants):
-                                if reactant.strip():  # Skip empty reactants
-                                    try:
-                                        if checker.check_ring("indole", reactant):
-                                            reactants_with_indole.append(i)
-                                        if checker.check_ring("pyrimidine", reactant):
-                                            reactants_with_pyrimidine.append(i)
-                                    except Exception as e:
-                                        print(f"Error checking rings in reactant {i}: {e}")
-
-                            print(f"Reactants with indole: {reactants_with_indole}")
-                            print(f"Reactants with pyrimidine: {reactants_with_pyrimidine}")
-
-                            # Check for convergent synthesis or key transformations
-                            is_coupling = False
-                            fg_transformation = False
-
-                            # Check for coupling reactions if heterocycles come from different reactants
-                            if (
-                                reactants_with_indole
-                                and reactants_with_pyrimidine
-                                and not any(
-                                    i in reactants_with_indole for i in reactants_with_pyrimidine
-                                )
-                            ):
-
-                                coupling_reactions = [
-                                    "Suzuki",
-                                    "Buchwald-Hartwig",
-                                    "N-arylation",
-                                    "Stille",
-                                    "Negishi",
-                                    "Heck",
-                                    "Sonogashira",
-                                ]
-
-                                for rxn_type in coupling_reactions:
-                                    try:
-                                        if checker.check_reaction(rxn_type, rsmi):
-                                            print(f"Detected {rxn_type} coupling reaction")
-                                            is_coupling = True
-                                            break
-                                    except Exception as e:
-                                        print(f"Error checking reaction {rxn_type}: {e}")
-
-                                # If specific coupling reaction not found, check for generic coupling
-                                if not is_coupling:
-                                    print("Detected heterocycle coupling (generic)")
-                                    is_coupling = True
-
-                            # Check for important functional group transformations on connected heterocycles
-                            # Case 1: Both heterocycles already connected in reactant
-                            if any(i in reactants_with_indole for i in reactants_with_pyrimidine):
-                                print("Both heterocycles already connected in reactant")
-
-                                # Check for sulfonamide to amine transformation
-                                try:
-                                    for i in range(len(reactants)):
-                                        if (
-                                            i in reactants_with_indole
-                                            and i in reactants_with_pyrimidine
-                                        ):
-                                            if checker.check_fg(
-                                                "Sulfonamide", reactants[i]
-                                            ) and checker.check_fg("Primary amine", product):
-                                                print(
-                                                    "Detected sulfonamide to primary amine transformation"
-                                                )
-                                                fg_transformation = True
-                                except Exception as e:
-                                    print(f"Error checking sulfonamide transformation: {e}")
-
-                                # Check for specific sulfonamide deprotection reaction
-                                try:
-                                    if checker.check_reaction(
-                                        "N-glutarimide deprotection", rsmi
-                                    ) or checker.check_reaction("Phthalimide deprotection", rsmi):
-                                        print("Detected amine deprotection reaction")
-                                        fg_transformation = True
-                                except Exception as e:
-                                    print(f"Error checking deprotection reaction: {e}")
-
-                                # Check for other relevant transformations
-                                try:
-                                    if checker.check_reaction(
-                                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                                        rsmi,
-                                    ):
-                                        print("Detected nitrogen acylation reaction")
-                                        fg_transformation = True
-                                except Exception as e:
-                                    print(f"Error checking acylation reaction: {e}")
-
-                                # Check for nucleophilic aromatic substitution
-                                try:
-                                    if checker.check_reaction(
-                                        "nucl_sub_aromatic_ortho_nitro", rsmi
-                                    ) or checker.check_reaction(
-                                        "nucl_sub_aromatic_para_nitro", rsmi
-                                    ):
-                                        print("Detected nucleophilic aromatic substitution")
-                                        fg_transformation = True
-                                except Exception as e:
-                                    print(f"Error checking nucleophilic substitution: {e}")
-
-                                # Check for reduction of nitro group
-                                try:
-                                    for i in range(len(reactants)):
-                                        if (
-                                            i in reactants_with_indole
-                                            and i in reactants_with_pyrimidine
-                                        ):
-                                            if checker.check_fg(
-                                                "Nitro group", reactants[i]
-                                            ) and checker.check_fg("Primary amine", product):
-                                                print("Detected nitro reduction to amine")
-                                                fg_transformation = True
-                                except Exception as e:
-                                    print(f"Error checking nitro reduction: {e}")
-
-                                # General check for sulfonamide deprotection
-                                try:
-                                    if (
-                                        any("S(=O)" in reactant for reactant in reactants)
-                                        and "NH2" in product
-                                    ):
-                                        print(
-                                            "Detected potential sulfonamide deprotection (SMILES pattern)"
-                                        )
-                                        fg_transformation = True
-                                except Exception as e:
-                                    print(f"Error in general sulfonamide check: {e}")
-
-                            # If either coupling or key transformation detected, mark as heterocycle coupling strategy
-                            if is_coupling or fg_transformation:
-                                print(
-                                    f"Confirmed heterocycle coupling or key transformation at depth {depth}"
-                                )
-                                has_heterocycle_coupling = True
-                    except Exception as e:
-                        print(f"Error checking product rings: {e}")
-            except Exception as e:
-                print(f"Error processing reaction SMILES: {e}")
-
-        # Continue DFS traversal
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return has_heterocycle_coupling
+    return ester_hydrolysis_found

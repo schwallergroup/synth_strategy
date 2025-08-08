@@ -2,58 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves formation of a heterocyclic ring system.
+    Detects a linear synthesis strategy that utilizes an isothiocyanate intermediate.
     """
-    ring_formation_found = False
+    found_isothiocyanate = False
+    is_linear_synthesis = True
+    reaction_count = 0
+    max_reactants_per_step = 0
 
     def dfs_traverse(node):
-        nonlocal ring_formation_found
+        nonlocal found_isothiocyanate, is_linear_synthesis, reaction_count, max_reactants_per_step
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            reaction_count += 1
 
-            # Check for ring formation by comparing ring count
-            reactant_mol = Chem.MolFromSmiles(reactants[0])
-            product_mol = Chem.MolFromSmiles(product)
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-            if reactant_mol and product_mol:
-                reactant_rings = Chem.GetSSSR(reactant_mol)
-                product_rings = Chem.GetSSSR(product_mol)
+            parts = rsmi.split(">")
+            if len(parts) < 3:
+                return
 
-                if len(product_rings) > len(reactant_rings):
-                    # Check if new ring contains a nitrogen (heterocycle)
-                    nitrogen_pattern = Chem.MolFromSmarts("[n]")
-                    if product_mol.HasSubstructMatch(nitrogen_pattern):
-                        ring_formation_found = True
-                        print(
-                            f"Found heterocyclic ring formation at depth {node.get('metadata', {}).get('ID', '')}"
-                        )
+            reactants_smiles = parts[0].split(".")
+            max_reactants_per_step = max(max_reactants_per_step, len(reactants_smiles))
 
+            # Check for isothiocyanate
+            for smi in reactants_smiles:
+                mol = Chem.MolFromSmiles(smi)
+                if mol:
+                    isothiocyanate_pattern = Chem.MolFromSmarts("[#6]-[#7]=[#6]=[#16]")
+                    if mol.HasSubstructMatch(isothiocyanate_pattern):
+                        found_isothiocyanate = True
+                        print("Found isothiocyanate reactant")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return ring_formation_found
+
+    # A synthesis is considered linear if there are multiple reactions and
+    # no more than 2 reactants per step on average
+    is_linear_synthesis = reaction_count > 1 and max_reactants_per_step <= 2
+
+    return found_isothiocyanate and is_linear_synthesis

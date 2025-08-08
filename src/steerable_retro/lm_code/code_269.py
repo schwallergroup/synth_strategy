@@ -2,129 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving the conversion of an alcohol
-    to an amine through a sequence of functional group interconversions:
-    alcohol → mesylate/triflate → azide → amine
+    This function detects a linear synthesis strategy where an aromatic scaffold
+    is preserved throughout the synthesis with sequential modifications.
     """
-    # Track transformations and their sequence
-    transformations = []
+    # Track if we have a linear synthesis with preserved aromatic scaffold
+    reaction_count = 0
+    all_reactions_preserve_aromatic = True
 
     def dfs_traverse(node, depth=0):
+        nonlocal reaction_count, all_reactions_preserve_aromatic
+
         if node["type"] == "reaction":
+            reaction_count += 1
+
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for alcohol to mesylate/triflate transformation
-                if any(
-                    checker.check_fg("Primary alcohol", r)
-                    or checker.check_fg("Secondary alcohol", r)
-                    or checker.check_fg("Tertiary alcohol", r)
-                    for r in reactants
-                ) and (
-                    checker.check_fg("Mesylate", product) or checker.check_fg("Triflate", product)
-                ):
-                    print(f"Found alcohol to mesylate/triflate transformation at depth {depth}")
-                    transformations.append(("alcohol_to_leaving_group", depth))
+                # Check if both reactant and product have aromatic rings
+                main_reactant = reactants[0]  # Assuming first reactant is the main one
+                reactant_mol = Chem.MolFromSmiles(main_reactant)
+                product_mol = Chem.MolFromSmiles(product)
 
-                # Check for mesylate/triflate to azide transformation
-                if any(
-                    checker.check_fg("Mesylate", r) or checker.check_fg("Triflate", r)
-                    for r in reactants
-                ) and checker.check_fg("Azide", product):
-                    print(f"Found mesylate/triflate to azide transformation at depth {depth}")
-                    transformations.append(("leaving_group_to_azide", depth))
+                if reactant_mol and product_mol:
+                    aromatic_pattern = Chem.MolFromSmarts("[c]1[c][c][c][c][c]1")
 
-                # Check for azide to amine transformation
-                if any(checker.check_fg("Azide", r) for r in reactants) and checker.check_fg(
-                    "Primary amine", product
-                ):
-                    print(f"Found azide to amine transformation at depth {depth}")
-                    transformations.append(("azide_to_amine", depth))
+                    reactant_has_aromatic = reactant_mol.HasSubstructMatch(aromatic_pattern)
+                    product_has_aromatic = product_mol.HasSubstructMatch(aromatic_pattern)
 
-        # Recursively process children
+                    # If either doesn't have aromatic ring, the scaffold is not preserved
+                    if not (reactant_has_aromatic and product_has_aromatic):
+                        all_reactions_preserve_aromatic = False
+
+                    # Check if this is a linear synthesis (one main reactant + small reagent)
+                    if len(reactants) > 1:
+                        # Check if second reactant is a small molecule (likely a reagent)
+                        reagent_mol = Chem.MolFromSmiles(reactants[1])
+                        if reagent_mol and reagent_mol.GetNumAtoms() > 6:  # If reagent is large
+                            # This might be a convergent step rather than linear
+                            print(f"Possible convergent step at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal from root
     dfs_traverse(route)
 
-    # Check if we have all three transformations
-    transformation_types = [t[0] for t in transformations]
-
-    if not all(
-        t in transformation_types
-        for t in ["alcohol_to_leaving_group", "leaving_group_to_azide", "azide_to_amine"]
-    ):
-        print("Not all required transformations found")
-        return False
-
-    # Sort transformations by depth to check sequence
-    sorted_transformations = sorted(transformations, key=lambda x: x[1])
-    sorted_types = [t[0] for t in sorted_transformations]
-
-    # Check if the transformations appear in the correct sequence in the route
-    # Note: In retrosynthesis, the sequence is reversed (higher depth = earlier in synthesis)
-    correct_sequence = False
-
-    for i in range(len(sorted_types) - 2):
-        if (
-            sorted_types[i] == "azide_to_amine"
-            and sorted_types[i + 1] == "leaving_group_to_azide"
-            and sorted_types[i + 2] == "alcohol_to_leaving_group"
-        ):
-            correct_sequence = True
-            break
-
-    print(f"Transformations in sequence: {correct_sequence}")
-    return correct_sequence
+    # Strategy is present if we have multiple reactions that all preserve the aromatic scaffold
+    result = reaction_count >= 2 and all_reactions_preserve_aromatic
+    print(f"Linear synthesis with preserved aromatic scaffold detected: {result}")
+    return result

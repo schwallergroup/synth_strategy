@@ -2,62 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves preservation of a pre-existing stereocenter
-    throughout the synthesis.
+    This function detects if the synthetic route follows a linear strategy
+    (each reaction typically has 2 reactants, one being the product of the previous step).
     """
-    # Track if we found a stereocenter that's maintained
-    stereocenter_preserved = False
+    # For a linear synthesis, we expect most reactions to have 2 reactants
+    linear_strategy = True
+    reaction_count = 0
 
-    # Track molecules with stereocenters at each depth
-    stereocenters_by_depth = {}
+    def dfs_traverse(node):
+        nonlocal linear_strategy, reaction_count
 
-    def dfs_traverse(node, depth=0):
-        nonlocal stereocenter_preserved
+        if node["type"] == "reaction":
+            reaction_count += 1
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                reactant_list = reactants_smiles.split(".")
 
-        if node["type"] == "mol":
-            smiles = node["smiles"]
-            if "@" in smiles:  # Simple check for stereochemistry in SMILES
-                mol = Chem.MolFromSmiles(smiles)
-                if mol:
-                    chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
-                    if chiral_centers:
-                        stereocenters_by_depth[depth] = chiral_centers
-                        print(f"Found stereocenter at depth {depth}: {chiral_centers}")
+                # If more than 2 reactants, it might not be a linear synthesis
+                if len(reactant_list) > 2:
+                    linear_strategy = False
+                    print(f"Non-linear step detected with {len(reactant_list)} reactants")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if stereocenters are preserved across multiple depths
-    if len(stereocenters_by_depth) >= 2:
-        # If we have stereocenters at multiple depths, consider them preserved
-        stereocenter_preserved = True
+    # Need at least 3 reactions to confirm linear strategy
+    if reaction_count < 3:
+        return False
 
-    # Return True if stereocenters are preserved
-    result = stereocenter_preserved
-    print(f"Preservation of pre-existing stereocenter: {result}")
-    return result
+    return linear_strategy

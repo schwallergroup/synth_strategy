@@ -2,59 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves reduction of an ester to an alcohol.
+    This function detects if the synthesis includes a malonic ester alkylation step.
     """
-    found_pattern = False
+    has_malonic_alkylation = False
 
     def dfs_traverse(node):
-        nonlocal found_pattern
+        nonlocal has_malonic_alkylation
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                # Pattern for malonic ester (diethyl malonate or similar)
+                malonic_pattern = Chem.MolFromSmarts("C(=O)OC.C(=O)OC")
 
-            # Ester pattern
-            ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])-[#6]")
-            alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
+                # Pattern for alkyl halide
+                alkyl_halide_pattern = Chem.MolFromSmarts("[#6][Cl,Br,I]")
 
-            has_ester = False
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(ester_pattern):
-                    has_ester = True
+                # Check reactants
+                has_malonic = False
+                has_alkyl_halide = False
 
-            product_mol = Chem.MolFromSmiles(product)
-            if has_ester and product_mol and product_mol.HasSubstructMatch(alcohol_pattern):
-                found_pattern = True
-                print("Ester reduction to alcohol detected")
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if not mol:
+                        continue
 
+                    if mol.HasSubstructMatch(malonic_pattern):
+                        has_malonic = True
+
+                    if mol.HasSubstructMatch(alkyl_halide_pattern):
+                        has_alkyl_halide = True
+
+                if has_malonic and has_alkyl_halide:
+                    has_malonic_alkylation = True
+                    print("Found malonic ester alkylation")
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return found_pattern
+    print(f"Malonic ester alkylation: {'present' if has_malonic_alkylation else 'absent'}")
+    return has_malonic_alkylation

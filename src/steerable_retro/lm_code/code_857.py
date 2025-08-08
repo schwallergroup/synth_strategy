@@ -2,80 +2,90 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving a sequence of carboxylic acid
-    derivative transformations (ester → acid → different ester → alcohol).
+    This function detects if the synthetic route uses acid chloride formation
+    followed by amide coupling.
     """
-    # Track the sequence of functional groups observed
-    functional_group_sequence = []
+    acid_chloride_depths = []
+    amide_formation_depths = []
 
-    def dfs_traverse(node):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Patterns for different carboxylic acid derivatives
-            ester_pattern = Chem.MolFromSmarts("[#6][#8][C](=[O])[#6]")
-            acid_pattern = Chem.MolFromSmarts("[#8H1][C](=[O])[#6]")
-            alcohol_pattern = Chem.MolFromSmarts("[#8H1][#6]")
+                # Check for acid chloride formation
+                product_mol = Chem.MolFromSmiles(product)
+                acid_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
+                acid_pattern = Chem.MolFromSmarts("C(=O)O")
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                if product_mol and product_mol.HasSubstructMatch(acid_chloride_pattern):
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(acid_pattern):
+                            acid_chloride_depths.append(depth)
+                            print(f"Acid chloride formation detected at depth {depth}")
+                            break
 
-            if product_mol:
-                # Determine the functional group transformation
-                if any(
-                    r and r.HasSubstructMatch(ester_pattern) for r in reactant_mols
-                ) and product_mol.HasSubstructMatch(acid_pattern):
-                    functional_group_sequence.append("ester_to_acid")
-                    print(f"Detected ester to acid conversion: {rsmi}")
-                elif any(
-                    r and r.HasSubstructMatch(acid_pattern) for r in reactant_mols
-                ) and product_mol.HasSubstructMatch(ester_pattern):
-                    functional_group_sequence.append("acid_to_ester")
-                    print(f"Detected acid to ester conversion: {rsmi}")
-                elif any(
-                    r and r.HasSubstructMatch(ester_pattern) for r in reactant_mols
-                ) and product_mol.HasSubstructMatch(alcohol_pattern):
-                    functional_group_sequence.append("ester_to_alcohol")
-                    print(f"Detected ester to alcohol conversion: {rsmi}")
+                # Check for amide formation from acid chloride
+                amide_pattern = Chem.MolFromSmarts("C(=O)N")
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+
+                if product_mol and product_mol.HasSubstructMatch(amide_pattern):
+                    has_acid_chloride = False
+                    has_amine = False
+
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if reactant_mol.HasSubstructMatch(acid_chloride_pattern):
+                                has_acid_chloride = True
+                            if reactant_mol.HasSubstructMatch(amine_pattern):
+                                has_amine = True
+
+                    if has_acid_chloride and has_amine:
+                        amide_formation_depths.append(depth)
+                        print(f"Amide formation from acid chloride detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if the sequence matches our target pattern
-    # We're looking for a sequence that includes ester→acid→ester→alcohol transformations
-    # This is a simplified check - in reality, you'd need to ensure these are connected transformations
-    has_ester_to_acid = "ester_to_acid" in functional_group_sequence
-    has_acid_to_ester = "acid_to_ester" in functional_group_sequence
-    has_ester_to_alcohol = "ester_to_alcohol" in functional_group_sequence
+    # Check if there's an acid chloride formation followed by amide formation
+    # This means there should be an acid chloride formation at a higher depth
+    # followed by an amide formation at a lower depth
+    for acid_depth in acid_chloride_depths:
+        for amide_depth in amide_formation_depths:
+            if amide_depth < acid_depth:  # Remember: lower depth = later in synthesis
+                return True
 
-    result = has_ester_to_acid and has_ester_to_alcohol
-    print(f"Carboxylic acid derivative sequence strategy detected: {result}")
-    print(f"Functional group sequence: {functional_group_sequence}")
-    return result
+    return False

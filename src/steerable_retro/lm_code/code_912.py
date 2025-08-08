@@ -2,71 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes the conversion of a nitrile to a lactam through
-    reduction and cyclization.
+    This function detects if there are sequential SNAr reactions (aryl chloride displacements).
     """
-    nitrile_to_lactam_found = False
+    snar_reactions = []
 
-    def dfs_traverse(node, depth=0):
-        nonlocal nitrile_to_lactam_found
-
+    def dfs_traverse(node):
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for nitrile in reactants
-            nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
+                # Check for aryl chloride in reactants
+                aryl_cl_pattern = Chem.MolFromSmarts("c-Cl")
+                amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
 
-            reactants_have_nitrile = False
-            for reactant in reactants_smiles:
-                try:
+                has_aryl_cl = False
+                has_amine = False
+
+                for reactant in reactants:
                     mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(nitrile_pattern):
-                        reactants_have_nitrile = True
-                        break
-                except:
-                    continue
+                    if mol:
+                        if mol.HasSubstructMatch(aryl_cl_pattern):
+                            has_aryl_cl = True
+                        if mol.HasSubstructMatch(amine_pattern):
+                            has_amine = True
 
-            # Check for lactam in product
-            lactam_pattern = Chem.MolFromSmarts("[C]1[C][C][N][C](=[O])[C]1")
+                # Check if product has new C-N bond where chlorine was
+                if has_aryl_cl and has_amine:
+                    snar_reactions.append(node.get("metadata", {}).get("ID", "unknown"))
 
-            product_has_lactam = False
-            try:
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if product_mol and product_mol.HasSubstructMatch(lactam_pattern):
-                    product_has_lactam = True
-            except:
-                pass
-
-            if reactants_have_nitrile and product_has_lactam:
-                nitrile_to_lactam_found = True
-                print(f"Nitrile to lactam conversion detected at depth {depth}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return nitrile_to_lactam_found
+
+    # Check if there are consecutive SNAr reactions
+    print(f"Found {len(snar_reactions)} potential SNAr reactions")
+    return len(snar_reactions) >= 2

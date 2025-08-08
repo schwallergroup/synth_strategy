@@ -2,127 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving early-stage diaryl ether formation
-    followed by sequential functional group transformations.
+    This function detects if the synthesis involves construction of a heterocycle
+    through imine cyclization.
     """
-    has_diaryl_ether_formation = False
-    has_nitrile_hydrolysis = False
-    has_amide_formation = False
-    has_late_alkylation = False
+    has_imine_cyclization = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_diaryl_ether_formation, has_nitrile_hydrolysis, has_amide_formation, has_late_alkylation
+    def dfs_traverse(node):
+        nonlocal has_imine_cyclization
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+            # Check for ketone and amine/sulfonamide in reactants
+            ketone_pattern = Chem.MolFromSmarts("[C](=[O])[C,N]")
+            amine_pattern = Chem.MolFromSmarts("[N][H]")
+            sulfonamide_pattern = Chem.MolFromSmarts("[N][S](=[O])(=[O])")
 
-            # Check for diaryl ether formation (early stage, depth >= 3)
-            if depth >= 3:
-                # Look for formation of diaryl ether (c-O-c)
-                diaryl_ether_pattern = Chem.MolFromSmarts("[c]-[O]-[c]")
-                if product is not None and product.HasSubstructMatch(diaryl_ether_pattern):
-                    # Check if this is a new formation by checking reactants
-                    reactant_has_pattern = False
-                    for r in reactants:
-                        if r is not None and r.HasSubstructMatch(diaryl_ether_pattern):
-                            reactant_has_pattern = True
-                            break
+            # Check for cyclic imine in product
+            cyclic_imine_pattern = Chem.MolFromSmarts("[C]=[N]")
 
-                    if not reactant_has_pattern:
-                        has_diaryl_ether_formation = True
-                        print(f"Detected diaryl ether formation at depth {depth}")
+            product_mol = Chem.MolFromSmiles(product)
 
-            # Check for nitrile hydrolysis
-            nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[O]")
+            if product_mol and product_mol.HasSubstructMatch(cyclic_imine_pattern):
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        if reactant_mol.HasSubstructMatch(ketone_pattern) and (
+                            reactant_mol.HasSubstructMatch(amine_pattern)
+                            or reactant_mol.HasSubstructMatch(sulfonamide_pattern)
+                        ):
 
-            if (
-                any(r is not None and r.HasSubstructMatch(nitrile_pattern) for r in reactants)
-                and product is not None
-                and product.HasSubstructMatch(carboxylic_acid_pattern)
-            ):
-                has_nitrile_hydrolysis = True
-                print(f"Detected nitrile hydrolysis at depth {depth}")
+                            # Check if product has more rings than reactants (cyclization)
+                            product_rings = Chem.GetSSSR(product_mol)
+                            reactant_rings = Chem.GetSSSR(reactant_mol)
 
-            # Check for amide formation
-            amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
-            amine_pattern = Chem.MolFromSmarts("[N;H1,H2]")
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[O]")
+                            if len(product_rings) > len(reactant_rings):
+                                has_imine_cyclization = True
+                                print("Detected heterocycle formation via imine cyclization")
 
-            if (
-                product is not None
-                and product.HasSubstructMatch(amide_pattern)
-                and any(r is not None and r.HasSubstructMatch(amine_pattern) for r in reactants)
-                and any(
-                    r is not None and r.HasSubstructMatch(carboxylic_acid_pattern)
-                    for r in reactants
-                )
-            ):
-                has_amide_formation = True
-                print(f"Detected amide formation at depth {depth}")
-
-            # Check for late-stage alkylations (N-methylation or O-methylation)
-            if depth <= 1:  # Late stage
-                # N-methylation: secondary amine to tertiary amine
-                if product is not None:
-                    n_methyl_pattern = Chem.MolFromSmarts("[N]-[CH3]")
-                    if product.HasSubstructMatch(n_methyl_pattern) and not any(
-                        r is not None and r.HasSubstructMatch(n_methyl_pattern) for r in reactants
-                    ):
-                        has_late_alkylation = True
-                        print(f"Detected N-methylation at depth {depth}")
-
-                # O-methylation: phenol to methoxy
-                o_methyl_pattern = Chem.MolFromSmarts("[c]-[O]-[CH3]")
-                phenol_pattern = Chem.MolFromSmarts("[c]-[OH]")
-
-                if (
-                    product is not None
-                    and product.HasSubstructMatch(o_methyl_pattern)
-                    and any(
-                        r is not None and r.HasSubstructMatch(phenol_pattern) for r in reactants
-                    )
-                ):
-                    has_late_alkylation = True
-                    print(f"Detected O-methylation at depth {depth}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    # Strategy is present if we have diaryl ether formation early and at least two of the other features
-    features_count = sum([has_nitrile_hydrolysis, has_amide_formation, has_late_alkylation])
-    strategy_present = has_diaryl_ether_formation and features_count >= 2
-
-    print(f"Early diaryl ether formation strategy detected: {strategy_present}")
-    return strategy_present
+    return has_imine_cyclization

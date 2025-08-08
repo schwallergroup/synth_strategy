@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,109 +54,78 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a synthesis that utilizes halogens (Cl, Br, I) as synthetic handles
-    throughout multiple steps of the route.
+    This function detects if the synthetic route involves a late-stage deprotection step.
+    Late-stage is defined as the final step or steps close to the final product (depth <= 2).
     """
-    # Track halogen presence and transformations at different depths
-    halogen_depths = set()
-    halogen_reaction_depths = set()
+    late_stage_deprotection_found = False
 
     def dfs_traverse(node, depth=0):
-        # For molecule nodes, check for halogen presence
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+        nonlocal late_stage_deprotection_found
 
-            # Check for various halogen functional groups
-            halogen_present = (
-                checker.check_fg("Aromatic halide", mol_smiles)
-                or checker.check_fg("Primary halide", mol_smiles)
-                or checker.check_fg("Secondary halide", mol_smiles)
-                or checker.check_fg("Tertiary halide", mol_smiles)
-                or checker.check_fg("Alkenyl halide", mol_smiles)
-                or checker.check_fg("Haloalkyne", mol_smiles)
-            )
+        # Consider depth <= 2 as late-stage
+        is_late_stage = depth <= 2
 
-            if halogen_present:
-                halogen_depths.add(depth)
-                print(f"Found halogen in molecule at depth {depth}: {mol_smiles}")
+        if is_late_stage and node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        # For reaction nodes, check if the reaction involves halogen transformation
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
+            # Check for various deprotection reactions
+            if (
+                checker.check_reaction("Boc amine deprotection", rsmi)
+                or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
+                or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
+                or checker.check_reaction("Alcohol deprotection from silyl ethers", rsmi)
+                or checker.check_reaction("Alcohol deprotection from silyl ethers (double)", rsmi)
+                or checker.check_reaction("Alcohol deprotection from silyl ethers (diol)", rsmi)
+                or checker.check_reaction("Acetal hydrolysis to diol", rsmi)
+                or checker.check_reaction("Acetal hydrolysis to aldehyde", rsmi)
+                or checker.check_reaction("Ketal hydrolysis to ketone", rsmi)
+                or checker.check_reaction("Hydroxyl benzyl deprotection", rsmi)
+                or checker.check_reaction("Carboxyl benzyl deprotection", rsmi)
+                or checker.check_reaction("Cleavage of methoxy ethers to alcohols", rsmi)
+                or checker.check_reaction("Cleavage of alkoxy ethers to alcohols", rsmi)
+                or checker.check_reaction("Ether cleavage to primary alcohol", rsmi)
+                or checker.check_reaction("COOH ethyl deprotection", rsmi)
+                or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
+                or checker.check_reaction("TMS deprotection from alkyne", rsmi)
+                or checker.check_reaction("N-glutarimide deprotection", rsmi)
+                or checker.check_reaction("Phthalimide deprotection", rsmi)
+            ):
 
-            # Check for reactions involving halogens
-            halogen_reaction = (
-                checker.check_reaction("Aromatic fluorination", rxn_smiles)
-                or checker.check_reaction("Aromatic chlorination", rxn_smiles)
-                or checker.check_reaction("Aromatic bromination", rxn_smiles)
-                or checker.check_reaction("Aromatic iodination", rxn_smiles)
-                or checker.check_reaction("Chlorination", rxn_smiles)
-                or checker.check_reaction("Fluorination", rxn_smiles)
-                or checker.check_reaction("Iodination", rxn_smiles)
-                or checker.check_reaction("Bromination", rxn_smiles)
-                or checker.check_reaction(
-                    "Aromatic substitution of bromine by chlorine", rxn_smiles
-                )
-                or checker.check_reaction("Aromatic dehalogenation", rxn_smiles)
-                or checker.check_reaction("Dehalogenation", rxn_smiles)
-                or checker.check_reaction("Finkelstein reaction", rxn_smiles)
-                or checker.check_reaction("Halodeboronation of boronic acids", rxn_smiles)
-                or checker.check_reaction("Halodeboronation of boronic esters", rxn_smiles)
-            )
+                print(f"Late-stage deprotection detected at depth {depth} in reaction: {rsmi}")
+                late_stage_deprotection_found = True
 
-            if halogen_reaction:
-                halogen_reaction_depths.add(depth)
-                print(f"Found halogen-involving reaction at depth {depth}: {rxn_smiles}")
+            # If no specific deprotection reaction was found, check for protecting groups manually
+            if not late_stage_deprotection_found:
+                # Check for protecting groups in reactants that are absent in product
+                protecting_groups = [
+                    "Boc",
+                    "TMS ether protective group",
+                    "Silyl protective group",
+                    "Acetal/Ketal",
+                ]
 
-            # Check for reactions that commonly use halogens as leaving groups
-            nucleophilic_reactions = (
-                checker.check_reaction("Suzuki coupling with boronic acids", rxn_smiles)
-                or checker.check_reaction("Suzuki coupling with boronic esters", rxn_smiles)
-                or checker.check_reaction("Negishi coupling", rxn_smiles)
-                or checker.check_reaction("Heck terminal vinyl", rxn_smiles)
-                or checker.check_reaction("Sonogashira acetylene_aryl halide", rxn_smiles)
-                or checker.check_reaction("Sonogashira alkyne_aryl halide", rxn_smiles)
-                or checker.check_reaction(
-                    "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rxn_smiles
-                )
-                or checker.check_reaction(
-                    "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rxn_smiles
-                )
-            )
+                for pg in protecting_groups:
+                    # Check if any reactant has the protecting group
+                    has_pg_in_reactants = any(
+                        checker.check_fg(pg, reactant) for reactant in reactants
+                    )
 
-            if nucleophilic_reactions:
-                # Check if reactants contain halogens
-                try:
-                    reactants = rxn_smiles.split(">")[0].split(".")
-                    for reactant in reactants:
-                        if (
-                            checker.check_fg("Aromatic halide", reactant)
-                            or checker.check_fg("Primary halide", reactant)
-                            or checker.check_fg("Secondary halide", reactant)
-                            or checker.check_fg("Tertiary halide", reactant)
-                        ):
-                            halogen_reaction_depths.add(depth)
-                            print(
-                                f"Found coupling reaction using halogen at depth {depth}: {rxn_smiles}"
-                            )
-                            break
-                except Exception as e:
-                    print(f"Error checking reactants: {e}")
+                    # Check if product doesn't have the protecting group
+                    product_has_pg = checker.check_fg(pg, product)
 
-        # Traverse children with incremented depth
+                    if has_pg_in_reactants and not product_has_pg:
+                        print(
+                            f"Late-stage {pg} deprotection detected at depth {depth} in reaction: {rsmi}"
+                        )
+                        late_stage_deprotection_found = True
+                        break
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if halogens are used in at least 2 different depths
-    # Consider both molecule presence and reaction involvement
-    all_halogen_depths = halogen_depths.union(halogen_reaction_depths)
-    result = len(all_halogen_depths) >= 2
-
-    print(f"Halogen depths: {halogen_depths}")
-    print(f"Halogen reaction depths: {halogen_reaction_depths}")
-    print(f"Halogen-mediated synthesis across multiple steps: {result}")
-
-    return result
+    print(f"Late-stage deprotection strategy: {late_stage_deprotection_found}")
+    return late_stage_deprotection_found

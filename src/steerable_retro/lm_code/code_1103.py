@@ -2,57 +2,145 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if a halogen (chlorine) is retained throughout the synthesis.
+    Detects if the synthesis route involves a late-stage amide coupling
+    (formation of an amide bond in the final or penultimate step).
     """
-    halogen_in_final = False
-    halogen_in_starting = False
+    found_late_amide = False
+    max_depth = 1  # Consider only reactions at depth 0 or 1 as "late-stage"
 
-    def dfs_traverse(node, depth=0, is_leaf=False):
-        nonlocal halogen_in_final, halogen_in_starting
+    def dfs_traverse(node, current_depth=0):
+        nonlocal found_late_amide
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for halogen
-                halogen_pattern = Chem.MolFromSmarts("[Cl,Br,I,F]")
-                has_halogen = mol.HasSubstructMatch(halogen_pattern)
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
 
-                # If this is the final product (depth 0)
-                if depth == 0:
-                    halogen_in_final = has_halogen
-                    print(f"Halogen in final product: {halogen_in_final}")
+                # Only check reactions at depth 0 or 1 (late-stage)
+                if current_depth <= max_depth:
+                    print(f"Checking reaction at depth {current_depth}: {rsmi}")
 
-                # If this is a starting material (leaf node with no children)
-                if node.get("in_stock", False) or (not node.get("children", [])):
-                    if has_halogen:
-                        halogen_in_starting = True
-                        print(f"Halogen in starting material found at depth {depth}")
+                    # Check for various amide coupling reactions
+                    amide_reactions = [
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                        "Acyl chloride with ammonia to amide",
+                        "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                        "Acyl chloride with secondary amine to amide",
+                        "Carboxylic acid with primary amine to amide",
+                        "Ester with ammonia to amide",
+                        "Ester with primary amine to amide",
+                        "Ester with secondary amine to amide",
+                        "Schotten-Baumann_amide",
+                        "Acylation of primary amines",
+                        "Acylation of secondary amines",
+                    ]
 
-        # Continue traversing
+                    for reaction_type in amide_reactions:
+                        if checker.check_reaction(reaction_type, rsmi):
+                            print(
+                                f"Found late-stage amide coupling: {reaction_type} at depth {current_depth}"
+                            )
+                            found_late_amide = True
+                            break
+
+                    # Additional check for amide formation if no specific reaction type matched
+                    if not found_late_amide:
+                        try:
+                            reactants = rsmi.split(">")[0].split(".")
+                            product = rsmi.split(">")[-1]
+
+                            # Check if any reactant has carboxylic acid or acyl halide
+                            has_carboxylic_acid = any(
+                                checker.check_fg("Carboxylic acid", r) for r in reactants
+                            )
+                            has_acyl_halide = any(
+                                checker.check_fg("Acyl halide", r) for r in reactants
+                            )
+
+                            # Check if any reactant has amine
+                            has_primary_amine = any(
+                                checker.check_fg("Primary amine", r) for r in reactants
+                            )
+                            has_secondary_amine = any(
+                                checker.check_fg("Secondary amine", r) for r in reactants
+                            )
+
+                            # Check if product has amide
+                            has_primary_amide = checker.check_fg("Primary amide", product)
+                            has_secondary_amide = checker.check_fg("Secondary amide", product)
+                            has_tertiary_amide = checker.check_fg("Tertiary amide", product)
+
+                            # Verify amide formation
+                            if (
+                                (has_carboxylic_acid or has_acyl_halide)
+                                and (has_primary_amine or has_secondary_amine)
+                                and (has_primary_amide or has_secondary_amide or has_tertiary_amide)
+                            ):
+                                print(
+                                    f"Found late-stage amide coupling (FG analysis) at depth {current_depth}"
+                                )
+                                found_late_amide = True
+                        except Exception as e:
+                            print(f"Error analyzing reaction: {e}")
+
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if not found_late_amide:  # Stop traversal if we already found what we're looking for
+                dfs_traverse(child, current_depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    return halogen_in_final and halogen_in_starting
+
+    return found_late_amide

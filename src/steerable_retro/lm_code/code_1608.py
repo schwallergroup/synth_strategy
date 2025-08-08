@@ -2,59 +2,123 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves azide chemistry,
-    specifically looking for azide introduction and transformation.
+    This function detects if the final step in the synthesis is a Boc deprotection.
+    In a retrosynthetic tree, the final synthetic step would be at the leaf reaction nodes.
     """
-    azide_found = False
+    # Define Boc deprotection reaction types
+    boc_deprotection_types = [
+        "Boc amine deprotection",
+        "Boc amine deprotection of guanidine",
+        "Boc amine deprotection to NH-NH2",
+        "Tert-butyl deprotection of amine",
+    ]
 
-    def dfs_traverse(node):
-        nonlocal azide_found
+    # Helper function to check if a reaction is a Boc deprotection
+    def is_boc_deprotection(reaction_node):
+        if not reaction_node.get("metadata", {}).get("rsmi"):
+            return False
 
+        rsmi = reaction_node["metadata"]["rsmi"]
+
+        # Check if the reaction is a Boc deprotection using the checker function
+        for boc_type in boc_deprotection_types:
+            if checker.check_reaction(boc_type, rsmi):
+                print(f"Found {boc_type} as final step: {rsmi}")
+                return True
+
+        # If none of the specific Boc deprotection reactions match,
+        # check manually for Boc group removal
+        reactants = rsmi.split(">")[0].split(".")
+        product = rsmi.split(">")[-1]
+
+        # Check for Boc group in reactants but not in product
+        reactant_has_boc = any(checker.check_fg("Boc", r) for r in reactants if r)
+        product_has_boc = checker.check_fg("Boc", product) if product else False
+
+        if reactant_has_boc and not product_has_boc:
+            print(f"Found Boc deprotection as final step (manual check): {rsmi}")
+            return True
+
+        return False
+
+    # Find all leaf reaction nodes (final steps in forward synthesis)
+    found_boc_deprotection = [False]  # Using list to allow modification in nested function
+
+    def find_leaf_reactions(node, is_child_of_reaction=False):
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0]
-                product = rsmi.split(">")[-1]
+            # Check if this reaction node has only molecule children (leaf reaction)
+            all_children_are_mols = all(
+                child["type"] == "mol" for child in node.get("children", [])
+            )
 
-                # Check for azide pattern in reactants or products
-                azide_pattern = Chem.MolFromSmarts("[N-]=[N+]=N")
+            if all_children_are_mols:
+                # This is a leaf reaction node (final step in forward synthesis)
+                if is_boc_deprotection(node):
+                    found_boc_deprotection[0] = True
+                    return
 
-                try:
-                    reactant_mol = Chem.MolFromSmiles(reactants)
-                    product_mol = Chem.MolFromSmiles(product)
+            # Continue traversal for non-leaf reaction nodes
+            for child in node.get("children", []):
+                find_leaf_reactions(child, True)
 
-                    if reactant_mol and product_mol:
-                        if reactant_mol.HasSubstructMatch(
-                            azide_pattern
-                        ) or product_mol.HasSubstructMatch(azide_pattern):
-                            print(f"Found azide pattern in reaction: {rsmi}")
-                            azide_found = True
-                except:
-                    print(f"Error processing SMILES: {rsmi}")
+        elif node["type"] == "mol" and not is_child_of_reaction:
+            # For molecule nodes that aren't children of reaction nodes
+            for child in node.get("children", []):
+                find_leaf_reactions(child, False)
 
-        for child in node.get("children", []):
-            dfs_traverse(child)
+    # Start traversal from the root
+    find_leaf_reactions(route)
 
-    dfs_traverse(route)
-    return azide_found
+    return found_boc_deprotection[0]

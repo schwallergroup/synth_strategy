@@ -2,57 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis maintains a trifluoromethyl group
-    throughout the synthesis.
+    This function detects if the route contains a fragment coupling strategy
+    where two or more complex fragments are combined.
     """
-    steps_with_cf3 = 0
-    total_steps = 0
+    found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal steps_with_cf3, total_steps
+    def dfs_traverse(node):
+        nonlocal found
 
-        if node["type"] == "reaction":
-            total_steps += 1
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            product = rsmi.split(">")[-1]
 
-                # Check for trifluoromethyl pattern
-                cf3_pattern = Chem.MolFromSmarts("[c]-[C](-[F])(-[F])-[F]")
+            # Count number of fragments in reactants
+            reactant_fragments = reactants_part.split(".")
 
-                product_mol = Chem.MolFromSmiles(product) if product else None
+            # Only consider reactions with multiple reactant fragments
+            if len(reactant_fragments) >= 2:
+                # Check complexity of fragments (simplified: count atoms)
+                complex_fragments = 0
+                for frag in reactant_fragments:
+                    # Count non-hydrogen atoms as a simple complexity measure
+                    atom_count = sum(1 for c in frag if c.isupper())
+                    if atom_count >= 5:  # Consider fragments with 5+ atoms as complex
+                        complex_fragments += 1
 
-                if product_mol and product_mol.HasSubstructMatch(cf3_pattern):
-                    print("Found trifluoromethyl group at depth", depth)
-                    steps_with_cf3 += 1
+                if complex_fragments >= 2:
+                    print(f"Found fragment coupling with {complex_fragments} complex fragments")
+                    found = True
 
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
     dfs_traverse(route)
 
-    # Return True if CF3 is present in all steps
-    return steps_with_cf3 > 0 and steps_with_cf3 == total_steps
+    return found

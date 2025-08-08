@@ -2,71 +2,110 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves tert-butyl ester deprotection.
+    Detects if the synthesis uses a convergent approach with 3+ fragments combined in the final steps.
+    A convergent synthesis builds separate complex fragments and combines them in late-stage reactions.
     """
-    tert_butyl_ester_pattern = Chem.MolFromSmarts("C(=O)OC(C)(C)C")
-    carboxylic_acid_pattern = Chem.MolFromSmarts("C(=O)O")
-    deprotection_detected = False
+    # Track significant fragments across late-stage reactions
+    significant_fragments = set()
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal deprotection_detected
+    # First, calculate the maximum depth of the synthesis route
+    def calculate_max_depth(node, current_depth=0):
+        nonlocal max_depth
+        max_depth = max(max_depth, current_depth)
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
-
-            # Check if any reactant contains tert-butyl ester
-            reactant_has_tert_butyl = False
-            for r_smiles in reactants_smiles:
-                try:
-                    r_mol = Chem.MolFromSmiles(r_smiles)
-                    if r_mol and r_mol.HasSubstructMatch(tert_butyl_ester_pattern):
-                        reactant_has_tert_butyl = True
-                        break
-                except:
-                    continue
-
-            # Check if product contains carboxylic acid
-            try:
-                p_mol = Chem.MolFromSmiles(product_smiles)
-                product_has_carboxylic_acid = p_mol and p_mol.HasSubstructMatch(
-                    carboxylic_acid_pattern
-                )
-            except:
-                product_has_carboxylic_acid = False
-
-            # If reactant has tert-butyl ester and product has carboxylic acid, it's a deprotection
-            if reactant_has_tert_butyl and product_has_carboxylic_acid:
-                print(f"tert-butyl ester deprotection detected in reaction: {rsmi}")
-                deprotection_detected = True
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            calculate_max_depth(child, current_depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
-    return deprotection_detected
+    calculate_max_depth(route)
+    print(f"Maximum depth of synthesis route: {max_depth}")
+
+    # Define what constitutes a late-stage reaction (within top 30% of steps)
+    late_stage_threshold = max(1, int(max_depth * 0.3))
+    print(f"Late-stage threshold depth: {late_stage_threshold}")
+
+    # Helper function to determine if a molecule is a significant fragment
+    def is_significant_fragment(smiles):
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return False
+
+        # Criteria for significant fragments:
+        # 1. Must have at least 5 atoms
+        # 2. Must have at least 1 carbon atom
+        # 3. Must have at least 3 bonds (to filter out simple molecules)
+        atom_count = mol.GetNumAtoms()
+        carbon_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6)
+        bond_count = mol.GetNumBonds()
+
+        return atom_count >= 5 and carbon_count >= 1 and bond_count >= 3
+
+    # Analyze the synthesis route to find significant fragments in late-stage reactions
+    def analyze_route(node, depth=0):
+        # Only consider late-stage reactions
+        if node["type"] == "reaction" and depth <= late_stage_threshold:
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                reactants = reactants_part.split(".")
+
+                # Add significant fragments to our set
+                for reactant in reactants:
+                    if is_significant_fragment(reactant):
+                        # Use canonical SMILES to avoid duplicates due to different representations
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            canonical_smiles = Chem.MolToSmiles(mol, isomericSmiles=True)
+                            significant_fragments.add(canonical_smiles)
+
+                print(
+                    f"Depth {depth}: Found {len(reactants)} reactants in reaction, "
+                    f"{sum(1 for r in reactants if is_significant_fragment(r))} significant"
+                )
+
+        # Continue traversal
+        for child in node.get("children", []):
+            analyze_route(child, depth + 1)
+
+    # Start analysis
+    analyze_route(route)
+
+    # Check if we have 3 or more unique significant fragments
+    print(
+        f"Total unique significant fragments found in late-stage reactions: {len(significant_fragments)}"
+    )
+
+    is_convergent = len(significant_fragments) >= 3
+    if is_convergent:
+        print("Found convergent synthesis strategy with 3+ significant fragments")
+    else:
+        print(
+            "Not a convergent synthesis: fewer than 3 significant fragments in late-stage reactions"
+        )
+
+    return is_convergent

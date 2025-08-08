@@ -2,66 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes formation of a morpholine amide
+    This function detects a synthetic strategy involving late-stage amide coupling.
     """
-    found_morpholine_amide_formation = False
+    late_stage_amide_found = False
 
-    def dfs_traverse(node):
-        nonlocal found_morpholine_amide_formation
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_amide_found
 
-        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Late stage = low depth
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0]
+                products = rsmi.split(">")[-1]
 
-            # Check for morpholine amide formation
-            morpholine_pattern = Chem.MolFromSmarts("N1CCOCC1")
-            morpholine_amide_pattern = Chem.MolFromSmarts("C(=O)N1CCOCC1")
-            acid_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
+                # Check for amine and carboxylic acid in reactants
+                reactant_mol = Chem.MolFromSmiles(reactants)
+                if reactant_mol:
+                    has_amine = reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2]"))
+                    has_carboxylic = reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("C(=O)[OH]"))
 
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol and product_mol.HasSubstructMatch(morpholine_amide_pattern):
-                has_morpholine = False
-                has_acid_chloride = False
+                    # Check for amide in products
+                    product_mol = Chem.MolFromSmiles(products)
+                    if product_mol and product_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts("[NH]C(=O)")
+                    ):
+                        if has_amine and has_carboxylic:
+                            print(f"Detected late-stage amide coupling at depth {depth}")
+                            late_stage_amide_found = True
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        if reactant_mol.HasSubstructMatch(morpholine_pattern):
-                            has_morpholine = True
-                        if reactant_mol.HasSubstructMatch(acid_chloride_pattern):
-                            has_acid_chloride = True
-
-                if has_morpholine and has_acid_chloride:
-                    found_morpholine_amide_formation = True
-                    print("Detected morpholine amide formation")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return found_morpholine_amide_formation
+    return late_stage_amide_found

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,208 +54,113 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a convergent synthesis strategy where two complex fragments
-    are joined in a late-stage reaction.
+    Detects synthesis routes based on tetrahydroisoquinoline scaffold
     """
-    convergent_detected = False
+    found_tetrahydroisoquinoline = False
+    tetrahydroisoquinoline_reactions = 0
 
-    def calculate_complexity(mol):
-        """Calculate molecular complexity based on multiple factors"""
-        if mol is None:
-            return 0
+    def is_tetrahydroisoquinoline(smiles):
+        """Helper function to check if a molecule contains tetrahydroisoquinoline scaffold"""
+        if not smiles:
+            return False
 
-        atom_count = mol.GetNumAtoms()
-        ring_count = mol.GetRingInfo().NumRings()
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return False
 
-        # More sophisticated complexity measure
-        complexity = atom_count + (ring_count * 3)
+        # First check: Direct isoquinoline check
+        if checker.check_ring("isoquinoline", smiles):
+            # Ensure it's tetrahydro (not fully aromatic)
+            # Look for non-aromatic nitrogen in a ring
+            for atom in mol.GetAtoms():
+                if atom.GetSymbol() == "N" and atom.IsInRing() and not atom.GetIsAromatic():
+                    return True
 
-        # Add complexity for heteroatoms
+        # Second check: Look for fused piperidine and benzene rings
+        if checker.check_ring("piperidine", smiles) and checker.check_ring("benzene", smiles):
+            # Get ring indices
+            piperidine_indices = checker.get_ring_atom_indices("piperidine", smiles)
+            benzene_indices = checker.get_ring_atom_indices("benzene", smiles)
+
+            if piperidine_indices and benzene_indices:
+                # Check if the rings share atoms (are fused)
+                piperidine_atoms = set([atom for ring in piperidine_indices for atom in ring])
+                benzene_atoms = set([atom for ring in benzene_indices for atom in ring])
+
+                # If rings share atoms and there's a nitrogen in the piperidine ring
+                if piperidine_atoms.intersection(benzene_atoms):
+                    for atom in mol.GetAtoms():
+                        if atom.GetSymbol() == "N" and atom.IsInRing() and not atom.GetIsAromatic():
+                            return True
+
+        # Third check: Direct pattern matching for 1,2,3,4-tetrahydroisoquinoline
+        # This is a fallback in case the ring detection methods fail
         for atom in mol.GetAtoms():
-            if atom.GetAtomicNum() not in [1, 6]:  # Not H or C
-                complexity += 1
-
-        # Add complexity for functional groups
-        complex_fgs = [
-            "Ester",
-            "Amide",
-            "Carboxylic acid",
-            "Nitrile",
-            "Nitro group",
-            "Sulfonamide",
-            "Sulfone",
-            "Phosphate ester",
-        ]
-        for fg in complex_fgs:
-            if checker.check_fg(fg, Chem.MolToSmiles(mol)):
-                complexity += 2
-
-        return complexity
-
-    def is_bond_forming_reaction(rsmi):
-        """Check if the reaction forms new carbon-carbon or carbon-heteroatom bonds"""
-        # Common bond-forming reaction types
-        bond_forming_reactions = [
-            "Suzuki",
-            "Negishi",
-            "Stille",
-            "Sonogashira",
-            "Heck",
-            "Buchwald-Hartwig",
-            "N-arylation",
-            "Acylation",
-            "Mitsunobu",
-            "Williamson Ether Synthesis",
-            "Ullmann",
-            "Goldberg",
-            "Michael addition",
-            "Aldol",
-            "Wittig",
-            "Grignard",
-            "Diels-Alder",
-        ]
-
-        for rxn_type in bond_forming_reactions:
-            if checker.check_reaction(rxn_type, rsmi):
-                print(f"Detected bond-forming reaction: {rxn_type}")
-                return True
+            if atom.GetSymbol() == "N" and atom.IsInRing():
+                # Check if it's part of a partially saturated isoquinoline-like structure
+                if not atom.GetIsAromatic() and atom.GetDegree() in [2, 3]:
+                    # This is a potential THIQ nitrogen
+                    return True
 
         return False
 
     def dfs_traverse(node, depth=0):
-        nonlocal convergent_detected
+        nonlocal found_tetrahydroisoquinoline, tetrahydroisoquinoline_reactions
 
-        if node["type"] == "reaction" and depth <= 3:  # Expanded to depth 3
-            print(f"Examining reaction at depth {depth}")
+        if node["type"] == "mol":
+            # Check if the molecule contains tetrahydroisoquinoline scaffold
+            if is_tetrahydroisoquinoline(node["smiles"]):
+                found_tetrahydroisoquinoline = True
+                print(f"Found tetrahydroisoquinoline scaffold at depth {depth}: {node['smiles']}")
 
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                print("No reaction SMILES found")
-                return
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            try:
+                # Check if this reaction forms or modifies tetrahydroisoquinoline
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
 
-            print(f"Reaction SMILES: {rsmi}")
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Handle multiple reactants
+                reactants = reactants_part.split(".")
 
-            # Check if we have at least two reactants
-            if len(reactants_smiles) >= 2:
-                try:
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check if product contains tetrahydroisoquinoline
+                product_has_thiq = is_tetrahydroisoquinoline(product_part)
 
-                    # Calculate complexity for each reactant
-                    complexities = [calculate_complexity(mol) for mol in reactant_mols]
-                    product_complexity = calculate_complexity(product_mol)
+                # Check if any reactant contains tetrahydroisoquinoline
+                reactants_have_thiq = any(
+                    is_tetrahydroisoquinoline(reactant) for reactant in reactants
+                )
 
-                    print(f"Reactant complexities: {complexities}")
-                    print(f"Product complexity: {product_complexity}")
+                # Check for Pictet-Spengler reaction which commonly forms THIQ
+                is_pictet_spengler = checker.check_reaction("Pictet-Spengler", rsmi)
 
-                    # Count significant reactants (complexity > 10)
-                    significant_reactants = sum(1 for c in complexities if c > 10)
+                # If product has tetrahydroisoquinoline but reactants don't, this reaction forms it
+                if product_has_thiq and not reactants_have_thiq:
+                    tetrahydroisoquinoline_reactions += 1
+                    reaction_type = "Pictet-Spengler" if is_pictet_spengler else "forming"
+                    print(
+                        f"Found reaction {reaction_type} tetrahydroisoquinoline at depth {depth}: {rsmi}"
+                    )
 
-                    # Check for common coupling reactions
-                    is_coupling = is_bond_forming_reaction(rsmi)
+                # If both product and reactants have tetrahydroisoquinoline, this reaction modifies it
+                elif product_has_thiq and reactants_have_thiq:
+                    tetrahydroisoquinoline_reactions += 1
+                    print(
+                        f"Found reaction modifying tetrahydroisoquinoline at depth {depth}: {rsmi}"
+                    )
+            except Exception as e:
+                print(f"Error processing reaction at depth {depth}: {e}")
 
-                    # Check for functional groups involved in coupling
-                    coupling_fgs = [
-                        "Carboxylic acid",
-                        "Primary amine",
-                        "Secondary amine",
-                        "Tertiary amine",
-                        "Boronic acid",
-                        "Boronic ester",
-                        "Aromatic halide",
-                        "Primary halide",
-                        "Secondary halide",
-                        "Tertiary halide",
-                        "Alkyne",
-                        "Primary alcohol",
-                        "Secondary alcohol",
-                        "Tertiary alcohol",
-                        "Acyl halide",
-                        "Ester",
-                        "Anhydride",
-                    ]
-
-                    fg_count = 0
-                    for r_smiles in reactants_smiles:
-                        for fg in coupling_fgs:
-                            if checker.check_fg(fg, r_smiles):
-                                fg_count += 1
-                                print(f"Found {fg} in reactant")
-                                break
-
-                    # Check for ring structures that might indicate complex fragments
-                    ring_structures = [
-                        "benzene",
-                        "pyridine",
-                        "pyrimidine",
-                        "pyrazine",
-                        "pyrrole",
-                        "furan",
-                        "thiophene",
-                        "imidazole",
-                        "oxazole",
-                        "thiazole",
-                        "indole",
-                        "benzimidazole",
-                        "quinoline",
-                        "isoquinoline",
-                    ]
-
-                    ring_count = 0
-                    for r_smiles in reactants_smiles:
-                        for ring in ring_structures:
-                            if checker.check_ring(ring, r_smiles):
-                                ring_count += 1
-                                print(f"Found {ring} ring in reactant")
-                                break
-
-                    # Criteria for convergent synthesis:
-                    # 1. At least 2 significant reactants
-                    # 2. Either a known coupling reaction or presence of coupling functional groups
-                    # 3. Product should be more complex than individual reactants
-                    # 4. Reactants should have some complexity balance
-
-                    if (
-                        significant_reactants >= 2
-                        and (is_coupling or fg_count >= 2 or ring_count >= 2)
-                        and product_complexity > max(complexities)
-                    ):
-
-                        # Check relative complexity - reactants should be somewhat balanced
-                        sorted_complexities = sorted(complexities, reverse=True)
-                        if (
-                            len(sorted_complexities) >= 2
-                            and sorted_complexities[1] > sorted_complexities[0] * 0.3
-                        ):
-                            convergent_detected = True
-                            print(f"✓ Detected convergent synthesis at depth {depth}")
-                        else:
-                            print("Reactant complexities too imbalanced for convergent synthesis")
-                    else:
-                        if significant_reactants < 2:
-                            print("Not enough significant reactants")
-                        if not (is_coupling or fg_count >= 2 or ring_count >= 2):
-                            print("No coupling reaction or sufficient functional groups detected")
-                        if product_complexity <= max(complexities):
-                            print("Product not more complex than reactants")
-
-                except Exception as e:
-                    print(f"Error in convergent synthesis detection: {e}")
-
-            # Check if this is a hydrolysis or deprotection reaction (not convergent)
-            hydrolysis_reactions = ["Hydrolysis", "Ester saponification", "deprotection"]
-            is_hydrolysis = any(checker.check_reaction(rxn, rsmi) for rxn in hydrolysis_reactions)
-            if is_hydrolysis:
-                print("Detected hydrolysis or deprotection reaction (not convergent)")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    print(f"Convergent synthesis detected: {convergent_detected}")
 
-    return convergent_detected
+    # Return True if we found tetrahydroisoquinoline and at least one reaction involving it
+    result = found_tetrahydroisoquinoline and tetrahydroisoquinoline_reactions > 0
+    print(
+        f"Final result: {result} (found_scaffold: {found_tetrahydroisoquinoline}, reactions: {tetrahydroisoquinoline_reactions})"
+    )
+    return result

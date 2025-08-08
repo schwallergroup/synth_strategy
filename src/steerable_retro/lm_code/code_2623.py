@@ -2,66 +2,92 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy involving addition of a PEG-like linker
-    to a heterocycle.
+    This function detects if the synthetic route involves aromatic halogenation
+    in the presence of a nitro group.
     """
-    peg_linker_addition = False
+    # Track if we found aromatic halogenation and nitro group
+    found_halogenation = False
+    has_nitro_group = False
 
-    def dfs_traverse(node):
-        nonlocal peg_linker_addition
+    def dfs_traverse(node, depth=0):
+        nonlocal found_halogenation, has_nitro_group
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for halogenation (C-H to C-Cl/Br/F/I)
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    halogen_pattern = Chem.MolFromSmarts("c-[Cl,Br,F,I]")
+                    if product_mol.HasSubstructMatch(halogen_pattern):
+                        # Check if this is a new halogen (not in reactants)
+                        halogen_count_product = len(
+                            product_mol.GetSubstructMatches(halogen_pattern)
+                        )
 
-            if product_mol:
-                # Check for PEG-like linker pattern
-                peg_pattern = Chem.MolFromSmarts("[#7]-[#6]-[#8]-[#6]-[#6]-[#8]-[#6]")
-                if product_mol.HasSubstructMatch(peg_pattern):
-                    # Check if product has a heterocycle
-                    has_heterocycle = False
-                    for ring in Chem.GetSSSR(product_mol):
-                        ring_atoms = list(ring)
-                        if any(
-                            product_mol.GetAtomWithIdx(i).GetSymbol() != "C" for i in ring_atoms
-                        ):
-                            has_heterocycle = True
-                            break
+                        total_halogen_count_reactants = 0
+                        for reactant in reactants:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if (
+                                reactant_mol
+                                and "Cl" in reactant
+                                or "Br" in reactant
+                                or "F" in reactant
+                                or "I" in reactant
+                            ):
+                                total_halogen_count_reactants += len(
+                                    reactant_mol.GetSubstructMatches(halogen_pattern)
+                                )
 
-                    if has_heterocycle:
-                        peg_linker_addition = True
-                        print(f"Detected PEG-like linker addition to heterocycle: {rsmi}")
+                        if halogen_count_product > total_halogen_count_reactants:
+                            print(f"Found halogenation at depth {depth}")
+                            found_halogenation = True
+
+                # Check for nitro group in any molecule
+                nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
+                if product_mol and product_mol.HasSubstructMatch(nitro_pattern):
+                    has_nitro_group = True
+                    print(f"Found nitro group at depth {depth}")
+
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
+                        has_nitro_group = True
+                        print(f"Found nitro group at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    return peg_linker_addition
+    return found_halogenation and has_nitro_group

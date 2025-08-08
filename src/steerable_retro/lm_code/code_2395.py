@@ -2,95 +2,104 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects synthetic routes involving polyethylene glycol (PEG) chain
-    manipulation, including chain cleavage and terminal functional group conversion.
+    This function detects a linear synthesis strategy involving heterocyclic compounds
+    (specifically pyrazole and piperidine rings).
     """
-    # Track if we found evidence of PEG manipulation
-    has_polyether_chain = False
-    has_terminal_group_conversion = False
+    # Track heterocycles
+    contains_pyrazole = False
+    contains_piperidine = False
+    is_linear = True
 
-    def dfs_traverse(node):
-        nonlocal has_polyether_chain, has_terminal_group_conversion
+    def dfs_traverse(node, depth=0):
+        nonlocal contains_pyrazole, contains_piperidine, is_linear
 
-        if node["type"] == "reaction":
-            # Extract reactants and products
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+        print(f"Checking node at depth {depth}: {node['type']}")
 
-            parts = rsmi.split(">")
-            if len(parts) < 3:
-                return
+        if node["type"] == "mol":
+            # Check for heterocycles in the molecule using the checker functions
+            if checker.check_ring("pyrazole", node["smiles"]):
+                contains_pyrazole = True
+                print(f"Found pyrazole at depth {depth} in molecule: {node['smiles']}")
 
-            reactants = parts[0].split(".")
-            products = parts[2].split(".")
+            if checker.check_ring("piperidine", node["smiles"]):
+                contains_piperidine = True
+                print(f"Found piperidine at depth {depth} in molecule: {node['smiles']}")
 
-            # Check for polyether chains in reactants or products
-            for mol_smiles in reactants + products:
-                try:
-                    mol = Chem.MolFromSmiles(mol_smiles)
-                    if mol:
-                        # Check for polyether pattern (at least 2 consecutive ether linkages)
-                        peg_pattern = Chem.MolFromSmarts("[#8]-[#6]-[#6]-[#8]-[#6]-[#6]")
-                        if mol.HasSubstructMatch(peg_pattern):
-                            has_polyether_chain = True
-                            print(f"Found polyether chain in: {mol_smiles}")
-                except:
-                    continue
-
-            # Check for terminal group conversion (alcohol to halide)
-            for reactant in reactants:
-                try:
-                    r_mol = Chem.MolFromSmiles(reactant)
-                    if r_mol:
-                        # Check for terminal alcohol
-                        terminal_alcohol = Chem.MolFromSmarts("[#6]-[#8;H1]")
-                        if r_mol.HasSubstructMatch(terminal_alcohol):
-                            # Look for corresponding product with terminal halide
-                            for product in products:
-                                try:
-                                    p_mol = Chem.MolFromSmiles(product)
-                                    if p_mol:
-                                        terminal_halide = Chem.MolFromSmarts("[#6]-[#17,#35,#53]")
-                                        if p_mol.HasSubstructMatch(terminal_halide):
-                                            has_terminal_group_conversion = True
-                                            print(
-                                                f"Found terminal group conversion: {reactant} -> {product}"
-                                            )
-                                except:
-                                    continue
-                except:
-                    continue
+        elif node["type"] == "reaction":
+            # Check if reaction has multiple products (non-linear)
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                products = rsmi.split(">")[-1].split(".")
+                if len(products) > 1:
+                    is_linear = False
+                    print(f"Found non-linear reaction at depth {depth}: {rsmi}")
+            except KeyError:
+                print(f"Warning: No rsmi found in reaction metadata at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
+    print("Starting traversal of synthesis route")
     dfs_traverse(route)
 
-    # Return True if we found evidence of PEG manipulation strategy
-    strategy_detected = has_polyether_chain and has_terminal_group_conversion
-    print(f"Polyether chain manipulation strategy detected: {strategy_detected}")
-    return strategy_detected
+    # Print final results for debugging
+    print(
+        f"Final results: contains_pyrazole={contains_pyrazole}, contains_piperidine={contains_piperidine}, is_linear={is_linear}"
+    )
+
+    # Return True if it's a linear synthesis with both heterocycles
+    return is_linear and contains_pyrazole and contains_piperidine

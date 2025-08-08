@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,68 +54,126 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects nitro group reduction to amine in the synthetic route.
+    This function detects if C-C bond formation occurs in the late stage of synthesis (low depth).
     """
-    nitro_reduction_found = False
+    cc_bond_formation_depths = []
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal nitro_reduction_found
+    # List of C-C bond forming reactions
+    cc_bond_reactions = [
+        "Suzuki",
+        "Negishi",
+        "Heck",
+        "Stille",
+        "Sonogashira",
+        "Kumada",
+        "Hiyama-Denmark",
+        "Friedel-Crafts alkylation",
+        "Diels-Alder",
+        "Wittig",
+        "Grignard",
+        "Aldol condensation",
+        "Michael addition",
+        "Aryllithium cross-coupling",
+        "Catellani",
+        "decarboxylative_coupling",
+        "A3 coupling",
+    ]
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal max_depth
+        max_depth = max(max_depth, depth)
 
-                # Check if any reactant has a nitro group
-                reactant_has_nitro = False
-                for reactant in reactants:
-                    if checker.check_fg("Nitro group", reactant):
-                        reactant_has_nitro = True
-                        print(f"Found reactant with nitro group: {reactant}")
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+
+            # Check if this is a C-C bond forming reaction
+            is_cc_formation = False
+
+            # Method 1: Check against known C-C bond forming reactions
+            for rxn_type in cc_bond_reactions:
+                try:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        print(f"Found {rxn_type} reaction at depth {depth}: {rsmi}")
+                        is_cc_formation = True
                         break
+                except Exception as e:
+                    print(f"Error checking reaction type {rxn_type}: {e}")
 
-                # Check if product has a primary amine
-                product_has_amine = checker.check_fg("Primary amine", product)
-                if product_has_amine:
-                    print(f"Found product with primary amine: {product}")
+            # Method 2: If not identified by reaction type, check for new C-C bonds using atom mapping
+            if not is_cc_formation:
+                try:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-                # Check if this is a nitro reduction reaction
-                if reactant_has_nitro and product_has_amine:
-                    if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
-                        nitro_reduction_found = True
-                        print(f"Found nitro reduction to amine reaction: {rsmi}")
-                    else:
-                        # Fallback check: look for nitro group and primary amine at corresponding positions
-                        # This is a backup in case the reaction checker fails
-                        try:
-                            # Find reactant with nitro group
-                            nitro_reactant = None
-                            for reactant in reactants:
-                                if checker.check_fg("Nitro group", reactant):
-                                    nitro_reactant = reactant
-                                    break
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
 
-                            if nitro_reactant:
-                                # Get atom indices of nitro group in reactant
-                                nitro_indices = checker.get_fg_atom_indices(
-                                    "Nitro group", nitro_reactant
-                                )
-                                if nitro_indices:
-                                    # This is a simplification - in a real implementation we would use
-                                    # atom mapping to track the exact transformation
-                                    nitro_reduction_found = True
+                    if product_mol and all(reactant_mols):
+                        # Extract atom maps from reactants
+                        reactant_c_maps = {}
+                        for r_mol in reactant_mols:
+                            for atom in r_mol.GetAtoms():
+                                if atom.GetAtomicNum() == 6 and atom.GetAtomMapNum() > 0:
+                                    reactant_c_maps[atom.GetAtomMapNum()] = atom.GetIdx()
+
+                        # Check for new C-C bonds in product between mapped atoms
+                        for bond in product_mol.GetBonds():
+                            begin_atom = bond.GetBeginAtom()
+                            end_atom = bond.GetEndAtom()
+
+                            if (
+                                begin_atom.GetAtomicNum() == 6
+                                and end_atom.GetAtomicNum() == 6
+                                and begin_atom.GetAtomMapNum() > 0
+                                and end_atom.GetAtomMapNum() > 0
+                            ):
+
+                                map1 = begin_atom.GetAtomMapNum()
+                                map2 = end_atom.GetAtomMapNum()
+
+                                # Check if these mapped atoms were in different reactant molecules
+                                # or if this bond didn't exist in the reactants
+                                new_bond = True
+                                for r_mol in reactant_mols:
+                                    atom1_idx = None
+                                    atom2_idx = None
+
+                                    for atom in r_mol.GetAtoms():
+                                        if atom.GetAtomMapNum() == map1:
+                                            atom1_idx = atom.GetIdx()
+                                        elif atom.GetAtomMapNum() == map2:
+                                            atom2_idx = atom.GetIdx()
+
+                                    if atom1_idx is not None and atom2_idx is not None:
+                                        bond = r_mol.GetBondBetweenAtoms(atom1_idx, atom2_idx)
+                                        if bond is not None:
+                                            new_bond = False
+                                            break
+
+                                if new_bond:
                                     print(
-                                        f"Found nitro reduction to amine (fallback detection): {rsmi}"
+                                        f"Found new C-C bond formation at depth {depth} between atoms with maps {map1} and {map2}"
                                     )
-                        except Exception as e:
-                            print(f"Error in fallback detection: {e}")
+                                    is_cc_formation = True
+                                    break
+                except Exception as e:
+                    print(f"Error analyzing atom mapping: {e}")
 
-        # Traverse children
+            if is_cc_formation:
+                cc_bond_formation_depths.append(depth)
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return nitro_reduction_found
+    # Define late stage as the first third of the synthesis depth
+    late_stage_threshold = max(1, max_depth // 3)
+    result = any(depth <= late_stage_threshold for depth in cc_bond_formation_depths)
+
+    print(f"Max depth: {max_depth}, Late stage threshold: {late_stage_threshold}")
+    print(f"C-C bond formation depths: {cc_bond_formation_depths}")
+    print(f"Late-stage C-C bond formation: {result}")
+
+    return result

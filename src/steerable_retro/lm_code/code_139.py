@@ -2,68 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route includes a late-stage ester hydrolysis
-    (conversion of ester to carboxylic acid in the final steps)
+    This function detects a protection-deprotection strategy involving
+    a benzylic amine protected as a sulfonamide.
     """
-    found_hydrolysis = False
+    # Track if we found both amine and sulfonamide
+    found_amine = False
+    found_sulfonamide = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_hydrolysis
+    # SMARTS patterns
+    amine_pattern = Chem.MolFromSmarts("[c][CH2][NH2]")
+    sulfonamide_pattern = Chem.MolFromSmarts("[c][CH2][NH][S](=O)(=O)[c]")
 
-        if node["type"] == "reaction" and depth <= 1:  # Check only late-stage reactions (depth 0-1)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+    def dfs_traverse(node):
+        nonlocal found_amine, found_sulfonamide
 
-                # Create RDKit mol objects
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                if mol.HasSubstructMatch(amine_pattern):
+                    found_amine = True
+                if mol.HasSubstructMatch(sulfonamide_pattern):
+                    found_sulfonamide = True
 
-                if product_mol and all(reactant_mols):
-                    # SMARTS for carboxylic acid
-                    acid_pattern = Chem.MolFromSmarts("[#6][C](=[O])[OH]")
-
-                    # SMARTS for ester
-                    ester_pattern = Chem.MolFromSmarts("[#6][C](=[O])[O][#6]")
-
-                    # Check if product has carboxylic acid
-                    has_acid_in_product = product_mol.HasSubstructMatch(acid_pattern)
-
-                    # Check if any reactant has ester
-                    has_ester_in_reactants = any(
-                        r.HasSubstructMatch(ester_pattern) for r in reactant_mols
-                    )
-
-                    if has_acid_in_product and has_ester_in_reactants:
-                        print(f"Found late-stage ester hydrolysis at depth {depth}")
-                        found_hydrolysis = True
-
-        # Continue traversal
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return found_hydrolysis
+
+    print(f"Found amine: {found_amine}")
+    print(f"Found sulfonamide: {found_sulfonamide}")
+
+    # Return True if both amine and sulfonamide are found
+    return found_amine and found_sulfonamide

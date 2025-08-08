@@ -2,71 +2,164 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving late-stage epoxide formation
-    (in the final or penultimate step of the synthesis).
+    This function detects esterification reactions (carboxylic acid → ester)
+    or the reverse (ester → carboxylic acid) in a synthetic route.
     """
-    epoxide_formation_found = False
-    epoxide_formation_depth = float("inf")
+    esterification_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal epoxide_formation_found, epoxide_formation_depth
+    def dfs_traverse(node):
+        nonlocal esterification_detected
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            print(f"Examining reaction: {rsmi}")
 
-            # Check for epoxide formation
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            # Check for direct esterification reactions using the checker function
+            esterification_reactions = [
+                "Esterification of Carboxylic Acids",
+                "Transesterification",
+                "O-alkylation of carboxylic acids with diazo compounds",
+                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
+                "Schotten-Baumann to ester",
+                "Oxidative esterification of primary alcohols",
+            ]
 
-            # Epoxide pattern
-            epoxide_pattern = Chem.MolFromSmarts("[C]1[O][C]1")
+            # Check for reverse esterification (hydrolysis) reactions
+            hydrolysis_reactions = [
+                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
+                "Ester saponification (methyl deprotection)",
+                "Ester saponification (alkyl deprotection)",
+            ]
 
-            if product_mol.HasSubstructMatch(epoxide_pattern):
-                # Check if epoxide is newly formed (not present in reactants)
-                epoxide_in_reactants = any(
-                    r.HasSubstructMatch(epoxide_pattern) for r in reactant_mols if r is not None
+            # Check for forward esterification reactions
+            for rxn_name in esterification_reactions:
+                if checker.check_reaction(rxn_name, rsmi):
+                    print(f"Esterification reaction detected: {rxn_name}")
+                    esterification_detected = True
+                    return
+
+            # Check for reverse esterification reactions (hydrolysis)
+            for rxn_name in hydrolysis_reactions:
+                if checker.check_reaction(rxn_name, rsmi):
+                    print(f"Ester hydrolysis reaction detected: {rxn_name}")
+                    esterification_detected = True
+                    return
+
+            # As a fallback, check for the functional group transformation manually
+            try:
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
+
+                # Check for forward esterification (carboxylic acid + alcohol → ester)
+                carboxylic_acid_in_reactants = any(
+                    checker.check_fg("Carboxylic acid", reactant) for reactant in reactants
+                )
+                alcohol_in_reactants = any(
+                    checker.check_fg("Primary alcohol", reactant)
+                    or checker.check_fg("Secondary alcohol", reactant)
+                    or checker.check_fg("Tertiary alcohol", reactant)
+                    or checker.check_fg("Phenol", reactant)
+                    for reactant in reactants
+                )
+                ester_in_product = checker.check_fg("Ester", product)
+
+                # Check for reverse esterification (ester → carboxylic acid)
+                ester_in_reactants = any(
+                    checker.check_fg("Ester", reactant) for reactant in reactants
+                )
+                carboxylic_acid_in_product = checker.check_fg("Carboxylic acid", product)
+
+                print(
+                    f"Manual check - Forward: Carboxylic acid in reactants: {carboxylic_acid_in_reactants}, "
+                    f"Alcohol in reactants: {alcohol_in_reactants}, Ester in product: {ester_in_product}"
+                )
+                print(
+                    f"Manual check - Reverse: Ester in reactants: {ester_in_reactants}, "
+                    f"Carboxylic acid in product: {carboxylic_acid_in_product}"
                 )
 
-                if not epoxide_in_reactants:
-                    epoxide_formation_found = True
-                    epoxide_formation_depth = min(epoxide_formation_depth, depth)
-                    print(f"Epoxide formation detected at depth {depth}")
+                # Forward esterification check
+                if carboxylic_acid_in_reactants and alcohol_in_reactants and ester_in_product:
+                    print(f"Forward esterification detected through functional group analysis")
+                    esterification_detected = True
+                    return
 
-        # Traverse children
+                # Reverse esterification check (hydrolysis)
+                if ester_in_reactants and carboxylic_acid_in_product:
+                    print(
+                        f"Reverse esterification (hydrolysis) detected through functional group analysis"
+                    )
+                    esterification_detected = True
+                    return
+
+                # Check for acyl halide esterification
+                acyl_halide_in_reactants = any(
+                    checker.check_fg("Acyl halide", reactant) for reactant in reactants
+                )
+                if acyl_halide_in_reactants and alcohol_in_reactants and ester_in_product:
+                    print(f"Acyl halide esterification detected through functional group analysis")
+                    esterification_detected = True
+                    return
+
+            except Exception as e:
+                print(f"Error in manual esterification check: {e}")
+
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if epoxide formation is late-stage (depth 0 or 1)
-    late_stage = epoxide_formation_found and epoxide_formation_depth <= 1
-
-    if late_stage:
-        print("Late-stage epoxide formation strategy detected")
-
-    return late_stage
+    print(f"Final result: esterification_detected = {esterification_detected}")
+    return esterification_detected

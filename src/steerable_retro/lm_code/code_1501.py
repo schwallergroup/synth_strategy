@@ -2,74 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a protection-deprotection sequence in the synthetic route,
-    specifically looking for ketone protection via ketal formation.
+    Detects if the synthetic route includes a nucleophilic aromatic substitution
+    (displacement of halide by amine).
     """
-    ketone_pattern = Chem.MolFromSmarts("[#6][C](=[O])[#6]")
-    ketal_pattern = Chem.MolFromSmarts("[#6]1[#8][#6][#6][#8]1")
-    protection_step = False
-    deprotection_step = False
+    has_snar = False
 
     def dfs_traverse(node):
-        nonlocal protection_step, deprotection_step
+        nonlocal has_snar
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+                # Look for a reaction where one reactant has an aryl halide and another has an amine
+                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[#9,#17,#35,#53]")
+                amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
 
-                # Check for protection: ketone + diol -> ketal
-                if product_mol and product_mol.HasSubstructMatch(ketal_pattern):
-                    has_ketone = any(
-                        r_mol and r_mol.HasSubstructMatch(ketone_pattern)
-                        for r_mol in reactants_mols
-                        if r_mol
-                    )
-                    if has_ketone:
-                        protection_step = True
-                        print("Detected ketone protection step")
+                # Check if product has aryl amine
+                aryl_amine_pattern = Chem.MolFromSmarts("[c]-[#7]")
 
-                # Check for deprotection: ketal -> ketone + diol
-                has_ketal = any(
-                    r_mol and r_mol.HasSubstructMatch(ketal_pattern)
-                    for r_mol in reactants_mols
-                    if r_mol
-                )
-                if has_ketal and product_mol and product_mol.HasSubstructMatch(ketone_pattern):
-                    deprotection_step = True
-                    print("Detected ketal deprotection step")
+                has_aryl_halide = False
+                has_amine = False
+
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(aryl_halide_pattern):
+                            has_aryl_halide = True
+                        if mol.HasSubstructMatch(amine_pattern):
+                            has_amine = True
+
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(aryl_amine_pattern):
+                    if has_aryl_halide and has_amine:
+                        has_snar = True
+                        print(f"Found nucleophilic aromatic substitution: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Return True if both protection and deprotection steps are detected
-    return protection_step and deprotection_step
+    return has_snar

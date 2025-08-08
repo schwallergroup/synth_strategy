@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,68 +54,122 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route involves a urea disconnection strategy.
+    This function detects if the synthesis has a late-stage amide coupling
+    (amide formation in the final step or penultimate step).
     """
-    urea_disconnection_found = False
+    has_late_stage_amide = False
 
-    def dfs_traverse(node):
-        nonlocal urea_disconnection_found
+    # Determine if route starts with a molecule (product) or reaction
+    starts_with_molecule = route["type"] == "mol"
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+    def is_amide_formation_reaction(rsmi, reactants_smiles, product_smiles):
+        """Helper function to check if a reaction is an amide formation"""
+        # Check for amide in product
+        has_amide_in_product = (
+            checker.check_fg("Primary amide", product_smiles)
+            or checker.check_fg("Secondary amide", product_smiles)
+            or checker.check_fg("Tertiary amide", product_smiles)
+        )
 
-            # Check if this is a urea synthesis reaction directly
-            urea_reactions = [
-                "Urea synthesis via isocyanate and primary amine",
-                "Urea synthesis via isocyanate and secondary amine",
-                "Urea synthesis via isocyanate and diazo",
-                "Urea synthesis via isocyanate and sulfonamide",
-                "urea",
-            ]
+        print(f"Product contains amide: {has_amide_in_product}")
 
-            for reaction_type in urea_reactions:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Found urea disconnection strategy: {reaction_type}")
-                    urea_disconnection_found = True
-                    return
+        if not has_amide_in_product:
+            return False
 
-            # If no direct reaction match, check for the pattern manually
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        # Check for amide in reactants
+        has_amide_in_reactants = any(
+            checker.check_fg("Primary amide", r)
+            or checker.check_fg("Secondary amide", r)
+            or checker.check_fg("Tertiary amide", r)
+            for r in reactants_smiles
+        )
 
-            # Check for urea or thiourea in product
-            product_has_urea = checker.check_fg("Urea", product)
-            product_has_thiourea = checker.check_fg("Thiourea", product)
+        print(f"Reactants contain amide: {has_amide_in_reactants}")
 
-            if product_has_urea or product_has_thiourea:
-                # Check for isocyanate/isothiocyanate and amine in reactants
-                isocyanate_found = False
-                amine_found = False
+        if has_amide_in_reactants:
+            return False  # Amide was already present, not newly formed
 
-                for reactant in reactants:
-                    if checker.check_fg("Isocyanate", reactant):
-                        isocyanate_found = True
-                    elif checker.check_fg("Isothiocyanate", reactant):
-                        isocyanate_found = True
+        # Check for amide coupling reaction types
+        is_amide_coupling = (
+            checker.check_reaction("Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi)
+            or checker.check_reaction(
+                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                rsmi,
+            )
+            or checker.check_reaction(
+                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
+                rsmi,
+            )
+            or checker.check_reaction("Acyl chloride with ammonia to amide", rsmi)
+            or checker.check_reaction(
+                "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+            )
+            or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
+            or checker.check_reaction("Ester with primary amine to amide", rsmi)
+            or checker.check_reaction("Ester with ammonia to amide", rsmi)
+            or checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi)
+            or checker.check_reaction("Ester with secondary amine to amide", rsmi)
+            or checker.check_reaction("Acylation of primary amines", rsmi)
+            or checker.check_reaction("Acylation of secondary amines", rsmi)
+            or checker.check_reaction("Schotten-Baumann_amide", rsmi)
+            or checker.check_reaction("Schotten-Baumann to ester", rsmi)
+            or checker.check_reaction("Carboxylic acid to amide conversion", rsmi)
+        )
 
-                    # Check for various types of amines
-                    if (
-                        checker.check_fg("Primary amine", reactant)
-                        or checker.check_fg("Secondary amine", reactant)
-                        or checker.check_fg("Aniline", reactant)
-                    ):
-                        amine_found = True
+        print(f"Reaction is amide coupling: {is_amide_coupling}")
 
-                if isocyanate_found and amine_found:
-                    fg_type = "Urea" if product_has_urea else "Thiourea"
-                    print(f"Found {fg_type} disconnection strategy through pattern matching")
-                    urea_disconnection_found = True
+        if is_amide_coupling:
+            return True
 
-        # Traverse children
+        # Alternative check using reactant functional groups if reaction check fails
+        has_acid = any(checker.check_fg("Carboxylic acid", r) for r in reactants_smiles)
+        has_acyl_halide = any(checker.check_fg("Acyl halide", r) for r in reactants_smiles)
+        has_ester = any(checker.check_fg("Ester", r) for r in reactants_smiles)
+        has_anhydride = any(checker.check_fg("Anhydride", r) for r in reactants_smiles)
+
+        has_primary_amine = any(checker.check_fg("Primary amine", r) for r in reactants_smiles)
+        has_secondary_amine = any(checker.check_fg("Secondary amine", r) for r in reactants_smiles)
+        has_ammonia = any(
+            "N" in r and len(r) <= 3 for r in reactants_smiles
+        )  # Simple check for ammonia
+
+        if (has_acid or has_acyl_halide or has_ester or has_anhydride) and (
+            has_primary_amine or has_secondary_amine or has_ammonia
+        ):
+            print("Detected amide coupling through functional group analysis")
+            return True
+
+        return False
+
+    def dfs_traverse(node, depth=0):
+        nonlocal has_late_stage_amide
+
+        print(f"Traversing node type: {node['type']} at depth: {depth}")
+
+        # Check if this is a late-stage reaction
+        is_late_stage = (starts_with_molecule and depth <= 2) or (
+            not starts_with_molecule and depth <= 1
+        )
+
+        if node["type"] == "reaction" and is_late_stage:
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                print(f"Analyzing potential late-stage reaction: {rsmi}")
+
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
+
+                if is_amide_formation_reaction(rsmi, reactants_smiles, product_smiles):
+                    has_late_stage_amide = True
+                    print("Detected late-stage amide coupling")
+            except Exception as e:
+                print(f"Error analyzing reaction: {e}")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return urea_disconnection_found
+    return has_late_stage_amide

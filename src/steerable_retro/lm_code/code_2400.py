@@ -2,84 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the route contains both amide formation and amide reduction steps.
+    This function detects if the synthesis follows a linear strategy without
+    convergent steps involving multiple complex fragments.
     """
-    has_amide_formation = False
-    has_amide_reduction = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal has_amide_formation, has_amide_reduction
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product = Chem.MolFromSmiles(product_smiles)
+                # Count complex reactants (more than 10 atoms)
+                complex_reactants = 0
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.GetNumAtoms() > 10:
+                        complex_reactants += 1
 
-            if product and all(r for r in reactants):
-                # Check for amide formation
-                amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
-                amine_pattern = Chem.MolFromSmarts("[N]")
-                carboxyl_pattern = Chem.MolFromSmarts("[C](=[O])[O,Cl,Br,I,F]")
+                # If more than one complex reactant, it's likely a convergent step
+                if complex_reactants > 1:
+                    print(f"Detected convergent step with {complex_reactants} complex reactants")
+                    is_linear = False
 
-                product_has_amide = product.HasSubstructMatch(amide_pattern)
-                reactants_have_amide = any(
-                    r.HasSubstructMatch(amide_pattern) for r in reactants if r
-                )
-                reactants_have_amine = any(
-                    r.HasSubstructMatch(amine_pattern) for r in reactants if r
-                )
-                reactants_have_carboxyl = any(
-                    r.HasSubstructMatch(carboxyl_pattern) for r in reactants if r
-                )
-
-                # Amide formation: carboxyl + amine → amide
-                if (
-                    product_has_amide
-                    and not reactants_have_amide
-                    and reactants_have_amine
-                    and reactants_have_carboxyl
-                ):
-                    has_amide_formation = True
-                    print(f"Amide formation detected in reaction: {rsmi}")
-
-                # Amide reduction: amide → amine
-                amine_ch2n_pattern = Chem.MolFromSmarts("[C][N]")
-                if (
-                    reactants_have_amide
-                    and not product_has_amide
-                    and product.HasSubstructMatch(amine_ch2n_pattern)
-                ):
-                    has_amide_reduction = True
-                    print(f"Amide reduction detected in reaction: {rsmi}")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from root
     dfs_traverse(route)
-    print(f"Bidirectional amide transformations: {has_amide_formation and has_amide_reduction}")
-    return has_amide_formation and has_amide_reduction
+
+    if is_linear:
+        print("Detected linear synthesis strategy")
+
+    return is_linear

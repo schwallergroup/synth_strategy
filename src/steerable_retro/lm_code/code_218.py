@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,127 +54,58 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy where a nitro group is reduced to an amine
-    before a coupling reaction occurs later in the synthesis.
+    This function detects a synthetic strategy involving isocyanate intermediates
+    that undergo cyclization to form nitrogen heterocycles.
     """
-    # Track molecules with nitro groups and their reduced amine products
-    molecule_info = {}
-    # Track reactions and their depths
-    nitro_reductions = {}  # {product_smiles: depth}
-    coupling_reactions = {}  # {product_smiles: (depth, reactant_smiles)}
+    # Track molecules with isocyanates and their positions in the route
+    isocyanate_molecules = set()
+    # Track cyclization reactions that form nitrogen heterocycles
+    cyclization_reactions = []
+    # Track the depth of each node to determine sequence
+    node_depths = {}
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            # Check if molecule has nitro group
-            if checker.check_fg("Nitro group", mol_smiles):
-                molecule_info[mol_smiles] = molecule_info.get(mol_smiles, {})
-                molecule_info[mol_smiles]["has_nitro"] = True
-                molecule_info[mol_smiles]["depth"] = depth
-                print(f"Found molecule with nitro group at depth {depth}: {mol_smiles}")
+        # Store the depth of this node
+        if node["type"] == "mol" and "smiles" in node and node["smiles"]:
+            node_depths[node["smiles"]] = depth
 
-            # Check if molecule has primary amine
-            if checker.check_fg("Primary amine", mol_smiles):
-                molecule_info[mol_smiles] = molecule_info.get(mol_smiles, {})
-                molecule_info[mol_smiles]["has_amine"] = True
-                molecule_info[mol_smiles]["depth"] = depth
-                print(f"Found molecule with primary amine at depth {depth}: {mol_smiles}")
+            # Check for isocyanate in molecules
+            if checker.check_fg("Isocyanate", node["smiles"]):
+                print(f"Found isocyanate in molecule: {node['smiles']} at depth {depth}")
+                isocyanate_molecules.add(node["smiles"])
 
-        elif node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for nitro reduction
-                try:
-                    reactant_has_nitro = any(
-                        checker.check_fg("Nitro group", reactant) for reactant in reactants
-                    )
-                    product_has_amine = checker.check_fg("Primary amine", product)
+            # Check if this is a cyclization reaction forming a nitrogen heterocycle
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-                    # Check if this is a nitro reduction reaction
-                    is_nitro_reduction = checker.check_reaction(
-                        "Reduction of nitro groups to amines", rsmi
-                    )
+            if all(reactant_mols) and product_mol:
+                # Count rings in reactants and product
+                reactant_ring_count = sum(mol.GetRingInfo().NumRings() for mol in reactant_mols)
+                product_ring_count = product_mol.GetRingInfo().NumRings()
 
-                    # If not explicitly a nitro reduction, check if nitro disappears and amine appears
-                    if not is_nitro_reduction and reactant_has_nitro and product_has_amine:
-                        # Check if nitro group is gone in product
-                        if not checker.check_fg("Nitro group", product):
-                            is_nitro_reduction = True
+                # Check if product has more rings than reactants (cyclization)
+                if product_ring_count > reactant_ring_count:
+                    # Check if the new ring contains nitrogen (nitrogen heterocycle)
+                    nitrogen_in_ring = False
+                    ring_info = product_mol.GetRingInfo()
+                    for ring_atoms in ring_info.AtomRings():
+                        for atom_idx in ring_atoms:
+                            atom = product_mol.GetAtomWithIdx(atom_idx)
+                            if atom.GetAtomicNum() == 7:  # Nitrogen
+                                nitrogen_in_ring = True
+                                break
+                        if nitrogen_in_ring:
+                            break
 
-                    if reactant_has_nitro and product_has_amine and is_nitro_reduction:
-                        print(f"Found nitro reduction at depth {depth}, rsmi: {rsmi}")
-                        nitro_reductions[product] = depth
-
-                        # Update molecule info
-                        for reactant in reactants:
-                            if checker.check_fg("Nitro group", reactant):
-                                molecule_info[reactant] = molecule_info.get(reactant, {})
-                                molecule_info[reactant]["has_nitro"] = True
-                                molecule_info[reactant]["reduced_to"] = product
-                                molecule_info[reactant]["depth"] = depth
-
-                        molecule_info[product] = molecule_info.get(product, {})
-                        molecule_info[product]["has_amine"] = True
-                        molecule_info[product]["reduced_from"] = [
-                            r for r in reactants if checker.check_fg("Nitro group", r)
-                        ]
-                        molecule_info[product]["depth"] = depth
-                except Exception as e:
-                    print(f"Error checking nitro reduction: {e}")
-
-                # Check for coupling reactions involving amines
-                try:
-                    # Check for various coupling reactions
-                    coupling_reactions_list = [
-                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
-                        "Suzuki coupling with boronic acids",
-                        "Sonogashira alkyne_aryl halide",
-                        "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                        "Carboxylic acid with primary amine to amide",
-                        "Ester with primary amine to amide",
-                    ]
-
-                    is_coupling = any(
-                        checker.check_reaction(rxn_type, rsmi)
-                        for rxn_type in coupling_reactions_list
-                    )
-
-                    # Also check for general coupling patterns if specific reaction types aren't detected
-                    if not is_coupling:
-                        # Check for amide formation (common coupling product)
-                        if checker.check_fg("Primary amide", product) or checker.check_fg(
-                            "Secondary amide", product
-                        ):
-                            reactant_has_amine = any(
-                                checker.check_fg("Primary amine", reactant)
-                                for reactant in reactants
-                            )
-                            reactant_has_acid = any(
-                                checker.check_fg("Carboxylic acid", reactant)
-                                for reactant in reactants
-                            )
-                            if reactant_has_amine and reactant_has_acid:
-                                is_coupling = True
-
-                    if is_coupling:
-                        # Check if any reactant has primary amine
-                        amine_reactants = [
-                            r for r in reactants if checker.check_fg("Primary amine", r)
-                        ]
-
-                        if amine_reactants:
-                            print(
-                                f"Found coupling reaction using amine at depth {depth}, rsmi: {rsmi}"
-                            )
-                            coupling_reactions[product] = (depth, amine_reactants)
-                except Exception as e:
-                    print(f"Error checking coupling reaction: {e}")
+                    if nitrogen_in_ring:
+                        print(f"Found cyclization forming nitrogen heterocycle: {rsmi}")
+                        # Store the reaction and its reactants for later analysis
+                        cyclization_reactions.append((rsmi, reactants, product, depth))
 
         # Traverse children
         for child in node.get("children", []):
@@ -180,52 +114,24 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    print(
-        f"Found {len(nitro_reductions)} nitro reductions and {len(coupling_reactions)} coupling reactions"
-    )
+    # Check if we have both isocyanates and cyclization reactions
+    if not isocyanate_molecules or not cyclization_reactions:
+        return False
 
-    # Check if any nitro-reduced amine is used in a coupling reaction
-    for product, (coupling_depth, amine_reactants) in coupling_reactions.items():
-        for amine_reactant in amine_reactants:
-            # Check if this amine was produced by nitro reduction
-            if amine_reactant in molecule_info and molecule_info[amine_reactant].get(
-                "reduced_from"
-            ):
-                nitro_reduction_depth = molecule_info[amine_reactant]["depth"]
-
-                print(
-                    f"Found connection: amine {amine_reactant} from nitro reduction at depth {nitro_reduction_depth} used in coupling at depth {coupling_depth}"
-                )
-
-                # Check if nitro reduction occurs before coupling (higher depth = earlier in synthesis)
-                if nitro_reduction_depth > coupling_depth:
+    # Check if any cyclization reaction uses an isocyanate
+    for rxn, reactants, product, rxn_depth in cyclization_reactions:
+        for reactant in reactants:
+            # If this reactant is or contains an isocyanate
+            for isocyanate_mol in isocyanate_molecules:
+                isocyanate_depth = node_depths.get(isocyanate_mol, -1)
+                # Check if the isocyanate appears before the cyclization in the synthesis route
+                # (higher depth means earlier in the synthesis)
+                if isocyanate_depth >= rxn_depth and (
+                    reactant == isocyanate_mol or checker.check_fg("Isocyanate", reactant)
+                ):
                     print(
-                        f"Confirmed nitro reduction before coupling: reduction at depth {nitro_reduction_depth}, coupling at depth {coupling_depth}"
+                        f"Confirmed isocyanate cyclization strategy: isocyanate at depth {isocyanate_depth} used in cyclization at depth {rxn_depth}"
                     )
                     return True
-
-    # Also check if there's any nitro reduction and coupling reaction in the correct order
-    if nitro_reductions and coupling_reactions:
-        min_nitro_depth = min(nitro_reductions.values())
-        min_coupling_depth = min(depth for depth, _ in coupling_reactions.values())
-
-        print(f"Final depths - nitro reduction: {min_nitro_depth}, coupling: {min_coupling_depth}")
-
-        # In retrosynthetic analysis, higher depth means earlier in synthesis
-        if min_nitro_depth > min_coupling_depth:
-            print(
-                f"Confirmed nitro reduction before coupling based on depths: reduction at {min_nitro_depth}, coupling at {min_coupling_depth}"
-            )
-            return True
-    else:
-        print(
-            f"Final counts - nitro reductions: {len(nitro_reductions)}, coupling reactions: {len(coupling_reactions)}"
-        )
-
-    # Check for molecules that have both nitro and amine groups
-    for mol_smiles, info in molecule_info.items():
-        if info.get("has_nitro") and info.get("has_amine"):
-            print(f"Found molecule with both nitro and amine groups: {mol_smiles}")
-            # This might indicate a partial reduction or a molecule with multiple functional groups
 
     return False

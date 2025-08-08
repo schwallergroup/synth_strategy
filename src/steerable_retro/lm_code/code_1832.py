@@ -2,60 +2,94 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving a long aliphatic chain (C12+)
-    with carboxylic acid functionalities.
+    Detects if the synthesis route involves a dibrominated aromatic intermediate.
     """
-    has_long_chain = False
-    has_carboxylic_acid = False
+    dibrominated_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_long_chain, has_carboxylic_acid
+    def dfs_traverse(node):
+        nonlocal dibrominated_found
 
         if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if not mol:
-                return
+            smiles = node["smiles"]
+            # First check if the molecule contains aromatic halides
+            if checker.check_fg("Aromatic halide", smiles):
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    # Count bromine atoms attached to aromatic carbons
+                    bromine_count = 0
+                    for atom in mol.GetAtoms():
+                        # Check if atom is bromine
+                        if atom.GetSymbol() == "Br":
+                            # Get the atom it's connected to
+                            neighbors = atom.GetNeighbors()
+                            if neighbors and len(neighbors) > 0:
+                                # Check if the neighbor is aromatic
+                                if neighbors[0].GetIsAromatic():
+                                    bromine_count += 1
 
-            # Check for carboxylic acid
-            if mol.HasSubstructMatch(Chem.MolFromSmarts("C(=O)[OH]")):
-                has_carboxylic_acid = True
-                print(f"Found carboxylic acid at depth {depth}")
-
-            # Check for long aliphatic chain (C12+)
-            # This is a simplified approach - in practice you might need a more sophisticated algorithm
-            aliphatic_chain_pattern = Chem.MolFromSmarts("CCCCCCCCCCCCC")  # C13 chain
-            if mol.HasSubstructMatch(aliphatic_chain_pattern):
-                has_long_chain = True
-                print(f"Found long aliphatic chain at depth {depth}")
+                    # If there are at least 2 bromine atoms on aromatic rings, it's dibrominated
+                    if bromine_count >= 2:
+                        print(f"Dibrominated aromatic intermediate found: {smiles}")
+                        print(f"Number of bromine atoms on aromatic rings: {bromine_count}")
+                        dibrominated_found = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    strategy_present = has_long_chain and has_carboxylic_acid
-    print(f"Long chain carboxylic acid strategy detected: {strategy_present}")
-    return strategy_present
+    print(f"Dibrominated aromatic intermediate strategy: {dibrominated_found}")
+    return dibrominated_found

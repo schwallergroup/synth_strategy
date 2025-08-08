@@ -2,74 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves sequential functionalization of aromatic/heteroaromatic systems.
+    This function detects a linear synthesis strategy with a late-stage fragment coupling.
     """
-    functionalization_steps = 0
+    # Track the number of fragments combined at each depth
+    fragment_couplings = {}
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal functionalization_steps
+    def dfs_traverse(node, depth=0):
+        nonlocal max_depth
+        max_depth = max(max_depth, depth)
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
-                reactants = rsmi.split(">")[0].split(".")
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-                # Check if this is an aromatic functionalization
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    product_mol and product_mol.GetNumAtoms() > 5
-                ):  # Ensure it's not a trivial molecule
-                    aromatic_pattern = Chem.MolFromSmarts("c")
-                    if product_mol.HasSubstructMatch(aromatic_pattern):
-                        # Common functionalization patterns
-                        patterns = [
-                            ("Halogenation", Chem.MolFromSmarts("c[Br,I,Cl]")),
-                            ("Amination", Chem.MolFromSmarts("c[N]")),
-                            ("Alkoxylation", Chem.MolFromSmarts("c[O][C]")),
-                            ("Metallation", Chem.MolFromSmarts("c[Sn,B,Zn,Mg]")),
-                            ("Sulfonylation", Chem.MolFromSmarts("c[S](=[O])(=[O])[O,N]")),
-                        ]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-                        for name, pattern in patterns:
-                            if product_mol.HasSubstructMatch(pattern):
-                                # Check if this is a new functionality
-                                is_new = True
-                                for reactant in reactants:
-                                    reactant_mol = Chem.MolFromSmiles(reactant)
-                                    if reactant_mol and reactant_mol.HasSubstructMatch(pattern):
-                                        is_new = False
-                                        break
-
-                                if is_new:
-                                    print(f"Found {name} of aromatic system")
-                                    functionalization_steps += 1
-                                    break
+            # Count number of fragments being combined
+            num_fragments = len(reactants_smiles)
+            if num_fragments > 1:
+                fragment_couplings[depth] = num_fragments
+                print(f"Found fragment coupling at depth {depth} with {num_fragments} fragments")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return functionalization_steps >= 2  # At least 2 functionalization steps
+
+    # Check if the strategy is present:
+    # 1. Linear synthesis: most steps have only one fragment
+    # 2. Late-stage coupling: fragment coupling at depth 0 or 1
+    has_late_coupling = 0 in fragment_couplings or 1 in fragment_couplings
+    is_mostly_linear = (
+        len(fragment_couplings) <= max_depth / 2
+    )  # Less than half of steps are couplings
+
+    strategy_present = has_late_coupling and is_mostly_linear
+
+    if strategy_present:
+        print("Detected linear synthesis with late-stage fragment coupling")
+
+    return strategy_present

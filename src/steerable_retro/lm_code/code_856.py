@@ -2,63 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving chain extension via
-    C-C bond formation using an activated methylene (e.g., chloromethyl).
+    This function detects if the synthetic route uses nitro groups as masked amines
+    that are later reduced to amines.
     """
-    chain_extension_detected = False
+    nitro_reduction_found = False
 
-    def dfs_traverse(node):
-        nonlocal chain_extension_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal nitro_reduction_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for chain extension via alkylation
-            # Look for activated methylene (chloromethyl) in reactants
-            chloromethyl_pattern = Chem.MolFromSmarts("[Cl][CH2][#6]")
+                # Check for nitro reduction pattern
+                nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                product_mol = Chem.MolFromSmiles(product)
 
-            if product_mol and any(
-                r and r.HasSubstructMatch(chloromethyl_pattern) for r in reactant_mols
-            ):
-                # Check if the product has a new C-C bond that wasn't in the reactants
-                # This is a simplification - in a real implementation, you'd need more sophisticated
-                # atom mapping and comparison
-                if len(reactants) >= 2:  # Need at least two reactants for C-C bond formation
-                    print(f"Detected potential chain extension via alkylation: {rsmi}")
-                    chain_extension_detected = True
+                if product_mol and product_mol.HasSubstructMatch(amine_pattern):
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
+                            nitro_reduction_found = True
+                            print(f"Nitro reduction detected at depth {depth}")
+                            break
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Chain extension via alkylation strategy detected: {chain_extension_detected}")
-    return chain_extension_detected
+    return nitro_reduction_found

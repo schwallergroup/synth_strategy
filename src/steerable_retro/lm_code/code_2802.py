@@ -2,87 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving sequential functionalization
-    of pyridine rings, including N-oxide formation and aromatic substitution.
+    This function detects if the synthesis involves multiple chloride installations
+    as leaving groups (e.g., alcohol to chloride, nitro to chloride).
     """
-    # Track if we found each key step
-    pyridine_present = False
-    n_oxide_formation = False
-    aromatic_substitution = False
+    chloride_installations = 0
 
     def dfs_traverse(node):
-        nonlocal pyridine_present, n_oxide_formation, aromatic_substitution
+        nonlocal chloride_installations
 
-        if node["type"] == "mol":
-            # Check for pyridine in any molecule
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                pyridine_pattern = Chem.MolFromSmarts("c1ccccn1")
-                if mol.HasSubstructMatch(pyridine_pattern):
-                    print("Found pyridine structure")
-                    pyridine_present = True
-
-        elif node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for N-oxide formation
-            if pyridine_present and not n_oxide_formation:
-                product_mol = Chem.MolFromSmiles(product_part)
-                n_oxide_pattern = Chem.MolFromSmarts("[n+]-[O-]")
-                if product_mol and product_mol.HasSubstructMatch(n_oxide_pattern):
-                    print("Found N-oxide formation")
-                    n_oxide_formation = True
+            # Check for alcohol to chloride transformation
+            alcohol_pattern = Chem.MolFromSmarts("[#6][OH]")
+            nitro_pattern = Chem.MolFromSmarts("[#6][N+](=[O])[O-]")
 
-            # Check for aromatic substitution (any new group on aromatic ring)
-            if n_oxide_formation and not aromatic_substitution:
-                reactants = reactants_part.split(".")
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-                product_mol = Chem.MolFromSmiles(product_part)
+            alcohol_present = False
+            nitro_present = False
 
-                # Look for nitration, halogenation, or other aromatic substitutions
-                nitro_pattern = Chem.MolFromSmarts("[#6]~[N+](~[O-])~[O-]")
-                halogen_pattern = Chem.MolFromSmarts("[#6]-[F,Cl,Br,I]")
-                ether_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6]")
+            for r_smi in reactants_smiles:
+                try:
+                    r_mol = Chem.MolFromSmiles(r_smi)
+                    if r_mol:
+                        if r_mol.HasSubstructMatch(alcohol_pattern):
+                            alcohol_present = True
+                        if r_mol.HasSubstructMatch(nitro_pattern):
+                            nitro_present = True
+                except:
+                    continue
 
-                if product_mol:
-                    if (
-                        product_mol.HasSubstructMatch(nitro_pattern)
-                        or product_mol.HasSubstructMatch(halogen_pattern)
-                        or product_mol.HasSubstructMatch(ether_pattern)
-                    ):
-                        print("Found aromatic substitution")
-                        aromatic_substitution = True
+            # Check if product has chloride where alcohol or nitro was
+            try:
+                p_mol = Chem.MolFromSmiles(product_smiles)
+                chloride_pattern = Chem.MolFromSmarts("[#6]Cl")
 
-        # Continue traversing
+                if p_mol and p_mol.HasSubstructMatch(chloride_pattern):
+                    if alcohol_present or nitro_present:
+                        chloride_installations += 1
+                        print(f"Detected chloride installation (count: {chloride_installations})")
+            except:
+                pass
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return True if all steps of the strategy were found
-    return pyridine_present and n_oxide_formation and aromatic_substitution
+    return chloride_installations >= 2  # Return True if at least 2 chloride installations

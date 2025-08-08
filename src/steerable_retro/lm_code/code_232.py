@@ -2,108 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the formation of a quinazoline core during the synthesis.
+    This function detects a strategy involving sequential aromatic nucleophilic substitutions
+    where amine nucleophiles displace halogens on aromatic rings.
     """
-    from rdkit import Chem
+    aromatic_subst_count = 0
 
-    quinazoline_formation_detected = False
-
-    def dfs_traverse(node, depth=0):
-        nonlocal quinazoline_formation_detected
+    def dfs_traverse(node):
+        nonlocal aromatic_subst_count
 
         if node["type"] == "reaction":
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if this is a Niementowski quinazoline reaction
-                if checker.check_reaction("{Niementowski_quinazoline}", rsmi):
-                    print(f"Detected Niementowski quinazoline reaction at depth {depth}: {rsmi}")
-                    quinazoline_formation_detected = True
-                    return
+            # Check for aromatic nucleophilic substitution pattern
+            # Look for halogen in reactants and amine-aromatic bond in product
+            halogen_pattern = Chem.MolFromSmarts("[c][F,Cl,Br,I]")
+            amine_pattern = Chem.MolFromSmarts("[c][NH][c,C]")
 
-                # Check if product contains a quinazoline structure
-                try:
-                    product_has_quinazoline = checker.check_ring("quinazoline", product_smiles)
+            halogen_found = False
+            for reactant in reactants:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol and mol.HasSubstructMatch(halogen_pattern):
+                    halogen_found = True
+                    break
 
-                    if product_has_quinazoline:
-                        print(f"Product contains quinazoline at depth {depth}: {product_smiles}")
+            product_mol = Chem.MolFromSmiles(product)
+            amine_bond_found = product_mol and product_mol.HasSubstructMatch(amine_pattern)
 
-                        # Check if any reactant has quinazoline
-                        reactant_has_quinazoline = False
-                        for reactant_smiles in reactants_smiles:
-                            if checker.check_ring("quinazoline", reactant_smiles):
-                                reactant_has_quinazoline = True
-                                print(f"Reactant already contains quinazoline: {reactant_smiles}")
-                                break
-
-                        if not reactant_has_quinazoline:
-                            print(
-                                f"Quinazoline core formation detected in reaction at depth {depth}: {rsmi}"
-                            )
-                            quinazoline_formation_detected = True
-                except Exception as e:
-                    print(f"Error checking quinazoline structure: {e}")
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+            if halogen_found and amine_bond_found:
+                aromatic_subst_count += 1
+                print(
+                    f"Found aromatic nucleophilic substitution at depth {node.get('depth', 'unknown')}"
+                )
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Call dfs_traverse on the root node
+    # Start traversal
     dfs_traverse(route)
-    print(f"Quinazoline formation detected: {quinazoline_formation_detected}")
 
-    return quinazoline_formation_detected
+    # Return True if we found at least 2 sequential aromatic nucleophilic substitutions
+    result = aromatic_subst_count >= 2
+    print(f"Sequential aromatic nucleophilic substitution strategy detected: {result}")
+    return result

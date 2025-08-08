@@ -2,68 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving multiple alcohol to leaving group
-    conversions (mesylate, chloride, etc.) throughout the synthesis.
+    Detects if the synthetic route involves maintaining a fluorine substituent throughout the synthesis,
+    particularly on a heterocyclic structure.
     """
-    alcohol_conversions = 0
+    # Track if fluorine is present at each step
+    steps_with_fluorine = []
 
-    def dfs_traverse(node):
-        nonlocal alcohol_conversions
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check for alcohol in reactants
-            alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
-
-            # Check for mesylate or chloride in product
-            mesylate_pattern = Chem.MolFromSmarts("[#6]-[#8]-S(=O)(=O)-[#6]")
-            chloride_pattern = Chem.MolFromSmarts("[#6]-[Cl]")
-
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "mol":
             try:
-                product_mol = Chem.MolFromSmiles(product)
-
-                for reactant in reactants:
-                    if reactant:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(alcohol_pattern):
-                            if product_mol and (
-                                product_mol.HasSubstructMatch(mesylate_pattern)
-                                or product_mol.HasSubstructMatch(chloride_pattern)
-                            ):
-                                print(
-                                    "Detected alcohol to leaving group conversion in reaction:",
-                                    rsmi,
-                                )
-                                alcohol_conversions += 1
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol is not None:
+                    # Check for fluorine attached to aromatic carbon
+                    fluorine_pattern = Chem.MolFromSmarts("c-[F]")
+                    if mol.HasSubstructMatch(fluorine_pattern):
+                        steps_with_fluorine.append(depth)
+                        print(f"Found fluorine-containing structure at depth {depth}")
             except:
-                pass
+                print("Error processing molecule SMILES")
 
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return alcohol_conversions >= 2  # At least 2 alcohol conversions
+
+    # Check if fluorine is present throughout multiple steps
+    return len(steps_with_fluorine) >= 2

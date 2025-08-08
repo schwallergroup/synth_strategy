@@ -2,58 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy where each reaction
-    has exactly one non-commercial reactant.
+    This function detects a synthetic strategy involving heterocyclic ring opening
+    in the early stages of synthesis.
     """
-    is_linear = True
+    ring_opening_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+    def dfs_traverse(node):
+        nonlocal ring_opening_detected
 
-        if node["type"] == "reaction":
-            if "children" in node:
-                # Count non-commercial reactants (those that have children)
-                non_commercial_count = sum(
-                    1
-                    for child in node["children"]
-                    if child["type"] == "mol" and not child.get("in_stock", False)
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
+
+            # Convert SMILES to molecules
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product_mol = Chem.MolFromSmiles(product_smiles)
+
+            if not all(reactant_mols) or not product_mol:
+                print("Warning: Could not parse all molecules in reaction")
+                return
+
+            # Count rings in reactants and product
+            reactant_ring_counts = [rdMolDescriptors.CalcNumRings(mol) for mol in reactant_mols]
+            product_ring_count = rdMolDescriptors.CalcNumRings(product_mol)
+
+            total_reactant_rings = sum(reactant_ring_counts)
+
+            # Check if product has fewer rings than reactants (ring opening)
+            if product_ring_count < total_reactant_rings:
+                # Check if the molecules contain nitrogen (heterocycles)
+                nitrogen_in_reactants = any(
+                    mol.GetSubstructMatches(Chem.MolFromSmarts("[#7]")) for mol in reactant_mols
+                )
+                nitrogen_in_product = bool(
+                    product_mol.GetSubstructMatches(Chem.MolFromSmarts("[#7]"))
                 )
 
-                if non_commercial_count > 1:
-                    is_linear = False
-                    print(
-                        f"Found non-linear step at depth {depth} with {non_commercial_count} non-commercial reactants"
-                    )
+                if nitrogen_in_reactants and nitrogen_in_product:
+                    print(f"Heterocycle ring opening detected: {rsmi}")
+                    ring_opening_detected = True
 
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    if is_linear:
-        print("Synthesis follows a linear strategy")
-
-    return is_linear
+    return ring_opening_detected

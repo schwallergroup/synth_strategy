@@ -2,56 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy without
-    convergent steps (each reaction has only one non-commercial reactant).
+    This function detects thiazole ring formation in the synthetic route.
     """
-    is_linear = True
+    thiazole_pattern = Chem.MolFromSmarts("c1nc([#6])sc1")
+    thiazole_formed = False
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        nonlocal thiazole_formed
 
         if node["type"] == "reaction":
-            # Count non-commercial reactants
-            non_commercial_reactants = 0
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    non_commercial_reactants += 1
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-            # If more than one non-commercial reactant, it's not linear
-            if non_commercial_reactants > 1:
-                print(
-                    f"Detected convergent step with {non_commercial_reactants} non-commercial reactants"
-                )
-                is_linear = False
-                return
+                try:
+                    reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+
+                    if reactants_mol and product_mol:
+                        # Check if thiazole is in product but not in reactants
+                        if product_mol.HasSubstructMatch(
+                            thiazole_pattern
+                        ) and not reactants_mol.HasSubstructMatch(thiazole_pattern):
+                            thiazole_formed = True
+                            print(f"Thiazole formation detected in reaction: {rsmi}")
+                except Exception as e:
+                    print(f"Error processing reaction SMILES: {e}")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    if is_linear:
-        print("Detected linear synthesis strategy")
-
-    return is_linear
+    return thiazole_formed

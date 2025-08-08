@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,125 +54,94 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the final step in the synthesis is an esterification.
+    This function detects if the synthetic route involves chlorosulfonation of an aromatic ring.
     """
-    final_step_is_esterification = False
-    reaction_depths = []  # Track depths of all reactions
-    esterification_depths = []  # Track depths of esterification reactions
+    chlorosulfonation_found = False
 
-    def dfs_traverse(node, depth=0, reaction_depth=0):
-        nonlocal final_step_is_esterification
+    def dfs_traverse(node):
+        nonlocal chlorosulfonation_found
 
-        print(f"Traversing node at depth {depth}, type: {node['type']}")
-
-        # Check if this is a reaction node
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            print(
-                f"Checking reaction at depth {depth}, reaction_depth {reaction_depth}, RSMI: {rsmi}"
-            )
 
-            # Track this reaction depth
-            reaction_depths.append(reaction_depth)
+            # First check if this is directly classified as aromatic sulfonyl chlorination
+            if checker.check_reaction("Aromatic sulfonyl chlorination", rsmi):
+                print("Detected aromatic sulfonyl chlorination reaction directly")
+                chlorosulfonation_found = True
+                return
 
-            try:
-                # Check for various esterification reaction types
-                esterification_reactions = [
-                    "Esterification of Carboxylic Acids",
-                    "Schotten-Baumann to ester",
-                    "O-alkylation of carboxylic acids with diazo compounds",
-                    "Transesterification",
-                    "Oxidative esterification of primary alcohols",
-                    "Acetic anhydride and alcohol to ester",
-                ]
+            # If not directly classified, check for the reaction components
+            reactants_str = rsmi.split(">")[0]
+            product_str = rsmi.split(">")[-1]
 
-                is_esterification = False
-                for reaction_type in esterification_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(
-                            f"Detected esterification at depth {depth}, reaction_depth {reaction_depth}: {reaction_type}"
-                        )
-                        is_esterification = True
-                        break
+            # Split reactants and analyze each
+            reactants = reactants_str.split(".")
 
-                # If no specific esterification reaction was detected, check for functional group changes
-                if not is_esterification:
-                    reactants_part = rsmi.split(">")[0]
-                    product_part = rsmi.split(">")[-1]
+            # Check for chlorosulfonating agents in reactants
+            has_chlorosulfonating_agent = False
+            has_aromatic_reactant = False
+            aromatic_reactant_smiles = ""
+            has_sulfonyl_chloride_product = False
 
-                    # Check if reactants contain carboxylic acid and product contains ester
-                    reactants = reactants_part.split(".")
+            # Common chlorosulfonating agents
+            chlorosulfonating_agents = [
+                "ClSO3H",
+                "O=S(=O)(O)Cl",
+                "ClS(=O)(=O)OH",
+                "HSO3Cl",  # Chlorosulfonic acid
+                "O=S(=O)(Cl)Cl",
+                "ClS(=O)(=O)Cl",  # Sulfuryl chloride (SO2Cl2)
+                "SOCl2",
+                "ClS(=O)Cl",
+                "O=S(Cl)Cl",  # Thionyl chloride
+            ]
 
-                    acid_in_reactants = False
-                    alcohol_in_reactants = False
+            for reactant in reactants:
+                try:
+                    # Check if this reactant is a chlorosulfonating agent
+                    for agent in chlorosulfonating_agents:
+                        if agent in reactant:
+                            print(f"Found chlorosulfonating agent: {reactant}")
+                            has_chlorosulfonating_agent = True
+                            break
 
-                    for reactant in reactants:
-                        if checker.check_fg("Carboxylic acid", reactant):
-                            acid_in_reactants = True
-                            print(f"Found carboxylic acid in reactant: {reactant}")
-                        if (
-                            checker.check_fg("Primary alcohol", reactant)
-                            or checker.check_fg("Secondary alcohol", reactant)
-                            or checker.check_fg("Tertiary alcohol", reactant)
-                            or checker.check_fg("Aromatic alcohol", reactant)
-                            or checker.check_fg("Phenol", reactant)
-                        ):
-                            alcohol_in_reactants = True
-                            print(f"Found alcohol in reactant: {reactant}")
-
-                    # Check for ester in product
-                    ester_in_product = checker.check_fg("Ester", product_part)
-                    if ester_in_product:
-                        print(f"Found ester in product: {product_part}")
-
-                    # In retrosynthesis, we might see the reverse: ester in reactants, acid in products
-                    ester_in_reactants = any(checker.check_fg("Ester", r) for r in reactants)
-                    acid_in_product = checker.check_fg("Carboxylic acid", product_part)
-
-                    # Check both forward and reverse esterification patterns
-                    if (acid_in_reactants and alcohol_in_reactants and ester_in_product) or (
-                        ester_in_reactants and acid_in_product
+                    # Check if this reactant has an aromatic ring
+                    if (
+                        checker.check_ring("benzene", reactant)
+                        or checker.check_ring("naphthalene", reactant)
+                        or checker.check_ring("anthracene", reactant)
                     ):
-                        print(
-                            f"Detected esterification at depth {depth}, reaction_depth {reaction_depth} (functional group analysis)"
-                        )
-                        is_esterification = True
+                        print(f"Found aromatic reactant: {reactant}")
+                        has_aromatic_reactant = True
+                        aromatic_reactant_smiles = reactant
+                except Exception as e:
+                    print(f"Error processing reactant {reactant}: {e}")
 
-                # If this is an esterification, track its depth
-                if is_esterification:
-                    esterification_depths.append(reaction_depth)
-                    print(f"Added esterification at reaction_depth {reaction_depth}")
-
+            # Check if product has sulfonyl chloride group
+            try:
+                if checker.check_fg("Sulfonyl halide", product_str):
+                    print(f"Found sulfonyl chloride in product: {product_str}")
+                    has_sulfonyl_chloride_product = True
             except Exception as e:
-                print(f"Error analyzing reaction: {e}")
+                print(f"Error checking product for sulfonyl chloride: {e}")
 
-            # Increment reaction depth for children
-            reaction_depth += 1
+            # Pattern-based detection: check if an aromatic ring in reactant gains a sulfonyl chloride in product
+            if has_aromatic_reactant and has_sulfonyl_chloride_product:
+                # Even if we don't explicitly identify the chlorosulfonating agent, the transformation is clear
+                if has_chlorosulfonating_agent:
+                    print("Detected chlorosulfonation with identified chlorosulfonating agent")
+                    chlorosulfonation_found = True
+                else:
+                    # Check if the product contains both an aromatic ring and a sulfonyl chloride
+                    # This is a strong indicator of chlorosulfonation even if reagent isn't identified
+                    print("Detected likely chlorosulfonation based on product formation")
+                    chlorosulfonation_found = True
 
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1, reaction_depth)
+            if not chlorosulfonation_found:  # Stop traversal if already found
+                dfs_traverse(child)
 
     # Start traversal from the root
     dfs_traverse(route)
-
-    # Sort depths to find minimum
-    reaction_depths.sort()
-    esterification_depths.sort()
-
-    print(f"All reaction depths: {reaction_depths}")
-    print(f"Esterification depths: {esterification_depths}")
-
-    # Check if any esterifications were found
-    if esterification_depths:
-        # Check if the first reaction (minimum depth) is an esterification
-        if (
-            esterification_depths
-            and reaction_depths
-            and esterification_depths[0] == reaction_depths[0]
-        ):
-            final_step_is_esterification = True
-            print(f"Final step is esterification (reaction_depth {esterification_depths[0]})")
-
-    print(f"Final result: {final_step_is_esterification}")
-    return final_step_is_esterification
+    return chlorosulfonation_found

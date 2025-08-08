@@ -2,53 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route maintains a complex polycyclic scaffold throughout.
-    A complex scaffold is defined as having at least 3 rings.
+    This function detects if the synthesis follows a linear strategy (no convergent steps).
+    A linear synthesis has exactly one non-starting material reactant in each step.
     """
-
-    def count_rings(mol):
-        return mol.GetSSSR()
-
-    scaffold_maintained = True
-    min_ring_count = 3  # Threshold for "complex" polycyclic system
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal scaffold_maintained
+        nonlocal is_linear
 
-        if node["type"] == "mol" and node.get("smiles"):
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    ring_count = len(count_rings(mol))
-                    print(f"Molecule has {ring_count} rings")
-                    if ring_count < min_ring_count:
-                        scaffold_maintained = False
-            except:
-                print("Error processing molecule SMILES")
+        if node["type"] == "reaction":
+            # Get the children of this reaction node (the reactants)
+            reactant_nodes = node.get("children", [])
 
+            # Count non-starting material reactants
+            non_starting_material_count = 0
+            for child in reactant_nodes:
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    non_starting_material_count += 1
+
+            # If more than one non-starting material reactant, it's not a linear synthesis
+            if non_starting_material_count > 1:
+                is_linear = False
+                print(
+                    f"Non-linear step detected with {non_starting_material_count} non-starting material reactants"
+                )
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return scaffold_maintained
+
+    print(f"Linear synthesis strategy: {is_linear}")
+    return is_linear

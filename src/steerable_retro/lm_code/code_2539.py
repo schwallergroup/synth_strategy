@@ -2,102 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a functional group interconversion from primary amine to nitrile.
-    In retrosynthesis, this means detecting nitrile to primary amine transformation.
+    This function detects a protection-deprotection sequence in the synthetic route,
+    specifically looking for ketone protection via ketal formation.
     """
-    # Track if we've seen the transformation
-    amine_to_nitrile_found = False
+    ketone_pattern = Chem.MolFromSmarts("[#6][C](=[O])[#6]")
+    ketal_pattern = Chem.MolFromSmarts("[#6]1[#8][#6][#6][#8]1")
+    protection_step = False
+    deprotection_step = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amine_to_nitrile_found
+    def dfs_traverse(node):
+        nonlocal protection_step, deprotection_step
 
         if node["type"] == "reaction":
-            try:
-                # Extract reactants and product (retrosynthetically)
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants_smiles = rsmi.split(">")[0].split(".")
                 product_smiles = rsmi.split(">")[-1]
 
-                # In retrosynthesis, we're moving from target to starting materials
-                # So we check for nitrile in reactants and primary amine in product
-                reactants_have_nitrile = any(
-                    checker.check_fg("Nitrile", r) for r in reactants_smiles
+                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+
+                # Check for protection: ketone + diol -> ketal
+                if product_mol and product_mol.HasSubstructMatch(ketal_pattern):
+                    has_ketone = any(
+                        r_mol and r_mol.HasSubstructMatch(ketone_pattern)
+                        for r_mol in reactants_mols
+                        if r_mol
+                    )
+                    if has_ketone:
+                        protection_step = True
+                        print("Detected ketone protection step")
+
+                # Check for deprotection: ketal -> ketone + diol
+                has_ketal = any(
+                    r_mol and r_mol.HasSubstructMatch(ketal_pattern)
+                    for r_mol in reactants_mols
+                    if r_mol
                 )
-
-                product_has_amine = checker.check_fg("Primary amine", product_smiles)
-
-                # If reactants have nitrile and product has primary amine, transformation occurred
-                if reactants_have_nitrile and product_has_amine:
-                    print(f"Potential nitrile to amine transformation detected at depth {depth}")
-
-                    # Check for known reactions that convert nitriles to amines
-                    if checker.check_reaction("Reduction of nitrile to amine", rsmi):
-                        print(f"Nitrile to amine reduction detected at depth {depth}")
-                        amine_to_nitrile_found = True
-                    else:
-                        # Even if we don't recognize the specific reaction, if we have confirmed
-                        # the functional group change, we'll count it
-                        print(
-                            f"Unclassified nitrile to amine transformation detected at depth {depth}"
-                        )
-                        amine_to_nitrile_found = True
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                if has_ketal and product_mol and product_mol.HasSubstructMatch(ketone_pattern):
+                    deprotection_step = True
+                    print("Detected ketal deprotection step")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    return amine_to_nitrile_found
+    # Return True if both protection and deprotection steps are detected
+    return protection_step and deprotection_step

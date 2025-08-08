@@ -2,100 +2,88 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a specific functional group transformation sequence:
-    nitro group → amine → amide in the synthetic route.
+    This function detects late-stage reductive amination to form secondary amines.
     """
-    # Track reactions with specific transformations
-    nitro_to_amine_reactions = []
-    amine_to_amide_reactions = []
+    found_reductive_amination = False
+    max_depth = 0
+    reductive_amination_depth = None
 
     def dfs_traverse(node, depth=0):
+        nonlocal found_reductive_amination, max_depth, reductive_amination_depth
+
+        max_depth = max(max_depth, depth)
+
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reactants and product from reaction SMILES
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                if product_mol:
-                    # Patterns
-                    nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
-                    amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+            # Check for reductive amination (aldehyde + primary amine → secondary amine)
+            aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
+            primary_amine_pattern = Chem.MolFromSmarts("[NH2]")
+            secondary_amine_pattern = Chem.MolFromSmarts("[NH]")
 
-                    # Check for nitro to amine transformation
-                    reactant_has_nitro = any(
-                        mol and mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols
-                    )
-                    product_has_amine = product_mol.HasSubstructMatch(amine_pattern)
+            has_aldehyde = any(
+                Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(aldehyde_pattern)
+                for r in reactants
+                if r
+            )
+            has_primary_amine = any(
+                Chem.MolFromSmiles(r)
+                and Chem.MolFromSmiles(r).HasSubstructMatch(primary_amine_pattern)
+                for r in reactants
+                if r
+            )
+            product_mol = Chem.MolFromSmiles(product) if product else None
+            has_secondary_amine = product_mol and product_mol.HasSubstructMatch(
+                secondary_amine_pattern
+            )
 
-                    if reactant_has_nitro and product_has_amine:
-                        nitro_to_amine_reactions.append((depth, node))
+            if has_aldehyde and has_primary_amine and has_secondary_amine:
+                found_reductive_amination = True
+                reductive_amination_depth = depth
+                print(f"Found reductive amination at depth {depth}")
 
-                    # Check for amine to amide transformation
-                    reactant_has_amine = any(
-                        mol and mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols
-                    )
-
-                    # Count amide bonds in reactants and product
-                    reactant_amide_count = sum(
-                        [
-                            len(mol.GetSubstructMatches(amide_pattern)) if mol else 0
-                            for mol in reactant_mols
-                        ]
-                    )
-                    product_amide_count = (
-                        len(product_mol.GetSubstructMatches(amide_pattern)) if product_mol else 0
-                    )
-
-                    if reactant_has_amine and product_amide_count > reactant_amide_count:
-                        amine_to_amide_reactions.append((depth, node))
-
-        # Continue traversal
+        # Continue traversing the tree
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if we have both transformations and they're in the correct order
-    # (nitro→amine should happen before amine→amide in the synthetic direction,
-    # which means higher depth in retrosynthetic direction)
-    if nitro_to_amine_reactions and amine_to_amide_reactions:
-        # Get the depths
-        nitro_to_amine_depths = [d for d, _ in nitro_to_amine_reactions]
-        amine_to_amide_depths = [d for d, _ in amine_to_amide_reactions]
-
-        # Check if any nitro→amine happens at higher depth than any amine→amide
-        if any(
-            n_depth > a_depth
-            for n_depth in nitro_to_amine_depths
-            for a_depth in amine_to_amide_depths
-        ):
-            print("Found nitro→amine→amide transformation sequence")
-            return True
+    # Check if reductive amination occurs late in the synthesis (in the first half of depth)
+    if found_reductive_amination and max_depth > 0 and reductive_amination_depth is not None:
+        late_threshold = max_depth / 2
+        late_stage = reductive_amination_depth < late_threshold
+        return late_stage
 
     return False

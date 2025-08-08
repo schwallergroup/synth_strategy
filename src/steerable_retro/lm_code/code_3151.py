@@ -2,67 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a nitro reduction to amine transformation in the synthesis route.
+    Detects if the synthesis follows a linear (non-convergent) approach.
     """
-    nitro_to_amine_found = False
+    is_linear = True
+    reaction_count = 0
 
     def dfs_traverse(node):
-        nonlocal nitro_to_amine_found
+        nonlocal is_linear, reaction_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            reaction_count += 1
 
-            # Create RDKit mol objects
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+            # Extract reactants
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-            if all(reactant_mols) and product_mol:
-                # Check for nitro group in reactants
-                nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-                reactants_with_nitro = any(
-                    mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols
-                )
+            parts = rsmi.split(">")
+            if len(parts) < 3:
+                return
 
-                # Check for amine group in product
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
-                product_has_amine = product_mol.HasSubstructMatch(amine_pattern)
+            reactants_smiles = parts[0].split(".")
 
-                # Check if nitro was reduced to amine
-                if (
-                    reactants_with_nitro
-                    and product_has_amine
-                    and not product_mol.HasSubstructMatch(nitro_pattern)
-                ):
-                    print("Detected nitro reduction to amine")
-                    nitro_to_amine_found = True
+            # If there are more than 2 reactants, it might be convergent
+            if len(reactants_smiles) > 2:
+                is_linear = False
+                print(f"Found more than 2 reactants: {len(reactants_smiles)}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return nitro_to_amine_found
+
+    # A linear synthesis should have at least 2 reactions
+    is_valid_linear = is_linear and reaction_count >= 2
+    print(f"Linear synthesis detected: {is_valid_linear}")
+    return is_valid_linear

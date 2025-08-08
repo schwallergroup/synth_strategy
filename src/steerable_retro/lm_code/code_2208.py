@@ -2,58 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy rather than
-    a convergent one, by checking if most reactions have only 1-2 reactants.
+    Detects if the synthesis incorporates a 4-cyanoaniline fragment.
     """
-    reaction_count = 0
-    linear_reaction_count = 0
+    cyanoaniline_used = False
 
     def dfs_traverse(node):
-        nonlocal reaction_count, linear_reaction_count
+        nonlocal cyanoaniline_used
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
-                reaction_count += 1
 
-                # If reaction has 1-2 reactants, consider it linear
-                if len(reactants) <= 2:
-                    linear_reaction_count += 1
-                    print(f"Linear reaction detected: {len(reactants)} reactants")
-                else:
-                    print(f"Convergent reaction detected: {len(reactants)} reactants")
+                # Check for 4-cyanoaniline fragment
+                cyanoaniline_pattern = Chem.MolFromSmarts("c1cc(N)ccc1C#N")
+
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(cyanoaniline_pattern):
+                        cyanoaniline_used = True
+                        print("4-Cyanoaniline fragment detected")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
 
-    # If at least 80% of reactions are linear, consider it a linear synthesis strategy
-    if reaction_count > 0:
-        linear_ratio = linear_reaction_count / reaction_count
-        print(f"Linear ratio: {linear_ratio} ({linear_reaction_count}/{reaction_count})")
-        return linear_ratio >= 0.8
-
-    return False
+    return cyanoaniline_used

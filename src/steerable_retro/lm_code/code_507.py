@@ -2,64 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects methyl to aldehyde oxidation in the synthetic sequence.
+    Detects a synthetic strategy involving piperazine as a linker to heterocycles.
     """
-    found_pattern = False
+    piperazine_present = False
+    piperazine_linked_to_heterocycle = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
+    def dfs_traverse(node):
+        nonlocal piperazine_present, piperazine_linked_to_heterocycle
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for piperazine
+                piperazine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#7][#6][#6]1")
+                if mol.HasSubstructMatch(piperazine_pattern):
+                    piperazine_present = True
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Check for piperazine linked to heterocycle
+                piperazine_linked_pattern = Chem.MolFromSmarts(
+                    "[#7]1[#6][#6][#7]([#6]2[#7][#6][#6][#6][#6]2)[#6][#6]1"
+                )
+                if mol.HasSubstructMatch(piperazine_linked_pattern):
+                    piperazine_linked_to_heterocycle = True
 
-            # Check for methyl pattern in reactants and aldehyde in product
-            methyl_pattern = Chem.MolFromSmarts("[#6][CH3]")
-            aldehyde_pattern = Chem.MolFromSmarts("[#6][CH]=O")
-
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if not product_mol or not product_mol.HasSubstructMatch(aldehyde_pattern):
-                # Skip if product doesn't have aldehyde
-                pass
-            else:
-                # Check if any reactant has methyl group
-                for reactant in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(methyl_pattern):
-                        found_pattern = True
-                        print(f"Found methyl to aldehyde oxidation at depth {depth}")
-                        break
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    return found_pattern
+
+    print(f"Piperazine present: {piperazine_present}")
+    print(f"Piperazine linked to heterocycle: {piperazine_linked_to_heterocycle}")
+
+    return piperazine_present and piperazine_linked_to_heterocycle

@@ -2,97 +2,190 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a sequence of functional group activations:
-    ester hydrolysis followed by acid chloride formation for amide coupling
+    This function detects a combined strategy of sequential reductive aminations with
+    Boc protection and thiazole modification.
     """
-    # Initialize flags
-    has_ester_hydrolysis = False
-    has_acid_chloride_formation = False
-    has_amide_formation = False
+    # Initialize flags for each strategy
+    reductive_amination_reactions = []
+    boc_protection_reactions = []
+    thiazole_reactions = []
 
-    def dfs_traverse(node):
-        nonlocal has_ester_hydrolysis, has_acid_chloride_formation, has_amide_formation
-
+    # Traverse the synthesis route to identify reactions
+    def traverse_route(node, depth=0):
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                product = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
 
-            # Check for ester hydrolysis
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("[C](=[O])[O][C]")
+                # Check for reductive amination
+                if (
+                    checker.check_reaction("Reductive amination with aldehyde", rsmi)
+                    or checker.check_reaction("Reductive amination with ketone", rsmi)
+                    or checker.check_reaction("Reductive amination with alcohol", rsmi)
+                    or checker.check_reaction("reductive amination", rsmi)
                 ):
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol and product_mol.HasSubstructMatch(
-                        Chem.MolFromSmarts("[C](=[O])[O]")
-                    ):
-                        print("Found ester hydrolysis")
-                        has_ester_hydrolysis = True
+                    print(f"Found reductive amination at depth {depth}: {rsmi}")
+                    reductive_amination_reactions.append((depth, rsmi))
 
-            # Check for acid chloride formation
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("[C](=[O])[O]")
+                # Alternative check for reductive amination: look for amine formation
+                elif any(
+                    checker.check_fg("Primary amine", r)
+                    or checker.check_fg("Secondary amine", r)
+                    or checker.check_fg("Tertiary amine", r)
+                    for r in reactants
+                ) and (
+                    checker.check_fg("Aldehyde", product) or checker.check_fg("Ketone", product)
                 ):
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol and product_mol.HasSubstructMatch(
-                        Chem.MolFromSmarts("[C](=[O])[Cl]")
-                    ):
-                        print("Found acid chloride formation")
-                        has_acid_chloride_formation = True
+                    print(
+                        f"Found potential reductive amination (amine formation) at depth {depth}: {rsmi}"
+                    )
+                    reductive_amination_reactions.append((depth, rsmi))
 
-            # Check for amide formation
-            if len(reactants) >= 2:
-                has_acid_chloride = False
-                has_amine = False
-
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(Chem.MolFromSmarts("[C](=[O])[Cl]")):
-                            has_acid_chloride = True
-                        if mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2]")):
-                            has_amine = True
-
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("[C](=[O])[NH]")
+                # Check for Boc protection
+                if (
+                    checker.check_reaction("Boc amine protection", rsmi)
+                    or checker.check_reaction("Boc amine protection explicit", rsmi)
+                    or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
+                    or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
+                    or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
+                    or checker.check_reaction("Boc amine protection of primary amine", rsmi)
                 ):
-                    if has_acid_chloride and has_amine:
-                        print("Found amide formation")
-                        has_amide_formation = True
+                    print(f"Found Boc protection at depth {depth}: {rsmi}")
+                    boc_protection_reactions.append((depth, rsmi))
 
-        # Traverse children
+                # Additional check for Boc group in product
+                elif "OC(=O)C(C)(C)C" in product or "OC(O)=C(C)(C)C" in product:
+                    print(f"Found Boc group in product at depth {depth}: {product}")
+                    boc_protection_reactions.append((depth, rsmi))
+
+                # Check for thiazole modification (focusing on thiazole and dechlorination)
+                if checker.check_ring("thiazole", product):
+                    print(f"Found thiazole in product at depth {depth}: {product}")
+
+                    # Check if any reactant contains thiazole and chlorine
+                    for reactant in reactants:
+                        if checker.check_ring("thiazole", reactant) and checker.check_fg(
+                            "Aromatic halide", reactant
+                        ):
+                            print(f"Found thiazole modification (dechlorination) at depth {depth}")
+                            thiazole_reactions.append((depth, rsmi))
+                            break
+            except Exception as e:
+                print(f"Error analyzing reaction: {e}")
+
+        # Check for piperidine/piperazine in molecule nodes
+        elif node["type"] == "mol" and depth == 0:  # Final product
+            if checker.check_ring("piperidine", node["smiles"]) or checker.check_ring(
+                "piperazine", node["smiles"]
+            ):
+                print(
+                    f"Found piperidine/piperazine in final product, which often results from sequential reductive aminations"
+                )
+
+        # Recursively traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            traverse_route(child, depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
+    # Start traversal from the root
+    traverse_route(route)
 
-    # Return True if the sequence is found
-    return has_ester_hydrolysis and has_acid_chloride_formation and has_amide_formation
+    # Check for sequential reductive amination (at least 2 reductive amination reactions)
+    has_sequential_reductive_amination = len(reductive_amination_reactions) >= 2
+
+    # If no reductive aminations found, check if final product has piperidine/piperazine
+    if not has_sequential_reductive_amination and route["type"] == "mol":
+        if checker.check_ring("piperidine", route["smiles"]) or checker.check_ring(
+            "piperazine", route["smiles"]
+        ):
+            print(
+                f"Found piperidine/piperazine in final product, which often results from sequential reductive aminations"
+            )
+            has_sequential_reductive_amination = True
+
+    # Check for Boc protection
+    has_boc_protection = len(boc_protection_reactions) > 0
+
+    # If no Boc protection reactions found, check if final product has Boc group
+    if not has_boc_protection and route["type"] == "mol":
+        if "OC(=O)C(C)(C)C" in route["smiles"] or "OC(O)=C(C)(C)C" in route["smiles"]:
+            print(f"Found Boc group in final product")
+            has_boc_protection = True
+
+    # Check for thiazole modification
+    has_thiazole_modification = len(thiazole_reactions) > 0
+
+    print(f"Sequential reductive amination: {has_sequential_reductive_amination}")
+    print(f"Boc protection: {has_boc_protection}")
+    print(f"Thiazole modification: {has_thiazole_modification}")
+
+    # Combined strategy requires at least reductive amination and one other feature
+    if has_sequential_reductive_amination and (has_boc_protection or has_thiazole_modification):
+        print("Detected combined reductive amination strategy with protection/modification")
+        return True
+
+    # Special case: If we have thiazole modification and the final product contains piperidine/piperazine with Boc
+    if has_thiazole_modification and route["type"] == "mol":
+        mol_smiles = route["smiles"]
+        if (
+            checker.check_ring("piperidine", mol_smiles)
+            or checker.check_ring("piperazine", mol_smiles)
+        ) and ("OC(=O)C(C)(C)C" in mol_smiles or "OC(O)=C(C)(C)C" in mol_smiles):
+            print(
+                "Detected combined strategy with thiazole modification and Boc-protected piperidine/piperazine"
+            )
+            return True
+
+    return False

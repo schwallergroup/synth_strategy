@@ -2,62 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if aromatic halides (Cl, Br) are preserved
-    throughout the synthesis.
+    Detects if the synthetic route involves nucleophilic aromatic substitution
+    with amine nucleophiles.
     """
-    has_final_halides = False
-    has_initial_halides = False
+    found_amine_nucleophile_snar = False
 
-    def dfs_traverse(node, depth=0, is_leaf=False):
-        nonlocal has_final_halides, has_initial_halides
+    def dfs_traverse(node):
+        nonlocal found_amine_nucleophile_snar
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for aromatic halides
-                ar_cl_pattern = Chem.MolFromSmarts("c-[#17]")
-                ar_br_pattern = Chem.MolFromSmarts("c-[#35]")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                has_halides = mol.HasSubstructMatch(ar_cl_pattern) or mol.HasSubstructMatch(
-                    ar_br_pattern
-                )
+            # Check for amine nucleophiles in reactants
+            amine_pattern = Chem.MolFromSmarts("[#7;!$(N~[!#6;!#1])]")  # Primary or secondary amine
+            aromatic_pattern = Chem.MolFromSmarts("a")
 
-                if depth == 0:  # Final product
-                    has_final_halides = has_halides
-                    print(f"Final product has halides: {has_halides}")
+            # Check if any reactant is an amine
+            amine_reactant = None
+            aromatic_reactant = None
 
-                if node.get("in_stock", False) or is_leaf:  # Starting material
-                    if has_halides:
-                        has_initial_halides = True
-                        print("Starting material has halides")
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(amine_pattern):
+                            amine_reactant = mol
+                        if mol.HasSubstructMatch(aromatic_pattern):
+                            aromatic_reactant = mol
+                except:
+                    continue
+
+            # If we have both an amine and an aromatic compound as reactants
+            if amine_reactant and aromatic_reactant:
+                try:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol:
+                        # Check if the product has a C-N bond that wasn't in the reactants
+                        c_n_bond_pattern = Chem.MolFromSmarts("a-[#7]")
+                        if prod_mol.HasSubstructMatch(c_n_bond_pattern):
+                            print("Found amine nucleophile in SNAr")
+                            found_amine_nucleophile_snar = True
+                except:
+                    pass
 
         # Traverse children
-        children = node.get("children", [])
-        is_leaf = len(children) == 0
-        for child in children:
-            dfs_traverse(child, depth + 1, is_leaf)
+        for child in node.get("children", []):
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_final_halides and has_initial_halides
+    return found_amine_nucleophile_snar

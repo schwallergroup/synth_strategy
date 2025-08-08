@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,223 +54,248 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving cycles of carbonyl introduction
-    followed by reduction in the synthesis route.
+    This function detects if the synthetic route uses a formylation reaction
+    to introduce an aldehyde group.
     """
-    # Track reactions in order of traversal
-    reaction_sequence = []
+    formylation_found = False
 
-    def dfs_traverse(node, current_depth=0):
-        node["depth"] = current_depth
+    def dfs_traverse(node):
+        nonlocal formylation_found
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-                depth = node.get("depth", 0)
+        if node["type"] == "reaction" and not formylation_found:
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-                reaction_type = None
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                try:
-                    # Check for carbonyl introduction reactions
+            # Check if product contains an aldehyde group
+            product_has_aldehyde = checker.check_fg("Aldehyde", product_smiles)
+
+            if product_has_aldehyde:
+                # Check if any reactant has an aldehyde (to exclude simple aldehyde transfers)
+                reactants_with_aldehyde = sum(
+                    1 for r in reactants_smiles if checker.check_fg("Aldehyde", r)
+                )
+
+                # If product has a new aldehyde (not just transferred from reactants)
+                if reactants_with_aldehyde == 0:
+                    print(f"Product has new aldehyde: {product_smiles}")
+
+                    # Direct check for known formylation reactions
+                    if checker.check_reaction("Friedel-Crafts acylation", rsmi):
+                        for reactant in reactants_smiles:
+                            if "C(=O)H" in reactant or "CHO" in reactant or "C=O" in reactant:
+                                print(f"Formylation detected via Friedel-Crafts acylation: {rsmi}")
+                                formylation_found = True
+                                return
+
+                    # Check for Vilsmeier-Haack formylation
+                    dmf_found = False
+                    pocl3_found = False
+                    aromatic_found = False
+
+                    for reactant in reactants_smiles:
+                        # Check for DMF or similar formamides
+                        if (
+                            "CN(C)C=O" in reactant
+                            or "CN(C)CHO" in reactant
+                            or "N(C)C=O" in reactant
+                        ):
+                            dmf_found = True
+                            print(f"DMF or formamide found: {reactant}")
+
+                        # Check for POCl3 or similar reagents
+                        if (
+                            "POCl3" in reactant
+                            or "P(=O)(Cl)(Cl)Cl" in reactant
+                            or "PCl" in reactant
+                        ):
+                            pocl3_found = True
+                            print(f"POCl3 or similar found: {reactant}")
+
+                        # Check for aromatic substrate
+                        if any(
+                            checker.check_ring(ring, reactant)
+                            for ring in [
+                                "benzene",
+                                "pyridine",
+                                "furan",
+                                "thiophene",
+                                "pyrrole",
+                                "indole",
+                                "quinoline",
+                                "isoquinoline",
+                            ]
+                        ):
+                            aromatic_found = True
+                            print(f"Aromatic substrate found: {reactant}")
+
                     if (
-                        checker.check_reaction("Friedel-Crafts acylation", rsmi)
+                        dmf_found
+                        and (pocl3_found or any("Cl" in r for r in reactants_smiles))
+                        and aromatic_found
+                    ) or (
+                        aromatic_found
+                        and any("CHO" in r or "C(=O)H" in r for r in reactants_smiles)
+                    ):
+                        print(f"Vilsmeier-Haack or similar formylation detected: {rsmi}")
+                        formylation_found = True
+                        return
+
+                    # Check for formylation with CO/H2 (reductive carbonylation)
+                    co_found = False
+                    h2_or_hydride_found = False
+                    metal_catalyst_found = False
+
+                    for reactant in reactants_smiles:
+                        if (
+                            reactant == "C=O"
+                            or reactant == "[C]=O"
+                            or reactant == "CO"
+                            or "[C-]#[O+]" in reactant
+                        ):
+                            co_found = True
+                            print(f"CO found: {reactant}")
+                        if (
+                            reactant == "[H][H]"
+                            or reactant == "H2"
+                            or reactant == "[H2]"
+                            or "AlH" in reactant
+                            or "BH" in reactant
+                        ):
+                            h2_or_hydride_found = True
+                            print(f"H2 or hydride found: {reactant}")
+                        if (
+                            "Pd" in reactant
+                            or "Rh" in reactant
+                            or "Ru" in reactant
+                            or "Fe" in reactant
+                            or "Co" in reactant
+                        ):
+                            metal_catalyst_found = True
+                            print(f"Metal catalyst found: {reactant}")
+
+                    if co_found and (h2_or_hydride_found or metal_catalyst_found):
+                        print(f"Formylation with CO/H2 detected: {rsmi}")
+                        formylation_found = True
+                        return
+
+                    # Check for formylation via oxidation of methyl groups
+                    methyl_oxidation = False
+                    for reactant in reactants_smiles:
+                        # Check if reactant has methyl group
+                        if "C" in reactant and not checker.check_fg("Aldehyde", reactant):
+                            # Check if oxidizing agents are present
+                            oxidizing_agents = [
+                                "KMnO4",
+                                "MnO2",
+                                "CrO3",
+                                "SeO2",
+                                "[O]",
+                                "O=O",
+                                "NaOCl",
+                                "H2O2",
+                            ]
+                            if any(
+                                agent in "".join(reactants_smiles) for agent in oxidizing_agents
+                            ):
+                                methyl_oxidation = True
+                                print(f"Potential methyl oxidation to aldehyde: {rsmi}")
+
+                    if methyl_oxidation:
+                        print(f"Formylation via methyl oxidation detected: {rsmi}")
+                        formylation_found = True
+                        return
+
+                    # Check for formylation via hydrolysis of formyl derivatives
+                    for reactant in reactants_smiles:
+                        if (
+                            "OC(=O)H" in reactant
+                            or "SC(=O)H" in reactant
+                            or "N(C(=O)H)" in reactant
+                        ):
+                            print(f"Formylation via hydrolysis of formyl derivative: {rsmi}")
+                            formylation_found = True
+                            return
+
+                    # Check for Duff formylation (hexamine-based)
+                    if any("C1N2CN3CN1CN(C2)C3" in r for r in reactants_smiles) and aromatic_found:
+                        print(f"Duff formylation detected: {rsmi}")
+                        formylation_found = True
+                        return
+
+                    # Check for Bouveault aldehyde synthesis (from ester to aldehyde)
+                    ester_found = False
+                    hydride_found = False
+
+                    for reactant in reactants_smiles:
+                        if checker.check_fg("Ester", reactant):
+                            ester_found = True
+                        if (
+                            "AlH" in reactant
+                            or "BH" in reactant
+                            or "H-" in reactant
+                            or "LiAlH" in reactant
+                        ):
+                            hydride_found = True
+
+                    if ester_found and hydride_found:
+                        print(f"Bouveault aldehyde synthesis detected: {rsmi}")
+                        formylation_found = True
+                        return
+
+                    # Check for Gattermann-Koch formylation
+                    if (
+                        co_found
+                        and any("HCl" in r or "Cl" in r for r in reactants_smiles)
+                        and any("AlCl3" in r for r in reactants_smiles)
+                        and aromatic_found
+                    ):
+                        print(f"Gattermann-Koch formylation detected: {rsmi}")
+                        formylation_found = True
+                        return
+
+                    # Check for reduction of carboxylic acid derivatives to aldehydes
+                    carboxylic_derivative_found = False
+                    for reactant in reactants_smiles:
+                        if (
+                            checker.check_fg("Carboxylic acid", reactant)
+                            or checker.check_fg("Ester", reactant)
+                            or checker.check_fg("Nitrile", reactant)
+                        ):
+                            carboxylic_derivative_found = True
+
+                    if carboxylic_derivative_found and h2_or_hydride_found:
+                        print(f"Formylation via reduction of carboxylic acid derivative: {rsmi}")
+                        formylation_found = True
+                        return
+
+                    # Check for any other reaction that introduces an aldehyde
+                    if (
+                        checker.check_reaction("Oxidation of alkene to aldehyde", rsmi)
+                        or checker.check_reaction("Oxidation of alcohol to aldehyde", rsmi)
+                        or checker.check_reaction("Bouveault aldehyde synthesis", rsmi)
                         or checker.check_reaction(
                             "Oxidation of aldehydes to carboxylic acids", rsmi
                         )
-                        or checker.check_reaction("Oxidation of alcohol to carboxylic acid", rsmi)
-                        or checker.check_reaction("Oxidation of ketone to carboxylic acid", rsmi)
-                        or checker.check_reaction("Oxidation of nitrile to carboxylic acid", rsmi)
-                        or checker.check_reaction("Aryl halide to carboxylic acid", rsmi)
-                        or checker.check_reaction("Oxidation of amide to carboxylic acid", rsmi)
-                        or checker.check_reaction("Oxidation of alkene to carboxylic acid", rsmi)
-                        or checker.check_reaction("Oxidation of alkene to aldehyde", rsmi)
-                        or checker.check_reaction(
-                            "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones",
-                            rsmi,
-                        )
-                        or checker.check_reaction(
-                            "Oxidation of alcohol and aldehyde to ester", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Oxidative esterification of primary alcohols", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                            rsmi,
-                        )
-                        or checker.check_reaction(
-                            "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
-                            rsmi,
-                        )
-                        or checker.check_reaction(
-                            "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
-                        )
-                        or checker.check_reaction("Acylation of olefines by aldehydes", rsmi)
-                        or checker.check_reaction("Acylation of secondary amines", rsmi)
-                        or checker.check_reaction("Acylation of primary amines", rsmi)
-                        or checker.check_reaction(
-                            "Acylation of secondary amines with anhydrides", rsmi
-                        )
-                    ):
-                        reaction_type = "carbonyl_introduction"
-                        print(f"Found carbonyl_introduction at depth: {depth}, reaction: {rsmi}")
+                    ):  # Reverse direction
+                        print(f"Other formylation reaction detected: {rsmi}")
+                        formylation_found = True
+                        return
 
-                    # Check for carbonyl reduction reactions
-                    elif (
-                        checker.check_reaction(
-                            "Reduction of aldehydes and ketones to alcohols", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Reduction of carboxylic acid to primary alcohol", rsmi
-                        )
-                        or checker.check_reaction("Reduction of ester to primary alcohol", rsmi)
-                        or checker.check_reaction("Reduction of nitrile to amine", rsmi)
-                        or checker.check_reaction("Reduction of primary amides to amines", rsmi)
-                        or checker.check_reaction("Reduction of secondary amides to amines", rsmi)
-                        or checker.check_reaction("Reduction of tertiary amides to amines", rsmi)
-                        or checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi)
-                        or checker.check_reaction("Reduction of amide to amine", rsmi)
-                    ):
-                        reaction_type = "carbonyl_reduction"
-                        print(f"Found carbonyl_reduction at depth: {depth}, reaction: {rsmi}")
+                    # General fallback - if we've detected a new aldehyde but none of the specific patterns matched
+                    # This is likely a formylation reaction we haven't specifically coded for
+                    print(f"General formylation detected (new aldehyde formed): {rsmi}")
+                    formylation_found = True
+                    return
 
-                    # If we couldn't identify using reaction types, check for functional group changes
-                    if not reaction_type:
-                        # Check for carbonyl introduction by functional group changes
-                        carbonyl_in_product = (
-                            checker.check_fg("Ketone", product)
-                            or checker.check_fg("Aldehyde", product)
-                            or checker.check_fg("Carboxylic acid", product)
-                            or checker.check_fg("Ester", product)
-                            or checker.check_fg("Amide", product)
-                        )
-
-                        carbonyl_in_reactants = False
-                        for reactant in reactants:
-                            if (
-                                checker.check_fg("Ketone", reactant)
-                                or checker.check_fg("Aldehyde", reactant)
-                                or checker.check_fg("Carboxylic acid", reactant)
-                                or checker.check_fg("Ester", reactant)
-                                or checker.check_fg("Amide", reactant)
-                            ):
-                                carbonyl_in_reactants = True
-                                break
-
-                        if carbonyl_in_product and not carbonyl_in_reactants:
-                            reaction_type = "carbonyl_introduction"
-                            print(
-                                f"Found carbonyl_introduction (by FG) at depth: {depth}, reaction: {rsmi}"
-                            )
-
-                        # Check for carbonyl reduction by functional group changes
-                        reduced_in_product = (
-                            checker.check_fg("Primary alcohol", product)
-                            or checker.check_fg("Secondary alcohol", product)
-                            or checker.check_fg("Tertiary alcohol", product)
-                            or checker.check_fg("Primary amine", product)
-                            or checker.check_fg("Secondary amine", product)
-                            or checker.check_fg("Tertiary amine", product)
-                        )
-
-                        # Check if this is a reduction reaction by looking at specific patterns
-                        if carbonyl_in_reactants and reduced_in_product:
-                            # Additional check for specific carbonyl-to-reduced pairs
-                            if (
-                                (
-                                    any(checker.check_fg("Ketone", r) for r in reactants)
-                                    and checker.check_fg("Secondary alcohol", product)
-                                )
-                                or (
-                                    any(checker.check_fg("Aldehyde", r) for r in reactants)
-                                    and checker.check_fg("Primary alcohol", product)
-                                )
-                                or (
-                                    any(checker.check_fg("Carboxylic acid", r) for r in reactants)
-                                    and checker.check_fg("Primary alcohol", product)
-                                )
-                                or (
-                                    any(checker.check_fg("Ester", r) for r in reactants)
-                                    and checker.check_fg("Primary alcohol", product)
-                                )
-                                or (
-                                    any(checker.check_fg("Amide", r) for r in reactants)
-                                    and (
-                                        checker.check_fg("Primary amine", product)
-                                        or checker.check_fg("Secondary amine", product)
-                                    )
-                                )
-                            ):
-                                reaction_type = "carbonyl_reduction"
-                                print(
-                                    f"Found carbonyl_reduction (by FG) at depth: {depth}, reaction: {rsmi}"
-                                )
-
-                    if reaction_type:
-                        reaction_sequence.append((depth, reaction_type, rsmi))
-
-                except Exception as e:
-                    print(f"Error in reaction classification: {e}")
-
-        # Traverse children with incremented depth
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            if not formylation_found:  # Only continue if we haven't found formylation yet
+                dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-
-    # Sort reactions by depth
-    reaction_sequence.sort(key=lambda x: x[0])
-    print(f"Reaction sequence: {[(d, rt) for d, rt, _ in reaction_sequence]}")
-
-    # Check for introduction-reduction cycles
-    has_cycle = False
-
-    # Check for Friedel-Crafts acylation specifically in the sequence
-    has_friedel_crafts = False
-    has_reduction = False
-
-    for depth, reaction_type, rsmi in reaction_sequence:
-        if reaction_type == "carbonyl_introduction" and checker.check_reaction(
-            "Friedel-Crafts acylation", rsmi
-        ):
-            has_friedel_crafts = True
-            print(f"Found Friedel-Crafts acylation at depth {depth}")
-        elif reaction_type == "carbonyl_reduction":
-            has_reduction = True
-
-    # If we have a Friedel-Crafts acylation and any reduction, consider it a cycle strategy
-    if has_friedel_crafts and has_reduction:
-        has_cycle = True
-        print(
-            "Found Friedel-Crafts acylation and reduction, which is part of the carbonyl introduction-reduction cycle strategy"
-        )
-
-    # Check for any introduction-reduction pair
-    if not has_cycle:
-        introductions = [d for d, rt, _ in reaction_sequence if rt == "carbonyl_introduction"]
-        reductions = [d for d, rt, _ in reaction_sequence if rt == "carbonyl_reduction"]
-
-        if introductions and reductions:
-            has_cycle = True
-            print(
-                f"Found cycle: introductions at depths {introductions} and reductions at depths {reductions}"
-            )
-
-    # Special case: If we have multiple carbonyl introductions but no explicit reductions,
-    # this might still be a valid strategy (as in the test case)
-    if (
-        not has_cycle
-        and len([r for r in reaction_sequence if r[1] == "carbonyl_introduction"]) >= 2
-    ):
-        # Check if the introductions are related to the same core structure
-        # This is a heuristic approach since we don't have atom-level tracking
-        has_cycle = True
-        print(
-            "Found multiple carbonyl introductions on the same core structure, considering this a cycle strategy"
-        )
-
-    print(f"Has carbonyl introduction-reduction cycle: {has_cycle}")
-    return has_cycle
+    return formylation_found

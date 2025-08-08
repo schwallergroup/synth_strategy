@@ -2,74 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving sequential borylation reactions
-    (aryl halide to boronic acid/ester transformations).
+    Detects synthesis routes that include an ester hydrolysis step.
     """
-    borylation_count = 0
+    found_ester_hydrolysis = False
 
     def dfs_traverse(node):
-        nonlocal borylation_count
+        nonlocal found_ester_hydrolysis
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for borylation: aryl halide to boronic acid/ester
-            reactant_has_aryl_halide = False
-            product_has_boronic = False
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-            for reactant in reactants:
-                if reactant:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[Br,I,Cl]")):
-                            reactant_has_aryl_halide = True
-                            break
-                    except:
-                        continue
+            if all(reactant_mols) and product_mol:
+                # Ester pattern
+                ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])")
 
-            if product:
-                try:
-                    mol = Chem.MolFromSmiles(product)
-                    if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[B]([O])([O])")):
-                        product_has_boronic = True
-                except:
-                    pass
+                # Carboxylic acid pattern
+                acid_pattern = Chem.MolFromSmarts("[#8;H1]-[#6](=[#8])")
 
-            if reactant_has_aryl_halide and product_has_boronic:
-                borylation_count += 1
-                print(f"Detected borylation reaction: {rsmi}")
+                # Check for ester hydrolysis
+                reactants_have_ester = any(
+                    mol.HasSubstructMatch(ester_pattern) for mol in reactant_mols
+                )
+                product_has_acid = product_mol.HasSubstructMatch(acid_pattern)
+
+                if reactants_have_ester and product_has_acid:
+                    found_ester_hydrolysis = True
+                    print("Found ester hydrolysis reaction")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Strategy is present if we have at least 2 borylation reactions
-    result = borylation_count >= 2
-    print(f"Borylation sequence strategy detected: {result} (count: {borylation_count})")
-    return result
+    print(f"Ester hydrolysis in sequence detected: {found_ester_hydrolysis}")
+    return found_ester_hydrolysis

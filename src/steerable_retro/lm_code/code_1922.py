@@ -2,75 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes a phenol alkylation step
-    (phenol + alkyl halide → aryl ether).
+    Detects if the synthesis route employs an early-stage benzylation strategy,
+    where a benzyl group is attached to a thiophene core.
     """
-    contains_phenol_alkylation = False
+    benzylation_detected = False
 
-    def dfs_traverse(node):
-        nonlocal contains_phenol_alkylation
+    def dfs_traverse(node, depth=0):
+        nonlocal benzylation_detected
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth >= 3:  # Focus on early-stage reactions
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for phenol pattern in reactants
-            phenol_pattern = Chem.MolFromSmarts("c[OH]")
-            alkyl_halide_pattern = Chem.MolFromSmarts("[#6][Cl,Br,I]")
+                # Check for thiophene in reactants
+                thiophene_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#16][#6]1")
+                # Check for benzyl bromide in reactants
+                benzyl_bromide_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6][#6][#6]1[C][Br]")
+                # Check for benzylated thiophene in product
+                benzylated_thiophene_pattern = Chem.MolFromSmarts(
+                    "[#6]1[#6][#6][#16][#6]1[C][#6]2[#6][#6][#6][#6][#6]2"
+                )
 
-            # Check for aryl ether pattern in product
-            aryl_ether_pattern = Chem.MolFromSmarts("c[O][#6]")
+                thiophene_present = False
+                benzyl_bromide_present = False
 
-            # Check if reactants contain phenol and alkyl halide
-            has_phenol = False
-            has_alkyl_halide = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(thiophene_pattern):
+                            thiophene_present = True
+                        if mol.HasSubstructMatch(benzyl_bromide_pattern):
+                            benzyl_bromide_present = True
 
-            for reactant in reactants_smiles:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol:
-                    if mol.HasSubstructMatch(phenol_pattern):
-                        has_phenol = True
-                    if mol.HasSubstructMatch(alkyl_halide_pattern):
-                        has_alkyl_halide = True
+                product_mol = Chem.MolFromSmiles(product)
+                if (
+                    thiophene_present
+                    and benzyl_bromide_present
+                    and product_mol
+                    and product_mol.HasSubstructMatch(benzylated_thiophene_pattern)
+                ):
+                    print(f"Early-stage benzylation detected at depth {depth}")
+                    benzylation_detected = True
 
-            # Check if product contains aryl ether
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            has_aryl_ether = False
-            if product_mol and product_mol.HasSubstructMatch(aryl_ether_pattern):
-                has_aryl_ether = True
-
-            # If all conditions are met, this is a phenol alkylation
-            if has_phenol and has_alkyl_halide and has_aryl_ether:
-                contains_phenol_alkylation = True
-                print("Detected phenol alkylation strategy")
-
-        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return contains_phenol_alkylation
+    return benzylation_detected

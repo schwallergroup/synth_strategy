@@ -2,63 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving reduction of a nitro group to an amine.
+    Detects aryl C-N bond formation (likely Buchwald-Hartwig type coupling)
+    between an aryl halide and an amine.
     """
-    nitro_reduction_detected = False
+    has_aryl_cn_coupling = False
 
     def dfs_traverse(node):
-        nonlocal nitro_reduction_detected
+        nonlocal has_aryl_cn_coupling
 
-        if node["type"] == "reaction":
+        if node.get("type") == "reaction":
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Convert to RDKit molecules
-                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for aryl halide
+                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,Cl,I,F]")
 
-                if all(reactants_mols) and product_mol:
-                    # Check for nitro group in reactants
-                    nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-                    reactants_with_nitro = any(
-                        [mol.HasSubstructMatch(nitro_pattern) for mol in reactants_mols]
-                    )
+                # Check for amine
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-                    # Check for amine in product
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
-                    product_has_amine = product_mol.HasSubstructMatch(amine_pattern)
+                # Check for aryl-N bond in product
+                aryl_n_pattern = Chem.MolFromSmarts("[c]-[NH]")
 
-                    if reactants_with_nitro and product_has_amine:
-                        print("Nitro to amine reduction detected")
-                        nitro_reduction_detected = True
+                # Check if reactants contain aryl halide and amine, and product contains aryl-N bond
+                has_aryl_halide = any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(aryl_halide_pattern)
+                    for r in reactants
+                    if Chem.MolFromSmiles(r)
+                )
+                has_amine = any(
+                    Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(amine_pattern)
+                    for r in reactants
+                    if Chem.MolFromSmiles(r)
+                )
+
+                product_mol = Chem.MolFromSmiles(product)
+                has_aryl_n = product_mol and product_mol.HasSubstructMatch(aryl_n_pattern)
+
+                if has_aryl_halide and has_amine and has_aryl_n:
+                    has_aryl_cn_coupling = True
+                    print("Found aryl C-N bond formation")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return nitro_reduction_detected
+
+    return has_aryl_cn_coupling

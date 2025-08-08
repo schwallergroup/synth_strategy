@@ -2,149 +2,106 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects direct C-H functionalization to form an aldehyde.
+    Detects a synthetic strategy involving sequential nitrogen functionalization in the late stages,
+    specifically an ester-to-amide conversion followed by N-alkylation.
     """
-    ch_to_aldehyde_detected = False
+    # Track if we found the required transformations
+    found_n_alkylation = False
+    found_ester_to_amide = False
+
+    # Track the depth at which transformations occur
+    n_alkylation_depth = None
+    ester_to_amide_depth = None
 
     def dfs_traverse(node, depth=0):
-        nonlocal ch_to_aldehyde_detected
+        nonlocal found_n_alkylation, found_ester_to_amide
+        nonlocal n_alkylation_depth, ester_to_amide_depth
 
         if node["type"] == "reaction":
-            try:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
+                reactants_smiles = rsmi.split(">")[0]
                 product_smiles = rsmi.split(">")[-1]
 
-                # Check if product contains aldehyde
-                if checker.check_fg("Aldehyde", product_smiles):
-                    # Check if any reactant does NOT contain aldehyde
-                    reactant_without_aldehyde = False
-                    for reactant in reactants_smiles:
-                        if not checker.check_fg("Aldehyde", reactant):
-                            reactant_without_aldehyde = True
-                            break
+                # Convert to RDKit molecules
+                try:
+                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
+                    product = Chem.MolFromSmiles(product_smiles)
 
-                    if reactant_without_aldehyde:
-                        # Check for specific C-H functionalization reactions
+                    if product and all(r for r in reactants):
+                        # Check for N-alkylation (primary amine to secondary amine)
+                        # Look for patterns where -NH2 becomes -NH-C
+                        primary_amine_pattern = Chem.MolFromSmarts("[NH2][#6]")
+                        secondary_amine_pattern = Chem.MolFromSmarts("[NH]([#6])[#6]")
+
+                        has_primary_amine = any(
+                            r.HasSubstructMatch(primary_amine_pattern) for r in reactants if r
+                        )
+                        has_secondary_amine = product.HasSubstructMatch(secondary_amine_pattern)
+
                         if (
-                            checker.check_reaction("Oxidation of alkene to aldehyde", rsmi)
-                            or checker.check_reaction("Oxidation of alcohol to aldehyde", rsmi)
-                            or checker.check_reaction("Aromatic hydroxylation", rsmi)
-                            or checker.check_reaction("Directed ortho metalation of arenes", rsmi)
-                            or checker.check_reaction("Hydration of alkyne to aldehyde", rsmi)
-                            or checker.check_reaction("Bouveault aldehyde synthesis", rsmi)
-                            or checker.check_reaction(
-                                "Homologation of aldehydes with formaldehyde", rsmi
-                            )
-                            or checker.check_reaction(
-                                "Homologation of diazo compounds to aldehydes using formaldehyde",
-                                rsmi,
-                            )
+                            has_primary_amine
+                            and has_secondary_amine
+                            and not product.HasSubstructMatch(primary_amine_pattern)
                         ):
+                            print(f"Found N-alkylation at depth {depth}")
+                            found_n_alkylation = True
+                            n_alkylation_depth = depth
 
-                            print(f"Detected C-H functionalization to aldehyde at depth {depth}")
-                            print(f"Reaction SMILES: {rsmi}")
-                            ch_to_aldehyde_detected = True
-                            return
+                        # Check for ester to amide transformation
+                        ester_pattern = Chem.MolFromSmarts("[#6][C](=[O])[O][#6]")
+                        amide_pattern = Chem.MolFromSmarts("[#6][C](=[O])[N]")
 
-                        # Check for primary alcohol oxidation (common C-H functionalization equivalent)
-                        for reactant in reactants_smiles:
-                            if checker.check_fg("Primary alcohol", reactant):
-                                print(
-                                    f"Detected primary alcohol oxidation to aldehyde at depth {depth}"
-                                )
-                                print(f"Reaction SMILES: {rsmi}")
-                                ch_to_aldehyde_detected = True
-                                return
+                        has_ester = any(r.HasSubstructMatch(ester_pattern) for r in reactants if r)
+                        has_amide = product.HasSubstructMatch(amide_pattern)
 
-                        # Additional check for general C-H functionalization
-                        # by comparing atom counts and checking for aldehyde formation
-                        product_mol = Chem.MolFromSmiles(product_smiles)
-                        for reactant in reactants_smiles:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and product_mol:
-                                # Check if atom count difference is small (typical for C-H functionalization)
-                                if abs(reactant_mol.GetNumAtoms() - product_mol.GetNumAtoms()) <= 5:
-                                    # Ensure we're not just detecting a simple functional group conversion
-                                    if not (
-                                        checker.check_fg("Ketone", reactant)
-                                        or checker.check_fg("Carboxylic acid", reactant)
-                                        or checker.check_fg("Ester", reactant)
-                                        or checker.check_fg("Nitrile", reactant)
-                                        or checker.check_fg("Amide", reactant)
-                                        or checker.check_fg("Acyl halide", reactant)
-                                    ):
+                        if has_ester and has_amide and not product.HasSubstructMatch(ester_pattern):
+                            print(f"Found ester-to-amide transformation at depth {depth}")
+                            found_ester_to_amide = True
+                            ester_to_amide_depth = depth
 
-                                        # Check for alkyne or alkene that could be oxidized to aldehyde
-                                        if (
-                                            checker.check_fg("Alkyne", reactant)
-                                            or checker.check_fg("Alkene", reactant)
-                                            or checker.check_fg("Allyl", reactant)
-                                            or checker.check_fg("Vinyl", reactant)
-                                        ):
-                                            print(
-                                                f"Detected potential C-H functionalization to aldehyde at depth {depth}"
-                                            )
-                                            print(f"Reaction SMILES: {rsmi}")
-                                            ch_to_aldehyde_detected = True
-                                            return
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                except Exception as e:
+                    print(f"Error processing reaction SMILES: {e}")
 
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    return ch_to_aldehyde_detected
+    # Check if we found both transformations in the correct sequence
+    # For late-stage transformations, we want low depth values
+    if found_n_alkylation and found_ester_to_amide:
+        # Check if N-alkylation occurs after ester-to-amide (lower depth number)
+        if n_alkylation_depth is not None and ester_to_amide_depth is not None:
+            if n_alkylation_depth < ester_to_amide_depth:
+                print("Found late-stage sequential nitrogen functionalization strategy")
+                return True
+
+    return False

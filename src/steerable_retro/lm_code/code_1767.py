@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,142 +54,135 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route involves protection of diols as cyclic acetals/ketals.
+    This function detects a synthetic strategy involving sequential functional group
+    interconversions from bromide to azide to amine.
     """
-    # Track if we found a valid protection reaction
-    found_protection_reaction = False
+    # Initialize flags to track the sequence of functional group interconversions
+    br_to_n3_detected = False
+    n3_to_nh2_detected = False
 
-    def dfs_traverse(node):
-        nonlocal found_protection_reaction
+    print("Starting analysis for br_to_n3_to_nh2 conversion strategy")
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal br_to_n3_detected, n3_to_nh2_detected
 
-            print(f"Analyzing reaction: {rsmi}")
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for protection reactions (acetalization)
-            if checker.check_reaction("Diol acetalization", rsmi) or checker.check_reaction(
-                "Aldehyde or ketone acetalization", rsmi
-            ):
-                print(f"Found acetalization reaction: {rsmi}")
+                # Check for bromide to azide conversion
+                # First check if this is a known azide formation reaction
+                if checker.check_reaction("Formation of Azides from halogens", rsmi):
+                    print(f"Found 'Formation of Azides from halogens' reaction at depth {depth}")
+                    # Verify that at least one reactant contains a bromide
+                    has_bromide = False
+                    for reactant in reactants:
+                        if (
+                            checker.check_fg("Primary halide", reactant)
+                            or checker.check_fg("Secondary halide", reactant)
+                            or checker.check_fg("Tertiary halide", reactant)
+                            or checker.check_fg("Aromatic halide", reactant)
+                        ):
+                            # Check if it's specifically a bromide
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol:
+                                for atom in mol.GetAtoms():
+                                    if atom.GetAtomicNum() == 35:  # Bromine atomic number
+                                        has_bromide = True
+                                        print(f"Found bromide in reactant: {reactant}")
+                                        break
 
-                # Check for cyclic acetal/ketal in product
-                cyclic_acetal_rings = ["dioxolane", "dioxane", "dioxolene", "dioxepane", "trioxane"]
-                has_cyclic_acetal = any(
-                    checker.check_ring(ring, product) for ring in cyclic_acetal_rings
-                )
+                    # Verify that the product contains an azide
+                    if has_bromide and checker.check_fg("Azide", product):
+                        br_to_n3_detected = True
+                        print(f"Detected bromide to azide conversion at depth {depth}")
 
-                if has_cyclic_acetal:
-                    print(f"Found cyclic acetal/ketal in product: {product}")
-                    found_protection_reaction = True
-                    return
+                # If specific reaction check fails, try a more general approach for bromide to azide
+                if not br_to_n3_detected:
+                    # Check for bromide in reactants
+                    has_bromide = False
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            for atom in mol.GetAtoms():
+                                if atom.GetAtomicNum() == 35:  # Bromine atomic number
+                                    has_bromide = True
+                                    print(f"Found bromide in reactant (general check): {reactant}")
+                                    break
 
-            # Direct detection of cyclic acetal/ketal formation
-            cyclic_acetal_rings = ["dioxolane", "dioxane", "dioxolene", "dioxepane", "trioxane"]
-            has_cyclic_acetal_product = any(
-                checker.check_ring(ring, product) for ring in cyclic_acetal_rings
-            )
-            has_cyclic_acetal_reactants = any(
-                any(checker.check_ring(ring, reactant) for ring in cyclic_acetal_rings)
-                for reactant in reactants
-            )
+                    # Check for azide in product
+                    if has_bromide and checker.check_fg("Azide", product):
+                        # Additional check to ensure it's a conversion (not just presence)
+                        # Look for azide in reactants - if not present, it's likely a conversion
+                        azide_in_reactants = any(checker.check_fg("Azide", r) for r in reactants)
+                        if not azide_in_reactants:
+                            br_to_n3_detected = True
+                            print(
+                                f"Detected bromide to azide conversion (general) at depth {depth}"
+                            )
 
-            # If a cyclic acetal/ketal is formed (appears in product but not in reactants)
-            if has_cyclic_acetal_product and not has_cyclic_acetal_reactants:
-                print(f"Found cyclic acetal/ketal formation in product: {product}")
+                # Check for azide to amine conversion
+                # Check for azide reduction reactions
+                if checker.check_reaction("Azide to amine reduction (Staudinger)", rsmi):
+                    print(f"Found 'Azide to amine reduction' reaction at depth {depth}")
+                    # Check for azide in reactants
+                    has_azide = False
+                    for reactant in reactants:
+                        if checker.check_fg("Azide", reactant):
+                            has_azide = True
+                            print(f"Found azide in reactant: {reactant}")
+                            break
 
-                # Check for diol in reactants
-                has_diol = False
-                has_carbonyl = False
+                    # Check for amine in product
+                    if has_azide and checker.check_fg("Primary amine", product):
+                        n3_to_nh2_detected = True
+                        print(f"Detected azide to amine conversion at depth {depth}")
 
-                for reactant in reactants:
-                    # Check for ethylene glycol or similar diols
-                    if "OCO" in reactant or "OCCO" in reactant or "OCCCO" in reactant:
-                        has_diol = True
-                        print(f"Found potential diol pattern in reactant: {reactant}")
+                # If specific reaction check fails, try a more general approach for azide reduction
+                if not n3_to_nh2_detected:
+                    # Check for azide in reactants
+                    has_azide = False
+                    for reactant in reactants:
+                        if checker.check_fg("Azide", reactant):
+                            has_azide = True
+                            print(f"Found azide in reactant (general check): {reactant}")
+                            break
 
-                    # Count alcohols in this specific reactant
-                    alcohol_count = 0
-                    if checker.check_fg("Primary alcohol", reactant):
-                        alcohol_count += 1
-                        print(f"Found primary alcohol in reactant: {reactant}")
-                    if checker.check_fg("Secondary alcohol", reactant):
-                        alcohol_count += 1
-                        print(f"Found secondary alcohol in reactant: {reactant}")
-                    if checker.check_fg("Tertiary alcohol", reactant):
-                        alcohol_count += 1
-                        print(f"Found tertiary alcohol in reactant: {reactant}")
+                    # Check for amine in product
+                    if has_azide and checker.check_fg("Primary amine", product):
+                        # Look for evidence of reduction (loss of N2)
+                        reactant_mols = [
+                            Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)
+                        ]
+                        product_mol = Chem.MolFromSmiles(product)
 
-                    # If this single reactant has multiple alcohols, it's a potential diol
-                    if alcohol_count >= 2:
-                        has_diol = True
-                        print(f"Found potential diol in reactant: {reactant}")
+                        if product_mol:
+                            # Count nitrogen atoms in reactants and product
+                            n_count_reactants = sum(
+                                sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 7)
+                                for mol in reactant_mols
+                            )
+                            n_count_product = sum(
+                                1 for atom in product_mol.GetAtoms() if atom.GetAtomicNum() == 7
+                            )
 
-                    # Check for carbonyl compounds
-                    if (
-                        checker.check_fg("Aldehyde", reactant)
-                        or checker.check_fg("Ketone", reactant)
-                        or checker.check_fg("Formaldehyde", reactant)
-                    ):
-                        has_carbonyl = True
-                        print(f"Found carbonyl compound in reactant: {reactant}")
-
-                # If we have either a diol or a carbonyl, and a cyclic acetal is formed, it's likely a protection
-                if has_diol or has_carbonyl:
-                    print("Found valid cyclic acetal/ketal formation")
-                    found_protection_reaction = True
-                    return
-
-            # Check for deprotection reactions (hydrolysis)
-            if (
-                checker.check_reaction("Acetal hydrolysis to diol", rsmi)
-                or checker.check_reaction("Acetal hydrolysis to aldehyde", rsmi)
-                or checker.check_reaction("Ketal hydrolysis to ketone", rsmi)
-            ):
-                print(f"Found acetal/ketal hydrolysis reaction: {rsmi}")
-
-                # Check for cyclic acetal/ketal in reactants
-                cyclic_acetal_rings = ["dioxolane", "dioxane", "dioxolene", "dioxepane", "trioxane"]
-                has_cyclic_acetal_reactant = any(
-                    any(checker.check_ring(ring, reactant) for ring in cyclic_acetal_rings)
-                    for reactant in reactants
-                )
-
-                if has_cyclic_acetal_reactant:
-                    print("Found valid cyclic acetal/ketal deprotection")
-                    found_protection_reaction = True
-                    return
-
-            # Special case: Check for reactions where a cyclic acetal/ketal appears or disappears
-            # This catches cases where the reaction might not be explicitly labeled as acetalization/hydrolysis
-            cyclic_acetal_rings = ["dioxolane", "dioxane", "dioxolene", "dioxepane", "trioxane"]
-            has_cyclic_acetal_product = any(
-                checker.check_ring(ring, product) for ring in cyclic_acetal_rings
-            )
-            has_cyclic_acetal_reactants = any(
-                any(checker.check_ring(ring, reactant) for ring in cyclic_acetal_rings)
-                for reactant in reactants
-            )
-
-            # Formation of cyclic acetal/ketal (protection)
-            if has_cyclic_acetal_product and not has_cyclic_acetal_reactants:
-                print(f"Detected formation of cyclic acetal/ketal: {product}")
-                found_protection_reaction = True
-                return
-
-            # Removal of cyclic acetal/ketal (deprotection)
-            if not has_cyclic_acetal_product and has_cyclic_acetal_reactants:
-                print(f"Detected removal of cyclic acetal/ketal from reactants")
-                found_protection_reaction = True
-                return
+                            # If nitrogen count decreased and we have an amine, it's likely a reduction
+                            if n_count_reactants > n_count_product:
+                                n3_to_nh2_detected = True
+                                print(
+                                    f"Detected azide to amine conversion (general) at depth {depth}"
+                                )
 
         # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    return found_protection_reaction
+    print(f"br_to_n3_detected: {br_to_n3_detected}, n3_to_nh2_detected: {n3_to_nh2_detected}")
+    # Return True if both conversions were detected
+    return br_to_n3_detected and n3_to_nh2_detected

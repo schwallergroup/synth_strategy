@@ -2,33 +2,38 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving reduction of a nitro group to an amine.
+    This function detects if the synthetic route uses TBDMS protection strategy
+    for hydroxyl groups multiple times.
     """
-    found_nitro_reduction = False
+    protection_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_nitro_reduction
+    def dfs_traverse(node):
+        nonlocal protection_count
 
         if node["type"] == "reaction":
             # Extract reactants and product
@@ -36,34 +41,31 @@ def main(route):
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-            if product_mol and all(r for r in reactant_mols):
-                # Check for nitro group in reactants
-                nitro_patt = Chem.MolFromSmarts("[N+](=O)[O-]")
-                # Check for amine in product
-                amine_patt = Chem.MolFromSmarts("[NH2]")
+            # Check for TBDMS protection pattern
+            # Look for alcohol in reactants
+            alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
+            # Look for TBDMS ether in product
+            tbdms_pattern = Chem.MolFromSmarts("[#8]-[#14]([#6])([#6])[#6]([#6])([#6])[#6]")
 
-                reactant_has_nitro = False
-                for r in reactant_mols:
-                    if r.HasSubstructMatch(nitro_patt):
-                        reactant_has_nitro = True
-                        break
-
-                product_has_amine = product_mol.HasSubstructMatch(amine_patt)
-
-                # If reactant has nitro and product has amine, it's likely a nitro reduction
-                if reactant_has_nitro and product_has_amine:
-                    found_nitro_reduction = True
-                    print(f"Found nitro reduction at depth {depth}")
+            if (
+                product
+                and any(r for r in reactants if r and r.HasSubstructMatch(alcohol_pattern))
+                and product.HasSubstructMatch(tbdms_pattern)
+            ):
+                protection_count += 1
+                print(f"TBDMS protection detected at reaction with SMILES: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    return found_nitro_reduction
+    # Return True if multiple TBDMS protections are found
+    result = protection_count >= 2
+    print(f"TBDMS protection strategy detected: {result} (count: {protection_count})")
+    return result

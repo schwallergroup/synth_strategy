@@ -2,78 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving C-O ether bond formation
-    between an alkyl bromide and bromophenol.
+    This function detects a linear synthesis strategy with sequential fragment additions
+    rather than convergent synthesis.
     """
-    found_ether_formation = False
+    max_fragments_per_reaction = 0
 
     def dfs_traverse(node):
-        nonlocal found_ether_formation
+        nonlocal max_fragments_per_reaction
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            # Check for bromophenol
-            bromophenol_pattern = Chem.MolFromSmarts("[OH][c]1[c]([Br])[c][c][c][c]1")
+                # Count number of fragments being combined
+                num_fragments = len(reactants)
+                max_fragments_per_reaction = max(max_fragments_per_reaction, num_fragments)
 
-            # Check for alkyl bromide
-            alkyl_bromide_pattern = Chem.MolFromSmarts("[C][Br]")
-
-            # Check for ether in product
-            ether_pattern = Chem.MolFromSmarts("[C][O][c]1[c]([Br])[c][c][c][c]1")
-
-            reactant_has_bromophenol = False
-            reactant_has_alkyl_bromide = False
-
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol:
-                    if mol.HasSubstructMatch(bromophenol_pattern):
-                        reactant_has_bromophenol = True
-                    if mol.HasSubstructMatch(alkyl_bromide_pattern):
-                        reactant_has_alkyl_bromide = True
-
-            product_mol = Chem.MolFromSmiles(product)
-            if (
-                reactant_has_bromophenol
-                and reactant_has_alkyl_bromide
-                and product_mol
-                and product_mol.HasSubstructMatch(ether_pattern)
-            ):
-                found_ether_formation = True
-                print("Found ether formation between alkyl bromide and bromophenol")
+                if num_fragments > 2:
+                    print(f"Found reaction with {num_fragments} fragments")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    if found_ether_formation:
-        print("Detected ether formation with bromophenol strategy")
-
-    return found_ether_formation
+    # If max fragments per reaction is 2, it's likely a linear synthesis
+    return max_fragments_per_reaction <= 2

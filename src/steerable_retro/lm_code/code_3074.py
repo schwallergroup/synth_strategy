@@ -2,63 +2,114 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects the use of protection/deprotection strategies,
-    particularly Boc protection of nitrogen.
+    Detects if the synthesis involves an aldol-type condensation (Knoevenagel or similar)
+    forming an α,β-unsaturated carbonyl compound.
     """
-    protection_found = False
+    has_aldol_condensation = False
 
-    def dfs_traverse(node):
-        nonlocal protection_found
+    def dfs_traverse(node, depth=0):
+        nonlocal has_aldol_condensation
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
 
-            product_smiles = rsmi.split(">")[-1]
-
-            try:
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if product_mol is None:
+                # Check if this is a Knoevenagel Condensation directly
+                if checker.check_reaction("Knoevenagel Condensation", rsmi):
+                    print(f"Detected Knoevenagel Condensation at depth {depth}")
+                    has_aldol_condensation = True
                     return
 
-                # Check for Boc protected amine
-                boc_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])-[#7]")
+                # Check for general aldol condensation
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                if product_mol.HasSubstructMatch(boc_pattern):
-                    protection_found = True
-                    print("Found Boc protection")
+                # Check for aldehyde or ketone in reactants
+                has_carbonyl = False
+                for reactant in reactants:
+                    if checker.check_fg("Aldehyde", reactant) or checker.check_fg(
+                        "Ketone", reactant
+                    ):
+                        has_carbonyl = True
+                        break
 
-            except:
-                pass  # Skip if there's an error processing the molecules
+                # Check for α,β-unsaturated carbonyl in product
+                if has_carbonyl and product:
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        # Check if product has an α,β-unsaturated carbonyl structure
+                        unsaturated_carbonyl_pattern = Chem.MolFromSmarts("C=CC=O")
+                        if product_mol.HasSubstructMatch(unsaturated_carbonyl_pattern):
+                            print(f"Detected aldol-type condensation at depth {depth}")
+                            has_aldol_condensation = True
+                            return
 
-        # Traverse children
+                        # Also check for α,β-unsaturated ketone
+                        unsaturated_ketone_pattern = Chem.MolFromSmarts("C=CC(=O)C")
+                        if product_mol.HasSubstructMatch(unsaturated_ketone_pattern):
+                            print(f"Detected aldol-type condensation at depth {depth}")
+                            has_aldol_condensation = True
+                            return
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(f"Protection/deprotection strategy detected: {protection_found}")
-    return protection_found
+    if has_aldol_condensation:
+        print("Detected aldol-type condensation strategy")
+
+    return has_aldol_condensation

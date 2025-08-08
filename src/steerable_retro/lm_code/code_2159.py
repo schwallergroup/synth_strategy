@@ -2,57 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy (vs. convergent).
+    This function detects a linear synthesis strategy.
+    It checks if each reaction has only one non-commercially available reactant,
+    indicating a linear rather than convergent approach.
     """
     is_linear = True
 
-    def dfs_traverse(node):
+    def dfs_traverse(node, depth=0):
         nonlocal is_linear
 
         if node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
+            # Count non-commercial reactants
+            non_commercial_count = 0
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    non_commercial_count += 1
 
-                # If more than 2 complex reactants, consider it convergent
-                complex_reactants = 0
-                for reactant_smiles in reactants_smiles:
-                    # Consider a reactant complex if it has more than 15 atoms
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                    if reactant_mol and reactant_mol.GetNumAtoms() > 15:
-                        complex_reactants += 1
+            if non_commercial_count > 1:
+                print(
+                    f"Found convergent step at depth {depth} with {non_commercial_count} non-commercial reactants"
+                )
+                is_linear = False
 
-                if complex_reactants > 2:
-                    print(
-                        f"Convergent step detected with {complex_reactants} complex reactants: {rsmi}"
-                    )
-                    is_linear = False
-            except Exception as e:
-                print(f"Error in linear synthesis detection: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from root
     dfs_traverse(route)
     return is_linear

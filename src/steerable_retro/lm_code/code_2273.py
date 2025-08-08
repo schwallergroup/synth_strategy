@@ -2,77 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic sequence involving nitrile and oxime transformations.
+    This function detects specific functional group interconversions:
+    amine to nitro and amide to nitrile.
     """
-    nitrile_formed = False
-    nitrile_consumed = False
-    oxime_formed = False
-    oxime_consumed = False
+    amine_to_nitro = False
+    amide_to_nitrile = False
 
     def dfs_traverse(node):
-        nonlocal nitrile_formed, nitrile_consumed, oxime_formed, oxime_consumed
+        nonlocal amine_to_nitro, amide_to_nitrile
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0]
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "children" in node:
+            # Get reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                reactant_mol = Chem.MolFromSmiles(reactants)
-                product_mol = Chem.MolFromSmiles(product)
+            # Convert to RDKit molecules
+            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
+            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-                if reactant_mol and product_mol:
-                    nitrile_pattern = Chem.MolFromSmarts("[CX2]#[NX1]")
-                    oxime_pattern = Chem.MolFromSmarts("[CX3]=[NX2]-[OX2]")
+            if all(reactant_mols) and product_mol:
+                # Check for amine to nitro conversion (retrosynthetic direction)
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
 
-                    # Check for nitrile formation
-                    if not reactant_mol.HasSubstructMatch(
-                        nitrile_pattern
-                    ) and product_mol.HasSubstructMatch(nitrile_pattern):
-                        nitrile_formed = True
-                        print("Detected nitrile formation")
+                nitro_in_reactants = any(
+                    len(mol.GetSubstructMatches(nitro_pattern)) > 0 for mol in reactant_mols
+                )
+                amine_in_product = len(product_mol.GetSubstructMatches(amine_pattern)) > 0
 
-                    # Check for nitrile consumption
-                    if reactant_mol.HasSubstructMatch(
-                        nitrile_pattern
-                    ) and not product_mol.HasSubstructMatch(nitrile_pattern):
-                        nitrile_consumed = True
-                        print("Detected nitrile consumption")
+                if nitro_in_reactants and amine_in_product:
+                    print(f"Amine to nitro conversion detected: {rsmi}")
+                    amine_to_nitro = True
 
-                    # Check for oxime formation
-                    if not reactant_mol.HasSubstructMatch(
-                        oxime_pattern
-                    ) and product_mol.HasSubstructMatch(oxime_pattern):
-                        oxime_formed = True
-                        print("Detected oxime formation")
+                # Check for amide to nitrile conversion (retrosynthetic direction)
+                amide_pattern = Chem.MolFromSmarts("[C](=O)[N]")
+                nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
 
-                    # Check for oxime consumption
-                    if reactant_mol.HasSubstructMatch(
-                        oxime_pattern
-                    ) and not product_mol.HasSubstructMatch(oxime_pattern):
-                        oxime_consumed = True
-                        print("Detected oxime consumption")
+                nitrile_in_reactants = any(
+                    len(mol.GetSubstructMatches(nitrile_pattern)) > 0 for mol in reactant_mols
+                )
+                amide_in_product = len(product_mol.GetSubstructMatches(amide_pattern)) > 0
+
+                if nitrile_in_reactants and amide_in_product:
+                    print(f"Amide to nitrile conversion detected: {rsmi}")
+                    amide_to_nitrile = True
 
         # Traverse children
         for child in node.get("children", []):
@@ -80,6 +79,4 @@ def main(route):
 
     # Start traversal
     dfs_traverse(route)
-
-    # Return True if we have both nitrile and oxime transformations
-    return nitrile_formed and nitrile_consumed and oxime_formed and oxime_consumed
+    return amine_to_nitro and amide_to_nitrile

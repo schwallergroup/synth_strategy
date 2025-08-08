@@ -2,76 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a Suzuki coupling reaction
-    (aryl halide + boronic acid → biaryl).
+    This function detects if the synthetic route involves nitro reduction to amine.
     """
-    has_suzuki_coupling = False
+    nitro_reduced = False
 
     def dfs_traverse(node):
-        nonlocal has_suzuki_coupling
+        nonlocal nitro_reduced
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-            try:
-                # Check for Suzuki coupling pattern
-                product_mol = Chem.MolFromSmiles(product)
+                # Check if reactants contain nitro group
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
+                reactant_with_nitro = None
+                for r in reactants:
+                    if r is not None and r.HasSubstructMatch(
+                        Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
+                    ):
+                        reactant_with_nitro = r
+                        break
 
-                if product_mol:
-                    # Check if product contains biaryl bond
-                    biaryl_pattern = Chem.MolFromSmarts("c:c-c:c")
+                # Check if product contains amine at the same position
+                product = Chem.MolFromSmiles(product_smiles)
+                if reactant_with_nitro is not None and product is not None:
+                    if product.HasSubstructMatch(
+                        Chem.MolFromSmarts("[#7H2]")
+                    ) and not product.HasSubstructMatch(Chem.MolFromSmarts("[#7+](=[#8])[#8-]")):
+                        nitro_reduced = True
+                        print("Nitro reduction detected")
 
-                    if product_mol.HasSubstructMatch(biaryl_pattern):
-                        # Check if reactants contain aryl halide and boronic acid
-                        has_aryl_halide = False
-                        has_boronic_acid = False
-
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                aryl_halide_pattern = Chem.MolFromSmarts("c[I,Br,Cl]")
-                                boronic_acid_pattern = Chem.MolFromSmarts("cB(O)O")
-
-                                if reactant_mol.HasSubstructMatch(aryl_halide_pattern):
-                                    has_aryl_halide = True
-                                if reactant_mol.HasSubstructMatch(boronic_acid_pattern):
-                                    has_boronic_acid = True
-
-                        if has_aryl_halide and has_boronic_acid:
-                            has_suzuki_coupling = True
-                            print(
-                                f"Detected Suzuki coupling at depth {node.get('depth', 'unknown')}"
-                            )
-            except Exception as e:
-                print(f"Error in Suzuki coupling detection: {e}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return has_suzuki_coupling
+    return nitro_reduced

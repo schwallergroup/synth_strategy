@@ -2,65 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving benzyl protection/deprotection
-    of an alcohol.
+    This function detects a synthetic strategy involving halogenated aromatic rings
+    (chloro- and fluoro-substituted) in the final product.
     """
-    # Track if we found benzyl deprotection
-    found_benzyl_deprotection = False
+    has_halogenated_aromatics = False
 
-    def dfs_traverse(node):
-        nonlocal found_benzyl_deprotection
+    def dfs_traverse(node, depth=0):
+        nonlocal has_halogenated_aromatics
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and depth == 0:  # Final product
+            smiles = node["smiles"]
+            mol = Chem.MolFromSmiles(smiles)
 
-            # Check for benzyl ether to alcohol conversion (deprotection)
-            benzyl_ether_pattern = Chem.MolFromSmarts("[O][C][c]1[c][c][c][c][c]1")
-            alcohol_pattern = Chem.MolFromSmarts("[OH]")
+            if mol:
+                # Check for chloro-aromatic pattern
+                cl_aromatic_pattern = Chem.MolFromSmarts("c[Cl]")
+                # Check for fluoro-aromatic pattern
+                f_aromatic_pattern = Chem.MolFromSmarts("c[F]")
 
-            # Check reactants for benzyl ether
-            has_benzyl_ether = False
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(benzyl_ether_pattern):
-                    has_benzyl_ether = True
-                    break
+                has_cl = mol.HasSubstructMatch(cl_aromatic_pattern)
+                has_f = mol.HasSubstructMatch(f_aromatic_pattern)
 
-            # Check product for alcohol
-            product_mol = Chem.MolFromSmiles(product)
-            has_alcohol = product_mol and product_mol.HasSubstructMatch(alcohol_pattern)
-
-            if has_benzyl_ether and has_alcohol:
-                found_benzyl_deprotection = True
-                print("Found benzyl deprotection strategy")
+                if has_cl and has_f:
+                    print("Found both chloro- and fluoro-substituted aromatic rings")
+                    has_halogenated_aromatics = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return found_benzyl_deprotection
+
+    return has_halogenated_aromatics

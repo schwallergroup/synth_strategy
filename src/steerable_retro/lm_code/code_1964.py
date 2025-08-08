@@ -2,96 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects C1 homologation of aromatic carboxylic acid via nitrile intermediate.
-    The sequence involves: ArCOOH → ArCH2OH → ArCH2X → ArCH2CN → ArCH2COOH → ArCH2COOMe
+    This function detects if the synthesis utilizes halogen chemistry extensively
+    (multiple halogenated intermediates or halogenation reactions).
     """
-    # Initialize tracking variables
-    has_aromatic_acid = False
-    has_benzylic_alcohol = False
-    has_benzylic_halide = False
-    has_phenylacetonitrile = False
-    has_phenylacetic_acid = False
-    has_phenylacetic_ester = False
-
-    # SMARTS patterns
-    aromatic_acid_pattern = Chem.MolFromSmarts("[c][C](=O)[OH]")
-    benzylic_alcohol_pattern = Chem.MolFromSmarts("[c][CH2][OH]")
-    benzylic_halide_pattern = Chem.MolFromSmarts("[c][CH2][Br,Cl,I,F]")
-    phenylacetonitrile_pattern = Chem.MolFromSmarts("[c][CH2][C]#[N]")
-    phenylacetic_acid_pattern = Chem.MolFromSmarts("[c][CH2][C](=O)[OH]")
-    phenylacetic_ester_pattern = Chem.MolFromSmarts("[c][CH2][C](=O)[O][C]")
+    halogen_pattern = Chem.MolFromSmarts("[#6]-[#9,#17,#35,#53]")
+    halogen_reactions_count = 0
+    halogenated_intermediates_count = 0
 
     def dfs_traverse(node):
-        nonlocal has_aromatic_acid, has_benzylic_alcohol, has_benzylic_halide
-        nonlocal has_phenylacetonitrile, has_phenylacetic_acid, has_phenylacetic_ester
+        nonlocal halogen_reactions_count, halogenated_intermediates_count
 
-        if node["type"] == "mol":
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    if mol.HasSubstructMatch(aromatic_acid_pattern):
-                        has_aromatic_acid = True
-                    if mol.HasSubstructMatch(benzylic_alcohol_pattern):
-                        has_benzylic_alcohol = True
-                    if mol.HasSubstructMatch(benzylic_halide_pattern):
-                        has_benzylic_halide = True
-                    if mol.HasSubstructMatch(phenylacetonitrile_pattern):
-                        has_phenylacetonitrile = True
-                    if mol.HasSubstructMatch(phenylacetic_acid_pattern):
-                        has_phenylacetic_acid = True
-                    if mol.HasSubstructMatch(phenylacetic_ester_pattern):
-                        has_phenylacetic_ester = True
-            except:
-                print(f"Error processing molecule: {node['smiles']}")
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(halogen_pattern):
+                halogenated_intermediates_count += 1
 
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Process reaction nodes if needed
-            pass
+        elif node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        # Process children
+            reactant_mols = [
+                Chem.MolFromSmiles(r) for r in reactants_smiles if Chem.MolFromSmiles(r)
+            ]
+            product_mol = Chem.MolFromSmiles(product_smiles)
+
+            if product_mol:
+                # Check if this reaction introduces or removes a halogen
+                product_halogens = len(product_mol.GetSubstructMatches(halogen_pattern))
+                reactant_halogens = sum(
+                    len(r.GetSubstructMatches(halogen_pattern)) for r in reactant_mols if r
+                )
+
+                if product_halogens != reactant_halogens:
+                    halogen_reactions_count += 1
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have the complete homologation sequence
-    sequence_present = (
-        has_aromatic_acid
-        and has_benzylic_alcohol
-        and has_benzylic_halide
-        and has_phenylacetonitrile
-        and has_phenylacetic_acid
+    # Consider it a halogen chemistry strategy if we have multiple halogenated intermediates
+    # and at least one halogenation/dehalogenation reaction
+    result = halogenated_intermediates_count >= 3 and halogen_reactions_count >= 1
+    print(
+        f"Halogen chemistry strategy detected: {result} (intermediates: {halogenated_intermediates_count}, reactions: {halogen_reactions_count})"
     )
-
-    print(f"C1 homologation via nitrile detection results:")
-    print(f"  Aromatic acid: {has_aromatic_acid}")
-    print(f"  Benzylic alcohol: {has_benzylic_alcohol}")
-    print(f"  Benzylic halide: {has_benzylic_halide}")
-    print(f"  Phenylacetonitrile: {has_phenylacetonitrile}")
-    print(f"  Phenylacetic acid: {has_phenylacetic_acid}")
-    print(f"  Phenylacetic ester: {has_phenylacetic_ester}")
-    print(f"  Complete sequence present: {sequence_present}")
-
-    return sequence_present
+    return result

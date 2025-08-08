@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,142 +54,66 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the route involves formation of nitrogen-containing heterocycles
+    This function detects a late-stage esterification in the synthetic route,
+    specifically looking for conversion of carboxylic acid to ester in the final steps.
     """
-    heterocycle_formed = False
+    print("Starting analysis for late-stage esterification")
+    esterification_depths = []
 
-    # List of common nitrogen-containing heterocycles to check
-    n_heterocycles = [
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "pyrrolidine",
-        "piperidine",
-        "piperazine",
-        "morpholine",
-        "aziridine",
-        "azetidine",
-        "azepane",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "benzimidazole",
-        "benzoxazole",
-        "benzothiazole",
-        "indazole",
-        "benzotriazole",
-    ]
-
-    # List of reactions commonly used for heterocycle formation
-    heterocycle_forming_reactions = [
-        "Formation of NOS Heterocycles",
-        "Paal-Knorr pyrrole synthesis",
-        "Benzothiazole formation from aldehyde",
-        "Benzothiazole formation from acyl halide",
-        "Benzothiazole formation from ester/carboxylic acid",
-        "Benzoxazole formation from aldehyde",
-        "Benzoxazole formation from acyl halide",
-        "Benzoxazole formation from ester/carboxylic acid",
-        "Benzoxazole formation (intramolecular)",
-        "Benzimidazole formation from aldehyde",
-        "Benzimidazole formation from acyl halide",
-        "Benzimidazole formation from ester/carboxylic acid",
-        "Pyrazole formation",
-        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-        "Huisgen 1,3 dipolar cycloaddition",
-        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-        "A3 coupling to imidazoles",
-        "Alkyne-imine cycloaddition",
-        "Azide-nitrile click cycloaddition to tetrazole",
-        "Azide-nitrile click cycloaddition to triazole",
-        "Intramolecular amination of azidobiphenyls (heterocycle formation)",
-        "Intramolecular amination (heterocycle formation)",
-    ]
-
-    def dfs_traverse(node):
-        nonlocal heterocycle_formed
-
-        if heterocycle_formed:
-            return  # Early return if we already found a heterocycle formation
+    def dfs_traverse(node, depth=0):
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
 
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
+            try:
                 rsmi = node["metadata"]["rsmi"]
+                print(f"Analyzing reaction SMILES: {rsmi}")
 
-                # Check if this is a known heterocycle-forming reaction
-                for reaction_type in heterocycle_forming_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Found heterocycle formation reaction: {reaction_type}")
-                        heterocycle_formed = True
-                        return
+                # Check if this is an esterification reaction
+                is_esterification = checker.check_reaction(
+                    "Esterification of Carboxylic Acids", rsmi
+                ) or checker.check_reaction("Transesterification", rsmi)
 
-                # If not a known reaction type, check for ring formation
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+                if is_esterification:
+                    print(f"Found esterification reaction at depth {depth}")
+                    esterification_depths.append(depth)
+                else:
+                    # Alternative check in case the reaction type is not directly recognized
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
+                    reactants_combined = ".".join(reactants)
 
-                # Skip if we can't parse the molecules
-                if not Chem.MolFromSmiles(product_part):
-                    for child in node.get("children", []):
-                        dfs_traverse(child)
-                    return
+                    # Check for both forward and retrosynthetic directions
+                    # Forward: acid in reactants, ester in product
+                    acid_in_reactants = any(
+                        checker.check_fg("Carboxylic acid", reactant) for reactant in reactants
+                    )
+                    ester_in_product = checker.check_fg("Ester", product)
 
-                # Check if any nitrogen-containing heterocycle is in the product but not in reactants
-                product_has_n_heterocycle = False
-                reactants_have_same_n_heterocycle = False
+                    # Retrosynthetic: ester in reactants, acid in product
+                    ester_in_reactants = any(
+                        checker.check_fg("Ester", reactant) for reactant in reactants
+                    )
+                    acid_in_product = checker.check_fg("Carboxylic acid", product)
 
-                for ring_name in n_heterocycles:
-                    if checker.check_ring(ring_name, product_part):
-                        product_has_n_heterocycle = True
+                    if (acid_in_reactants and ester_in_product) or (
+                        ester_in_reactants and acid_in_product
+                    ):
+                        print(
+                            f"Found potential esterification at depth {depth} (acid ↔ ester conversion)"
+                        )
+                        esterification_depths.append(depth)
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
 
-                        # Check if any reactant has the same heterocycle
-                        for reactant in reactants_part.split("."):
-                            if reactant and checker.check_ring(ring_name, reactant):
-                                reactants_have_same_n_heterocycle = True
-                                break
-
-                        if not reactants_have_same_n_heterocycle:
-                            print(f"Found heterocycle formation: {ring_name} formed in product")
-                            heterocycle_formed = True
-                            return
-
-                # If we haven't found a heterocycle yet, check ring count difference
-                try:
-                    reactants_mol = [
-                        Chem.MolFromSmiles(r)
-                        for r in reactants_part.split(".")
-                        if r and Chem.MolFromSmiles(r)
-                    ]
-                    product_mol = Chem.MolFromSmiles(product_part)
-
-                    if product_mol and reactants_mol:
-                        # Count rings in reactants and product
-                        reactant_rings = sum([r.GetRingInfo().NumRings() for r in reactants_mol])
-                        product_rings = product_mol.GetRingInfo().NumRings()
-
-                        # Check if product has more rings and contains nitrogen in rings
-                        if product_rings > reactant_rings:
-                            # Check if any nitrogen atom is in a ring in the product
-                            for atom in product_mol.GetAtoms():
-                                if atom.GetAtomicNum() == 7 and atom.IsInRing():
-                                    print(
-                                        f"Found heterocycle formation: New ring with nitrogen detected"
-                                    )
-                                    heterocycle_formed = True
-                                    return
-                except Exception as e:
-                    print(f"Error analyzing rings: {e}")
-
-        # Process children nodes
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return heterocycle_formed
+
+    # Check if there's an esterification at depth 0, 1, or 2 (late stage)
+    # Depth 0 is target molecule, depth 1 is first reaction, depth 2 is second reaction
+    result = any(depth <= 2 for depth in esterification_depths)
+    print(f"Esterification depths found: {esterification_depths}")
+    print(f"Has late-stage esterification: {result}")
+    return result

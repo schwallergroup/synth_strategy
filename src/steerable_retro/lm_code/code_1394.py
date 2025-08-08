@@ -2,86 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route uses a late-stage amide coupling strategy.
-    This checks if an amide bond is formed in the final or penultimate step.
+    Detects if the synthesis route uses N-alkylation to form secondary amines
     """
-    amide_formation_depth = None
+    n_alkylation_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal amide_formation_depth
+        nonlocal n_alkylation_detected
 
         if node["type"] == "reaction":
-            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for amide formation
-            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check for N-alkylation pattern: primary amine + alkyl halide → secondary amine
+            primary_amine_pattern = Chem.MolFromSmarts("[N;H2]")
+            alkyl_halide_pattern = Chem.MolFromSmarts("[C][Br,Cl,I]")
+            secondary_amine_pattern = Chem.MolFromSmarts("[N;H1][C]")
 
-            if product_mol and all(m for m in reactant_mols):
-                # Look for amide pattern in product but not in reactants
-                amide_pattern = Chem.MolFromSmarts("[C;$(C=O)][N;!$(N=*)]")
-                product_matches = product_mol.GetSubstructMatches(amide_pattern)
+            # Check reactants
+            has_primary_amine = False
+            has_alkyl_halide = False
 
-                # Check if any reactant has the same amide bond
-                new_amide_formed = False
-                for match in product_matches:
-                    amide_bond = (match[0], match[1])
-                    # Check if this bond exists in any reactant
-                    exists_in_reactants = False
-                    for r_mol in reactant_mols:
-                        if r_mol.HasSubstructMatch(amide_pattern):
-                            r_matches = r_mol.GetSubstructMatches(amide_pattern)
-                            for r_match in r_matches:
-                                # If same atoms are connected in reactant, it's not a new bond
-                                if (
-                                    product_mol.GetAtomWithIdx(match[0]).GetSymbol()
-                                    == r_mol.GetAtomWithIdx(r_match[0]).GetSymbol()
-                                    and product_mol.GetAtomWithIdx(match[1]).GetSymbol()
-                                    == r_mol.GetAtomWithIdx(r_match[1]).GetSymbol()
-                                ):
-                                    exists_in_reactants = True
-                                    break
+            for r in reactants:
+                r_mol = Chem.MolFromSmiles(r)
+                if r_mol:
+                    if r_mol.HasSubstructMatch(primary_amine_pattern):
+                        has_primary_amine = True
+                    if r_mol.HasSubstructMatch(alkyl_halide_pattern):
+                        has_alkyl_halide = True
 
-                    if not exists_in_reactants:
-                        new_amide_formed = True
-                        break
+            # Check product
+            product_mol = Chem.MolFromSmiles(product)
+            has_secondary_amine = product_mol and product_mol.HasSubstructMatch(
+                secondary_amine_pattern
+            )
 
-                if new_amide_formed:
-                    amide_formation_depth = depth
-                    print(f"Amide formation detected at depth {depth}")
+            if has_primary_amine and has_alkyl_halide and has_secondary_amine:
+                print(f"N-alkylation detected at depth {depth}")
+                n_alkylation_detected = True
 
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if amide formation occurred in the late stage (depth 0 or 1)
-    is_late_stage = amide_formation_depth is not None and amide_formation_depth <= 1
-    print(f"Late-stage amide coupling: {is_late_stage} (depth: {amide_formation_depth})")
-    return is_late_stage
+    return n_alkylation_detected

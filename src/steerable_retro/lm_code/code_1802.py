@@ -2,72 +2,162 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a Boc protection/deprotection sequence in the synthesis.
+    This function detects if the synthetic route involves multiple heterocycles.
+    Returns True if at least 3 different heterocycles are found.
     """
-    # Track if we found Boc protection and deprotection
-    boc_protected_found = False
-    boc_deprotection_found = False
+    heterocycles = set()
+
+    # List of heterocycles to check
+    heterocycle_list = [
+        "furan",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "oxolane",
+        "oxane",
+        "dioxolane",
+        "dioxolene",
+        "trioxane",
+        "dioxepane",
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "thiomorpholine",
+        "aziridine",
+        "azetidine",
+        "azepane",
+        "diazepane",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "carbazole",
+        "acridine",
+        "thiophene",
+        "thiopyran",
+        "thiirane",
+        "thietane",
+        "thiolane",
+        "thiane",
+        "dithiane",
+        "dithiolane",
+        "benzothiophene",
+        "oxathiolane",
+        "dioxathiolane",
+        "thiazolidine",
+        "oxazolidine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "pteridin",
+        "phenothiazine",
+        "phenoxazine",
+        "dibenzofuran",
+        "dibenzothiophene",
+        "xanthene",
+        "thioxanthene",
+        "pyrroline",
+        "pyrrolidone",
+        "imidazolidine",
+        "porphyrin",
+        "indazole",
+        "benzotriazole",
+    ]
 
     def dfs_traverse(node):
-        nonlocal boc_protected_found, boc_deprotection_found
+        nonlocal heterocycles
 
-        if node["type"] == "mol":
-            # Check if molecule contains Boc-protected amine
-            if node.get("smiles"):
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")):
-                    boc_protected_found = True
-                    print("Found Boc-protected intermediate")
+        if node["type"] == "mol" and "smiles" in node:
+            mol_smiles = node["smiles"]
 
-        elif node["type"] == "reaction":
-            # Check if this is a Boc deprotection reaction
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Check for all heterocycles
+            for heterocycle in heterocycle_list:
+                if checker.check_ring(heterocycle, mol_smiles):
+                    heterocycles.add(heterocycle)
+                    print(f"Found {heterocycle} heterocycle in molecule: {mol_smiles}")
 
-                # Check if reactant has Boc but product doesn't
-                reactant_has_boc = False
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")):
-                        reactant_has_boc = True
+                    # Early return if we already have 3 or more heterocycles
+                    if len(heterocycles) >= 3:
+                        return
 
-                product_mol = Chem.MolFromSmiles(product)
-                product_has_boc = product_mol and product_mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")
-                )
-
-                if reactant_has_boc and not product_has_boc:
-                    boc_deprotection_found = True
-                    print("Found Boc deprotection step")
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return boc_protected_found and boc_deprotection_found
+    print(f"Total unique heterocycles found: {len(heterocycles)}")
+    print(f"Heterocycles: {', '.join(heterocycles)}")
+
+    return len(heterocycles) >= 3  # At least 3 different heterocycles

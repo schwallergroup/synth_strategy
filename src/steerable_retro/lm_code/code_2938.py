@@ -2,121 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Checks if the route contains late-stage sulfonamide formation.
-    Late-stage means the sulfonamide is formed in the final steps (low depth).
+    This function detects if the synthesis uses a convergent approach in the final step,
+    combining 3 or more fragments.
     """
-    # Track sulfonamide formation reactions and their depths
-    sulfonamide_reactions = []
-    max_depth = 0
+    final_step_reactant_count = 0
 
-    def dfs(node, depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node, depth=0):
+        nonlocal final_step_reactant_count
 
-        # Check for sulfonamide formation in reaction nodes
-        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product = rsmi.split(">")[-1]
+        # Check if this is a reaction node
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            # Check if this is the final step (depth 0)
+            if depth == 0:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                # Count non-empty reactants
+                valid_reactants = [r for r in reactants if r.strip()]
+                final_step_reactant_count = len(valid_reactants)
+                print(f"Final step has {final_step_reactant_count} reactants: {valid_reactants}")
 
-            # Check if the product contains a sulfonamide group
-            if checker.check_fg("Sulfonamide", product):
-                # Check if reactants don't have sulfonamide (indicating formation)
-                reactants = reactants_part.split(".")
-                has_sulfonamide_in_reactants = False
-
-                for reactant in reactants:
-                    print(f"Checking reactant for sulfonamide: {reactant}")
-                    if checker.check_fg("Sulfonamide", reactant):
-                        has_sulfonamide_in_reactants = True
-                        print(f"Found sulfonamide in reactant: {reactant}")
-                        break
-
-                print(f"Product has sulfonamide: {checker.check_fg('Sulfonamide', product)}")
-                print(f"Any reactant has sulfonamide: {has_sulfonamide_in_reactants}")
-
-                # If product has sulfonamide but reactants don't, it's a formation reaction
-                if not has_sulfonamide_in_reactants:
-                    print(f"Found sulfonamide formation at depth {depth}: {rsmi}")
-                    sulfonamide_reactions.append((depth, rsmi))
-
-                    # Also check for specific sulfonamide formation reactions
-                    is_schotten_baumann = checker.check_reaction(
-                        "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
-                    ) or checker.check_reaction(
-                        "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
-                    )
-                    print(f"Is Schotten-Baumann sulfonamide synthesis: {is_schotten_baumann}")
-
-        # Recursively check children
+        # Continue traversal
         for child in node.get("children", []):
-            dfs(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    # Start DFS from the root
-    dfs(route)
+    # Start traversal from the root (target molecule)
+    if route["type"] == "mol":
+        # If the root is a molecule, check its children for the final reaction step
+        for child in route.get("children", []):
+            dfs_traverse(child)
+    else:
+        # If the root is already a reaction, start from there
+        dfs_traverse(route)
 
-    print(f"Max depth in synthesis: {max_depth}")
-    print(f"Sulfonamide reactions found: {len(sulfonamide_reactions)}")
-
-    # If we found sulfonamide formations, check if any are late-stage
-    if sulfonamide_reactions:
-        # Sort by depth (ascending)
-        sulfonamide_reactions.sort(key=lambda x: x[0])
-        print(f"Sulfonamide reaction depths: {[depth for depth, _ in sulfonamide_reactions]}")
-
-        # Consider it late-stage if it's in the first third of the synthesis
-        late_stage_threshold = max(2, max_depth // 3)
-        print(f"Late-stage threshold: {late_stage_threshold}")
-
-        return sulfonamide_reactions[0][0] <= late_stage_threshold
-
-    return False
+    print(f"Final reactant count: {final_step_reactant_count}")
+    return final_step_reactant_count >= 3

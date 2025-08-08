@@ -2,78 +2,107 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis with sequential functionalization
-    of an aromatic core structure.
+    This function detects if the route follows a "build-couple-pair" strategy,
+    where a complex scaffold is built through sequential coupling reactions,
+    with functional group manipulations in late stages.
     """
-    is_linear = True
-    aromatic_functionalization_count = 0
+    # We need to check for:
+    # 1. At least two coupling reactions (e.g., Suzuki)
+    # 2. Late-stage functional group manipulations
+    # 3. Increasing ring count throughout the synthesis
+
+    coupling_reactions = 0
+    late_stage_fg_manipulation = False
 
     def dfs_traverse(node):
-        nonlocal is_linear, aromatic_functionalization_count
+        nonlocal coupling_reactions, late_stage_fg_manipulation
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
+            depth = node.get("metadata", {}).get("depth", -1)
 
-            # Check if this is a linear step (1-2 reactants)
-            if len(reactants) > 2:
-                is_linear = False
+            # Check for coupling reaction (simplified)
+            has_boron = False
+            has_halide = False
 
-            # Check if this involves aromatic functionalization
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and product_mol:
-                        # Check if both have aromatic rings
-                        if any(atom.GetIsAromatic() for atom in reactant_mol.GetAtoms()) and any(
-                            atom.GetIsAromatic() for atom in product_mol.GetAtoms()
-                        ):
-                            # Check if product has more functional groups than reactant
-                            if sum(
-                                1 for atom in product_mol.GetAtoms() if atom.GetAtomicNum() > 1
-                            ) > sum(
-                                1 for atom in reactant_mol.GetAtoms() if atom.GetAtomicNum() > 1
-                            ):
-                                aromatic_functionalization_count += 1
-                                break
-            except:
-                print("Error in processing molecules for aromatic functionalization check")
+            for reactant in reactants:
+                if reactant:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(
+                            Chem.MolFromSmarts("[#6]-[#5](-[#8])-[#8]")
+                        ) or mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]-[#5](-[#8;R])-[#8;R]")):
+                            has_boron = True
 
-        # Process children
+                        if mol.HasSubstructMatch(Chem.MolFromSmarts("[#6;a]-[#35,#53,#17]")):
+                            has_halide = True
+
+            if has_boron and has_halide:
+                coupling_reactions += 1
+                print(f"Found coupling reaction at depth {depth}: {rsmi}")
+
+            # Check for late-stage functional group manipulation
+            if depth <= 1:  # Late stage
+                # Check for functional group changes (simplified)
+                if any(
+                    Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts("[#6]-[#9]"))
+                    for r in reactants
+                    if r
+                ) and Chem.MolFromSmiles(product).HasSubstructMatch(
+                    Chem.MolFromSmarts("[#6]-[#8]-[#6]")
+                ):
+                    late_stage_fg_manipulation = True
+                    print(f"Found late-stage FG manipulation: {rsmi}")
+
+                # Check for deprotection
+                if any(
+                    Chem.MolFromSmiles(r).HasSubstructMatch(
+                        Chem.MolFromSmarts("[#14]([#6])([#6])([#6])[#8]-[#6]")
+                    )
+                    for r in reactants
+                    if r
+                ) and Chem.MolFromSmiles(product).HasSubstructMatch(
+                    Chem.MolFromSmarts("[#8;H1]-[#6]")
+                ):
+                    late_stage_fg_manipulation = True
+                    print(f"Found late-stage deprotection: {rsmi}")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Call dfs_traverse on the root node
+    # Start traversal
     dfs_traverse(route)
 
-    # Return True if it's a linear synthesis with at least 3 aromatic functionalization steps
-    result = is_linear and aromatic_functionalization_count >= 3
-    print(f"Linear synthesis with sequential aromatic functionalization: {result}")
-    print(f"  - Linear synthesis: {is_linear}")
-    print(f"  - Aromatic functionalization steps: {aromatic_functionalization_count}")
-
-    return result
+    build_couple_pair = coupling_reactions >= 2 and late_stage_fg_manipulation
+    print(
+        f"Build-couple-pair strategy: {build_couple_pair} (Couplings: {coupling_reactions}, Late-stage FG: {late_stage_fg_manipulation})"
+    )
+    return build_couple_pair

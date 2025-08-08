@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,301 +54,96 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route follows a linear strategy of heterocycle construction
-    with subsequent functionalization steps.
+    Detects ring formation in the early stages of synthesis (high depth).
     """
-    # List of heterocycles to check
-    heterocycles = [
+    found_ring_formation = False
+
+    # List of common ring types to check
+    ring_types = [
         "furan",
+        "pyran",
         "pyrrole",
-        "thiophene",
+        "pyridine",
         "pyrazole",
         "imidazole",
         "oxazole",
         "thiazole",
-        "isoxazole",
-        "isothiazole",
-        "triazole",
-        "tetrazole",
-        "pyridine",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
+        "cyclopropane",
+        "cyclobutane",
+        "cyclopentane",
+        "cyclohexane",
+        "benzene",
         "indole",
         "quinoline",
-        "isoquinoline",
     ]
 
-    # List of functionalization reactions to check
-    functionalization_reactions = [
-        "Aromatic fluorination",
-        "Aromatic chlorination",
-        "Aromatic bromination",
-        "Aromatic iodination",
-        "Suzuki coupling with boronic acids",
-        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-        "Sonogashira acetylene_aryl halide",
-        "Heck terminal vinyl",
-        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-        "Friedel-Crafts acylation",
-        "Friedel-Crafts alkylation",
-        "Minisci (para)",
-        "Minisci (ortho)",
-        "Aromatic nitration with HNO3",
+    # List of common ring-forming reaction types
+    ring_forming_reactions = [
+        "Diels-Alder",
+        "Paal-Knorr pyrrole synthesis",
+        "Pictet-Spengler",
+        "Fischer indole",
+        "Friedlaender chinoline",
+        "benzofuran",
+        "benzothiophene",
+        "indole",
+        "oxadiazole",
     ]
 
-    # Important functional groups to track
-    important_fgs = [
-        "Nitrile",
-        "Ester",
-        "Amide",
-        "Carboxylic acid",
-        "Nitro group",
-        "Primary halide",
-        "Secondary halide",
-        "Tertiary halide",
-        "Aromatic halide",
-        "Aldehyde",
-        "Ketone",
-        "Primary amine",
-        "Secondary amine",
-        "Tertiary amine",
-        "Boronic acid",
-        "Boronic ester",
-        "Triflate",
-        "Tosylate",
-        "Mesylate",
-    ]
+    def dfs_traverse(node, depth=0):
+        nonlocal found_ring_formation
 
-    # Track heterocycle molecules and transformations by path
-    heterocycle_paths = {}  # {path_id: [(depth, mol_smiles, heterocycle_type, fgs)]}
-    transformation_sequence = []  # [(type, heterocycle, reaction/fg, path_id, depth)]
-
-    # Track current path during traversal
-    current_path = []
-    path_counter = 0
-
-    def dfs_traverse(node, depth=0, path_id=None):
-        nonlocal path_counter
-
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-
-            # If this is a leaf node (starting material), create a new path
-            if node.get("in_stock", False) or not node.get("children", []):
-                path_counter += 1
-                path_id = path_counter
-                current_path.append(path_id)
-
-            # Check for heterocycles in this molecule
-            detected_heterocycle = None
-            for heterocycle in heterocycles:
-                if checker.check_ring(heterocycle, mol_smiles):
-                    detected_heterocycle = heterocycle
-                    print(
-                        f"Found heterocycle {heterocycle} at depth {depth} in molecule: {mol_smiles}"
-                    )
-                    break
-
-            # Detect functional groups
-            present_fgs = []
-            for fg in important_fgs:
-                if checker.check_fg(fg, mol_smiles):
-                    present_fgs.append(fg)
-
-            # Record this molecule in its path if it contains a heterocycle
-            if detected_heterocycle and path_id is not None:
-                if path_id not in heterocycle_paths:
-                    heterocycle_paths[path_id] = []
-                heterocycle_paths[path_id].append(
-                    (depth, mol_smiles, detected_heterocycle, present_fgs)
-                )
-
-            # Traverse children
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1, path_id)
-
-        elif node["type"] == "reaction":
+        if node["type"] == "reaction" and depth >= 4:  # Early in synthesis
             try:
+                # Extract reactants and product
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
+                reactants_smiles = rsmi.split(">")[0].split(".")
                 product_smiles = rsmi.split(">")[-1]
 
-                # Check if this is a heterocycle formation or functionalization reaction
-                product_heterocycle = None
-                reactant_heterocycle = None
+                # Convert to RDKit molecules
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-                # Check if product contains a heterocycle
-                for heterocycle in heterocycles:
-                    if checker.check_ring(heterocycle, product_smiles):
-                        product_heterocycle = heterocycle
-                        break
+                if not product or not all(reactants):
+                    return
 
-                # Check if any reactant contains a heterocycle
-                for heterocycle in heterocycles:
-                    if checker.check_ring(heterocycle, reactants_smiles):
-                        reactant_heterocycle = heterocycle
-                        break
+                # Check if this is a known ring-forming reaction
+                for rxn_type in ring_forming_reactions:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        print(f"Detected early ring-forming reaction: {rxn_type} at depth {depth}")
+                        found_ring_formation = True
+                        return
 
-                # Get functional groups in product and reactants
-                product_fgs = []
-                reactant_fgs = []
+                # Count rings in reactants and product
+                reactant_rings = sum([r.GetRingInfo().NumRings() for r in reactants])
+                product_rings = product.GetRingInfo().NumRings()
 
-                for fg in important_fgs:
-                    if checker.check_fg(fg, product_smiles):
-                        product_fgs.append(fg)
-                    if checker.check_fg(fg, reactants_smiles):
-                        reactant_fgs.append(fg)
-
-                # Heterocycle formation: product has heterocycle, reactants don't
-                if product_heterocycle and not reactant_heterocycle:
-                    transformation_sequence.append(
-                        ("heterocycle_formation", product_heterocycle, "formation", path_id, depth)
+                if product_rings > reactant_rings:
+                    print(f"Detected early ring formation at depth {depth}")
+                    print(
+                        f"Rings in reactants: {reactant_rings}, Rings in product: {product_rings}"
                     )
-                    print(f"Detected heterocycle formation: {product_heterocycle} at depth {depth}")
 
-                # Functionalization: both product and reactants have the same heterocycle
-                elif (
-                    product_heterocycle
-                    and reactant_heterocycle
-                    and product_heterocycle == reactant_heterocycle
-                ):
-                    # Check for specific functionalization reactions
-                    functionalization_detected = False
+                    # Check which specific rings are formed
+                    for ring_type in ring_types:
+                        # Check if ring exists in product but not in any reactant
+                        ring_in_product = checker.check_ring(ring_type, product_smiles)
+                        ring_in_reactants = any(
+                            checker.check_ring(ring_type, r) for r in reactants_smiles
+                        )
 
-                    for reaction_type in functionalization_reactions:
-                        if checker.check_reaction(reaction_type, rsmi):
-                            transformation_sequence.append(
-                                (
-                                    "functionalization",
-                                    product_heterocycle,
-                                    reaction_type,
-                                    path_id,
-                                    depth,
-                                )
-                            )
-                            print(
-                                f"Detected functionalization: {reaction_type} on {product_heterocycle} at depth {depth}"
-                            )
-                            functionalization_detected = True
-                            break
-
-                    # Check for functional group changes if no specific reaction detected
-                    if not functionalization_detected:
-                        # Added FGs (in retrosynthesis, these are removed in forward synthesis)
-                        added_fgs = [fg for fg in product_fgs if fg not in reactant_fgs]
-                        # Removed FGs (in retrosynthesis, these are added in forward synthesis)
-                        removed_fgs = [fg for fg in reactant_fgs if fg not in product_fgs]
-
-                        if added_fgs:
-                            for fg in added_fgs:
-                                transformation_sequence.append(
-                                    (
-                                        "functionalization",
-                                        product_heterocycle,
-                                        f"{fg}_addition",
-                                        path_id,
-                                        depth,
-                                    )
-                                )
-                                print(
-                                    f"Detected {fg} addition on {product_heterocycle} at depth {depth}"
-                                )
-                                functionalization_detected = True
-
-                        if removed_fgs:
-                            for fg in removed_fgs:
-                                transformation_sequence.append(
-                                    (
-                                        "functionalization",
-                                        product_heterocycle,
-                                        f"{fg}_removal",
-                                        path_id,
-                                        depth,
-                                    )
-                                )
-                                print(
-                                    f"Detected {fg} removal on {product_heterocycle} at depth {depth}"
-                                )
-                                functionalization_detected = True
+                        if ring_in_product and not ring_in_reactants:
+                            print(f"Formed {ring_type} ring at depth {depth}")
+                            found_ring_formation = True
             except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                print(f"Error analyzing reaction at depth {depth}: {e}")
 
-            # Traverse children
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1, path_id)
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Transformation sequence: {transformation_sequence}")
-    print(f"Heterocycle paths: {heterocycle_paths}")
-
-    # Analyze each path for linear heterocycle functionalization
-    for path_id, molecules in heterocycle_paths.items():
-        if len(molecules) < 3:
-            continue
-
-        # Sort by depth (ascending - early to late stage)
-        molecules.sort(key=lambda x: x[0])
-
-        # Check if the same heterocycle is maintained throughout the path
-        heterocycle_types = set(mol[2] for mol in molecules)
-        if len(heterocycle_types) == 1:
-            heterocycle_type = list(heterocycle_types)[0]
-
-            # Count functionalization steps in this path
-            functionalizations = [
-                t
-                for t in transformation_sequence
-                if t[0] == "functionalization" and t[1] == heterocycle_type and t[3] == path_id
-            ]
-
-            # Check if we have at least 2 functionalization steps
-            if len(functionalizations) >= 2:
-                print(
-                    f"Linear heterocycle functionalization detected in path {path_id}: heterocycle {heterocycle_type} with {len(functionalizations)} functionalization steps"
-                )
-                return True
-
-    # Alternative check: look for consecutive functionalizations on the same heterocycle
-    for heterocycle in heterocycles:
-        # Get all functionalizations for this heterocycle
-        functionalizations = [
-            t
-            for t in transformation_sequence
-            if t[0] == "functionalization" and t[1] == heterocycle
-        ]
-
-        # Group by path
-        by_path = {}
-        for f in functionalizations:
-            path_id = f[3]
-            if path_id not in by_path:
-                by_path[path_id] = []
-            by_path[path_id].append(f)
-
-        # Check each path
-        for path_id, path_functionalizations in by_path.items():
-            if len(path_functionalizations) >= 2:
-                print(
-                    f"Linear heterocycle functionalization detected: heterocycle {heterocycle} with {len(path_functionalizations)} functionalization steps in path {path_id}"
-                )
-                return True
-
-    # Check the stdout - we can see there are multiple functionalizations on pyridine
-    # This is a special case check based on the test output
-    pyridine_functionalizations = [
-        t for t in transformation_sequence if t[0] == "functionalization" and t[1] == "pyridine"
-    ]
-
-    if len(pyridine_functionalizations) >= 2:
-        print(
-            f"Linear heterocycle functionalization detected: pyridine with {len(pyridine_functionalizations)} functionalization steps"
-        )
-        return True
-
-    return False
+    print(f"Early ring formation detected: {found_ring_formation}")
+    return found_ring_formation

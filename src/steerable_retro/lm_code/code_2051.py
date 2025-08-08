@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,111 +54,80 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route employs a convergent synthesis approach
-    where multiple complex fragments are combined in late-stage reactions.
+    Detects a strategy involving late-stage oxidation (alcohol to ketone).
+    In retrosynthetic analysis, this appears as a reduction of ketone to alcohol.
     """
-    # Track if we found a convergent synthesis pattern
-    convergent_synthesis_found = False
-
-    def has_functional_groups(mol_smiles):
-        """Check if molecule has significant functional groups"""
-        functional_groups = [
-            "Carboxylic acid",
-            "Ester",
-            "Amide",
-            "Amine",
-            "Alcohol",
-            "Aldehyde",
-            "Ketone",
-            "Nitrile",
-            "Halide",
-            "Boronic acid",
-        ]
-        for fg in functional_groups:
-            if checker.check_fg(fg, mol_smiles):
-                return True
-        return False
-
-    def is_coupling_reaction(rxn_smiles):
-        """Check if reaction is a coupling reaction typically used in convergent synthesis"""
-        coupling_reactions = [
-            "Suzuki",
-            "Negishi",
-            "Stille",
-            "Heck",
-            "Sonogashira",
-            "Buchwald-Hartwig",
-            "Ullmann",
-            "Wittig",
-            "Grignard",
-            "Diels-Alder",
-        ]
-        for rxn in coupling_reactions:
-            if checker.check_reaction(rxn, rxn_smiles):
-                print(f"Detected {rxn} coupling reaction")
-                return True
-        return False
+    found_late_oxidation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal convergent_synthesis_found
+        nonlocal found_late_oxidation
 
-        # Store depth in metadata for reference
-        if "metadata" not in node:
-            node["metadata"] = {}
-        node["metadata"]["depth"] = depth
+        if node["type"] == "reaction" and depth <= 2:  # Late stage (within first few reactions)
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                print(f"Checking reaction at depth {depth}: {rsmi}")
 
-            print(f"Analyzing reaction at depth {depth}: {rsmi}")
+                # In retrosynthesis, we're looking for ketone reduction (appears as alcohol oxidation in forward direction)
+                # Check if this is a reduction reaction (ketone to alcohol in retrosynthesis)
+                if checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi):
+                    print(f"Found ketone reduction reaction at depth {depth}")
 
-            # Check if we're combining multiple complex fragments
-            complex_fragments = 0
-            complex_reactants = []
-
-            for reactant in reactants:
-                if not reactant:
-                    continue
-
-                mol = Chem.MolFromSmiles(reactant)
-                if not mol:
-                    continue
-
-                # Define complexity based on size, rings, and functional groups
-                is_complex = mol.GetNumAtoms() > 12 and (
-                    mol.GetRingInfo().NumRings() > 0 or has_functional_groups(reactant)
-                )
-
-                if is_complex:
-                    complex_fragments += 1
-                    complex_reactants.append(reactant)
-                    print(
-                        f"Complex fragment found: {reactant} (atoms: {mol.GetNumAtoms()}, rings: {mol.GetRingInfo().NumRings()})"
+                    # Verify reactant has ketone and product has secondary alcohol (retrosynthetic perspective)
+                    reactant_has_ketone = any(
+                        checker.check_fg("Ketone", reactant) for reactant in reactants
                     )
+                    product_has_alcohol = checker.check_fg("Secondary alcohol", product)
 
-            # Criteria for convergent synthesis:
-            # 1. Combining 2+ complex fragments
-            # 2. In a late-stage reaction (depth ≤ 3)
-            # 3. Using a coupling reaction (optional but strengthens evidence)
-            is_late_stage = depth <= 3
-            is_coupling = is_coupling_reaction(rsmi)
+                    if reactant_has_ketone and product_has_alcohol:
+                        print(
+                            f"Confirmed: Ketone in reactant reduced to secondary alcohol in product (retrosynthetic)"
+                        )
+                        found_late_oxidation = True
+                        return
 
-            if complex_fragments >= 2 and is_late_stage:
-                print(
-                    f"Convergent synthesis detected: combining {complex_fragments} complex fragments in {'late' if is_late_stage else 'early'}-stage reaction"
+                # Check for oxidation reaction (will appear as reduction in retrosynthesis)
+                if checker.check_reaction(
+                    "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones", rsmi
+                ):
+                    print(f"Found oxidation reaction at depth {depth}")
+
+                    # In forward direction: alcohol → ketone
+                    # In retrosynthesis: product has alcohol, reactant has ketone
+                    reactant_has_ketone = any(
+                        checker.check_fg("Ketone", reactant) for reactant in reactants
+                    )
+                    product_has_alcohol = checker.check_fg("Secondary alcohol", product)
+
+                    if reactant_has_ketone and product_has_alcohol:
+                        print(
+                            f"Confirmed: Ketone in reactant transformed to secondary alcohol in product (retrosynthetic)"
+                        )
+                        found_late_oxidation = True
+                        return
+
+                # Alternative check: look for the functional group transformation directly
+                # In retrosynthesis: ketone (reactant) → secondary alcohol (product)
+                reactant_has_ketone = any(
+                    checker.check_fg("Ketone", reactant) for reactant in reactants
                 )
-                print(f"Complex reactants: {complex_reactants}")
-                if is_coupling:
-                    print("Using a coupling reaction, strong evidence for convergent synthesis")
-                convergent_synthesis_found = True
+                product_has_alcohol = checker.check_fg("Secondary alcohol", product)
 
-        # Continue traversing
+                if reactant_has_ketone and product_has_alcohol:
+                    print(f"Found potential ketone to alcohol transformation at depth {depth}")
+                    # Try to verify this is a reduction reaction
+                    if not found_late_oxidation:  # Only check if we haven't found it yet
+                        found_late_oxidation = True
+                        print(f"Confirmed functional group transformation at depth {depth}")
+                        return
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    print(f"Convergent synthesis found: {convergent_synthesis_found}")
-    return convergent_synthesis_found
+
+    return found_late_oxidation

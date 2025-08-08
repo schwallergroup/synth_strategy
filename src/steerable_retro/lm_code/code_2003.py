@@ -2,76 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a Heck coupling (aryl halide + alkene) is present in the synthesis.
+    This function detects multiple O-alkylation steps in the synthesis.
     """
-    heck_coupling_found = False
+    o_alkylation_count = 0
 
-    def dfs_traverse(node):
-        nonlocal heck_coupling_found
+    def dfs_traverse(node, depth=0):
+        nonlocal o_alkylation_count
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Get reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-                # Check for aryl halide in reactants
-                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,Cl,I,F]")
-                # Check for alkene in reactants
-                alkene_pattern = Chem.MolFromSmarts("[C]=[C]")
-                # Check for extended conjugation in product
-                extended_conjugation = Chem.MolFromSmarts("[c]-[C]=[C]-[C](=O)")
+            # Check for O-alkylation pattern
+            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
+            product_mol = Chem.MolFromSmiles(product_part)
 
-                aryl_halide_found = False
-                alkene_found = False
+            if product_mol and all(r for r in reactants_mols):
+                # Look for hydroxyl in reactants
+                oh_pattern = Chem.MolFromSmarts("[OH]")
+                benzyl_pattern = Chem.MolFromSmarts("[CH2][c]1[cH][cH][cH][cH][cH]1")
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
+                # Look for ether in product
+                ether_pattern = Chem.MolFromSmarts("[O][CH2][c]")
 
-                    if reactant_mol.HasSubstructMatch(aryl_halide_pattern):
-                        aryl_halide_found = True
+                reactants_have_oh = any(r.HasSubstructMatch(oh_pattern) for r in reactants_mols)
+                reactants_have_benzyl = any(
+                    r.HasSubstructMatch(benzyl_pattern) for r in reactants_mols
+                )
+                product_has_ether = product_mol.HasSubstructMatch(ether_pattern)
 
-                    if reactant_mol.HasSubstructMatch(alkene_pattern):
-                        alkene_found = True
-
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    aryl_halide_found
-                    and alkene_found
-                    and product_mol
-                    and product_mol.HasSubstructMatch(extended_conjugation)
-                ):
-                    heck_coupling_found = True
-                    print("Found Heck coupling (aryl halide + alkene)")
+                if reactants_have_oh and reactants_have_benzyl and product_has_ether:
+                    print(f"O-alkylation detected at depth {depth}")
+                    o_alkylation_count += 1
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-
-    return heck_coupling_found
+    return o_alkylation_count >= 2  # Return True if at least 2 O-alkylations are detected

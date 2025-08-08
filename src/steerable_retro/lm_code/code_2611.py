@@ -2,78 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy where each step builds
-    on the previous with no convergent steps.
-
-    A linear synthesis has a tree structure with no branching except possibly
-    at the final step (depth 0).
+    Detects if the synthesis route involves Suzuki coupling (aryl-aryl C-C bond formation).
     """
-    # Track the tree structure to detect branching
-    mol_nodes_by_depth = {}
+    has_suzuki = False
 
-    def dfs_traverse(node, depth=0, current_path=None):
-        if current_path is None:
-            current_path = []
+    def dfs_traverse(node, depth=0):
+        nonlocal has_suzuki
 
-        if node["type"] == "mol":
-            # Skip in-stock molecules (starting materials)
-            if node.get("in_stock", False):
-                return
+        if node["type"] == "reaction":
+            # Get reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Store molecule at its depth
-            if depth not in mol_nodes_by_depth:
-                mol_nodes_by_depth[depth] = []
-            mol_nodes_by_depth[depth].append(node["smiles"])
+            # Look for boronic acid/ester pattern in reactants
+            boronic_pattern = Chem.MolFromSmarts("[#6]-[#5](-[#8])-[#8]")
 
-        # Add current node to path and traverse children
-        new_path = current_path + [node]
+            # Check if any reactant has a boronic acid/ester group
+            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
+            has_boronic = any(
+                [mol and mol.HasSubstructMatch(boronic_pattern) for mol in reactant_mols]
+            )
+
+            # Check if any reactant has a halogen (Cl, Br, I) on an aromatic ring
+            halogen_pattern = Chem.MolFromSmarts("c-[#17,#35,#53]")
+            has_aryl_halide = any(
+                [mol and mol.HasSubstructMatch(halogen_pattern) for mol in reactant_mols]
+            )
+
+            if has_boronic and has_aryl_halide:
+                has_suzuki = True
+                print(f"Detected Suzuki coupling at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1, new_path)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    # If no non-stock molecules were found, return False
-    if not mol_nodes_by_depth:
-        print("Linear synthesis strategy detected: False (no non-stock molecules found)")
-        return False
-
-    # Sort depths (lower depth = later in synthesis, closer to final product)
-    sorted_depths = sorted(mol_nodes_by_depth.keys())
-
-    # A linear synthesis should have exactly one molecule at each depth
-    # except possibly at the lowest depth (final product)
-    linear = True
-    if sorted_depths:
-        min_depth = min(sorted_depths)
-        for depth in sorted_depths:
-            if depth != min_depth and len(mol_nodes_by_depth[depth]) > 1:
-                linear = False
-                print(
-                    f"Non-linear branching detected at depth {depth} with {len(mol_nodes_by_depth[depth])} molecules"
-                )
-                break
-
-    print(f"Linear synthesis strategy detected: {linear}")
-    return linear
+    return has_suzuki

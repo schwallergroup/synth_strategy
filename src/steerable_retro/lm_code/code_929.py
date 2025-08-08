@@ -2,45 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy (no convergent steps).
+    This function detects aromatic nitration reactions.
     """
-    is_linear = True
+    nitration_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+    def dfs_traverse(node):
+        nonlocal nitration_found
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+            reactants = rsmi.split(">")[0]
+            product = rsmi.split(">")[-1]
 
-            # If there are more than 2 reactants, it's likely a convergent step
-            if len(reactants) > 2:
-                is_linear = False
-                print(f"Convergent step detected at depth {depth} with {len(reactants)} reactants")
+            # Check for nitrating agent in reactants
+            reactants_mol = Chem.MolFromSmiles(reactants)
+            if reactants_mol and reactants_mol.HasSubstructMatch(
+                Chem.MolFromSmarts("[N+](=O)[O-]")
+            ):
+                # Check for nitro group on aromatic in product
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(
+                    Chem.MolFromSmarts("c[N+](=O)[O-]")
+                ):
+                    print("Aromatic nitration detected")
+                    nitration_found = True
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return is_linear
+    return nitration_found

@@ -2,75 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a sequence of nitro reduction to amine followed by isocyanate formation.
+    This function detects if acylation with oxalyl chloride is used in the synthesis.
     """
-    nitro_reduction = False
-    amine_to_isocyanate = False
-    nitro_reduction_depth = -1
+    oxalyl_chloride_acylation_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal nitro_reduction, amine_to_isocyanate, nitro_reduction_depth
-
+    def dfs_traverse(node):
+        nonlocal oxalyl_chloride_acylation_detected
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
 
-                # Check for nitro reduction
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2]")):
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(
-                            Chem.MolFromSmarts("[N+](=O)[O-]")
-                        ):
-                            nitro_reduction = True
-                            nitro_reduction_depth = depth
-                            print(f"Found nitro reduction at depth {depth}")
+                # Check for oxalyl chloride in reactants
+                oxalyl_chloride_pattern = Chem.MolFromSmarts("ClC(=O)C(=O)Cl")
 
-                # Check for amine to isocyanate
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[O]=[C]=[N]")):
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(
-                            Chem.MolFromSmarts("[NH2]")
-                        ):
-                            amine_to_isocyanate = True
-                            # Check if this happens after nitro reduction
-                            if nitro_reduction_depth != -1 and depth < nitro_reduction_depth:
-                                print(
-                                    f"Found amine to isocyanate at depth {depth}, after nitro reduction"
-                                )
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(oxalyl_chloride_pattern):
+                        oxalyl_chloride_acylation_detected = True
+                        print(f"Acylation with oxalyl chloride detected in reaction: {rsmi}")
+                        break
 
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return true if both transformations are found and in the correct sequence
-    return nitro_reduction and amine_to_isocyanate and nitro_reduction_depth != -1
+    print(f"Acylation with oxalyl chloride detected: {oxalyl_chloride_acylation_detected}")
+    return oxalyl_chloride_acylation_detected

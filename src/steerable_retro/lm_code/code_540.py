@@ -2,63 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects linear synthesis strategies that maintain stable functional groups
-    like trifluoromethyl and heterocycles throughout the synthesis.
+    This function detects if the synthesis route involves phenol O-alkylation
+    with an alpha-carbonyl electrophile.
     """
-    steps_count = 0
-    trifluoromethyl_preserved = True
-    heterocycle_preserved = True
+    phenol_alkylation_found = False
 
     def dfs_traverse(node):
-        nonlocal steps_count, trifluoromethyl_preserved, heterocycle_preserved
+        nonlocal phenol_alkylation_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            steps_count += 1
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            # Check for phenol in reactants
+            phenol_pattern = Chem.MolFromSmarts("c[OX2H1]")
 
-            # Check for trifluoromethyl group preservation
-            if "[C:]([F:])([F:])[F:]" in product and not any(
-                "[C:]([F:])([F:])[F:]" in r for r in reactants
-            ):
-                trifluoromethyl_preserved = False
-                print(f"Trifluoromethyl group not preserved in step: {rsmi}")
+            # Check for alpha-carbonyl electrophile in reactants
+            alpha_carbonyl_pattern = Chem.MolFromSmarts("[Br,Cl,I,F][CX4][CX3](=[OX1])")
 
-            # Check for heterocycle preservation (oxazole)
-            if "c1oc" in product and not any("c1oc" in r for r in reactants):
-                heterocycle_preserved = False
-                print(f"Heterocycle not preserved in step: {rsmi}")
+            # Check for phenoxy-carbonyl in product
+            phenoxy_carbonyl_pattern = Chem.MolFromSmarts("c[OX2][CX4][CX3](=[OX1])")
 
+            phenol_found = False
+            alpha_carbonyl_found = False
+
+            for reactant in reactants_smiles:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if not reactant_mol:
+                    continue
+
+                if reactant_mol.HasSubstructMatch(phenol_pattern):
+                    phenol_found = True
+
+                if reactant_mol.HasSubstructMatch(alpha_carbonyl_pattern):
+                    alpha_carbonyl_found = True
+
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            product_has_phenoxy_carbonyl = product_mol and product_mol.HasSubstructMatch(
+                phenoxy_carbonyl_pattern
+            )
+
+            if phenol_found and alpha_carbonyl_found and product_has_phenoxy_carbonyl:
+                print("Phenol O-alkylation detected in reaction:", rsmi)
+                phenol_alkylation_found = True
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    print(
-        f"Steps count: {steps_count}, Trifluoromethyl preserved: {trifluoromethyl_preserved}, Heterocycle preserved: {heterocycle_preserved}"
-    )
-
-    # Return True if it's a linear synthesis (>3 steps) with preserved stable groups
-    return steps_count >= 3 and trifluoromethyl_preserved and heterocycle_preserved
+    return phenol_alkylation_found

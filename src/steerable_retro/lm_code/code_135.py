@@ -2,65 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis uses late-stage amide formation
-    as the final or near-final step.
+    This function detects a synthetic strategy involving coupling with an isocyanate group.
     """
-    found_late_amide = False
+    isocyanate_coupling_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_late_amide
+    def dfs_traverse(node):
+        nonlocal isocyanate_coupling_detected
 
-        if node["type"] == "reaction" and depth <= 1:  # Only check late-stage reactions (low depth)
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
 
-                # Check for amide formation
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
-                    if product_mol.HasSubstructMatch(amide_pattern):
-                        # Check if reactants contain acid and amine
-                        has_acid = False
-                        has_amine = False
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                if reactant_mol.HasSubstructMatch(
-                                    Chem.MolFromSmarts("[C](=[O])[O]")
-                                ):
-                                    has_acid = True
-                                if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[N]")):
-                                    has_amine = True
+                # Check if any reactant contains isocyanate group
+                isocyanate_pattern = Chem.MolFromSmarts("[#7]=[#6]=[#8]")
 
-                        if has_acid and has_amine:
-                            print(f"Found late-stage amide formation at depth {depth}")
-                            found_late_amide = True
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol is not None and mol.HasSubstructMatch(isocyanate_pattern):
+                        print("Found isocyanate coupling")
+                        isocyanate_coupling_detected = True
+                        break
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return found_late_amide
+    return isocyanate_coupling_detected

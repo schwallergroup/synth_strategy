@@ -2,62 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects sequential ester hydrolysis steps in the synthesis.
+    Detects if the synthetic route contains a fragment coupling reaction involving an ester.
     """
-    ester_hydrolysis_count = 0
+    has_ester_coupling = False
 
     def dfs_traverse(node):
-        nonlocal ester_hydrolysis_count
+        nonlocal has_ester_coupling
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for ester hydrolysis pattern
-            try:
-                reactant_mol = Chem.MolFromSmiles(reactants[0])  # Assuming first reactant
-                product_mol = Chem.MolFromSmiles(product)
+                # Check for ester pattern in reactants
+                ester_pattern = Chem.MolFromSmarts("[#6][#8][#6](=[O])")
+                amine_pattern = Chem.MolFromSmarts("[N;H2][#6]")
 
-                # SMARTS patterns for ester and carboxylic acid
-                ester_pattern = Chem.MolFromSmarts("C(=O)OC")
-                acid_pattern = Chem.MolFromSmarts("C(=O)O")
+                has_ester = False
+                has_amine = False
 
-                # Check if reactant has ester and product has acid
-                if (
-                    reactant_mol
-                    and reactant_mol.HasSubstructMatch(ester_pattern)
-                    and product_mol
-                    and product_mol.HasSubstructMatch(acid_pattern)
-                ):
-                    print(f"Detected ester hydrolysis at depth {node['metadata'].get('depth', -1)}")
-                    ester_hydrolysis_count += 1
-            except:
-                pass
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if not reactant_mol:
+                        continue
+
+                    if reactant_mol.HasSubstructMatch(ester_pattern):
+                        has_ester = True
+
+                    if reactant_mol.HasSubstructMatch(amine_pattern):
+                        has_amine = True
+
+                # If both ester and amine are present in reactants
+                if has_ester and has_amine:
+                    # Check if product has fewer fragments than reactants
+                    if len(reactants) > 1 and "." not in product:
+                        has_ester_coupling = True
+                        print(
+                            f"Detected fragment coupling with ester at reaction with RSMI: {rsmi}"
+                        )
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return ester_hydrolysis_count >= 2  # Return True if at least 2 ester hydrolysis steps
+    print(f"Fragment coupling with ester strategy detected: {has_ester_coupling}")
+    return has_ester_coupling

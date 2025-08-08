@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,169 +54,273 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis route involves halogenation
-    (fluorination, chlorination, bromination, or iodination) in the final step.
+    This function detects if the synthetic route involves formation of a heterocycle
+    in the final step (late-stage heterocycle formation).
     """
-    final_step_halogenation = False
+    final_heterocycle_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal final_step_halogenation
+    # List of common heterocycles to check
+    heterocycle_types = [
+        "furan",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "oxolane",
+        "oxane",
+        "dioxolane",
+        "dioxolene",
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "thiomorpholine",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "purine",
+        "carbazole",
+        "acridine",
+        "thiophene",
+        "thiopyran",
+        "thiirane",
+        "thietane",
+        "thiolane",
+        "thiane",
+        "dithiane",
+        "dithiolane",
+        "benzothiophene",
+        "oxathiolane",
+        "dioxathiolane",
+        "thiazolidine",
+        "oxazolidine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+    ]
 
-        # Print node information for debugging
-        if node["type"] == "mol":
-            print(f"Depth {depth}, Molecule: {node['smiles']}")
-        elif node["type"] == "reaction":
-            print(f"Depth {depth}, Reaction: {node['metadata'].get('rsmi', 'No RSMI')}")
+    # List of heterocycle-forming reactions
+    heterocycle_forming_reactions = [
+        "Formation of NOS Heterocycles",
+        "Paal-Knorr pyrrole synthesis",
+        "benzothiazole formation from aldehyde",
+        "benzothiazole formation from acyl halide",
+        "benzothiazole formation from ester/carboxylic acid",
+        "benzoxazole formation from aldehyde",
+        "benzoxazole formation from acyl halide",
+        "benzoxazole formation from ester/carboxylic acid",
+        "benzoxazole formation (intramolecular)",
+        "benzimidazole formation from aldehyde",
+        "benzimidazole formation from acyl halide",
+        "benzimidazole formation from ester/carboxylic acid",
+        "tetrazole formation",
+        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
+        "Huisgen 1,3 dipolar cycloaddition",
+        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
+        "Pyrazole formation",
+        "Azide-nitrile click cycloaddition to tetrazole",
+        "Azide-nitrile click cycloaddition to triazole",
+        "Intramolecular amination of azidobiphenyls (heterocycle formation)",
+        "Intramolecular amination (heterocycle formation)",
+        "{benzimidazole_derivatives_carboxylic-acid/ester}",
+        "{benzimidazole_derivatives_aldehyde}",
+        "{benzothiazole}",
+        "{benzoxazole_arom-aldehyde}",
+        "{benzoxazole_carboxylic-acid}",
+        "{thiazole}",
+        "{Niementowski_quinazoline}",
+        "{tetrazole_terminal}",
+        "{tetrazole_connect_regioisomere_1}",
+        "{tetrazole_connect_regioisomere_2}",
+        "{Huisgen_Cu-catalyzed_1,4-subst}",
+        "{Huisgen_Ru-catalyzed_1,5_subst}",
+        "{Huisgen_disubst-alkyne}",
+        "{1,2,4-triazole_acetohydrazide}",
+        "{1,2,4-triazole_carboxylic-acid/ester}",
+        "{3-nitrile-pyridine}",
+        "{pyrazole}",
+        "{Paal-Knorr pyrrole}",
+        "{triaryl-imidazole}",
+        "{Fischer indole}",
+        "{Friedlaender chinoline}",
+        "{benzofuran}",
+        "{benzothiophene}",
+        "{indole}",
+        "{oxadiazole}",
+        "{imidazole}",
+        "1,2,4-oxadiazol-5(2H)-one synthesis from nitrile, hydrogen carbonate, and hydroxylamine",
+    ]
 
-        # Check if this is a reaction at depth 1 (final synthetic step)
-        if node["type"] == "reaction" and depth == 1:
-            try:
-                # Extract reaction SMILES
-                rsmi = node["metadata"]["rsmi"]
-                print(f"Analyzing final step reaction: {rsmi}")
+    def find_final_reaction(node, depth=0, path=None):
+        """Find the final reaction in the synthetic route (closest to target)"""
+        if path is None:
+            path = []
 
-                # Check if this is a halogenation reaction using the checker functions
-                halogenation_reactions = [
-                    "Aromatic fluorination",
-                    "Aromatic chlorination",
-                    "Aromatic bromination",
-                    "Aromatic iodination",
-                    "Chlorination",
-                    "Fluorination",
-                    "Iodination",
-                    "Bromination",
-                ]
+        # If this is the target molecule (root of the tree)
+        if depth == 0 and node["type"] == "mol":
+            # Look for its parent reaction
+            for child in node.get("children", []):
+                if child["type"] == "reaction":
+                    return child
 
-                for reaction_type in halogenation_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Detected {reaction_type} in final step")
-                        final_step_halogenation = True
-                        return
+        # If this is a reaction node
+        if node["type"] == "reaction":
+            # Check if this reaction produces a molecule that has no further reactions
+            # (i.e., it's the final step before the target)
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    # Check if this molecule has no reaction children
+                    has_reaction_children = False
+                    for grandchild in child.get("children", []):
+                        if grandchild["type"] == "reaction":
+                            has_reaction_children = True
+                            break
 
-                # If no specific halogenation reaction was detected, check for halogen addition
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                    if not has_reaction_children:
+                        return node
 
-                # Create RDKit molecules
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-
-                if not product_mol or any(r is None for r in reactant_mols):
-                    print("Failed to parse some molecules")
-                    return
-
-                # Check for common brominating agents like NBS
-                if any("O=C1CCC(=O)N1Br" in r for r in reactants_smiles):
-                    print("Detected N-bromosuccinimide (NBS) as a reactant, likely a bromination")
-                    final_step_halogenation = True
-                    return
-
-                # Check for other common halogenation reagents
-                halogenation_reagents = {
-                    "F": ["F2", "XeF2", "CF3OF", "CH3COOF"],
-                    "Cl": ["Cl2", "NaOCl", "Ca(OCl)2", "SO2Cl2", "PCl5"],
-                    "Br": ["Br2", "NBS", "CBr4", "PBr3"],
-                    "I": ["I2", "NIS", "ICl"],
-                }
-
-                for halogen, reagents in halogenation_reagents.items():
-                    for reagent in reagents:
-                        for reactant in reactants_smiles:
-                            if reagent in reactant:
-                                print(f"Detected {halogen}ation reagent: {reagent}")
-                                final_step_halogenation = True
-                                return
-
-                # Count halogen atoms in product and reactants
-                halogen_symbols = ["F", "Cl", "Br", "I"]
-
-                # Count halogens in product
-                product_halogens = {}
-                for atom in product_mol.GetAtoms():
-                    symbol = atom.GetSymbol()
-                    if symbol in halogen_symbols:
-                        product_halogens[symbol] = product_halogens.get(symbol, 0) + 1
-
-                # Count halogens in reactants
-                reactants_halogens = {}
-                for reactant in reactant_mols:
-                    for atom in reactant.GetAtoms():
-                        symbol = atom.GetSymbol()
-                        if symbol in halogen_symbols:
-                            reactants_halogens[symbol] = reactants_halogens.get(symbol, 0) + 1
-
-                print(f"Product halogens: {product_halogens}")
-                print(f"Reactants halogens: {reactants_halogens}")
-
-                # Check if any halogen was added or increased in the product
-                for halogen in halogen_symbols:
-                    product_count = product_halogens.get(halogen, 0)
-                    reactant_count = reactants_halogens.get(halogen, 0)
-
-                    if product_count > reactant_count:
-                        print(
-                            f"Detected {halogen} addition in final step: {reactant_count} → {product_count}"
-                        )
-                        final_step_halogenation = True
-                        return
-
-                # Check for halogen transfer reactions (like NBS bromination)
-                # Look at atom mapping to see if bromine moved to a new position
-                if "Br" in rsmi:
-                    # Check if the reaction involves a bromine atom with atom mapping
-                    # This is a simplification - in a real implementation, we would trace the atom mapping
-                    if "[Br:" in rsmi and "Br]" in product_smiles:
-                        print("Detected bromine transfer in final step based on atom mapping")
-                        final_step_halogenation = True
-                        return
-
-                # Also check for halogen functional groups as a backup
-                halogen_fgs = [
-                    "Aromatic halide",
-                    "Primary halide",
-                    "Secondary halide",
-                    "Tertiary halide",
-                    "Alkenyl halide",
-                    "Haloalkyne",
-                ]
-
-                product_halogen_fgs = set()
-                for fg in halogen_fgs:
-                    if checker.check_fg(fg, product_smiles):
-                        product_halogen_fgs.add(fg)
-
-                reactants_halogen_fgs = set()
-                for reactant in reactants_smiles:
-                    for fg in halogen_fgs:
-                        if checker.check_fg(fg, reactant):
-                            reactants_halogen_fgs.add(fg)
-
-                print(f"Product halogen FGs: {product_halogen_fgs}")
-                print(f"Reactants halogen FGs: {reactants_halogen_fgs}")
-
-                # If product has halogen FGs not in reactants, it's likely halogenation
-                if product_halogen_fgs - reactants_halogen_fgs:
-                    print(
-                        f"Detected new halogen functional groups: {product_halogen_fgs - reactants_halogen_fgs}"
-                    )
-                    final_step_halogenation = True
-                    return
-
-                # Special case for NBS bromination where the bromine is transferred
-                # Look for patterns in the reaction SMILES that indicate bromination
-                if "O=C1CCC(=O)N1[Br:" in rsmi and "[Br:" in product_smiles:
-                    print("Detected NBS bromination pattern with atom mapping")
-                    final_step_halogenation = True
-                    return
-
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
-
-        # Traverse children
+        # If not found at this level, check children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            result = find_final_reaction(child, depth + 1, path + [node])
+            if result:
+                return result
 
-    # Start traversal
-    dfs_traverse(route)
+        return None
 
-    return final_step_halogenation
+    # Find the final reaction in the route
+    final_reaction = find_final_reaction(route)
+
+    if final_reaction and "metadata" in final_reaction and "rsmi" in final_reaction["metadata"]:
+        print(f"Found final reaction: {final_reaction['metadata']['rsmi']}")
+
+        rsmi = final_reaction["metadata"]["rsmi"]
+
+        try:
+            # Extract reactants and product
+            parts = rsmi.split(">")
+            if len(parts) >= 3:
+                reactants_smiles = parts[0].split(".")
+                product_smiles = parts[2]
+
+                print(f"Final reaction - Reactants: {reactants_smiles}, Product: {product_smiles}")
+
+                # Convert to RDKit molecules
+                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+
+                if product_mol and all(mol is not None for mol in reactants_mols):
+                    # Check if the reaction is a known heterocycle-forming reaction
+                    for rxn_type in heterocycle_forming_reactions:
+                        if checker.check_reaction(rxn_type, rsmi):
+                            print(f"Detected heterocycle formation reaction: {rxn_type}")
+                            final_heterocycle_formation = True
+                            break
+
+                    if not final_heterocycle_formation:
+                        # Check for heterocycle presence in product but not in reactants
+                        heterocycles_in_product = []
+                        for heterocycle in heterocycle_types:
+                            if checker.check_ring(heterocycle, product_smiles):
+                                heterocycles_in_product.append(heterocycle)
+                                print(f"Found {heterocycle} in product")
+
+                        # For each heterocycle in the product, check if it's new
+                        for heterocycle in heterocycles_in_product:
+                            # Check if this heterocycle was not present in any of the reactants
+                            heterocycle_in_reactants = any(
+                                checker.check_ring(heterocycle, r) for r in reactants_smiles
+                            )
+
+                            if not heterocycle_in_reactants:
+                                print(f"Detected new {heterocycle} formation in final step")
+                                final_heterocycle_formation = True
+                                break
+
+                    # If still not identified, check for ring transformations
+                    if not final_heterocycle_formation:
+                        # Get all rings in reactants and product
+                        reactant_rings = []
+                        for r_mol in reactants_mols:
+                            if r_mol:
+                                ring_info = r_mol.GetRingInfo()
+                                for idx in range(ring_info.NumRings()):
+                                    ring_atoms = ring_info.AtomRings()[idx]
+                                    reactant_rings.append(set(ring_atoms))
+
+                        product_rings = []
+                        if product_mol:
+                            ring_info = product_mol.GetRingInfo()
+                            for idx in range(ring_info.NumRings()):
+                                ring_atoms = ring_info.AtomRings()[idx]
+                                product_rings.append(set(ring_atoms))
+
+                        # Count rings in reactants and product
+                        reactants_ring_count = sum(
+                            [mol.GetRingInfo().NumRings() for mol in reactants_mols if mol]
+                        )
+                        product_ring_count = (
+                            product_mol.GetRingInfo().NumRings() if product_mol else 0
+                        )
+
+                        print(
+                            f"Ring count - Reactants: {reactants_ring_count}, Product: {product_ring_count}"
+                        )
+
+                        # Check if product has different ring structure
+                        if product_ring_count != reactants_ring_count:
+                            # Check if product contains any heterocycle
+                            for heterocycle in heterocycle_types:
+                                if checker.check_ring(heterocycle, product_smiles):
+                                    print(
+                                        f"Detected {heterocycle} in product with changed ring count"
+                                    )
+                                    final_heterocycle_formation = True
+                                    break
+
+                        # Even if ring count is the same, check for ring transformations
+                        # by looking for heterocycles in the product that weren't in reactants
+                        if not final_heterocycle_formation:
+                            # Check for specific ring-forming reactions
+                            ring_forming_reactions = [
+                                "Intramolecular amination",
+                                "Cyclization",
+                                "Ring formation",
+                                "Ring closure",
+                            ]
+
+                            for reaction_pattern in ring_forming_reactions:
+                                if reaction_pattern.lower() in rsmi.lower():
+                                    # Check if product contains any heterocycle
+                                    for heterocycle in heterocycle_types:
+                                        if checker.check_ring(heterocycle, product_smiles):
+                                            print(
+                                                f"Detected {heterocycle} in product via {reaction_pattern}"
+                                            )
+                                            final_heterocycle_formation = True
+                                            break
+                                    if final_heterocycle_formation:
+                                        break
+        except Exception as e:
+            print(f"Error processing reaction SMILES: {e}")
+    else:
+        print("No final reaction found in the route")
+
+    print(f"Final result: {final_heterocycle_formation}")
+    return final_heterocycle_formation

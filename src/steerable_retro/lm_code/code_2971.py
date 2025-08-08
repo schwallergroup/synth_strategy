@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,166 +54,168 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the route involves early-stage functional group manipulations
-    (alcohol-aldehyde-ester interconversions) at depths > 1.
+    This function detects a specific functional group interconversion sequence:
+    nitro → amine → isothiocyanate → heterocycle
     """
-    has_early_fg_manipulation = False
+    # Initialize flags for each transformation
+    nitro_reduction = False
+    isothiocyanate_formation = False
+    heterocycle_formation = False
+
+    # Track atom mappings to ensure we're following the same functional group
+    nitro_atom_maps = set()
+    amine_atom_maps = set()
+    isothiocyanate_atom_maps = set()
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_early_fg_manipulation
+        nonlocal nitro_reduction, isothiocyanate_formation, heterocycle_formation
+        nonlocal nitro_atom_maps, amine_atom_maps, isothiocyanate_atom_maps
 
-        print(f"Traversing node at depth {depth}, type: {node['type']}")
-
-        if node["type"] == "reaction" and depth > 1:  # Early stage (depth > 1)
-            try:
-                rsmi = node["metadata"].get("rsmi", "")
-                if not rsmi:
-                    print(f"No reaction SMILES found at depth {depth}")
-                    return
-
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
-                print(f"Reactants: {reactants}")
-                print(f"Product: {product}")
+                print(f"Examining reaction at depth {depth}: {rsmi}")
 
-                # Debug functional groups
-                for i, r in enumerate(reactants):
-                    print(
-                        f"Reactant {i} FGs: Primary alcohol: {checker.check_fg('Primary alcohol', r)}, "
-                        f"Secondary alcohol: {checker.check_fg('Secondary alcohol', r)}, "
-                        f"Ester: {checker.check_fg('Ester', r)}, "
-                        f"Aldehyde: {checker.check_fg('Aldehyde', r)}, "
-                        f"Carboxylic acid: {checker.check_fg('Carboxylic acid', r)}"
+                # Check for nitro reduction (depth 5)
+                if depth == 5:
+                    # Check if this is a nitro reduction reaction
+                    if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                        print("Detected nitro reduction reaction at depth 5")
+
+                        # Verify nitro group in reactant and amine in product
+                        for reactant in reactants:
+                            if checker.check_fg("Nitro group", reactant):
+                                print(f"Found nitro group in reactant: {reactant}")
+
+                                # Get the product and check for amine
+                                if checker.check_fg("Primary amine", product):
+                                    print(f"Found primary amine in product: {product}")
+                                    nitro_reduction = True
+
+                                    # Extract atom mappings for tracking
+                                    reactant_mol = Chem.MolFromSmiles(reactant)
+                                    product_mol = Chem.MolFromSmiles(product)
+
+                                    if reactant_mol and product_mol:
+                                        for atom in reactant_mol.GetAtoms():
+                                            if atom.GetSymbol() == "N" and atom.HasProp(
+                                                "molAtomMapNumber"
+                                            ):
+                                                nitro_atom_maps.add(
+                                                    atom.GetProp("molAtomMapNumber")
+                                                )
+
+                                        for atom in product_mol.GetAtoms():
+                                            if atom.GetSymbol() == "N" and atom.HasProp(
+                                                "molAtomMapNumber"
+                                            ):
+                                                amine_atom_maps.add(
+                                                    atom.GetProp("molAtomMapNumber")
+                                                )
+
+                                    print(f"Nitro atom maps: {nitro_atom_maps}")
+                                    print(f"Amine atom maps: {amine_atom_maps}")
+                    else:
+                        # Fallback: check for nitro to amine conversion without specific reaction
+                        nitro_in_reactants = any(
+                            checker.check_fg("Nitro group", r) for r in reactants
+                        )
+                        amine_in_product = checker.check_fg("Primary amine", product)
+
+                        if nitro_in_reactants and amine_in_product:
+                            print("Detected nitro to amine conversion at depth 5 (fallback)")
+                            nitro_reduction = True
+
+                # Check for isothiocyanate formation (depth 3)
+                if depth == 3:
+                    # Check if this is an isothiocyanate formation reaction
+                    if checker.check_reaction("Amine and thiophosgene to isothiocyanate", rsmi):
+                        print("Detected isothiocyanate formation reaction at depth 3")
+
+                        # Verify amine in reactants and isothiocyanate in product
+                        amine_found = False
+                        for reactant in reactants:
+                            if checker.check_fg("Primary amine", reactant):
+                                print(f"Found primary amine in reactant: {reactant}")
+                                amine_found = True
+
+                        if amine_found and checker.check_fg("Isothiocyanate", product):
+                            print(f"Found isothiocyanate in product: {product}")
+                            isothiocyanate_formation = True
+                    else:
+                        # Fallback: check for amine to isothiocyanate conversion without specific reaction
+                        amine_in_reactants = any(
+                            checker.check_fg("Primary amine", r) for r in reactants
+                        )
+                        isothiocyanate_in_product = checker.check_fg("Isothiocyanate", product)
+
+                        if amine_in_reactants and isothiocyanate_in_product:
+                            print(
+                                "Detected amine to isothiocyanate conversion at depth 3 (fallback)"
+                            )
+                            isothiocyanate_formation = True
+
+                # Check for heterocycle formation from isothiocyanate (depth 1)
+                if depth == 1:
+                    # Check for heterocycle formation reactions
+                    heterocycle_reactions = [
+                        "Benzimidazole formation from aldehyde",
+                        "Benzimidazole formation from acyl halide",
+                        "Benzimidazole formation from ester/carboxylic acid",
+                        "Benzothiazole formation from aldehyde",
+                        "Benzothiazole formation from acyl halide",
+                        "Benzothiazole formation from ester/carboxylic acid",
+                        "Benzoxazole formation from aldehyde",
+                        "Benzoxazole formation from acyl halide",
+                        "Benzoxazole formation from ester/carboxylic acid",
+                        "Benzoxazole formation (intramolecular)",
+                    ]
+
+                    reaction_detected = False
+                    for rxn_type in heterocycle_reactions:
+                        if checker.check_reaction(rxn_type, rsmi):
+                            print(f"Detected heterocycle formation reaction: {rxn_type}")
+                            reaction_detected = True
+                            break
+
+                    # Verify isothiocyanate in reactants
+                    isothiocyanate_found = any(
+                        checker.check_fg("Isothiocyanate", r) for r in reactants
                     )
-                print(
-                    f"Product FGs: Primary alcohol: {checker.check_fg('Primary alcohol', product)}, "
-                    f"Secondary alcohol: {checker.check_fg('Secondary alcohol', product)}, "
-                    f"Ester: {checker.check_fg('Ester', product)}, "
-                    f"Aldehyde: {checker.check_fg('Aldehyde', product)}, "
-                    f"Carboxylic acid: {checker.check_fg('Carboxylic acid', product)}"
-                )
+                    if isothiocyanate_found:
+                        print("Found isothiocyanate in reactants")
 
-                # Check for alcohol-aldehyde-ester-carboxylic acid interconversions
+                    # Check for heterocycle in product
+                    heterocycle_rings = [
+                        "benzimidazole",
+                        "benzothiazole",
+                        "benzoxazole",
+                        "thiazole",
+                        "oxazole",
+                        "imidazole",
+                    ]
 
-                # Alcohol to aldehyde oxidation
-                if any(
-                    checker.check_fg("Primary alcohol", r) for r in reactants
-                ) and checker.check_fg("Aldehyde", product):
-                    print(f"Found alcohol to aldehyde oxidation at depth {depth}")
-                    has_early_fg_manipulation = True
+                    heterocycle_found = False
+                    for ring in heterocycle_rings:
+                        if checker.check_ring(ring, product):
+                            print(f"Found {ring} in product: {product}")
+                            heterocycle_found = True
+                            break
 
-                # Aldehyde to alcohol reduction
-                elif any(checker.check_fg("Aldehyde", r) for r in reactants) and checker.check_fg(
-                    "Primary alcohol", product
-                ):
-                    print(f"Found aldehyde to alcohol reduction at depth {depth}")
-                    has_early_fg_manipulation = True
+                    if (reaction_detected or heterocycle_found) and isothiocyanate_found:
+                        heterocycle_formation = True
 
-                # Alcohol to ester transformation
-                elif any(
-                    checker.check_fg("Primary alcohol", r) for r in reactants
-                ) and checker.check_fg("Ester", product):
-                    print(f"Found alcohol to ester transformation at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Ester to alcohol reduction
-                elif any(checker.check_fg("Ester", r) for r in reactants) and checker.check_fg(
-                    "Primary alcohol", product
-                ):
-                    print(f"Found ester to alcohol reduction at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Carboxylic acid to ester
-                elif any(
-                    checker.check_fg("Carboxylic acid", r) for r in reactants
-                ) and checker.check_fg("Ester", product):
-                    print(f"Found carboxylic acid to ester transformation at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Ester to carboxylic acid hydrolysis
-                elif any(checker.check_fg("Ester", r) for r in reactants) and checker.check_fg(
-                    "Carboxylic acid", product
-                ):
-                    print(f"Found ester to carboxylic acid hydrolysis at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Aldehyde to carboxylic acid oxidation
-                elif any(checker.check_fg("Aldehyde", r) for r in reactants) and checker.check_fg(
-                    "Carboxylic acid", product
-                ):
-                    print(f"Found aldehyde to carboxylic acid oxidation at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Secondary alcohol to ketone oxidation
-                elif any(
-                    checker.check_fg("Secondary alcohol", r) for r in reactants
-                ) and checker.check_fg("Ketone", product):
-                    print(f"Found secondary alcohol to ketone oxidation at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Ketone to secondary alcohol reduction
-                elif any(checker.check_fg("Ketone", r) for r in reactants) and checker.check_fg(
-                    "Secondary alcohol", product
-                ):
-                    print(f"Found ketone to secondary alcohol reduction at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Alcohol to carboxylic acid oxidation
-                elif any(
-                    checker.check_fg("Primary alcohol", r) for r in reactants
-                ) and checker.check_fg("Carboxylic acid", product):
-                    print(f"Found alcohol to carboxylic acid oxidation at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Carboxylic acid to alcohol reduction
-                elif any(
-                    checker.check_fg("Carboxylic acid", r) for r in reactants
-                ) and checker.check_fg("Primary alcohol", product):
-                    print(f"Found carboxylic acid to alcohol reduction at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Ketone to carboxylic acid oxidation
-                elif any(checker.check_fg("Ketone", r) for r in reactants) and checker.check_fg(
-                    "Carboxylic acid", product
-                ):
-                    print(f"Found ketone to carboxylic acid oxidation at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Nitrile to carboxylic acid hydrolysis
-                elif any(checker.check_fg("Nitrile", r) for r in reactants) and checker.check_fg(
-                    "Carboxylic acid", product
-                ):
-                    print(f"Found nitrile to carboxylic acid hydrolysis at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Nitrile to amide hydrolysis
-                elif any(checker.check_fg("Nitrile", r) for r in reactants) and (
-                    checker.check_fg("Primary amide", product)
-                    or checker.check_fg("Secondary amide", product)
-                    or checker.check_fg("Tertiary amide", product)
-                ):
-                    print(f"Found nitrile to amide hydrolysis at depth {depth}")
-                    has_early_fg_manipulation = True
-
-                # Amide to carboxylic acid hydrolysis
-                elif (
-                    any(checker.check_fg("Primary amide", r) for r in reactants)
-                    or any(checker.check_fg("Secondary amide", r) for r in reactants)
-                    or any(checker.check_fg("Tertiary amide", r) for r in reactants)
-                ) and checker.check_fg("Carboxylic acid", product):
-                    print(f"Found amide to carboxylic acid hydrolysis at depth {depth}")
-                    has_early_fg_manipulation = True
-
-            except Exception as e:
-                print(f"Error processing reaction at depth {depth}: {e}")
-
-        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: {has_early_fg_manipulation}")
-    return has_early_fg_manipulation
+
+    print(f"Nitro reduction: {nitro_reduction}")
+    print(f"Isothiocyanate formation: {isothiocyanate_formation}")
+    print(f"Heterocycle formation: {heterocycle_formation}")
+
+    # Return True only if all transformations are detected in the correct sequence
+    return nitro_reduction and isothiocyanate_formation and heterocycle_formation

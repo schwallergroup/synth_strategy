@@ -2,72 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects borylation reactions that prepare coupling partners.
-    It looks for reactions converting aryl halides to boronic esters.
+    Detects a convergent synthesis strategy where multiple complex fragments
+    are joined together rather than linear elaboration of a single core.
     """
-    borylation_found = False
+    # Track fragment couplings at different depths
+    fragment_couplings = []
 
-    def dfs_traverse(node):
-        nonlocal borylation_found
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
 
-            # Check for aryl halide pattern in reactants
-            aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
+            reactants = reactants_part.split(".")
 
-            # Check for boronic ester pattern in product
-            boronic_ester_pattern = Chem.MolFromSmarts("[c][B]1[O][C]([C])([C])[C]([C])([C])[O]1")
-
-            has_aryl_halide = False
-
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(aryl_halide_pattern):
-                        has_aryl_halide = True
-                        break
-                except:
-                    continue
-
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                has_boronic_ester = product_mol and product_mol.HasSubstructMatch(
-                    boronic_ester_pattern
+            # Check if this is a fragment coupling (multiple complex reactants)
+            if len(reactants) >= 2:
+                complex_reactants = sum(
+                    1
+                    for r in reactants
+                    if Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).GetNumAtoms() > 8
                 )
-            except:
-                has_boronic_ester = False
 
-            if has_aryl_halide and has_boronic_ester:
-                print(f"Found borylation reaction: {rsmi}")
-                borylation_found = True
+                if complex_reactants >= 2:
+                    fragment_couplings.append((depth, complex_reactants))
+                    print(
+                        f"Found fragment coupling at depth {depth} with {complex_reactants} complex reactants"
+                    )
 
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Borylation preparation found: {borylation_found}")
-    return borylation_found
+
+    # Analyze the pattern of fragment couplings
+    # Convergent synthesis typically has multiple fragment couplings at different depths
+    is_convergent = len(fragment_couplings) >= 2 and len(set(d for d, _ in fragment_couplings)) >= 2
+
+    print(f"Convergent synthesis with multiple fragment couplings detected: {is_convergent}")
+    return is_convergent

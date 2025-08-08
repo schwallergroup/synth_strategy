@@ -2,124 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves protection of a carboxylic acid as an ester
-    and subsequent deprotection.
+    This function detects a synthetic strategy involving a Weinreb amide intermediate
+    followed by a late-stage multi-component reaction (MCR).
     """
-    # Track both protection and deprotection events
-    protection_events = []
-    deprotection_events = []
+    # Initialize tracking variables
+    has_weinreb_amide = False
+    has_mcr = False
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node):
+        nonlocal has_weinreb_amide, has_mcr
+
         if node["type"] == "reaction":
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                # Check for protection reactions (acid → ester in forward direction)
-                if checker.check_reaction("Protection of carboxylic acid", rsmi):
-                    print(f"Found carboxylic acid protection reaction at depth {depth}: {rsmi}")
-                    protection_events.append((depth, rsmi))
-                    return
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for deprotection reactions (ester → acid in forward direction)
-                if (
-                    checker.check_reaction("Ester saponification (methyl deprotection)", rsmi)
-                    or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
-                    or checker.check_reaction("COOH ethyl deprotection", rsmi)
-                    or checker.check_reaction("Deprotection of carboxylic acid", rsmi)
-                ):
-                    print(f"Found carboxylic acid deprotection reaction at depth {depth}: {rsmi}")
-                    deprotection_events.append((depth, rsmi))
-                    return
+            # Check for multi-component reaction (4+ components)
+            if len(reactants_smiles) >= 4:
+                print(f"Found MCR with {len(reactants_smiles)} components")
+                has_mcr = True
 
-                # Alternative check for protection: carboxylic acid to ester transformation
-                for reactant in reactants_smiles:
-                    if checker.check_fg("Carboxylic acid", reactant):
-                        product = product_smiles
-                        if checker.check_fg("Ester", product):
-                            print(
-                                f"Found carboxylic acid to ester transformation at depth {depth}: {rsmi}"
-                            )
-                            protection_events.append((depth, rsmi))
-                            return
-
-                # Alternative check for deprotection: ester to carboxylic acid transformation
-                for reactant in reactants_smiles:
-                    if checker.check_fg("Ester", reactant) and checker.check_fg(
-                        "Carboxylic acid", product_smiles
-                    ):
-                        print(
-                            f"Found ester to carboxylic acid transformation at depth {depth}: {rsmi}"
-                        )
-                        deprotection_events.append((depth, rsmi))
-                        return
-
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+            # Check for Weinreb amide in reactants
+            weinreb_amide_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#7](-[#6])-[#6](=[#8])-[#6]")
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(weinreb_amide_pattern):
+                        print("Found Weinreb amide in reactants")
+                        has_weinreb_amide = True
+                except:
+                    continue
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # A protection strategy requires both protection and deprotection events
-    has_protection_strategy = len(protection_events) > 0 or len(deprotection_events) > 0
-
-    print(f"Protection events: {len(protection_events)}")
-    print(f"Deprotection events: {len(deprotection_events)}")
-    print(f"Carboxylic acid protection strategy detected: {has_protection_strategy}")
-
-    return has_protection_strategy
+    # Return True if both conditions are met
+    return has_weinreb_amide and has_mcr

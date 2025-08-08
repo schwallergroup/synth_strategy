@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,99 +54,90 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a strategy involving the conversion of an aldehyde to an alkene.
-    Common reactions include Wittig, Julia olefination, and aldol condensation.
+    Detects formation of an ester with a tertiary alcohol containing two thiophene rings.
     """
-    conversion_detected = False
+    found_bis_thiophene_ester = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal conversion_detected
+    def dfs_traverse(node):
+        nonlocal found_bis_thiophene_ester
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
+            products_part = rsmi.split(">")[-1]
 
-            print(f"Depth {depth}, Examining reaction: {rsmi}")
+            print(f"Examining reaction: {rsmi}")
 
-            # Check for aldehyde in reactants
-            aldehyde_in_reactants = any(checker.check_fg("Aldehyde", r) for r in reactants if r)
+            # Check for esterification or related reactions
+            is_esterification = checker.check_reaction("Esterification of Carboxylic Acids", rsmi)
+            is_hydrolysis = checker.check_reaction(
+                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+            )
 
-            # Check for alkene-related functional groups in product
-            alkene_in_product = False
-            if product:
-                alkene_in_product = (
-                    checker.check_fg("Alkene", product)
-                    or checker.check_fg("Vinyl", product)
-                    or checker.check_fg("Allyl", product)
-                    or checker.check_fg("Conjugated diene", product)
+            if is_esterification or is_hydrolysis:
+                print(f"Found {'esterification' if is_esterification else 'hydrolysis'} reaction")
+
+                # For esterification: alcohol in reactants, ester in products
+                # For hydrolysis: ester in reactants, alcohol in products
+                alcohol_molecules = (
+                    reactants_part.split(".") if is_esterification else products_part.split(".")
+                )
+                ester_molecules = (
+                    products_part.split(".") if is_esterification else reactants_part.split(".")
                 )
 
-            # Check for specific reactions that convert aldehydes to alkenes
-            wittig_reaction = (
-                checker.check_reaction("Wittig reaction", rsmi)
-                or checker.check_reaction("Wittig", rsmi)
-                or checker.check_reaction("{Wittig}", rsmi)
-            )
-            julia_reaction = checker.check_reaction("Julia Olefination", rsmi)
-            aldol_condensation = checker.check_reaction("Aldol condensation", rsmi)
+                # Look for tertiary alcohol with two thiophene rings
+                for mol_smiles in alcohol_molecules:
+                    print(f"Checking molecule for tertiary alcohol: {mol_smiles}")
 
-            print(f"  Aldehyde in reactants: {aldehyde_in_reactants}")
-            print(f"  Alkene in product: {alkene_in_product}")
-            print(f"  Wittig reaction: {wittig_reaction}")
-            print(f"  Julia reaction: {julia_reaction}")
-            print(f"  Aldol condensation: {aldol_condensation}")
+                    if checker.check_fg("Tertiary alcohol", mol_smiles):
+                        print("Found tertiary alcohol")
 
-            # If we have an aldehyde in reactants and an alkene in product, this is likely our target conversion
-            if aldehyde_in_reactants and alkene_in_product:
-                print(f"  Found aldehyde in reactants and alkene in product")
+                        # Check for thiophene rings
+                        if checker.check_ring("thiophene", mol_smiles):
+                            thiophene_indices = checker.get_ring_atom_indices(
+                                "thiophene", mol_smiles
+                            )
+                            thiophene_count = len(thiophene_indices)
+                            print(f"Found {thiophene_count} thiophene rings")
 
-                # Check for specific named reactions
-                if wittig_reaction:
-                    print("  Detected Wittig reaction converting aldehyde to alkene")
-                    conversion_detected = True
-                elif julia_reaction:
-                    print("  Detected Julia olefination converting aldehyde to alkene")
-                    conversion_detected = True
-                elif aldol_condensation:
-                    print("  Detected aldol condensation converting aldehyde to alkene")
-                    conversion_detected = True
-                elif checker.check_reaction(
-                    "Aldehyde or ketone to alpha,beta-unsaturated carbonyl", rsmi
+                            if thiophene_count >= 2:
+                                print("Found tertiary alcohol with at least 2 thiophene rings")
+
+                                # Check if there's a corresponding ester
+                                for ester_smiles in ester_molecules:
+                                    if checker.check_fg("Ester", ester_smiles):
+                                        print(
+                                            "Found ester in the corresponding part of the reaction"
+                                        )
+                                        found_bis_thiophene_ester = True
+                                        return  # Early return once found
+
+            # Also check for other reactions that might form this specific ester
+            for reactant in reactants_part.split("."):
+                if checker.check_fg("Tertiary alcohol", reactant) and checker.check_ring(
+                    "thiophene", reactant
                 ):
-                    print("  Detected conversion of aldehyde to alpha,beta-unsaturated carbonyl")
-                    conversion_detected = True
-                else:
-                    # Check for other reactions or patterns
-                    # Look for patterns in atom-mapped SMILES that indicate aldehyde to alkene conversion
-                    try:
-                        # Find aldehyde reactant
-                        aldehyde_reactant = None
-                        for r in reactants:
-                            if checker.check_fg("Aldehyde", r):
-                                aldehyde_reactant = r
-                                break
+                    thiophene_indices = checker.get_ring_atom_indices("thiophene", reactant)
+                    if len(thiophene_indices) >= 2:
+                        print("Found tertiary alcohol with at least 2 thiophene rings in reactants")
 
-                        if aldehyde_reactant:
-                            # Check if this is a reaction that typically converts aldehydes to alkenes
-                            # Look for patterns in atom-mapped SMILES
-                            if "=" in product and "[CH" in product:
-                                print(
-                                    "  Detected potential aldehyde to alkene conversion through unspecified reaction"
+                        for product in products_part.split("."):
+                            if checker.check_fg("Ester", product) and checker.check_ring(
+                                "thiophene", product
+                            ):
+                                product_thiophene_indices = checker.get_ring_atom_indices(
+                                    "thiophene", product
                                 )
-                                conversion_detected = True
-                    except Exception as e:
-                        print(f"  Error in pattern check: {e}")
+                                if len(product_thiophene_indices) >= 2:
+                                    print("Found ester with at least 2 thiophene rings in products")
+                                    found_bis_thiophene_ester = True
+                                    return  # Early return once found
 
-            # Special case for Wittig-like reactions where the product might not be detected as an alkene
-            if aldehyde_in_reactants and not conversion_detected:
-                if "CH2=" in product or "=[CH]" in product or "=[CH2]" in product:
-                    print("  Detected potential aldehyde to alkene conversion (special pattern)")
-                    conversion_detected = True
-
+        # Continue traversing if not found yet
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: Aldehyde to alkene conversion detected: {conversion_detected}")
-    return conversion_detected
+    return found_bis_thiophene_ester

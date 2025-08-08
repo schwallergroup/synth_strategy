@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,39 +54,61 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis uses a convergent approach where two nitrile-containing
-    fragments are combined in a mid-stage reaction.
+    Detects if the synthesis route involves a late-stage ester hydrolysis
+    (conversion of ester to carboxylic acid in the final step).
     """
-    has_convergent_nitrile_coupling = False
+    result = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_convergent_nitrile_coupling
+        nonlocal result
 
-        if node["type"] == "reaction" and depth > 0:  # Any non-terminal reaction
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
+
+        # Check if this is a reaction node at a late stage (depth <= 1)
+        if node["type"] == "reaction" and depth <= 1:
             try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                # Extract reaction SMILES from metadata
+                if "rsmi" in node.get("metadata", {}):
+                    rsmi = node["metadata"]["rsmi"]
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-                # Check if we have multiple reactants with nitriles
-                nitrile_reactants = []
-                for reactant in reactants_smiles:
-                    if checker.check_fg("Nitrile", reactant):
-                        nitrile_reactants.append(reactant)
+                    print(f"Checking late-stage reaction at depth {depth}: {rsmi}")
 
-                # Verify this is a convergent synthesis (multiple nitrile fragments combining)
-                if len(nitrile_reactants) >= 2:
-                    # This is a convergent nitrile synthesis - two nitrile fragments are combined
-                    has_convergent_nitrile_coupling = True
-                    print(f"Convergent coupling of nitrile fragments at depth {depth}")
-                    print(f"Nitrile-containing reactants: {nitrile_reactants}")
-                    print(f"Product: {product_smiles}")
+                    # Check if this is an ester hydrolysis reaction
+                    is_ester_hydrolysis = checker.check_reaction(
+                        "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+                    )
+                    print(f"Is ester hydrolysis reaction: {is_ester_hydrolysis}")
+
+                    # If reaction checker failed, try checking functional groups manually
+                    if not is_ester_hydrolysis:
+                        # Check if any reactant contains an ester group
+                        has_ester = any(
+                            checker.check_fg("Ester", reactant) for reactant in reactants
+                        )
+                        print(f"Has ester in reactants: {has_ester}")
+
+                        # Check if product contains a carboxylic acid group
+                        has_acid = checker.check_fg("Carboxylic acid", product)
+                        print(f"Has carboxylic acid in product: {has_acid}")
+
+                        # Verify both conditions are met
+                        if has_ester and has_acid:
+                            print("Detected ester and carboxylic acid functional groups")
+                            is_ester_hydrolysis = True
+
+                    if is_ester_hydrolysis:
+                        print(f"Detected late-stage ester hydrolysis at depth {depth}")
+                        result = True
             except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                print(f"Error analyzing reaction: {e}")
 
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    print("Starting traversal")
     dfs_traverse(route)
-    return has_convergent_nitrile_coupling
+    print(f"Final result: {result}")
+    return result

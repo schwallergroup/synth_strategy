@@ -2,78 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a sequence of functional group interconversions:
-    sulfonic acid → sulfonyl chloride → sulfonamide
+    Detects a strategy for synthesizing a conjugated dye system with a PEG spacer.
     """
-    # Track the depths at which each functional group is found
-    sulfonic_acid_depth = -1
-    sulfonyl_chloride_depth = -1
-    sulfonamide_depth = -1
+    # Track key structural elements
+    has_styryl_bridge = False
+    has_peg_linker = False
+    has_dimethylamino = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal sulfonic_acid_depth, sulfonyl_chloride_depth, sulfonamide_depth
+        nonlocal has_styryl_bridge, has_peg_linker, has_dimethylamino
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
-                product_mol = Chem.MolFromSmiles(product)
+        if node["type"] == "mol" and depth == 0:  # Final product
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if not mol:
+                return
 
-                if product_mol:
-                    # Check for sulfonic acid
-                    sulfonic_acid_pattern = Chem.MolFromSmarts("[c]-[S](=[O])(=[O])-[OH]")
-                    if product_mol.HasSubstructMatch(sulfonic_acid_pattern) and (
-                        sulfonic_acid_depth == -1 or depth > sulfonic_acid_depth
-                    ):
-                        sulfonic_acid_depth = depth
-                        print(f"Found sulfonic acid at depth {depth}")
+            # Check for styryl bridge (conjugated C=C between aromatics)
+            styryl_pattern = Chem.MolFromSmarts("c-C=C-c")
+            if mol.HasSubstructMatch(styryl_pattern):
+                has_styryl_bridge = True
+                print("Found styryl bridge in final product")
 
-                    # Check for sulfonyl chloride
-                    sulfonyl_chloride_pattern = Chem.MolFromSmarts("[c]-[S](=[O])(=[O])-[Cl]")
-                    if product_mol.HasSubstructMatch(sulfonyl_chloride_pattern) and (
-                        sulfonyl_chloride_depth == -1 or depth > sulfonyl_chloride_depth
-                    ):
-                        sulfonyl_chloride_depth = depth
-                        print(f"Found sulfonyl chloride at depth {depth}")
+            # Check for PEG linker
+            peg_pattern = Chem.MolFromSmarts("O-C-C-O-C-C-O")
+            if mol.HasSubstructMatch(peg_pattern):
+                has_peg_linker = True
+                print("Found PEG linker in final product")
 
-                    # Check for sulfonamide
-                    sulfonamide_pattern = Chem.MolFromSmarts("[c]-[S](=[O])(=[O])-[N]")
-                    if product_mol.HasSubstructMatch(sulfonamide_pattern) and (
-                        sulfonamide_depth == -1 or depth > sulfonamide_depth
-                    ):
-                        sulfonamide_depth = depth
-                        print(f"Found sulfonamide at depth {depth}")
+            # Check for dimethylamino group
+            dimethylamino_pattern = Chem.MolFromSmarts("c-N(-C)(-C)")
+            if mol.HasSubstructMatch(dimethylamino_pattern):
+                has_dimethylamino = True
+                print("Found dimethylamino group in final product")
 
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if the sequence is found in the correct order (decreasing depth)
-    if sulfonic_acid_depth > sulfonyl_chloride_depth > sulfonamide_depth > 0:
-        print(
-            f"Found sulfonic acid → sulfonyl chloride → sulfonamide sequence: {sulfonic_acid_depth} → {sulfonyl_chloride_depth} → {sulfonamide_depth}"
-        )
-        return True
-    return False
+    # Return True if we found all key elements of the conjugated dye
+    return has_styryl_bridge and has_peg_linker and has_dimethylamino

@@ -2,71 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route contains multiple C-N bond formations.
+    This function detects a late-stage Suzuki coupling strategy (depth 0-1)
+    involving a halogenated aryl partner.
     """
-    cn_bond_count = 0
+    suzuki_coupling_found = False
+    halogenated_partner = False
 
-    def dfs_traverse(node):
-        nonlocal cn_bond_count
+    def dfs_traverse(node, depth=0):
+        nonlocal suzuki_coupling_found, halogenated_partner
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0-1)
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for amide formation
-                reactants = Chem.MolFromSmiles(reactants_smiles)
-                product = Chem.MolFromSmiles(product_smiles)
+                # Check for boronic acid derivative in reactants
+                boronic_pattern = Chem.MolFromSmarts("[#6]-[#5](-[#8])-[#8]")
 
-                if reactants and product:
-                    # Look for carboxylic acid or derivative in reactants
-                    acid_pattern = Chem.MolFromSmarts("[C](=[O])[O,N]")
-                    amine_pattern = Chem.MolFromSmarts("[N;!$(N=*);!$(NC=O)]")
-                    amide_pattern = Chem.MolFromSmarts("[N;!$(N=*)][C](=[O])")
+                # Check for aryl halide in reactants
+                aryl_halide_pattern = Chem.MolFromSmarts("c-[#35,#53,#17]")
 
-                    has_acid = reactants.HasSubstructMatch(acid_pattern)
-                    has_amine = reactants.HasSubstructMatch(amine_pattern)
-                    has_amide_product = product.HasSubstructMatch(amide_pattern)
+                # Check for fluorinated aryl group
+                fluorinated_aryl = Chem.MolFromSmarts("c[F]")
 
-                    # Check for C-N bond formation (including amide)
-                    if has_acid and has_amine and has_amide_product:
-                        cn_bond_count += 1
-                        print(f"C-N bond formation detected in reaction: {rsmi}")
+                # Check if this looks like a Suzuki coupling
+                has_boronic = False
+                has_aryl_halide = False
+                has_fluorinated_aryl = False
 
-                    # Check for other C-N bond formations (e.g., SNAr)
-                    aryl_halide = Chem.MolFromSmarts("[c][Br,Cl,I,F]")
-                    if reactants.HasSubstructMatch(aryl_halide) and reactants.HasSubstructMatch(
-                        amine_pattern
-                    ):
-                        # Check if product has new C-N bond where halide was
-                        if product.HasSubstructMatch(Chem.MolFromSmarts("[c][N]")):
-                            cn_bond_count += 1
-                            print(f"C-N bond formation (SNAr) detected in reaction: {rsmi}")
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(boronic_pattern):
+                            has_boronic = True
+                        if mol.HasSubstructMatch(aryl_halide_pattern):
+                            has_aryl_halide = True
+                        if mol.HasSubstructMatch(fluorinated_aryl):
+                            has_fluorinated_aryl = True
 
+                # Product should have a new C-C bond
+                if has_boronic and has_aryl_halide:
+                    suzuki_coupling_found = True
+                    if has_fluorinated_aryl:
+                        halogenated_partner = True
+                    print(f"Found Suzuki coupling at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return cn_bond_count >= 2
+
+    # Return True if we found a late-stage Suzuki coupling with halogenated partner
+    return suzuki_coupling_found and halogenated_partner

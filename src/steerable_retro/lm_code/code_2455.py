@@ -2,74 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the alkylation of a benzofuran core with a dibromoalkane.
+    This function detects if the synthetic route involves aryl bromide to aldehyde
+    transformation as a key step.
     """
-    benzofuran_alkylation = False
+    aryl_br_to_aldehyde = False
 
-    def dfs_traverse(node):
-        nonlocal benzofuran_alkylation
+    def dfs_traverse(node, depth=0):
+        nonlocal aryl_br_to_aldehyde
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for benzofuran in reactants
-                benzofuran_pattern = Chem.MolFromSmarts("c1ccc2c(c1)oc[c]2")
-                dibromo_pattern = Chem.MolFromSmarts("Br[CH2][CH2][CH2][CH2]Br")
+            # Check for aryl bromide in reactants
+            aryl_br_pattern = Chem.MolFromSmarts("c[Br]")
+            aryl_cho_pattern = Chem.MolFromSmarts("c[CH]=O")
 
-                has_benzofuran = False
-                has_dibromo = False
+            has_aryl_br = any(
+                Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(aryl_br_pattern)
+                for r in reactants
+            )
+            has_aryl_cho = Chem.MolFromSmiles(product) and Chem.MolFromSmiles(
+                product
+            ).HasSubstructMatch(aryl_cho_pattern)
 
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            if mol.HasSubstructMatch(benzofuran_pattern):
-                                has_benzofuran = True
-                            if mol.HasSubstructMatch(dibromo_pattern):
-                                has_dibromo = True
-                    except:
-                        continue
-
-                # Check if product has alkylated benzofuran
-                if has_benzofuran and has_dibromo:
-                    try:
-                        prod_mol = Chem.MolFromSmiles(product)
-                        if prod_mol and prod_mol.HasSubstructMatch(benzofuran_pattern):
-                            alkylated_pattern = Chem.MolFromSmarts(
-                                "c1ccc2c(c1)oc(c2)[CH2][CH2][CH2][CH2]Br"
-                            )
-                            if prod_mol.HasSubstructMatch(alkylated_pattern):
-                                benzofuran_alkylation = True
-                                print("Found benzofuran alkylation with dibromoalkane")
-                    except:
-                        pass
+            if has_aryl_br and has_aryl_cho:
+                aryl_br_to_aldehyde = True
+                print(f"Aryl bromide to aldehyde transformation detected at depth {depth}")
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return benzofuran_alkylation
+
+    return aryl_br_to_aldehyde

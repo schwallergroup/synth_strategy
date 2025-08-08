@@ -2,109 +2,130 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves multiple chlorinated aromatic rings.
+    This function detects a synthetic strategy involving a diarylamine core structure
+    that undergoes sequential nitrogen-containing functional group transformations
+    (oxime → hydroxylamine → amide) in the late stages of synthesis.
     """
-    # Track total unique chlorinated aromatic rings across all molecules
-    total_chloro_rings = 0
+    # Track if we've found the key transformations
+    found_diarylamine = False
+    found_oxime = False
+    found_hydroxylamine = False
+    found_n_hydroxy_amide = False
+
+    # Track the sequence of transformations
+    oxime_to_hydroxylamine = False
+    hydroxylamine_to_amide = False
 
     def dfs_traverse(node):
-        nonlocal total_chloro_rings
+        nonlocal found_diarylamine, found_oxime, found_hydroxylamine, found_n_hydroxy_amide
+        nonlocal oxime_to_hydroxylamine, hydroxylamine_to_amide
 
         if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+            # Check for diarylamine core
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                diarylamine_pattern = Chem.MolFromSmarts("[c]-[NH]-[c]")
+                if mol.HasSubstructMatch(diarylamine_pattern):
+                    found_diarylamine = True
 
-            # Check if molecule contains aromatic halide functional group
-            if checker.check_fg("Aromatic halide", mol_smiles):
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if mol:
-                    # Get ring information
-                    ring_info = mol.GetRingInfo()
-                    atom_rings = ring_info.AtomRings()
+                # Check for specific functional groups
+                oxime_pattern = Chem.MolFromSmarts("[C]=[N]-[OH]")
+                if mol.HasSubstructMatch(oxime_pattern):
+                    found_oxime = True
+                    print(f"Found oxime in molecule: {node['smiles']}")
 
-                    # Count chlorinated aromatic rings
-                    chloro_ring_count = 0
-                    for ring in atom_rings:
-                        # Check if ring is aromatic
-                        is_aromatic_ring = all(
-                            mol.GetAtomWithIdx(idx).GetIsAromatic() for idx in ring
+                hydroxylamine_pattern = Chem.MolFromSmarts("[NH]-[OH]")
+                if mol.HasSubstructMatch(hydroxylamine_pattern) and not mol.HasSubstructMatch(
+                    Chem.MolFromSmarts("[C](=O)-[N]-[OH]")
+                ):
+                    found_hydroxylamine = True
+                    print(f"Found hydroxylamine in molecule: {node['smiles']}")
+
+                n_hydroxy_amide_pattern = Chem.MolFromSmarts("[C](=O)-[N]-[OH]")
+                if mol.HasSubstructMatch(n_hydroxy_amide_pattern):
+                    found_n_hydroxy_amide = True
+                    print(f"Found N-hydroxy amide in molecule: {node['smiles']}")
+
+        elif node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
+
+                # Check for oxime to hydroxylamine transformation
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
+
+                if product_mol and any(r for r in reactant_mols):
+                    # Check if this reaction converts oxime to hydroxylamine
+                    if (
+                        any(
+                            r and r.HasSubstructMatch(Chem.MolFromSmarts("[C]=[N]-[OH]"))
+                            for r in reactant_mols
+                            if r
                         )
-                        if not is_aromatic_ring:
-                            continue
-
-                        # Check if ring contains a carbon connected to chlorine
-                        has_chlorine = False
-                        for atom_idx in ring:
-                            atom = mol.GetAtomWithIdx(atom_idx)
-                            for neighbor in atom.GetNeighbors():
-                                if neighbor.GetAtomicNum() == 17:  # Chlorine
-                                    has_chlorine = True
-                                    break
-                            if has_chlorine:
-                                break
-
-                        if has_chlorine:
-                            chloro_ring_count += 1
-
-                    if chloro_ring_count > 0:
-                        print(
-                            f"Found molecule with {chloro_ring_count} chlorinated aromatic rings: {mol_smiles}"
+                        and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[NH]-[OH]"))
+                        and not product_mol.HasSubstructMatch(
+                            Chem.MolFromSmarts("[C](=O)-[N]-[OH]")
                         )
-                        total_chloro_rings += chloro_ring_count
+                    ):
+                        oxime_to_hydroxylamine = True
+                        print(f"Found oxime to hydroxylamine transformation: {rsmi}")
+
+                    # Check if this reaction converts hydroxylamine to N-hydroxy amide
+                    if any(
+                        r
+                        and r.HasSubstructMatch(Chem.MolFromSmarts("[NH]-[OH]"))
+                        and not r.HasSubstructMatch(Chem.MolFromSmarts("[C](=O)-[N]-[OH]"))
+                        for r in reactant_mols
+                        if r
+                    ) and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[C](=O)-[N]-[OH]")):
+                        hydroxylamine_to_amide = True
+                        print(f"Found hydroxylamine to N-hydroxy amide transformation: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Total chlorinated aromatic rings found: {total_chloro_rings}")
-    return total_chloro_rings > 1
+    # Check if the strategy is present
+    strategy_present = (
+        found_diarylamine
+        and found_oxime
+        and found_hydroxylamine
+        and found_n_hydroxy_amide
+        and oxime_to_hydroxylamine
+        and hydroxylamine_to_amide
+    )
+
+    print(
+        f"Diarylamine core with sequential N transformations strategy detected: {strategy_present}"
+    )
+    return strategy_present

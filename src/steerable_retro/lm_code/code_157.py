@@ -2,54 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy (no convergent steps)
+    This function detects a linear fragment assembly strategy by checking if most reactions
+    involve combining exactly two fragments.
     """
-    is_linear = True
+    reaction_count = 0
+    two_fragment_reactions = 0
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        nonlocal reaction_count, two_fragment_reactions
 
-        if node.get("type") == "reaction":
-            # Count reactants that are not in_stock
-            non_stock_reactants = 0
-            for child in node.get("children", []):
-                if child.get("type") == "mol" and not child.get("in_stock", False):
-                    non_stock_reactants += 1
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
 
-            # If more than one non-stock reactant, it's a convergent step
-            if non_stock_reactants > 1:
-                is_linear = False
-                print("Convergent step detected")
+                # Count fragments in reactants
+                fragment_count = len(reactants_part.split("."))
+                reaction_count += 1
 
-        # Traverse children
+                if fragment_count == 2:
+                    two_fragment_reactions += 1
+                    print(f"Detected two-fragment reaction: {reactants_part}")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    if is_linear:
-        print("Linear synthesis strategy confirmed")
-
-    return is_linear
+    # If at least 60% of reactions involve exactly two fragments, consider it linear assembly
+    return reaction_count > 0 and (two_fragment_reactions / reaction_count) >= 0.6

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,147 +54,42 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthetic route involves protecting group strategy,
-    specifically TMS protection/deprotection for alkynes and Boc protection/deprotection for amines.
+    Detects if the synthesis maintains a cyclohexane scaffold throughout.
+    Only checks non-stock molecules (intermediates and final product) with at least 6 atoms.
     """
-    tms_protection = False
-    tms_deprotection = False
-    boc_protection = False
-    boc_deprotection = False
+    all_nodes_have_cyclohexane = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal tms_protection, tms_deprotection, boc_protection, boc_deprotection
+    def dfs_traverse(node):
+        nonlocal all_nodes_have_cyclohexane
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_str = rsmi.split(">")[0]
-            reactants = reactants_str.split(".")
-            product_str = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node:
+            mol_smiles = node["smiles"]
 
-            # In retrosynthesis, the product of the reaction is what we're trying to make
-            # and the reactants are the precursors
+            # Skip checking in_stock molecules (starting materials/reagents)
+            if node.get("in_stock", False):
+                print(f"Skipping in_stock molecule: {mol_smiles}")
+                return
 
-            # Check for TMS protection/deprotection
-            # TMS deprotection: TMS-alkyne → terminal alkyne
-            if checker.check_reaction("TMS deprotection from alkyne", rsmi):
-                print(f"Detected TMS deprotection reaction at depth {depth}: {rsmi}")
-                tms_deprotection = True
+            # Skip very small molecules that can't contain cyclohexane
+            mol = Chem.MolFromSmiles(mol_smiles)
+            if mol and mol.GetNumAtoms() < 6:
+                print(f"Skipping small molecule (< 6 atoms): {mol_smiles}")
+                return
 
-            # Check if any reactant has TMS group and product has terminal alkyne
-            for reactant in reactants:
-                if checker.check_fg("TMS ether protective group", reactant) and checker.check_fg(
-                    "Alkyne", product_str
-                ):
-                    if not checker.check_fg("TMS ether protective group", product_str):
-                        print(
-                            f"Detected TMS deprotection at depth {depth}: {reactant} -> {product_str}"
-                        )
-                        tms_deprotection = True
+            # Use the checker function to detect cyclohexane scaffold
+            has_cyclohexane = checker.check_ring("cyclohexane", mol_smiles)
 
-            # Check for silyl protection reactions that might apply to alkynes
-            if checker.check_reaction("Alcohol protection with silyl ethers", rsmi):
-                if checker.check_fg("Alkyne", reactants_str) and checker.check_fg(
-                    "Silyl protective group", product_str
-                ):
-                    print(
-                        f"Detected silyl protection at depth {depth}: {reactants_str} -> {product_str}"
-                    )
-                    tms_protection = True
-                elif checker.check_fg("Alkyne", reactants_str) and checker.check_fg(
-                    "TMS ether protective group", product_str
-                ):
-                    print(
-                        f"Detected TMS protection at depth {depth}: {reactants_str} -> {product_str}"
-                    )
-                    tms_protection = True
-
-            # Check if any reactant has terminal alkyne and product has TMS group
-            for reactant in reactants:
-                if checker.check_fg("Alkyne", reactant) and not checker.check_fg(
-                    "TMS ether protective group", reactant
-                ):
-                    if checker.check_fg(
-                        "TMS ether protective group", product_str
-                    ) and checker.check_fg("Alkyne", product_str):
-                        print(
-                            f"Detected TMS protection at depth {depth}: {reactant} -> {product_str}"
-                        )
-                        tms_protection = True
-                    elif checker.check_fg(
-                        "Silyl protective group", product_str
-                    ) and checker.check_fg("Alkyne", product_str):
-                        print(
-                            f"Detected silyl protection at depth {depth}: {reactant} -> {product_str}"
-                        )
-                        tms_protection = True
-
-            # Check for alcohol deprotection from silyl ethers
-            if (
-                checker.check_reaction("Alcohol deprotection from silyl ethers", rsmi)
-                or checker.check_reaction("Alcohol deprotection from silyl ethers (double)", rsmi)
-                or checker.check_reaction("Alcohol deprotection from silyl ethers (diol)", rsmi)
-            ):
-                print(f"Detected silyl deprotection reaction at depth {depth}: {rsmi}")
-                tms_deprotection = True
-
-            # Boc deprotection: Boc-amine → amine
-            if (
-                checker.check_reaction("Boc amine deprotection", rsmi)
-                or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
-                or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
-                or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
-            ):
-                print(f"Detected Boc deprotection reaction at depth {depth}: {rsmi}")
-                boc_deprotection = True
-
-            # Check if any reactant has Boc group and product has free amine
-            for reactant in reactants:
-                if checker.check_fg("Boc", reactant):
-                    if checker.check_fg("Primary amine", product_str) or checker.check_fg(
-                        "Secondary amine", product_str
-                    ):
-                        if not checker.check_fg("Boc", product_str):
-                            print(
-                                f"Detected Boc deprotection at depth {depth}: {reactant} -> {product_str}"
-                            )
-                            boc_deprotection = True
-
-            # Boc protection: amine → Boc-amine
-            if (
-                checker.check_reaction("Boc amine protection", rsmi)
-                or checker.check_reaction("Boc amine protection explicit", rsmi)
-                or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
-                or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
-                or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
-                or checker.check_reaction("Boc amine protection of primary amine", rsmi)
-            ):
-                print(f"Detected Boc protection reaction at depth {depth}: {rsmi}")
-                boc_protection = True
-
-            # Check if any reactant has free amine and product has Boc group
-            for reactant in reactants:
-                if (
-                    checker.check_fg("Primary amine", reactant)
-                    or checker.check_fg("Secondary amine", reactant)
-                ) and not checker.check_fg("Boc", reactant):
-                    if checker.check_fg("Boc", product_str):
-                        print(
-                            f"Detected Boc protection at depth {depth}: {reactant} -> {product_str}"
-                        )
-                        boc_protection = True
+            if not has_cyclohexane:
+                print(f"Found molecule without cyclohexane scaffold: {mol_smiles}")
+                all_nodes_have_cyclohexane = False
+            else:
+                print(f"Molecule contains cyclohexane scaffold: {mol_smiles}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Return true if we have either protection or deprotection for either TMS or Boc
-    tms_strategy = tms_protection or tms_deprotection
-    boc_strategy = boc_protection or boc_deprotection
-
-    print(f"TMS strategy detected: {tms_strategy}")
-    print(f"Boc strategy detected: {boc_strategy}")
-
-    # Return true if either TMS or Boc protection strategy is detected
-    return tms_strategy or boc_strategy
+    return all_nodes_have_cyclohexane

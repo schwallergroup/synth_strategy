@@ -2,104 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves oxazole ring formation.
+    This function detects a convergent synthesis strategy where two complex fragments are joined late in the synthesis.
     """
-    oxazole_formation_detected = False
+    found_pattern = False
 
-    def dfs_traverse(node):
-        nonlocal oxazole_formation_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal found_pattern
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (low depth)
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check if oxazole is in product
-                if checker.check_ring("oxazole", product):
-                    print(f"Found oxazole in product: {product}")
+                # Check for complex fragment joining
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
+                product_mol = Chem.MolFromSmiles(product)
 
-                    # Check if oxazole is not in any reactant
-                    reactant_has_oxazole = False
-                    for reactant in reactants:
-                        if checker.check_ring("oxazole", reactant):
-                            print(f"Found oxazole in reactant: {reactant}")
-                            reactant_has_oxazole = True
-                            break
+                if product_mol and len(reactant_mols) >= 2:
+                    # Count complex fragments (>15 heavy atoms)
+                    complex_fragments = sum(
+                        1 for r in reactant_mols if r and Descriptors.HeavyAtomCount(r) > 15
+                    )
 
-                    if not reactant_has_oxazole:
-                        # Check if this is a known oxazole formation reaction
-                        if (
-                            checker.check_reaction("benzoxazole formation from aldehyde", rsmi)
-                            or checker.check_reaction(
-                                "benzoxazole formation from acyl halide", rsmi
-                            )
-                            or checker.check_reaction(
-                                "benzoxazole formation from ester/carboxylic acid", rsmi
-                            )
-                            or checker.check_reaction(
-                                "benzoxazole formation (intramolecular)", rsmi
-                            )
-                        ):
-                            print(f"Oxazole formation reaction detected: {rsmi}")
-                            oxazole_formation_detected = True
-                        else:
-                            # Generic check for oxazole formation
-                            print(f"Potential oxazole formation detected: {rsmi}")
-                            oxazole_formation_detected = True
+                    # Check if product is significantly more complex than individual reactants
+                    product_complexity = Descriptors.HeavyAtomCount(product_mol)
+                    max_reactant_complexity = max(
+                        [Descriptors.HeavyAtomCount(r) for r in reactant_mols if r], default=0
+                    )
+
+                    if (
+                        complex_fragments >= 2
+                        and product_complexity > max_reactant_complexity * 1.3
+                    ):
+                        print(
+                            "Found convergent synthesis with late-stage joining of complex fragments"
+                        )
+                        found_pattern = True
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    print(f"Oxazole formation detected: {oxazole_formation_detected}")
-    return oxazole_formation_detected
+    return found_pattern

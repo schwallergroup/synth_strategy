@@ -2,79 +2,95 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves early TMS protection
-    that is maintained through multiple steps of the synthesis.
+    This function detects late-stage C-N bond formations including reductive amination
+    and aryl-N coupling.
     """
-    tms_pattern = Chem.MolFromSmarts("[#6][Si]([#6])([#6])[#6]")
-    tms_reactions = []
-    tms_depth = -1
-    max_depth = -1
+    # Track C-N bond formations
+    reductive_amination = False
+    aryl_n_coupling = False
+    late_stage_cn_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal tms_reactions, tms_depth, max_depth
+    # SMARTS patterns
+    carbonyl_pattern = Chem.MolFromSmarts("[#6]=O")
+    amine_pattern = Chem.MolFromSmarts("[#7;!$(N=*);!$(N#*)]")
+    aryl_pattern = Chem.MolFromSmarts("c")
 
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal reductive_amination, aryl_n_coupling, late_stage_cn_formation
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0]
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if TMS is being introduced in this reaction
-            if (
-                not any(
-                    Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(tms_pattern)
-                    for r in reactants
-                )
-                and Chem.MolFromSmiles(product)
-                and Chem.MolFromSmiles(product).HasSubstructMatch(tms_pattern)
-            ):
-                tms_reactions.append(depth)
-                tms_depth = depth
-                print(f"TMS introduction detected at depth {depth}")
+            reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-            # Check if TMS is maintained in this reaction
-            elif (
-                any(
-                    Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(tms_pattern)
-                    for r in reactants
-                )
-                and Chem.MolFromSmiles(product)
-                and Chem.MolFromSmiles(product).HasSubstructMatch(tms_pattern)
-            ):
-                tms_reactions.append(depth)
-                print(f"TMS maintained at depth {depth}")
+            if reactants_mol and product_mol:
+                # Check for reductive amination (carbonyl + amine → amine)
+                if (
+                    reactants_mol.HasSubstructMatch(carbonyl_pattern)
+                    and reactants_mol.HasSubstructMatch(amine_pattern)
+                    and product_mol.HasSubstructMatch(amine_pattern)
+                    and not product_mol.HasSubstructMatch(carbonyl_pattern)
+                ):
+                    reductive_amination = True
+                    # Check if this is a late-stage reaction (depth 0 or 1)
+                    if node["metadata"].get("depth", 0) <= 1:
+                        late_stage_cn_formation = True
+                        print("Detected late-stage reductive amination")
 
+                # Check for aryl-N coupling
+                if (
+                    reactants_mol.HasSubstructMatch(aryl_pattern)
+                    and reactants_mol.HasSubstructMatch(amine_pattern)
+                    and product_mol.HasSubstructMatch(aryl_pattern)
+                    and product_mol.HasSubstructMatch(amine_pattern)
+                ):
+                    # This is a simplistic check - in a real implementation,
+                    # we would need to compare atom mappings to confirm new C-N bond
+                    aryl_n_coupling = True
+                    # Check if this is a late-stage reaction (depth 0 or 1)
+                    if node["metadata"].get("depth", 0) <= 1:
+                        late_stage_cn_formation = True
+                        print("Detected late-stage aryl-N coupling")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if TMS was introduced early and maintained through multiple steps
-    if tms_depth >= 0 and tms_depth >= max_depth - 1 and len(tms_reactions) >= 2:
-        print(
-            f"TMS protection strategy detected: introduced at depth {tms_depth} and maintained through {len(tms_reactions)} reactions"
-        )
-        return True
-    return False
+    # Strategy is present if we have late-stage C-N bond formation
+    strategy_present = late_stage_cn_formation and (reductive_amination or aryl_n_coupling)
+
+    if strategy_present:
+        print("Late-stage C-N bond formation strategy detected")
+
+    return strategy_present

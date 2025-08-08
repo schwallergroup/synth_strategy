@@ -2,159 +2,165 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving nitro reduction.
-    Looks for conversion of aromatic nitro group to amine.
+    This function detects a convergent synthesis strategy where two complex fragments
+    are joined in the final step.
     """
-    has_nitro_reduction = False
+    is_convergent = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_nitro_reduction
+    # Find all synthesized intermediates in the route
+    synthesized_intermediates = set()
 
-        if node["type"] == "reaction":
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+    def collect_intermediates(node):
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            # Store both the original SMILES and a canonicalized version without atom mapping
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                synthesized_intermediates.add(node["smiles"])
+                # Also add canonicalized SMILES without atom mapping
+                canonical_smiles = Chem.MolToSmiles(mol)
+                synthesized_intermediates.add(canonical_smiles)
+        for child in node.get("children", []):
+            collect_intermediates(child)
 
-                # Check if this is a nitro reduction reaction
-                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
-                    print(f"Found nitro reduction reaction at depth {depth}")
-                    has_nitro_reduction = True
-                else:
-                    # Alternative check: look for nitro groups in reactants and amines in product
-                    reactant_with_nitro = None
-                    for r in reactants_smiles:
-                        if checker.check_fg("Nitro group", r):
-                            reactant_with_nitro = r
-                            break
+    collect_intermediates(route)
+    print(f"Found {len(synthesized_intermediates)} synthesized intermediate entries in the route")
 
-                    if reactant_with_nitro and checker.check_fg("Primary amine", product_smiles):
-                        # Check if the nitro group is on an aromatic ring
-                        reactant_mol = Chem.MolFromSmiles(reactant_with_nitro)
-                        product_mol = Chem.MolFromSmiles(product_smiles)
+    # Find the final reaction (the first reaction node in retrosynthetic traversal)
+    final_reaction = None
 
-                        if reactant_mol and product_mol:
-                            # Method 1: Check using atom indices
-                            try:
-                                nitro_indices = (
-                                    checker.get_fg_atom_indices("Nitro group", reactant_with_nitro)
-                                    or []
+    def find_final_reaction(node):
+        nonlocal final_reaction
+        if node["type"] == "reaction" and final_reaction is None:
+            final_reaction = node
+        for child in node.get("children", []):
+            find_final_reaction(child)
+
+    find_final_reaction(route)
+
+    if final_reaction and "rsmi" in final_reaction.get("metadata", {}):
+        rsmi = final_reaction["metadata"]["rsmi"]
+        print(f"Analyzing final reaction: {rsmi}")
+
+        reactants = rsmi.split(">")[0].split(".")
+        product = rsmi.split(">")[-1]
+
+        print(f"Found {len(reactants)} reactants")
+
+        # If we have at least 2 reactants in the final step
+        if len(reactants) >= 2:
+            # Check if both reactants are complex (not simple reagents)
+            complex_synthesized_reactants = 0
+
+            # Check each reactant in the final step
+            for reactant in reactants:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol:
+                    # Get canonicalized SMILES without atom mapping
+                    canonical_reactant = Chem.MolToSmiles(mol)
+                    # Also create a version with atom mapping removed
+                    mol_no_mapping = Chem.MolFromSmiles(reactant)
+                    for atom in mol_no_mapping.GetAtoms():
+                        atom.SetAtomMapNum(0)
+                    unmapped_reactant = Chem.MolToSmiles(mol_no_mapping)
+
+                    # Define complexity: more than 7 atoms or contains a ring
+                    atom_count = mol.GetNumAtoms()
+                    ring_info = mol.GetRingInfo()
+                    has_ring = ring_info.NumRings() > 0
+
+                    print(f"Reactant: {reactant}")
+                    print(f"Canonical: {canonical_reactant}")
+                    print(f"Unmapped: {unmapped_reactant}")
+                    print(f"Atoms: {atom_count}, Has ring: {has_ring}")
+
+                    # Check if this reactant is a synthesized intermediate
+                    # by checking all possible SMILES representations
+                    is_intermediate = False
+
+                    # Check if this reactant is a child of the final reaction
+                    for child in final_reaction.get("children", []):
+                        if child["type"] == "mol" and not child.get("in_stock", False):
+                            child_mol = Chem.MolFromSmiles(child["smiles"])
+                            if child_mol:
+                                child_canonical = Chem.MolToSmiles(child_mol)
+                                print(
+                                    f"Comparing with child: {child['smiles']} (canonical: {child_canonical})"
                                 )
 
-                                for atom_indices_group in nitro_indices:
-                                    for atom_indices in atom_indices_group:
-                                        # Check if we have valid atom indices
-                                        if (
-                                            atom_indices
-                                            and isinstance(atom_indices, tuple)
-                                            and len(atom_indices) > 0
-                                        ):
-                                            # Get the atom attached to the nitro group
-                                            try:
-                                                n_atom = reactant_mol.GetAtomWithIdx(
-                                                    atom_indices[0]
-                                                )
-                                                for neighbor in n_atom.GetNeighbors():
-                                                    if neighbor.GetIsAromatic():
-                                                        print(
-                                                            f"Found aromatic nitro reduction at depth {depth}"
-                                                        )
-                                                        has_nitro_reduction = True
-                                                        break
-                                            except Exception as e:
-                                                print(f"Error processing atom indices: {e}")
-                            except Exception as e:
-                                print(f"Error with atom indices approach: {e}")
+                                # Try to match with the child's SMILES
+                                if (
+                                    reactant == child["smiles"]
+                                    or canonical_reactant == child["smiles"]
+                                    or unmapped_reactant == child["smiles"]
+                                    or reactant == child_canonical
+                                    or canonical_reactant == child_canonical
+                                    or unmapped_reactant == child_canonical
+                                ):
+                                    is_intermediate = True
+                                    print(f"Match found with child node!")
+                                    break
 
-                            # Method 2: Direct check for aromatic nitro groups
-                            if not has_nitro_reduction:
-                                for atom in reactant_mol.GetAtoms():
-                                    if atom.GetIsAromatic():
-                                        for neighbor in atom.GetNeighbors():
-                                            if (
-                                                neighbor.GetSymbol() == "N"
-                                                and neighbor.GetIdx()
-                                                in [
-                                                    a.GetIdx()
-                                                    for a in reactant_mol.GetAtoms()
-                                                    if a.GetSymbol() == "N"
-                                                ]
-                                            ):
-                                                # Check if this nitrogen is part of a nitro group
-                                                oxygen_count = sum(
-                                                    1
-                                                    for nn in neighbor.GetNeighbors()
-                                                    if nn.GetSymbol() == "O"
-                                                )
-                                                if (
-                                                    oxygen_count >= 2
-                                                ):  # Nitro group typically has 2 oxygen atoms
-                                                    print(
-                                                        f"Found aromatic nitro reduction at depth {depth} (direct check)"
-                                                    )
-                                                    has_nitro_reduction = True
-                                                    break
-                                        if has_nitro_reduction:
-                                            break
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                    # If not found in direct children, check all synthesized intermediates
+                    if not is_intermediate:
+                        if (
+                            reactant in synthesized_intermediates
+                            or canonical_reactant in synthesized_intermediates
+                            or unmapped_reactant in synthesized_intermediates
+                        ):
+                            is_intermediate = True
+                            print(f"Match found in synthesized intermediates!")
 
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+                    print(f"Is synthesized intermediate: {is_intermediate}")
 
-    # Start traversal
-    dfs_traverse(route)
+                    # Count as complex synthesized reactant if it meets criteria
+                    if (atom_count > 7 or has_ring) and is_intermediate:
+                        complex_synthesized_reactants += 1
+                        print(f"Found complex synthesized reactant: {reactant}")
+                    # If it's complex but not found as synthesized, it might still be synthesized
+                    # but with different SMILES representation - check children directly
+                    elif atom_count > 7 or has_ring:
+                        # For complex reactants, assume they're synthesized if they're not explicitly marked as in_stock
+                        for child in final_reaction.get("children", []):
+                            if child["type"] == "mol":
+                                child_mol = Chem.MolFromSmiles(child["smiles"])
+                                if child_mol and not child.get("in_stock", True):
+                                    # Try structure matching instead of just SMILES comparison
+                                    if mol.GetNumAtoms() == child_mol.GetNumAtoms():
+                                        print(
+                                            f"Complex reactant likely matches a synthesized intermediate"
+                                        )
+                                        complex_synthesized_reactants += 1
+                                        print(f"Found complex synthesized reactant: {reactant}")
+                                        break
 
-    # Return True if nitro reduction is found
-    return has_nitro_reduction
+            print(f"Complex synthesized reactants: {complex_synthesized_reactants}")
+            if complex_synthesized_reactants >= 2:
+                print("Convergent synthesis detected: final step joins two complex fragments")
+                is_convergent = True
+
+    return is_convergent

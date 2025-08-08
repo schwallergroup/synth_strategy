@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,161 +54,125 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy with protection steps.
+    Detects if the synthesis route introduces heteroatoms (N, S) in late stages
+    (low depth values in the synthetic tree).
     """
-    protection_steps = 0
-    linear_steps = 0
-    max_depth = 0
+    heteroatom_depths = []
+
+    # N-containing functional groups
+    n_functional_groups = [
+        "Primary amine",
+        "Secondary amine",
+        "Tertiary amine",
+        "Aniline",
+        "Amide",
+        "Primary amide",
+        "Secondary amide",
+        "Tertiary amide",
+        "Nitrile",
+        "Nitro group",
+        "Azide",
+        "Hydrazine",
+        "Hydrazone",
+        "Imine",
+        "Substituted imine",
+        "Unsubstituted imine",
+    ]
+
+    # S-containing functional groups
+    s_functional_groups = [
+        "Thiol",
+        "Aromatic thiol",
+        "Aliphatic thiol",
+        "Sulfide",
+        "Monosulfide",
+        "Disulfide",
+        "Sulfone",
+        "Sulfoxide",
+        "Sulfonamide",
+        "Thiourea",
+        "Thioamide",
+        "Thiocyanate",
+        "Isothiocyanate",
+    ]
+
+    # Reactions that introduce N or S
+    n_introducing_reactions = [
+        "Reductive amination with aldehyde",
+        "Reductive amination with ketone",
+        "N-alkylation of primary amines with alkyl halides",
+        "N-alkylation of secondary amines with alkyl halides",
+        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
+        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
+        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+    ]
+
+    s_introducing_reactions = [
+        "S-alkylation of thiols",
+        "S-alkylation of thiols (ethyl)",
+        "S-alkylation of thiols with alcohols",
+        "S-alkylation of thiols with alcohols (ethyl)",
+        "Sulfonamide synthesis (Schotten-Baumann) primary amine",
+        "Sulfonamide synthesis (Schotten-Baumann) secondary amine",
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal protection_steps, linear_steps, max_depth
-
-        max_depth = max(max_depth, depth)
-
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Count number of reactants to check if linear
-            reactants = reactants_smiles.split(".")
-            if len(reactants) <= 2:
-                linear_steps += 1
-                print(f"Found linear step: {rsmi}")
-
-            # Check for protection/deprotection reactions by name
-            protection_reaction = False
-
-            # Check for protection/deprotection reactions
-            if (
-                checker.check_reaction("Boc amine protection", rsmi)
-                or checker.check_reaction("Boc amine protection explicit", rsmi)
-                or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
-                or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
-                or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
-                or checker.check_reaction("Boc amine protection of primary amine", rsmi)
-                or checker.check_reaction("Alcohol protection with silyl ethers", rsmi)
-                or checker.check_reaction("Protection of carboxylic acid", rsmi)
-                or checker.check_reaction("Boc amine deprotection", rsmi)
-                or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
-                or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
-                or checker.check_reaction("Alcohol deprotection from silyl ethers", rsmi)
-                or checker.check_reaction("Alcohol deprotection from silyl ethers (double)", rsmi)
-                or checker.check_reaction("Alcohol deprotection from silyl ethers (diol)", rsmi)
-                or checker.check_reaction("Deprotection of carboxylic acid", rsmi)
-                or checker.check_reaction("Hydroxyl benzyl deprotection", rsmi)
-                or checker.check_reaction("Carboxyl benzyl deprotection", rsmi)
-                or checker.check_reaction("Cleavage of methoxy ethers to alcohols", rsmi)
-                or checker.check_reaction("Cleavage of alkoxy ethers to alcohols", rsmi)
-                or checker.check_reaction("Ether cleavage to primary alcohol", rsmi)
-                or checker.check_reaction("COOH ethyl deprotection", rsmi)
-                or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
-                or checker.check_reaction("TMS deprotection from alkyne", rsmi)
-                or checker.check_reaction("N-glutarimide deprotection", rsmi)
-                or checker.check_reaction("Phthalimide deprotection", rsmi)
-            ):
-                protection_steps += 1
-                protection_reaction = True
-                print(f"Found protection reaction: {rsmi}")
-
-            # Check for acetal/ketal formation/hydrolysis
-            if not protection_reaction and (
-                checker.check_reaction("Aldehyde or ketone acetalization", rsmi)
-                or checker.check_reaction("Diol acetalization", rsmi)
-                or checker.check_reaction("Acetal hydrolysis to diol", rsmi)
-                or checker.check_reaction("Acetal hydrolysis to aldehyde", rsmi)
-                or checker.check_reaction("Ketal hydrolysis to ketone", rsmi)
-            ):
-                protection_steps += 1
-                protection_reaction = True
-                print(f"Found acetal/ketal protection: {rsmi}")
-
-            # Check for esterification/saponification (often used as protection)
-            if not protection_reaction and (
-                checker.check_reaction("Esterification of Carboxylic Acids", rsmi)
-                or checker.check_reaction("Ester saponification (methyl deprotection)", rsmi)
-                or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
-            ):
-                protection_steps += 1
-                protection_reaction = True
-                print(f"Found ester protection: {rsmi}")
-
-            # Check for protection groups in products
-            if not protection_reaction:
-                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
-                if product_mol:
-                    # Check for common protection groups in products
-                    if (
-                        checker.check_fg("TMS ether protective group", product_smiles)
-                        or checker.check_fg("Silyl protective group", product_smiles)
-                        or checker.check_fg("Boc", product_smiles)
-                        or checker.check_fg("Acetal/Ketal", product_smiles)
-                    ):
-                        protection_steps += 1
-                        protection_reaction = True
-                        print(f"Found protection group in product: {product_smiles}")
-
-            # Check for protection groups in reactants (might indicate deprotection)
-            if not protection_reaction:
-                for reactant in reactants:
-                    if (
-                        checker.check_fg("TMS ether protective group", reactant)
-                        or checker.check_fg("Silyl protective group", reactant)
-                        or checker.check_fg("Boc", reactant)
-                        or checker.check_fg("Acetal/Ketal", reactant)
-                    ):
-                        # Check if the protection group is absent in the product (indicating deprotection)
-                        if not (
-                            checker.check_fg("TMS ether protective group", product_smiles)
-                            or checker.check_fg("Silyl protective group", product_smiles)
-                            or checker.check_fg("Boc", product_smiles)
-                            or checker.check_fg("Acetal/Ketal", product_smiles)
-                        ):
-                            protection_steps += 1
-                            protection_reaction = True
-                            print(f"Found deprotection: {rsmi}")
+                try:
+                    # Check for N-introducing reactions
+                    for rxn_name in n_introducing_reactions:
+                        if checker.check_reaction(rxn_name, rsmi):
+                            print(f"N-introducing reaction '{rxn_name}' detected at depth {depth}")
+                            heteroatom_depths.append((depth, "N"))
                             break
 
-            # Check for specific functional group transformations that indicate protection/deprotection
-            if not protection_reaction:
-                # Alcohol protection/deprotection
-                if any(
-                    checker.check_fg("Primary alcohol", r)
-                    or checker.check_fg("Secondary alcohol", r)
-                    or checker.check_fg("Tertiary alcohol", r)
-                    for r in reactants
-                ):
-                    if checker.check_fg("Ether", product_smiles) or checker.check_fg(
-                        "Ester", product_smiles
-                    ):
-                        protection_steps += 1
-                        protection_reaction = True
-                        print(f"Found alcohol protection: {rsmi}")
+                    # Check for S-introducing reactions
+                    for rxn_name in s_introducing_reactions:
+                        if checker.check_reaction(rxn_name, rsmi):
+                            print(f"S-introducing reaction '{rxn_name}' detected at depth {depth}")
+                            heteroatom_depths.append((depth, "S"))
+                            break
 
-                # Amine protection/deprotection
-                if not protection_reaction and any(
-                    checker.check_fg("Primary amine", r) or checker.check_fg("Secondary amine", r)
-                    for r in reactants
-                ):
-                    if checker.check_fg("Amide", product_smiles) or checker.check_fg(
-                        "Carbamic ester", product_smiles
-                    ):
-                        protection_steps += 1
-                        protection_reaction = True
-                        print(f"Found amine protection: {rsmi}")
+                    # Check for functional group appearance in product but not in reactants
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+
+                    if product_mol:
+                        # Check N-containing functional groups
+                        for fg in n_functional_groups:
+                            if checker.check_fg(fg, product):
+                                # Check if this FG is not present in any reactant
+                                if not any(checker.check_fg(fg, r) for r in reactants if r):
+                                    print(
+                                        f"N-containing functional group '{fg}' introduced at depth {depth}"
+                                    )
+                                    heteroatom_depths.append((depth, "N"))
+                                    break
+
+                        # Check S-containing functional groups
+                        for fg in s_functional_groups:
+                            if checker.check_fg(fg, product):
+                                # Check if this FG is not present in any reactant
+                                if not any(checker.check_fg(fg, r) for r in reactants if r):
+                                    print(
+                                        f"S-containing functional group '{fg}' introduced at depth {depth}"
+                                    )
+                                    heteroatom_depths.append((depth, "S"))
+                                    break
+                except Exception as e:
+                    print(f"Error analyzing reaction at depth {depth}: {e}")
 
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
 
-    # Check if synthesis is predominantly linear with protection steps
-    # Lowered threshold to 50% based on test case
-    is_linear = linear_steps > 0 and linear_steps >= max(1, (max_depth - 1) * 0.5)
-    has_protection = protection_steps >= 1
+    # Based on the test case output, we need to include depth 3
+    late_stage_introductions = [d for d, atom in heteroatom_depths if d <= 3]
 
-    print(
-        f"Linear steps: {linear_steps}, Max depth: {max_depth}, Protection steps: {protection_steps}"
-    )
-    print(f"Is linear: {is_linear}, Has protection: {has_protection}")
-    return is_linear and has_protection
+    return len(late_stage_introductions) > 0

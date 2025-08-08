@@ -2,75 +2,110 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects aryl C-N bond formation (likely Buchwald-Hartwig type coupling)
-    between an aryl halide and an amine.
+    Detects a synthetic strategy where a piperazine is introduced via SNAr in the late stage of synthesis.
+    Looks for:
+    1. SNAr reaction (halogen displacement by nitrogen nucleophile)
+    2. Piperazine as the nucleophile
+    3. Reaction occurring in the late stage (low depth)
+    4. Activated aromatic ring (with electron-withdrawing groups)
     """
-    has_aryl_cn_coupling = False
+    # Track if we found the SNAr with piperazine
+    found_snar_with_piperazine = False
 
-    def dfs_traverse(node):
-        nonlocal has_aryl_cn_coupling
+    def dfs_traverse(node, depth=0):
+        nonlocal found_snar_with_piperazine
 
-        if node.get("type") == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and depth <= 2:  # Focus on late-stage reactions (low depth)
+            # Extract reactants and product
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for aryl halide
-                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,Cl,I,F]")
+                # Check if this is potentially an SNAr reaction
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-                # Check for amine
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                # Look for piperazine in reactants
+                piperazine_pattern = Chem.MolFromSmarts(
+                    "[N]1CCN([C])CC1"
+                )  # Methylpiperazine pattern
 
-                # Check for aryl-N bond in product
-                aryl_n_pattern = Chem.MolFromSmarts("[c]-[NH]")
+                has_piperazine = False
+                for reactant in reactants_smiles:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(piperazine_pattern):
+                        has_piperazine = True
+                        break
 
-                # Check if reactants contain aryl halide and amine, and product contains aryl-N bond
-                has_aryl_halide = any(
-                    Chem.MolFromSmiles(r)
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(aryl_halide_pattern)
-                    for r in reactants
-                    if Chem.MolFromSmiles(r)
-                )
-                has_amine = any(
-                    Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(amine_pattern)
-                    for r in reactants
-                    if Chem.MolFromSmiles(r)
-                )
+                # Look for halogen in other reactant (potential leaving group)
+                halogen_pattern = Chem.MolFromSmarts("c[F,Cl,Br,I]")
 
-                product_mol = Chem.MolFromSmiles(product)
-                has_aryl_n = product_mol and product_mol.HasSubstructMatch(aryl_n_pattern)
+                has_aryl_halide = False
+                for reactant in reactants_smiles:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(halogen_pattern):
+                        has_aryl_halide = True
+                        break
 
-                if has_aryl_halide and has_amine and has_aryl_n:
-                    has_aryl_cn_coupling = True
-                    print("Found aryl C-N bond formation")
+                # Check if product has piperazine attached to aromatic ring
+                piperazine_on_aryl_pattern = Chem.MolFromSmarts("c[N]1CCN([C])CC1")
 
-        # Traverse children
+                if (
+                    has_piperazine
+                    and has_aryl_halide
+                    and product_mol
+                    and product_mol.HasSubstructMatch(piperazine_on_aryl_pattern)
+                ):
+                    print(f"Found SNAr with piperazine at depth {depth}")
+
+                    # Check for activating groups (nitro, fluoro) on the aromatic ring
+                    nitro_pattern = Chem.MolFromSmarts("c[N+](=O)[O-]")
+                    fluoro_pattern = Chem.MolFromSmarts("cF")
+
+                    has_activating_groups = False
+                    for reactant in reactants_smiles:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if reactant_mol.HasSubstructMatch(
+                                nitro_pattern
+                            ) or reactant_mol.HasSubstructMatch(fluoro_pattern):
+                                has_activating_groups = True
+                                break
+
+                    if has_activating_groups:
+                        print("Found activating groups for SNAr")
+                        found_snar_with_piperazine = True
+
+        # Continue traversing the tree
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return has_aryl_cn_coupling
+    return found_snar_with_piperazine

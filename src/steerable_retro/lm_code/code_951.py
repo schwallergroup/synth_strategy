@@ -2,33 +2,39 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes N-methylation of a sulfonamide.
+    This function detects the use of Boc protection throughout synthesis
+    with removal in the final steps.
     """
-    methylation_found = False
+    boc_present = False
+    boc_removed = False
 
-    def dfs_traverse(node):
-        nonlocal methylation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal boc_present, boc_removed
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
@@ -36,33 +42,37 @@ def main(route):
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for secondary sulfonamide in reactants
-                secondary_sulfonamide_found = False
+                # Boc group SMARTS pattern
+                boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)")
+
+                # Check for Boc in reactants
                 for reactant in reactants:
                     reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        secondary_sulfonamide_pattern = Chem.MolFromSmarts(
-                            "[#6]-[#7H]-[#16](=[#8])(=[#8])-[#6]"
-                        )
-                        if reactant_mol.HasSubstructMatch(secondary_sulfonamide_pattern):
-                            secondary_sulfonamide_found = True
-                            break
+                    if reactant_mol and reactant_mol.HasSubstructMatch(boc_pattern):
+                        boc_present = True
 
-                # Check for N-methylated sulfonamide in product
+                # Check for Boc removal (present in reactant but not in product)
+                reactant_has_boc = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(boc_pattern):
+                        reactant_has_boc = True
+
                 product_mol = Chem.MolFromSmiles(product)
-                if product_mol and secondary_sulfonamide_found:
-                    tertiary_sulfonamide_pattern = Chem.MolFromSmarts(
-                        "[#6]-[#7]([#6])-[#16](=[#8])(=[#8])-[#6]"
-                    )
-                    if product_mol.HasSubstructMatch(tertiary_sulfonamide_pattern):
-                        print("Found N-methylation of sulfonamide")
-                        methylation_found = True
+                if (
+                    reactant_has_boc
+                    and product_mol
+                    and not product_mol.HasSubstructMatch(boc_pattern)
+                    and depth <= 1
+                ):
+                    boc_removed = True
+                    print(f"Detected Boc removal at depth {depth}: {rsmi}")
 
-        # Continue traversing
+        # Traverse children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return methylation_found
+    return boc_present and boc_removed

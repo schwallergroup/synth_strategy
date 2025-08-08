@@ -2,75 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves formation of a nitrogen heterocycle.
+    This function detects a Boc protection-deprotection sequence in the synthesis.
     """
-    heterocycle_formation_found = False
+    boc_protected_found = False
+    deprotection_found = False
 
     def dfs_traverse(node):
-        nonlocal heterocycle_formation_found
+        nonlocal boc_protected_found, deprotection_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for nitrogen heterocycle formation
-            # Patterns for common N-heterocycles
-            pyrimidine_pattern = Chem.MolFromSmarts("c1ncncc1")
-            pyridine_pattern = Chem.MolFromSmarts("c1ncccc1")
-            imidazole_pattern = Chem.MolFromSmarts("c1ncnc1")
+            # Check for Boc group in molecules
+            boc_pattern = Chem.MolFromSmarts("C(=O)OC(C)(C)C")
 
-            product_mol = Chem.MolFromSmiles(product)
+            # Check for deprotection (Boc in reactants but not in product)
+            reactants_have_boc = any(
+                Chem.MolFromSmiles(r).HasSubstructMatch(boc_pattern) for r in reactants if r
+            )
+            product_has_boc = (
+                Chem.MolFromSmiles(product).HasSubstructMatch(boc_pattern) if product else False
+            )
 
-            if product_mol:
-                has_heterocycle = (
-                    product_mol.HasSubstructMatch(pyrimidine_pattern)
-                    or product_mol.HasSubstructMatch(pyridine_pattern)
-                    or product_mol.HasSubstructMatch(imidazole_pattern)
-                )
+            if reactants_have_boc and not product_has_boc:
+                deprotection_found = True
+                print("Boc deprotection detected")
 
-                if has_heterocycle:
-                    # Check if reactants don't have the same heterocycle
-                    heterocycle_in_reactants = False
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and (
-                            reactant_mol.HasSubstructMatch(pyrimidine_pattern)
-                            or reactant_mol.HasSubstructMatch(pyridine_pattern)
-                            or reactant_mol.HasSubstructMatch(imidazole_pattern)
-                        ):
-                            heterocycle_in_reactants = True
-                            break
-
-                    if not heterocycle_in_reactants:
-                        print("Nitrogen heterocycle formation detected")
-                        heterocycle_formation_found = True
+            # Check for protection (Boc in product)
+            if product_has_boc:
+                boc_protected_found = True
+                print("Boc protected intermediate detected")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    return heterocycle_formation_found
+
+    # Return True if both protection and deprotection were found
+    result = boc_protected_found and deprotection_found
+    print(f"Boc protection-deprotection sequence detected: {result}")
+    return result

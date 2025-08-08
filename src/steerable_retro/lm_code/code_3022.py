@@ -2,59 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves an amide formation step.
+    This function detects convergent synthesis approach with multiple fragment couplings.
     """
-    amide_formed = False
+    fragment_coupling_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_formed
+    def dfs_traverse(node):
+        nonlocal fragment_coupling_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                # If reaction has multiple reactants, it's potentially a fragment coupling
+                if len(reactants) >= 2:
+                    # Check if reactants are substantial fragments (not just reagents)
+                    substantial_fragments = 0
+                    for r in reactants:
+                        mol = Chem.MolFromSmiles(r)
+                        if (
+                            mol and mol.GetNumHeavyAtoms() > 6
+                        ):  # Arbitrary threshold for "substantial"
+                            substantial_fragments += 1
 
-            if product_mol:
-                # Check for amide pattern in product
-                amide_pattern = Chem.MolFromSmarts("[#7]-[#6](=[#8])")
+                    if substantial_fragments >= 2:
+                        fragment_coupling_count += 1
+                        print(f"Detected fragment coupling (count: {fragment_coupling_count})")
 
-                if product_mol.HasSubstructMatch(amide_pattern):
-                    # Check if amide was not present in reactants
-                    reactants_have_amide = any(
-                        r and r.HasSubstructMatch(amide_pattern) for r in reactant_mols if r
-                    )
-
-                    if not reactants_have_amide:
-                        amide_formed = True
-                        print(f"Amide formation detected at depth {depth}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
 
-    return amide_formed
+    # Return True if multiple fragment couplings are detected
+    return fragment_coupling_count >= 2

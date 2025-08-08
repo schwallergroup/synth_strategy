@@ -2,64 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear path without convergent steps.
-    A linear synthesis has at least 3 reactions and each reaction has at most one non-starting material reactant.
+    This function detects if the synthetic route involves amide bond formation
+    as a key connection strategy.
     """
-    is_linear = True
-    reaction_count = 0
+    amide_formation = False
 
-    def dfs_traverse(node):
-        nonlocal is_linear, reaction_count
+    def dfs_traverse(node, depth=0):
+        nonlocal amide_formation
 
         if node["type"] == "reaction":
-            reaction_count += 1
-
-            # Check if this reaction has more than one non-starting material reactant
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                reactants = reactants_part.split(".")
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Find the children nodes that correspond to reactants
-                children = node.get("children", [])
+                # Check for amide formation
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    amide_pattern = Chem.MolFromSmarts("[#6](=[#8])[#7]")
+                    if product_mol.HasSubstructMatch(amide_pattern):
+                        # Check if reactants contain carboxylic acid and amine
+                        has_acid = False
+                        has_amine = False
+                        for reactant in reactants:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol:
+                                acid_pattern = Chem.MolFromSmarts("[#6](=[#8])[#8]")
+                                amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
+                                if reactant_mol.HasSubstructMatch(acid_pattern):
+                                    has_acid = True
+                                if reactant_mol.HasSubstructMatch(amine_pattern):
+                                    has_amine = True
 
-                # Count non-starting material reactants
-                complex_reactants = 0
-                for child in children:
-                    if child["type"] == "mol" and not child.get("in_stock", False):
-                        complex_reactants += 1
-
-                if complex_reactants > 1:
-                    is_linear = False
-                    print(f"Convergent step detected: {rsmi}")
+                        if has_acid and has_amine:
+                            print(f"Amide formation detected at depth {depth}")
+                            amide_formation = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
 
-    # A synthesis with at least 3 reactions that is linear
-    return is_linear and reaction_count >= 3
+    print(f"Amide formation strategy: {amide_formation}")
+    return amide_formation

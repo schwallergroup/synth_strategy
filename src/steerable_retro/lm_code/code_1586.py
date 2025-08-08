@@ -2,75 +2,119 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves an early-stage nitration
-    of an aromatic ring.
+    This function detects if the synthesis includes an ester hydrolysis step.
     """
-    # Track if we found nitration in early stages
-    found_early_nitration = False
-    max_depth = 0
+    has_ester_hydrolysis = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_early_nitration, max_depth
+        nonlocal has_ester_hydrolysis
 
-        # Track maximum depth to determine what's "early stage"
-        max_depth = max(max_depth, depth)
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Examining reaction at depth {depth}: {rsmi}")
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+            # Check if this is an ester hydrolysis reaction using the checker function
+            if checker.check_reaction(
+                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+            ):
+                print(f"Ester hydrolysis detected at depth {depth}: {rsmi}")
+                has_ester_hydrolysis = True
+
+            # Alternative check for ester saponification reactions
+            elif checker.check_reaction(
+                "Ester saponification (methyl deprotection)", rsmi
+            ) or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi):
+                print(f"Ester saponification detected at depth {depth}: {rsmi}")
+                has_ester_hydrolysis = True
+
+            # If the specific reaction types weren't detected, try a more general approach
+            else:
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for nitration (addition of nitro group)
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
-                    if product_mol.HasSubstructMatch(nitro_pattern):
-                        # Check if nitro group is new (not in reactants)
-                        nitro_count_product = len(product_mol.GetSubstructMatches(nitro_pattern))
+                # In retrosynthesis, we're looking for carboxylic acid in reactants and ester in product
+                has_carboxylic_acid = any(
+                    checker.check_fg("Carboxylic acid", r) for r in reactants if r
+                )
+                has_alcohol = any(
+                    checker.check_fg("Primary alcohol", r)
+                    or checker.check_fg("Secondary alcohol", r)
+                    or checker.check_fg("Tertiary alcohol", r)
+                    or checker.check_fg("Aromatic alcohol", r)
+                    for r in reactants
+                    if r
+                )
+                has_ester = checker.check_fg("Ester", product)
 
-                        total_nitro_count_reactants = 0
-                        for reactant in reactants:
-                            if "N(=O)(O)" in reactant or "[N+](=[O])[O-]" in reactant:
-                                reactant_mol = Chem.MolFromSmiles(reactant)
-                                if reactant_mol:
-                                    total_nitro_count_reactants += len(
-                                        reactant_mol.GetSubstructMatches(nitro_pattern)
-                                    )
+                print(
+                    f"FG analysis - Carboxylic acid in reactants: {has_carboxylic_acid}, "
+                    f"Alcohol in reactants: {has_alcohol}, Ester in product: {has_ester}"
+                )
 
-                        if nitro_count_product > total_nitro_count_reactants:
-                            print(f"Found nitration at depth {depth}")
-                            # We'll determine if it's "early stage" after traversal
-                            if depth >= 2:  # Assuming depth >= 2 is "early stage"
-                                found_early_nitration = True
+                if has_carboxylic_acid and has_ester:
+                    print(
+                        f"Potential ester formation (reverse of hydrolysis) detected at depth {depth}: {rsmi}"
+                    )
+                    if has_alcohol:
+                        print(f"Alcohol also present in reactants, confirming ester formation")
+                    has_ester_hydrolysis = True
 
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-
-    # Determine if nitration occurred in early stage (upper half of synthesis)
-    return found_early_nitration
+    return has_ester_hydrolysis

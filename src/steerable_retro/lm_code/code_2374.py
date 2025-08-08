@@ -2,77 +2,90 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a nitrile functional group is preserved throughout the synthesis.
+    Detects a convergent synthesis strategy using Friedel-Crafts acylation
+    to combine two complex fragments, followed by ketone reduction.
     """
-    nitrile_present_in_product = False
-    nitrile_preserved = True
+    # Track if we found the key reactions
+    found_friedel_crafts = False
+    found_ketone_reduction = False
 
-    def dfs_traverse(node, is_product=True):
-        nonlocal nitrile_present_in_product, nitrile_preserved
+    def dfs_traverse(node):
+        nonlocal found_friedel_crafts, found_ketone_reduction
 
-        if node["type"] == "mol" and "smiles" in node:
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
-                has_nitrile = mol and mol.HasSubstructMatch(nitrile_pattern)
-
-                if is_product:
-                    nitrile_present_in_product = has_nitrile
-                    print(f"Product {'has' if has_nitrile else 'does not have'} nitrile group")
-            except:
-                pass
-
-        elif node["type"] == "reaction":
+        if node["type"] == "reaction":
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                try:
-                    p_mol = Chem.MolFromSmiles(product)
-                    p_has_nitrile = p_mol and p_mol.HasSubstructMatch(Chem.MolFromSmarts("[C]#[N]"))
+                # Check for Friedel-Crafts acylation
+                if len(reactants) == 2:
+                    acid_chloride_pattern = Chem.MolFromSmarts("[C](=O)[Cl]")
+                    aromatic_pattern = Chem.MolFromSmarts("[c]")
+                    ketone_pattern = Chem.MolFromSmarts("[c][C](=O)[c]")
 
-                    r_has_nitrile = False
-                    for reactant in reactants:
-                        r_mol = Chem.MolFromSmiles(reactant)
-                        if r_mol and r_mol.HasSubstructMatch(Chem.MolFromSmarts("[C]#[N]")):
-                            r_has_nitrile = True
-                            break
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+                    product_mol = Chem.MolFromSmiles(product)
 
-                    # If reactant had nitrile but product doesn't, nitrile wasn't preserved
-                    if r_has_nitrile and not p_has_nitrile:
-                        nitrile_preserved = False
-                        print("Nitrile group was not preserved in a reaction")
-                except:
-                    pass
+                    if (
+                        product_mol
+                        and any(
+                            m and m.HasSubstructMatch(acid_chloride_pattern) for m in reactant_mols
+                        )
+                        and any(m and m.HasSubstructMatch(aromatic_pattern) for m in reactant_mols)
+                        and product_mol.HasSubstructMatch(ketone_pattern)
+                    ):
+                        print("Found Friedel-Crafts acylation")
+                        found_friedel_crafts = True
 
+                # Check for ketone reduction
+                ketone_pattern = Chem.MolFromSmarts("[c][C](=O)[c]")
+                methylene_pattern = Chem.MolFromSmarts("[c][CH2][c]")
+
+                product_mol = Chem.MolFromSmiles(product)
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+
+                # In forward direction, this would be a ketone reduction
+                # In retrosynthetic direction (as shown), this is an oxidation
+                if (
+                    product_mol
+                    and any(m and m.HasSubstructMatch(ketone_pattern) for m in reactant_mols)
+                    and product_mol.HasSubstructMatch(methylene_pattern)
+                ):
+                    print("Found ketone reduction (in forward direction)")
+                    found_ketone_reduction = True
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, False)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    result = nitrile_present_in_product and nitrile_preserved
-    print(f"Nitrile-preserving strategy detected: {result}")
-    return result
+    # Return True if both key reactions are found
+    return found_friedel_crafts and found_ketone_reduction

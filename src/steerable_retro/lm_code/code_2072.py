@@ -2,55 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves incorporation of a sulfonamide group.
+    Detects a synthetic route that includes nitro group reduction to an amine.
     """
-    sulfonamide_incorporated = False
+    has_nitro_reduction = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal sulfonamide_incorporated
+    def dfs_traverse(node):
+        nonlocal has_nitro_reduction
 
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-                product_mol = Chem.MolFromSmiles(product)
+            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                # Check for sulfonamide pattern in reactants
-                sulfonamide_pattern = Chem.MolFromSmarts("[#7]-[S](=[O])(=[O])-[#6]")
+            # Check for nitro reduction
+            nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
+            amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-                # Check if sulfonamide is present in product but not in all reactants
-                if product_mol and product_mol.HasSubstructMatch(sulfonamide_pattern):
-                    for r_mol in reactant_mols:
-                        if r_mol and r_mol.HasSubstructMatch(sulfonamide_pattern):
-                            print(f"Found sulfonamide incorporation at depth {depth}")
-                            sulfonamide_incorporated = True
+            if any(
+                mol.HasSubstructMatch(nitro_pattern) for mol in reactants
+            ) and product.HasSubstructMatch(amine_pattern):
+                print("Found nitro reduction")
+                has_nitro_reduction = True
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return sulfonamide_incorporated
+
+    print(f"Nitro reduction strategy detected: {has_nitro_reduction}")
+    return has_nitro_reduction

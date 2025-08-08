@@ -2,70 +2,105 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes that include N-alkylation with a complex aromatic fragment.
+    This function detects a synthetic strategy where two aromatic fragments
+    are connected via ether bonds using an alkyl chain linker.
     """
-    found_n_alkylation = False
+    # Track if we found the pattern
+    found_pattern = False
+    # Track the presence of key features
+    has_ether_linkage = False
+    has_alkyl_chain = False
+    aromatic_fragments = 0
 
     def dfs_traverse(node):
-        nonlocal found_n_alkylation
+        nonlocal found_pattern, has_ether_linkage, has_alkyl_chain, aromatic_fragments
 
-        if node["type"] == "reaction":
+        if node["type"] == "mol":
+            # Check final product for the desired pattern
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for aromatic-O-alkyl-O-aromatic pattern
+                aromatic_ether_pattern = Chem.MolFromSmarts(
+                    "c-[#8]-[#6]-[#6]-[#6]-[#6]-[#6]-[#8]-c"
+                )
+                if mol.HasSubstructMatch(aromatic_ether_pattern):
+                    has_ether_linkage = True
+                    has_alkyl_chain = True
+                    aromatic_fragments = 2
+                    found_pattern = True
+                    print(
+                        f"Found aromatic-O-alkyl-O-aromatic pattern in molecule: {node['smiles']}"
+                    )
+
+        elif node["type"] == "reaction":
             # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-            # Check for N-alkylation
-            nh_pattern = Chem.MolFromSmarts("[nH]")
-            n_alkyl_pattern = Chem.MolFromSmarts("n[CH2]c")
-            aromatic_pattern = Chem.MolFromSmarts("c1ccc2ccccc2c1")  # Naphthalene or similar
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            reactant_mols = [
-                Chem.MolFromSmiles(r) for r in reactants_smiles if Chem.MolFromSmiles(r)
-            ]
+            # Check for ether formation reactions
+            if any("O" in r for r in reactants) and "O" in product:
+                prod_mol = Chem.MolFromSmiles(product)
+                if prod_mol and prod_mol.HasSubstructMatch(Chem.MolFromSmarts("c-[#8]-[#6]")):
+                    has_ether_linkage = True
+                    print(f"Found ether formation reaction: {rsmi}")
 
-            if product_mol and product_mol.HasSubstructMatch(n_alkyl_pattern):
-                # Check if any reactant has NH and another has aromatic fragment
-                has_nh = any(
-                    r and r.HasSubstructMatch(nh_pattern) for r in reactant_mols if r is not None
-                )
-                has_aromatic = any(
-                    r and r.HasSubstructMatch(aromatic_pattern)
-                    for r in reactant_mols
-                    if r is not None
-                )
+                # Check for alkyl chain
+                if any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(
+                        Chem.MolFromSmarts("[#6]-[#6]-[#6]-[#6]-[#6]")
+                    )
+                    for r in reactants
+                    if Chem.MolFromSmiles(r)
+                ):
+                    has_alkyl_chain = True
+                    print(f"Found alkyl chain in reaction: {rsmi}")
 
-                if has_nh and has_aromatic:
-                    print("Found N-alkylation with complex aromatic fragment")
-                    found_n_alkylation = True
+                # Count aromatic fragments
+                for r in reactants:
+                    r_mol = Chem.MolFromSmiles(r)
+                    if r_mol and r_mol.HasSubstructMatch(Chem.MolFromSmarts("c1ccccc1")):
+                        aromatic_fragments += 1
+                        print(f"Found aromatic fragment: {r}")
 
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    return found_n_alkylation
+    # Check if we have all the required elements
+    if has_ether_linkage and has_alkyl_chain and aromatic_fragments >= 2:
+        found_pattern = True
+
+    return found_pattern

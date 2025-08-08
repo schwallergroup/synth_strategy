@@ -2,75 +2,152 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving sequential SNAr reactions on a heterocyclic core.
-    It looks for multiple reactions where a halogen on a heterocycle is replaced by O or N.
+    Detects if the synthesis route uses tosylation for alcohol activation.
     """
-    snar_reactions = 0
+    tosylation_detected = False
+    tosylated_molecules = set()  # Track molecules that have been tosylated
 
-    def dfs_traverse(node):
-        nonlocal snar_reactions
+    def dfs_traverse(node, depth=0):
+        nonlocal tosylation_detected
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for SNAr reaction pattern
-            # Look for heterocycle with halogen in reactants and O/N connection in product
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                # Check if this is a tosylation reaction (formation of sulfonic ester)
+                if checker.check_reaction("Formation of Sulfonic Esters", rsmi):
+                    # Check for alcohol in reactants
+                    alcohol_present = False
+                    for reactant in reactants:
+                        if (
+                            checker.check_fg("Primary alcohol", reactant)
+                            or checker.check_fg("Secondary alcohol", reactant)
+                            or checker.check_fg("Tertiary alcohol", reactant)
+                        ):
+                            alcohol_present = True
+                            break
 
-            if product_mol:
-                # Pattern for heterocycle with halogen (Cl, F, Br, I)
-                heterocycle_hal_pattern = Chem.MolFromSmarts(
-                    "[c,n]1[c,n][c,n][c,n][c,n]1[Cl,F,Br,I]"
-                )
+                    # Check for sulfonate (tosylate) in product
+                    sulfonate_in_product = checker.check_fg("Sulfonate", product)
 
-                # Patterns for O/N connections in heterocycles
-                o_connection_pattern = Chem.MolFromSmarts("[c,n]1[c,n][c,n][c,n][c,n]1[O]")
-                n_connection_pattern = Chem.MolFromSmarts("[c,n]1[c,n][c,n][c,n][c,n]1[N]")
+                    if alcohol_present and sulfonate_in_product:
+                        print(f"Found tosylation activation at depth: {depth}")
+                        tosylation_detected = True
+                        tosylated_molecules.add(product)
 
-                # Check if any reactant has the halogen pattern
-                has_hal_reactant = any(
-                    mol and mol.HasSubstructMatch(heterocycle_hal_pattern) for mol in reactant_mols
-                )
+                # Alternative check: look for tosylation using sulfonyl halides
+                elif not tosylation_detected:
+                    # Check for alcohol in reactants
+                    alcohol_reactant = None
+                    for reactant in reactants:
+                        if (
+                            checker.check_fg("Primary alcohol", reactant)
+                            or checker.check_fg("Secondary alcohol", reactant)
+                            or checker.check_fg("Tertiary alcohol", reactant)
+                        ):
+                            alcohol_reactant = reactant
+                            break
 
-                # Check if product has O or N connection
-                has_o_product = product_mol.HasSubstructMatch(o_connection_pattern)
-                has_n_product = product_mol.HasSubstructMatch(n_connection_pattern)
+                    # Check for sulfonyl halide (which includes tosyl chloride)
+                    sulfonyl_halide_present = any(
+                        checker.check_fg("Sulfonyl halide", r) for r in reactants
+                    )
 
-                if has_hal_reactant and (has_o_product or has_n_product):
-                    snar_reactions += 1
-                    print(f"SNAr reaction detected: {rsmi}")
+                    # Check if alcohol is converted to sulfonate
+                    if alcohol_reactant and sulfonyl_halide_present:
+                        # Check for sulfonate in product and absence of alcohol
+                        if (
+                            checker.check_fg("Sulfonate", product)
+                            and not checker.check_fg("Primary alcohol", product)
+                            and not checker.check_fg("Secondary alcohol", product)
+                            and not checker.check_fg("Tertiary alcohol", product)
+                        ):
+                            print(
+                                f"Found tosylation activation (alternative check) at depth: {depth}"
+                            )
+                            tosylation_detected = True
+                            tosylated_molecules.add(product)
 
-        # Traverse children
+                # Check if this reaction uses a previously tosylated molecule as a reactant
+                # This confirms the tosylate is being used as a leaving group
+                elif not tosylation_detected and tosylated_molecules:
+                    for reactant in reactants:
+                        if reactant in tosylated_molecules:
+                            # Check if this is a substitution reaction
+                            if (
+                                checker.check_reaction("S-alkylation of thiols", rsmi)
+                                or checker.check_reaction(
+                                    "N-alkylation of primary amines with alkyl halides", rsmi
+                                )
+                                or checker.check_reaction(
+                                    "N-alkylation of secondary amines with alkyl halides", rsmi
+                                )
+                                or checker.check_reaction("Williamson Ether Synthesis", rsmi)
+                            ):
+                                print(
+                                    f"Found reaction using tosylate as leaving group at depth: {depth}"
+                                )
+                                tosylation_detected = True
+                                break
+
+        # Process children (reactants in retrosynthesis)
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return True if at least 2 SNAr reactions are detected
-    return snar_reactions >= 2
+    print(f"Tosylation activation strategy detected: {tosylation_detected}")
+    return tosylation_detected

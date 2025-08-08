@@ -2,81 +2,86 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving S-alkylation following sulfonylation.
+    Detects if there's retention of aromatic bromide through multiple steps.
     """
-    # Track reactions and their depths
-    sulfonylation_depth = None
-    s_alkylation_depth = None
+    # Track molecules with aromatic bromides at different depths
+    bromide_molecules = []
+    bromide_retention = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal sulfonylation_depth, s_alkylation_depth
+    def dfs(node, depth=0):
+        nonlocal bromide_retention
 
-        # Only process reaction nodes
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node.get("type") == "mol" and "smiles" in node:
+            mol_smiles = node["smiles"]
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            # Check if molecule has aromatic bromide
+            if checker.check_fg("Aromatic halide", mol_smiles) and "Br" in mol_smiles:
+                bromide_molecules.append((depth, mol_smiles))
+                print(f"Aromatic bromide found at depth {depth}: {mol_smiles}")
 
-            if all(reactant_mols) and product_mol:
-                # Check for sulfonylation (formation of sulfonyl chloride)
-                sulfonyl_cl_pattern = Chem.MolFromSmarts("[c:1][S:2](=[O:3])(=[O:4])[Cl:5]")
-                if product_mol.HasSubstructMatch(sulfonyl_cl_pattern):
-                    has_sulfonyl_cl_reactant = any(
-                        mol.HasSubstructMatch(sulfonyl_cl_pattern) for mol in reactant_mols if mol
-                    )
-                    if not has_sulfonyl_cl_reactant:
-                        sulfonylation_depth = depth
-                        print(f"Found sulfonylation at depth {depth}")
+                # Check if we have bromides at different depths
+                depths = set(d for d, _ in bromide_molecules)
+                if len(depths) >= 2:
+                    bromide_retention = True
+                    print(f"Aromatic bromide retention detected across depths: {sorted(depths)}")
 
-                # Check for S-alkylation (conversion of SO2Cl to SO2R)
-                s_alkyl_pattern = Chem.MolFromSmarts("[c:1][S:2](=[O:3])(=[O:4])[#6:5]")
-                sulfonyl_cl_pattern = Chem.MolFromSmarts("[c:1][S:2](=[O:3])(=[O:4])[Cl:5]")
-
-                if product_mol.HasSubstructMatch(s_alkyl_pattern):
-                    # Check if any reactant has sulfonyl chloride
-                    has_sulfonyl_cl_reactant = any(
-                        mol and mol.HasSubstructMatch(sulfonyl_cl_pattern) for mol in reactant_mols
-                    )
-                    if has_sulfonyl_cl_reactant:
-                        s_alkylation_depth = depth
-                        print(f"Found S-alkylation at depth {depth}")
-
-        # Traverse children
+        # Recursively check children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs(child, depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
+    # Start DFS from the root
+    dfs(route)
 
-    # Return True if S-alkylation follows sulfonylation
-    if sulfonylation_depth is not None and s_alkylation_depth is not None:
-        return (
-            s_alkylation_depth < sulfonylation_depth
-        )  # Remember: lower depth = later in synthesis
-    return False
+    return bromide_retention

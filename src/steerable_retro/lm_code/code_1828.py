@@ -2,75 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route preserves certain structural motifs (chlorobenzene,
-    isoxazole, and morpholine) throughout the synthesis.
+    Detects if the synthesis route involves a diaryl ether disconnection as a key step.
     """
-    # Define the motifs to track
-    motifs = {
-        "chlorobenzene": Chem.MolFromSmarts("[#6]1:[#6]:[#6](-[#17]):[#6]:[#6]:[#6]:1"),
-        "isoxazole": Chem.MolFromSmarts("[#6]1:[#7]:[#8]:[#6]:[#6]:1"),
-        "morpholine": Chem.MolFromSmarts("[#7]1-[#6]-[#6]-[#8]-[#6]-[#6]-1"),
-    }
-
-    # Track which motifs are present at each step
-    motifs_present = {name: [] for name in motifs}
-    all_products = []
+    diaryl_ether_disconnection_found = False
 
     def dfs_traverse(node):
+        nonlocal diaryl_ether_disconnection_found
+
         if node["type"] == "reaction":
-            # Extract product
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            if product:
-                all_products.append(product)
-                # Check each motif
-                for name, pattern in motifs.items():
-                    if product.HasSubstructMatch(pattern):
-                        motifs_present[name].append(True)
-                    else:
-                        motifs_present[name].append(False)
+            # Check for diaryl ether disconnection
+            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-        # Continue traversing
+            if product_mol and all(r for r in reactant_mols if r):
+                # Check for phenol pattern in reactants
+                phenol_pattern = Chem.MolFromSmarts("[c][OH]")
+                # Check for diaryl ether pattern in product
+                diaryl_ether_pattern = Chem.MolFromSmarts("[c][O][c]")
+
+                has_phenol = any(r.HasSubstructMatch(phenol_pattern) for r in reactant_mols if r)
+                has_diaryl_ether = product_mol.HasSubstructMatch(diaryl_ether_pattern)
+
+                if has_phenol and has_diaryl_ether:
+                    diaryl_ether_disconnection_found = True
+                    print("Diaryl ether disconnection found")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have products and if motifs are preserved
-    if not all_products:
-        return False
-
-    preserved_motifs = []
-    for name, presence_list in motifs_present.items():
-        if presence_list and all(presence_list):
-            preserved_motifs.append(name)
-            print(f"Motif {name} is preserved throughout synthesis")
-
-    # Strategy is present if at least two motifs are preserved
-    strategy_present = len(preserved_motifs) >= 2
-    print(f"Preserved motifs strategy detected: {strategy_present}")
-    return strategy_present
+    print(f"Diaryl ether disconnection strategy: {diaryl_ether_disconnection_found}")
+    return diaryl_ether_disconnection_found

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,110 +54,136 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects the specific strategy of pyrazole formation combined with late-stage ether coupling.
-    This represents the core strategy identified in the analyzed route.
+    This function detects a strategy where a trifluoromethyl-substituted isoxazole motif
+    is maintained throughout the synthesis.
     """
-    # Track if we found pyrazole formation and ether coupling
-    pyrazole_formation_found = False
-    late_stage_ether_coupling_found = False
+    # Track presence of the motif at each step
+    motif_present_at_steps = []
 
-    # Define a helper function to traverse the synthesis route
-    def traverse_route(node, depth=0):
-        nonlocal pyrazole_formation_found, late_stage_ether_coupling_found
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            print(f"Checking molecule at depth {depth}: {mol_smiles}")
 
-        # Check if this is a reaction node
-        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
-            product_smiles = rxn_smiles.split(">")[-1]
-            reactants_smiles = rxn_smiles.split(">")[0].split(".")
+            try:
+                # Check for isoxazole ring
+                has_isoxazole = checker.check_ring("isoxazole", mol_smiles)
 
-            # Check for pyrazole formation
-            if not pyrazole_formation_found:
-                # Check if product contains pyrazole ring
-                if checker.check_ring("pyrazole", product_smiles):
-                    # Check if reactants don't contain pyrazole ring (indicating formation)
-                    reactants_have_pyrazole = any(
-                        checker.check_ring("pyrazole", reactant) for reactant in reactants_smiles
+                # Check for trifluoromethyl group
+                has_trifluoro = checker.check_fg("Trifluoro group", mol_smiles)
+
+                if has_isoxazole and has_trifluoro:
+                    # Need to verify the trifluoromethyl group is attached to the isoxazole
+                    mol = Chem.MolFromSmiles(mol_smiles)
+                    if not mol:
+                        print(f"Failed to parse SMILES at depth {depth}: {mol_smiles}")
+                        return
+
+                    # Get atom indices for isoxazole ring
+                    isoxazole_indices_list = checker.get_ring_atom_indices("isoxazole", mol_smiles)
+
+                    # Get atom indices for trifluoromethyl group
+                    trifluoro_indices_list = checker.get_fg_atom_indices(
+                        "Trifluoro group", mol_smiles
                     )
-                    if not reactants_have_pyrazole:
-                        print(f"Found pyrazole formation reaction: {rxn_smiles}")
-                        pyrazole_formation_found = True
 
-                # Also check if this is a pyrazole formation reaction type
-                if checker.check_reaction("pyrazole", rxn_smiles) or checker.check_reaction(
-                    "{pyrazole}", rxn_smiles
-                ):
-                    print(f"Found pyrazole formation reaction type: {rxn_smiles}")
-                    pyrazole_formation_found = True
+                    print(f"Isoxazole indices: {isoxazole_indices_list}")
+                    print(f"Trifluoromethyl indices: {trifluoro_indices_list}")
 
-            # Check for ether coupling (expanded to include more reaction types)
-            # Late stage is typically at lower depths in the tree, expanded to depth 3
-            if depth <= 3:  # Consider reactions at depth 0, 1, 2, or 3 as late-stage
-                # Check for specific ether formation reactions - expanded list
-                if (
-                    checker.check_reaction("Williamson Ether Synthesis", rxn_smiles)
-                    or checker.check_reaction("{Williamson ether}", rxn_smiles)
-                    or checker.check_reaction("Mitsunobu aryl ether", rxn_smiles)
-                    or checker.check_reaction("Alcohol to ether", rxn_smiles)
-                    or checker.check_reaction("Chan-Lam etherification", rxn_smiles)
-                    or checker.check_reaction("Chan-Lam alcohol", rxn_smiles)
-                    or checker.check_reaction(
-                        "Ullmann-Goldberg Substitution aryl alcohol", rxn_smiles
-                    )
-                    or checker.check_reaction("Ullmann condensation", rxn_smiles)
-                ):
-                    print(f"Found late-stage ether coupling reaction: {rxn_smiles}")
-                    late_stage_ether_coupling_found = True
+                    # Check if any trifluoromethyl group is attached to the isoxazole ring
+                    is_attached = False
 
-                # Check for ether formation by looking at product and reactants
-                elif checker.check_fg("Ether", product_smiles):
-                    # Check if any reactant doesn't have the ether group
-                    reactants_without_ether = [
-                        r for r in reactants_smiles if not checker.check_fg("Ether", r)
-                    ]
-                    if reactants_without_ether:
-                        print(f"Found late-stage ether formation: {rxn_smiles}")
-                        late_stage_ether_coupling_found = True
+                    # Flatten isoxazole indices if needed
+                    isoxazole_atoms = []
+                    if isinstance(isoxazole_indices_list, list):
+                        for indices in isoxazole_indices_list:
+                            if isinstance(indices, tuple):
+                                isoxazole_atoms.extend(indices)
+                            else:
+                                isoxazole_atoms.append(indices)
+                    else:
+                        isoxazole_atoms = [isoxazole_indices_list]
 
-                # Additional check for C-O bond formation that might indicate ether coupling
-                # This is a more general check for ether formation
-                elif (
-                    any("O" in reactant for reactant in reactants_smiles) and "O" in product_smiles
-                ):
-                    # Look for reactions that might involve C-O-C bond formation
-                    if any(
-                        checker.check_fg("Primary alcohol", r)
-                        or checker.check_fg("Secondary alcohol", r)
-                        or checker.check_fg("Tertiary alcohol", r)
-                        or checker.check_fg("Aromatic alcohol", r)
-                        or checker.check_fg("Phenol", r)
-                        for r in reactants_smiles
-                    ):
-                        # Check if this isn't another known reaction type that wouldn't form ethers
-                        if not (
-                            checker.check_reaction("Esterification", rxn_smiles)
-                            or checker.check_reaction("Oxidation", rxn_smiles)
-                        ):
-                            print(
-                                f"Found potential late-stage ether formation via C-O bond: {rxn_smiles}"
-                            )
-                            late_stage_ether_coupling_found = True
+                    # Flatten trifluoromethyl indices if needed
+                    trifluoro_atoms = []
+                    if isinstance(trifluoro_indices_list, list):
+                        for indices in trifluoro_indices_list:
+                            if isinstance(indices, tuple):
+                                trifluoro_atoms.extend(indices)
+                            else:
+                                trifluoro_atoms.append(indices)
+                    else:
+                        trifluoro_atoms = [trifluoro_indices_list]
 
-        # Process molecule nodes
-        elif node.get("type") == "mol":
-            # Nothing specific to check in molecule nodes for this strategy
-            pass
+                    # Find the carbon atom of CF3 (usually the first atom in the group)
+                    cf3_carbon_atoms = []
+                    for i, atom_idx in enumerate(trifluoro_atoms):
+                        if isinstance(atom_idx, int):
+                            atom = mol.GetAtomWithIdx(atom_idx)
+                            if atom.GetSymbol() == "C":
+                                cf3_carbon_atoms.append(atom_idx)
 
-        # Recursively process children
+                    # Check if any CF3 carbon is connected to any isoxazole atom
+                    for cf3_carbon in cf3_carbon_atoms:
+                        carbon_atom = mol.GetAtomWithIdx(cf3_carbon)
+                        for neighbor in carbon_atom.GetNeighbors():
+                            neighbor_idx = neighbor.GetIdx()
+                            if neighbor_idx in isoxazole_atoms:
+                                is_attached = True
+                                break
+
+                        # Also check if any isoxazole atom is connected to the CF3 carbon
+                        if not is_attached:
+                            for isox_idx in isoxazole_atoms:
+                                isox_atom = mol.GetAtomWithIdx(isox_idx)
+                                for neighbor in isox_atom.GetNeighbors():
+                                    if neighbor.GetIdx() == cf3_carbon:
+                                        is_attached = True
+                                        break
+                                if is_attached:
+                                    break
+
+                        if is_attached:
+                            break
+
+                    if is_attached:
+                        motif_present_at_steps.append(depth)
+                        print(f"Detected trifluoromethyl-isoxazole at depth {depth}")
+                    else:
+                        print(
+                            f"Found isoxazole and trifluoromethyl, but they are not connected at depth {depth}"
+                        )
+                else:
+                    if not has_isoxazole:
+                        print(f"No isoxazole ring found at depth {depth}")
+                    if not has_trifluoro:
+                        print(f"No trifluoromethyl group found at depth {depth}")
+            except Exception as e:
+                print(f"Error processing molecule at depth {depth}: {e}")
+
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            traverse_route(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
-    traverse_route(route)
+    # Call dfs_traverse on the root node
+    print("Starting traversal of synthesis route")
+    dfs_traverse(route)
 
-    combined_strategy = pyrazole_formation_found and late_stage_ether_coupling_found
-    print(f"Combined pyrazole formation with ether coupling strategy: {combined_strategy}")
-    print(f"Pyrazole formation found: {pyrazole_formation_found}")
-    print(f"Late-stage ether coupling found: {late_stage_ether_coupling_found}")
+    print(f"Motif found at depths: {motif_present_at_steps}")
 
-    return combined_strategy
+    # Strategy is present if the motif appears in at least 3 different depths
+    # and spans from early to late stages of the synthesis
+    if len(motif_present_at_steps) >= 3:
+        depth_range = max(motif_present_at_steps) - min(motif_present_at_steps)
+        print(f"Depth range: {depth_range}")
+        if depth_range >= 2:  # Spans at least 3 steps
+            print("Strategy detected: Trifluoromethyl-isoxazole maintained throughout synthesis")
+            return True
+        else:
+            print("Motif doesn't span enough synthesis steps")
+    else:
+        print(
+            f"Motif not found in enough steps (found in {len(motif_present_at_steps)} steps, need at least 3)"
+        )
+
+    return False

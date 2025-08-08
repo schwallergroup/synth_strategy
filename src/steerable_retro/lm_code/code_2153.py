@@ -2,64 +2,42 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving a late-stage Suzuki coupling with preparatory borylation
-    and earlier ring formation.
+    This function detects if the synthesis involves early heterocycle formation
+    followed by late-stage functionalization.
     """
-    has_suzuki_coupling = False
-    has_borylation = False
-    has_ring_formation = False
+    heterocycle_depth = None
+    functionalization_depths = []
+    max_depth = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_suzuki_coupling, has_borylation, has_ring_formation
+        nonlocal heterocycle_depth, functionalization_depths, max_depth
+
+        max_depth = max(max_depth, depth)
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
@@ -67,109 +45,63 @@ def main(route):
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for Suzuki coupling (late stage, depth 0-1)
-                if depth <= 1:
-                    # Check directly for Suzuki coupling reaction
-                    if (
-                        checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                        or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
-                        or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                        or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
-                    ):
-                        has_suzuki_coupling = True
-                        print(f"Found late-stage Suzuki coupling at depth {depth}")
-                    # Fallback check using functional groups
-                    elif any(
-                        checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
-                        for r in reactants
-                    ) and any(checker.check_fg("Aromatic halide", r) for r in reactants):
-                        has_suzuki_coupling = True
-                        print(f"Found late-stage Suzuki coupling (FG check) at depth {depth}")
+                product_mol = Chem.MolFromSmiles(product)
+                if not product_mol:
+                    return
 
-                # Check for borylation (mid stage, depth 1-2)
-                elif depth <= 3:
-                    # Check for preparation of boronic acid/ester
-                    if (
-                        checker.check_reaction("Preparation of boronic acids", rsmi)
-                        or checker.check_reaction("Preparation of boronic ethers", rsmi)
-                        or checker.check_reaction(
-                            "Preparation of boronic acids from trifluoroborates", rsmi
-                        )
-                    ):
-                        has_borylation = True
-                        print(f"Found borylation step at depth {depth}")
-                    # Fallback check using functional groups
-                    elif (
-                        checker.check_fg("Boronic acid", product)
-                        or checker.check_fg("Boronic ester", product)
-                    ) and any(checker.check_fg("Aromatic halide", r) for r in reactants):
-                        has_borylation = True
-                        print(f"Found borylation step (FG check) at depth {depth}")
+                # Check for heterocycle formation (pyrazole)
+                pyrazole_patt = Chem.MolFromSmarts("c1nn[c]c1")
+                if product_mol.HasSubstructMatch(pyrazole_patt):
+                    # Check if reactants don't have pyrazole
+                    pyrazole_in_reactants = False
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(pyrazole_patt):
+                            pyrazole_in_reactants = True
 
-                # Check for ring formation (early stage, depth 2+)
-                if depth >= 2:
-                    # Check for common ring-forming reactions
-                    ring_forming_reactions = [
-                        "Paal-Knorr pyrrole synthesis",
-                        "Formation of NOS Heterocycles",
-                        "Benzothiazole formation",
-                        "Benzoxazole formation",
-                        "Benzimidazole formation",
-                        "Diels-Alder",
-                        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-                    ]
+                    if not pyrazole_in_reactants:
+                        heterocycle_depth = depth
+                        print(f"Detected heterocycle formation at depth {depth}")
 
-                    if any(checker.check_reaction(rxn, rsmi) for rxn in ring_forming_reactions):
-                        has_ring_formation = True
-                        print(f"Found ring formation reaction at depth {depth}")
-                        return
+                # Check for late functionalizations
+                # 1. Ether formation
+                ether_patt = Chem.MolFromSmarts("[#6]-[#8]-[#6]")
+                # 2. Cyanation
+                nitrile_patt = Chem.MolFromSmarts("C#N")
+                # 3. Formylation
+                aldehyde_patt = Chem.MolFromSmarts("[CX3H1](=O)")
 
-                    # Check for common rings in product but not in all reactants
-                    common_rings = [
-                        "pyrrole",
-                        "pyridine",
-                        "furan",
-                        "thiophene",
-                        "benzene",
-                        "indole",
-                        "pyrazole",
-                        "imidazole",
-                        "oxazole",
-                        "thiazole",
-                        "pyrimidine",
-                        "quinoline",
-                        "isoquinoline",
-                        "benzothiazole",
-                        "benzoxazole",
-                        "benzimidazole",
-                    ]
+                for patt, name in [
+                    (ether_patt, "ether"),
+                    (nitrile_patt, "nitrile"),
+                    (aldehyde_patt, "aldehyde"),
+                ]:
+                    if product_mol.HasSubstructMatch(patt):
+                        # Check if reactants don't have the pattern
+                        pattern_in_reactants = False
+                        for reactant in reactants:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol and reactant_mol.HasSubstructMatch(patt):
+                                pattern_in_reactants = True
 
-                    # Check if product has rings that aren't in all reactants
-                    product_rings = [
-                        ring for ring in common_rings if checker.check_ring(ring, product)
-                    ]
-                    if product_rings:
-                        # Check if any ring in product is not present in all reactants
-                        for ring in product_rings:
-                            if not all(
-                                checker.check_ring(ring, r)
-                                for r in reactants
-                                if Chem.MolFromSmiles(r)
-                            ):
-                                has_ring_formation = True
-                                print(f"Found ring formation at depth {depth}: {ring}")
-                                break
+                        if not pattern_in_reactants:
+                            functionalization_depths.append(depth)
+                            print(f"Detected {name} functionalization at depth {depth}")
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Return True if all key elements of the strategy are present
-    result = has_suzuki_coupling and has_borylation and has_ring_formation
-    print(
-        f"Strategy detection result: Suzuki={has_suzuki_coupling}, Borylation={has_borylation}, Ring formation={has_ring_formation}"
-    )
-    return result
+    # Check if heterocycle formation is early (higher depth) and functionalizations are late (lower depth)
+    if heterocycle_depth is not None and functionalization_depths:
+        early_heterocycle = heterocycle_depth > max_depth / 2
+        late_functionalizations = any(depth < max_depth / 2 for depth in functionalization_depths)
+
+        if early_heterocycle and late_functionalizations:
+            print(
+                f"Confirmed early heterocycle formation (depth {heterocycle_depth}) with late functionalizations"
+            )
+            return True
+
+    return False

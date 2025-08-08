@@ -2,111 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves ester aminolysis to form an amide.
+    Detects a convergent synthesis strategy that joins two complex heterocyclic fragments.
     """
-    ester_aminolysis_detected = False
+    convergent_step_found = False
 
-    def dfs_traverse(node):
-        nonlocal ester_aminolysis_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal convergent_step_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Extract reactants and product
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # First, check if this is an ester aminolysis reaction directly
-                if checker.check_reaction("Aminolysis of esters", rsmi):
-                    print(f"Ester aminolysis detected directly: {rsmi}")
-                    ester_aminolysis_detected = True
-                    return
+            # Check if this is a convergent step joining heterocycles
+            if len(reactants) >= 2:
+                # Patterns for heterocycles
+                benzimidazole_pattern = Chem.MolFromSmarts("c1nc2ccccc2n1")
+                benzothiophene_pattern = Chem.MolFromSmarts("c1sc2ccccc2c1")
 
-                # If not directly identified, check for the pattern manually
-                if len(reactants) >= 2:
-                    # Check for ester in reactants
-                    ester_reactant = None
-                    amine_reactant = None
-
-                    for reactant in reactants:
-                        if checker.check_fg("Ester", reactant):
-                            ester_reactant = reactant
-                        if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                            "Secondary amine", reactant
+                # Check reactants for heterocycles
+                heterocycle_count = 0
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(benzimidazole_pattern) or mol.HasSubstructMatch(
+                            benzothiophene_pattern
                         ):
-                            amine_reactant = reactant
+                            heterocycle_count += 1
 
-                    # Check if product has an amide
-                    if (
-                        ester_reactant
-                        and amine_reactant
-                        and checker.check_fg("Primary amide", product)
-                        or checker.check_fg("Secondary amide", product)
-                    ):
-                        # Verify this is not just a coincidence by checking the reaction pattern
-                        # This is a fallback in case the direct reaction check failed
-                        print(f"Ester aminolysis pattern detected: {rsmi}")
-                        print(f"Ester reactant: {ester_reactant}")
-                        print(f"Amine reactant: {amine_reactant}")
-                        print(f"Amide product: {product}")
-                        ester_aminolysis_detected = True
-            except Exception as e:
-                print(f"Error in processing reaction SMILES: {e}")
+                # Check if product contains both heterocycles
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and heterocycle_count >= 2:
+                    if product_mol.HasSubstructMatch(
+                        benzimidazole_pattern
+                    ) and product_mol.HasSubstructMatch(benzothiophene_pattern):
+                        convergent_step_found = True
+                        print("Found convergent heterocycle synthesis step")
 
-        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return ester_aminolysis_detected
+    return convergent_step_found

@@ -2,78 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves benzyl protection and deprotection of a phenol.
+    Detects a linear fragment assembly strategy where each step adds one fragment
+    without convergent synthesis patterns.
     """
-    has_protection = False
-    has_deprotection = False
+    # Track the number of reactions and whether any have more than 2 reactants
+    reaction_count = 0
+    has_convergent_step = False
 
-    def dfs_traverse(node):
-        nonlocal has_protection, has_deprotection
+    def dfs_traverse(node, depth=0):
+        nonlocal reaction_count, has_convergent_step
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            reaction_count += 1
+
+            # Extract reactants from reaction SMILES
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants = [r for r in rsmi.split(">")[0].split(".") if r]
 
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+            # If more than 2 reactants, might be convergent synthesis
+            if len(reactants) > 2:
+                has_convergent_step = True
+                print(
+                    f"Found potential convergent step at depth {depth} with {len(reactants)} reactants"
+                )
 
-                # Check for benzyl protection (phenol + benzyl halide -> benzyl ether)
-                phenol_pattern = Chem.MolFromSmarts("[c][OH]")
-                benzyl_halide_pattern = Chem.MolFromSmarts("[c][C][Cl,Br,I]")
-                benzyl_ether_pattern = Chem.MolFromSmarts("[c][C][O][c]")
-
-                # Check for deprotection (benzyl ether -> phenol)
-                if product_mol and product_mol.HasSubstructMatch(phenol_pattern):
-                    for r_mol in reactant_mols:
-                        if r_mol and r_mol.HasSubstructMatch(benzyl_ether_pattern):
-                            print("Detected benzyl deprotection")
-                            has_deprotection = True
-
-                # Check for protection
-                if product_mol and product_mol.HasSubstructMatch(benzyl_ether_pattern):
-                    has_phenol = False
-                    has_benzyl_halide = False
-
-                    for r_mol in reactant_mols:
-                        if r_mol:
-                            if r_mol.HasSubstructMatch(phenol_pattern):
-                                has_phenol = True
-                            if r_mol.HasSubstructMatch(benzyl_halide_pattern):
-                                has_benzyl_halide = True
-
-                    if has_phenol and has_benzyl_halide:
-                        print("Detected benzyl protection")
-                        has_protection = True
-            except:
-                pass
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_protection and has_deprotection
+
+    # Linear strategy has multiple reactions but no convergent steps
+    strategy_present = reaction_count >= 3 and not has_convergent_step
+
+    print(
+        f"Strategy detection result: {strategy_present} (reactions: {reaction_count}, convergent: {has_convergent_step})"
+    )
+    return strategy_present

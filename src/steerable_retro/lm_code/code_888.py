@@ -2,87 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear pattern where each step
-    builds upon a single product from the previous step.
-
-    In a linear synthesis:
-    1. Each reaction should have exactly one product molecule
-    2. Each intermediate molecule (not a starting material) should be used in exactly one reaction
-    3. The synthesis forms a single chain without branches
+    This function detects Wittig olefination.
+    Looks for C=C bond formation using phosphorane and aldehyde.
     """
-    is_linear = True
+    wittig_detected = False
 
-    # Track visited nodes to avoid cycles
-    visited = set()
-
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear
-
-        # Skip if already visited
-        node_id = id(node)
-        if node_id in visited:
-            return
-        visited.add(node_id)
+    def dfs_traverse(node):
+        nonlocal wittig_detected
 
         if node["type"] == "reaction":
-            # For a reaction node, check if it produces exactly one product molecule
-            # In a retrosynthetic tree, we need to check the reaction SMILES
-            # to determine the number of products in the forward direction
-            try:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                products = rsmi.split(">")[-1].split(".")
-                product_count = len(products)
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                if product_count != 1:
-                    is_linear = False
-                    print(
-                        f"Non-linear pattern detected at depth {depth}: reaction has {product_count} product molecules in forward direction"
-                    )
-                    print(f"Reaction SMILES: {rsmi}")
-            except (KeyError, IndexError) as e:
-                # If we can't get the reaction SMILES, assume it's linear and continue
-                print(f"Warning at depth {depth}: Could not analyze reaction SMILES - {str(e)}")
+                # Check for aldehyde in reactants
+                aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
 
-        elif node["type"] == "mol":
-            # Skip checking for the target molecule (depth 0) and starting materials
-            if depth > 0 and not node.get("in_stock", False):
-                # Count how many reactions this molecule participates in
-                reaction_children = [
-                    child for child in node.get("children", []) if child["type"] == "reaction"
-                ]
+                # Check for phosphorane in reactants
+                phosphorane_pattern = Chem.MolFromSmarts("P(c1ccccc1)(c1ccccc1)=C")
 
-                # In a linear synthesis, each intermediate molecule should be used in exactly one reaction
-                if len(reaction_children) != 1:
-                    is_linear = False
-                    print(
-                        f"Non-linear pattern detected at depth {depth}: molecule feeds into {len(reaction_children)} reactions"
-                    )
-                    print(f"Molecule SMILES: {node.get('smiles', 'Not available')}")
+                # Check for C=C in product
+                alkene_pattern = Chem.MolFromSmarts("C=C-C(=O)O")
 
-        # Continue traversal
+                has_aldehyde = False
+                has_phosphorane = False
+
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(aldehyde_pattern):
+                            has_aldehyde = True
+                        if mol and mol.HasSubstructMatch(phosphorane_pattern) or "P" in reactant:
+                            has_phosphorane = True
+                    except:
+                        continue
+
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    has_alkene = product_mol and product_mol.HasSubstructMatch(alkene_pattern)
+
+                    if has_aldehyde and has_phosphorane and has_alkene:
+                        print("Detected Wittig olefination")
+                        wittig_detected = True
+                except:
+                    pass
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return is_linear
+    return wittig_detected

@@ -2,75 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves coupling of two halogenated fragments
-    to form a biaryl amine.
+    This function detects nitro group reduction to amine.
     """
+    nitro_reduction_found = False
 
     def dfs_traverse(node):
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        nonlocal nitro_reduction_found
 
-                # Check for coupling of halogenated fragments
-                fluoro_aromatic_pattern = Chem.MolFromSmarts("[c]-[F]")
-                bromo_aromatic_pattern = Chem.MolFromSmarts("[c]-[Br]")
-                chloro_aromatic_pattern = Chem.MolFromSmarts("[c]-[Cl]")
-                biaryl_amine_pattern = Chem.MolFromSmarts("[c]-[NH]-[c]")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                product_mol = Chem.MolFromSmiles(product) if product else None
+            # Check for nitro group in reactants
+            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
 
-                # Count halogenated fragments in reactants
-                halogenated_fragments = 0
-                for r in reactant_mols:
-                    if r:
-                        if (
-                            r.HasSubstructMatch(fluoro_aromatic_pattern)
-                            or r.HasSubstructMatch(bromo_aromatic_pattern)
-                            or r.HasSubstructMatch(chloro_aromatic_pattern)
-                        ):
-                            halogenated_fragments += 1
+            for reactant in reactants:
+                try:
+                    r_mol = Chem.MolFromSmiles(reactant)
+                    if r_mol and r_mol.HasSubstructMatch(nitro_pattern):
+                        # Check if product has amine where nitro was
+                        p_mol = Chem.MolFromSmiles(product)
+                        if p_mol:
+                            # Count nitro groups in reactant
+                            nitro_count_r = len(r_mol.GetSubstructMatches(nitro_pattern))
+                            # Count nitro groups in product
+                            nitro_count_p = len(p_mol.GetSubstructMatches(nitro_pattern))
 
-                # Check if product forms biaryl amine
-                forms_biaryl_amine = product_mol and product_mol.HasSubstructMatch(
-                    biaryl_amine_pattern
-                )
+                            # Check if nitro groups decreased and amines increased
+                            amine_pattern = Chem.MolFromSmarts("[NH2]")
+                            amine_count_r = len(r_mol.GetSubstructMatches(amine_pattern))
+                            amine_count_p = len(p_mol.GetSubstructMatches(amine_pattern))
 
-                if halogenated_fragments >= 2 and forms_biaryl_amine:
-                    print(
-                        f"Found coupling of {halogenated_fragments} halogenated fragments to form biaryl amine"
-                    )
-                    return True
+                            if nitro_count_p < nitro_count_r and amine_count_p > amine_count_r:
+                                print("Found nitro reduction to amine")
+                                nitro_reduction_found = True
+                except:
+                    continue
 
-        # Traverse children
         for child in node.get("children", []):
-            if dfs_traverse(child):
-                return True
+            dfs_traverse(child)
 
-        return False
-
-    # Start traversal from the root
-    return dfs_traverse(route)
+    dfs_traverse(route)
+    return nitro_reduction_found

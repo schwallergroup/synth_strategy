@@ -2,69 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves N-alkylation
-    with a bromoacetate fragment.
+    This function detects if the synthesis involves hydroxylamine addition to a ketone.
     """
-    n_alkylation_found = False
+    hydroxylamine_addition_found = False
 
     def dfs_traverse(node):
-        nonlocal n_alkylation_found
+        nonlocal hydroxylamine_addition_found
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for bromoacetate pattern in reactants
-                bromoacetate_pattern = Chem.MolFromSmarts("Br[CH2][C](=[O])[O]")
-                # Check for N-alkylated product pattern
-                n_alkylated_pattern = Chem.MolFromSmarts("[#7]-[CH2][C](=[O])[O]")
+            # Check for ketone pattern
+            ketone_pattern = Chem.MolFromSmarts("C=O")
 
-                try:
-                    # Check if any reactant contains bromoacetate
-                    bromoacetate_present = False
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(bromoacetate_pattern):
-                            bromoacetate_present = True
-                            break
+            # Check for hydroxylamine pattern
+            hydroxylamine_pattern = Chem.MolFromSmarts("[OH][N]")
 
-                    product_mol = Chem.MolFromSmiles(product)
+            # Check for hydroxamic acid pattern
+            hydroxamic_acid_pattern = Chem.MolFromSmarts("[OH][N]=C")
 
-                    if (
-                        bromoacetate_present
-                        and product_mol
-                        and product_mol.HasSubstructMatch(n_alkylated_pattern)
-                    ):
-                        print(f"Found N-alkylation with bromoacetate in reaction: {rsmi}")
-                        n_alkylation_found = True
-                except:
-                    print(f"Error processing SMILES in reaction: {rsmi}")
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
+            if product_mol and product_mol.HasSubstructMatch(hydroxamic_acid_pattern):
+                # Check if reactants contain ketone and hydroxylamine
+                has_ketone = False
+                has_hydroxylamine = False
+
+                for r in reactants:
+                    if r:
+                        r_mol = Chem.MolFromSmiles(r)
+                        if r_mol:
+                            if r_mol.HasSubstructMatch(ketone_pattern):
+                                has_ketone = True
+                            if (
+                                r_mol.HasSubstructMatch(hydroxylamine_pattern)
+                                or r == "[OH:1][NH2:2]"
+                            ):
+                                has_hydroxylamine = True
+
+                if has_ketone and has_hydroxylamine:
+                    print("Found hydroxylamine addition to ketone")
+                    hydroxylamine_addition_found = True
+
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return n_alkylation_found
+
+    return hydroxylamine_addition_found

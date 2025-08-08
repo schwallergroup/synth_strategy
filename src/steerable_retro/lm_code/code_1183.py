@@ -2,64 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
-def main(route):
+def main(route, min_interconversions=2):
     """
-    This function detects if the synthetic route involves esterification.
+    Detects if the synthesis route includes multiple interconversions between
+    carboxylic acids and esters (protection/deprotection)
     """
-    esterification_found = False
+    interconversion_count = 0
 
     def dfs_traverse(node):
-        nonlocal esterification_found
+        nonlocal interconversion_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if reactants contain a carboxylic acid and an alcohol, and product contains an ester
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                # Create RDKit mol objects
+                product_mol = Chem.MolFromSmiles(product)
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
 
-            if product_mol and len(reactant_mols) >= 2:
-                # Check for carboxylic acid in reactants
-                acid_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2H]")
-                has_acid = any(mol.HasSubstructMatch(acid_pattern) for mol in reactant_mols if mol)
+                if product_mol and all(reactant_mols):
+                    # SMARTS for carboxylic acid
+                    acid_pattern = Chem.MolFromSmarts("[#6][C](=[O])[OH]")
 
-                # Check for alcohol in reactants
-                alcohol_pattern = Chem.MolFromSmarts("[OX2H]")
-                has_alcohol = any(
-                    mol.HasSubstructMatch(alcohol_pattern) for mol in reactant_mols if mol
-                )
+                    # SMARTS for ester
+                    ester_pattern = Chem.MolFromSmarts("[#6][C](=[O])[O][#6]")
 
-                # Check for ester in product
-                ester_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2][C]")
-                has_ester = product_mol.HasSubstructMatch(ester_pattern) if product_mol else False
+                    # Check for acid to ester conversion
+                    has_acid_in_reactants = any(
+                        r.HasSubstructMatch(acid_pattern) for r in reactant_mols
+                    )
+                    has_ester_in_product = product_mol.HasSubstructMatch(ester_pattern)
 
-                if has_acid and has_alcohol and has_ester:
-                    print("Esterification detected")
-                    esterification_found = True
+                    # Check for ester to acid conversion
+                    has_ester_in_reactants = any(
+                        r.HasSubstructMatch(ester_pattern) for r in reactant_mols
+                    )
+                    has_acid_in_product = product_mol.HasSubstructMatch(acid_pattern)
 
+                    if (has_acid_in_reactants and has_ester_in_product) or (
+                        has_ester_in_reactants and has_acid_in_product
+                    ):
+                        interconversion_count += 1
+                        print(f"Found acid/ester interconversion, total: {interconversion_count}")
+
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return esterification_found
+    return interconversion_count >= min_interconversions

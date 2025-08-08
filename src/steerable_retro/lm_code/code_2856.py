@@ -2,113 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves reduction of a ketone to an alcohol.
-    In retrosynthetic analysis, this corresponds to oxidation of an alcohol to a ketone.
+    Detects a strategy involving the formation of a quaternary carbon center.
     """
-    ketone_reduction_detected = False
+    found_quaternary_carbon_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal ketone_reduction_detected
+        nonlocal found_quaternary_carbon_formation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            print(f"Examining reaction at depth {depth}: {rsmi}")
+            # Convert to RDKit molecules
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-            # Primary check: Use the specific reaction checker
-            # In retrosynthesis, check for both reduction and oxidation reactions
-            if checker.check_reaction(
-                "Reduction of aldehydes and ketones to alcohols", rsmi
-            ) or checker.check_reaction(
-                "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones", rsmi
-            ):
-                print(f"Ketone reduction/alcohol oxidation reaction detected: {rsmi}")
-                ketone_reduction_detected = True
-            else:
-                # Secondary check: Look for alcohol to ketone transformation (retrosynthetic)
-                # or ketone to alcohol transformation (forward)
-                alcohol_in_product = (
-                    checker.check_fg("Secondary alcohol", product)
-                    or checker.check_fg("Primary alcohol", product)
-                    or checker.check_fg("Tertiary alcohol", product)
-                )
-                ketone_in_product = checker.check_fg("Ketone", product)
+            if product_mol and all(r for r in reactant_mols):
+                # Check for quaternary carbon in product
+                quat_carbon_patt = Chem.MolFromSmarts("[#6D4](-[#6])(-[#6])(-[#6])(-[#6])")
 
-                if alcohol_in_product:
-                    print(f"Found alcohol in product: {product}")
-                    for reactant in reactants:
-                        if checker.check_fg("Ketone", reactant):
-                            print(f"Found ketone in reactant: {reactant}")
-                            ketone_reduction_detected = True
-                            print(f"Ketone reduction detected through functional group analysis")
+                if product_mol.HasSubstructMatch(quat_carbon_patt):
+                    # Check if quaternary carbon was formed in this step
+                    reactants_have_quat_carbon = False
+                    for r in reactant_mols:
+                        if r.HasSubstructMatch(quat_carbon_patt):
+                            reactants_have_quat_carbon = True
                             break
 
-                # Also check the reverse direction (for completeness)
-                if ketone_in_product and not ketone_reduction_detected:
-                    print(f"Found ketone in product: {product}")
-                    for reactant in reactants:
-                        if (
-                            checker.check_fg("Secondary alcohol", reactant)
-                            or checker.check_fg("Primary alcohol", reactant)
-                            or checker.check_fg("Tertiary alcohol", reactant)
-                        ):
-                            print(f"Found alcohol in reactant: {reactant}")
-                            ketone_reduction_detected = True
-                            print(
-                                f"Alcohol oxidation (reverse of ketone reduction) detected through functional group analysis"
-                            )
-                            break
+                    if not reactants_have_quat_carbon:
+                        found_quaternary_carbon_formation = True
+                        print(f"Found quaternary carbon formation at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -117,4 +67,4 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    return ketone_reduction_detected
+    return found_quaternary_carbon_formation

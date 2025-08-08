@@ -2,72 +2,101 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
-def main(route):
+def main(route, debug=False):
     """
-    This function detects if the synthetic route involves nucleophilic aromatic substitution
-    of a chloropyrimidine with an amine.
+    Detects if the synthesis follows a linear strategy (no convergent steps with multiple complex fragments).
+
+    A linear synthesis typically builds a molecule by sequential addition of small fragments to a growing core.
+    Convergent synthesis involves separate complex fragments being joined in late-stage reactions.
+
+    Args:
+        route: The synthesis route tree
+        debug: Whether to print debug information
+
+    Returns:
+        bool: True if the synthesis is linear, False if convergent steps are detected
     """
-    nas_detected = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal nas_detected
+        nonlocal is_linear
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+            # Handle empty reactants
+            if not reactants_part:
+                return
 
-            # Check for chloropyrimidine in reactants
-            chloropyrimidine_pattern = Chem.MolFromSmarts("[#17]-c1ncncc1")
+            reactants = reactants_part.split(".")
 
-            # Check for aminopyrimidine in product
-            aminopyrimidine_pattern = Chem.MolFromSmarts("[#7;!H0,!$(N-[#6]=O)]-c1ncncc1")
+            # Skip if only one reactant (definitely linear)
+            if len(reactants) <= 1:
+                return
 
-            # Check for amine in reactants
-            amine_pattern = Chem.MolFromSmarts("[#7;!$(N=*);!$(NC=O)]")
+            # Analyze reactant complexity
+            reactant_complexities = []
+            total_atoms = 0
 
-            reactant_has_chloropyrimidine = any(
-                r is not None and r.HasSubstructMatch(chloropyrimidine_pattern) for r in reactants
-            )
-            reactant_has_amine = any(
-                r is not None and r.HasSubstructMatch(amine_pattern) for r in reactants
-            )
-            product_has_aminopyrimidine = product is not None and product.HasSubstructMatch(
-                aminopyrimidine_pattern
-            )
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        num_atoms = mol.GetNumAtoms()
+                        num_rings = len(mol.GetSSSR())
 
-            if reactant_has_chloropyrimidine and reactant_has_amine and product_has_aminopyrimidine:
-                print("Detected nucleophilic aromatic substitution of chloropyrimidine with amine")
-                nas_detected = True
+                        # Calculate complexity score based on atoms and rings
+                        complexity = num_atoms + (num_rings * 2)
+                        reactant_complexities.append(complexity)
+                        total_atoms += num_atoms
+                except Exception as e:
+                    if debug:
+                        print(f"Error processing reactant {reactant}: {e}")
+                    continue
 
-        # Traverse children
+            # Sort complexities in descending order
+            reactant_complexities.sort(reverse=True)
+
+            # Check for convergent pattern - multiple significant fragments
+            if len(reactant_complexities) >= 2:
+                # If the second most complex reactant is significant compared to the total
+                # (more than 25% of total atoms or complexity > 12)
+                if len(reactant_complexities) >= 2 and (
+                    (reactant_complexities[1] > 12)
+                    or (total_atoms > 0 and reactant_complexities[1] / total_atoms > 0.25)
+                ):
+                    is_linear = False
+                    if debug:
+                        print(
+                            f"Found convergent step with reactant complexities: {reactant_complexities}"
+                        )
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return nas_detected
+    return is_linear

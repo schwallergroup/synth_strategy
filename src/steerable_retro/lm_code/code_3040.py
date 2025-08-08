@@ -2,62 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves reduction of a nitro group to an amine.
+    This function detects a strategy involving multiple benzylation reactions.
+    It counts the number of benzylation reactions in the route.
     """
-    nitro_reduction_found = False
+    benzylation_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal nitro_reduction_found
+    def dfs_traverse(node):
+        nonlocal benzylation_count
 
         if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for nitro group in reactants
-            nitro_pattern = Chem.MolFromSmarts("[#6]-[NX3+](=[OX1])[OX1-]")
+            # Check for benzylation: formation of benzyl ether
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if product_mol:
+                # SMARTS for benzyl ether
+                benzyl_ether_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6]-c1ccccc1")
 
-            # Check for amine in product where nitro was
-            amine_pattern = Chem.MolFromSmarts("[NX3]")
+                if product_mol.HasSubstructMatch(benzyl_ether_pattern):
+                    # Check if any reactant contains benzyl group attached to a leaving group
+                    for r_smi in reactants_smiles:
+                        r_mol = Chem.MolFromSmiles(r_smi)
+                        if not r_mol:
+                            continue
 
-            product_mol = Chem.MolFromSmiles(product)
-
-            # Check if reactants contain nitro and product contains new amine
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
-                    if product_mol and product_mol.HasSubstructMatch(amine_pattern):
-                        # This is a simplification - ideally we'd check that the amine is at the same position
-                        # where the nitro group was, but that requires more complex analysis
-                        nitro_reduction_found = True
-                        print(f"Nitro reduction detected at depth {depth}")
-                        break
+                        # Check for benzyl halide or similar
+                        if r_mol.HasSubstructMatch(
+                            Chem.MolFromSmarts("c1ccccc1-[#6]-[F,Cl,Br,I,O]")
+                        ):
+                            print("Benzylation reaction detected:", rsmi)
+                            benzylation_count += 1
+                            break
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return nitro_reduction_found
+    # Return True if there are at least 2 benzylation reactions
+    return benzylation_count >= 2

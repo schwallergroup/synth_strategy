@@ -2,43 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects linear fragment assembly strategy (as opposed to convergent),
-    where each reaction adds one fragment at a time.
+    This function detects a borylation of aryl bromide followed by Suzuki coupling strategy.
+    It looks for conversion of aryl bromide to boronic acid/ester and subsequent biaryl formation.
     """
-    linear_assembly = True
+    # Track if we've found borylation and coupling steps
+    borylation_found = False
+    suzuki_coupling_found = False
 
     def dfs_traverse(node):
-        nonlocal linear_assembly
+        nonlocal borylation_found, suzuki_coupling_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and products
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # If any reaction has more than 2 reactants, it's not a simple linear assembly
-            if len(reactants) > 2:
-                linear_assembly = False
-                print("Found reaction with more than 2 reactants - not linear assembly")
+            # Check for borylation (aryl bromide to boronic acid/ester)
+            if not borylation_found:
+                aryl_bromide_pattern = Chem.MolFromSmarts("[c]-[Br]")
+                boronic_pattern = Chem.MolFromSmarts("[c]-[B]")
+
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
+
+                if (
+                    product_mol
+                    and any(r and r.HasSubstructMatch(aryl_bromide_pattern) for r in reactant_mols)
+                    and product_mol.HasSubstructMatch(boronic_pattern)
+                ):
+                    borylation_found = True
+                    print("Found borylation step")
+
+            # Check for Suzuki coupling (boronic acid + aryl halide/triflate → biaryl)
+            if not suzuki_coupling_found:
+                boronic_pattern = Chem.MolFromSmarts("[c]-[B]")
+                biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
+
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
+
+                if (
+                    product_mol
+                    and any(r and r.HasSubstructMatch(boronic_pattern) for r in reactant_mols)
+                    and product_mol.HasSubstructMatch(biaryl_pattern)
+                ):
+                    suzuki_coupling_found = True
+                    print("Found Suzuki coupling step")
 
         # Traverse children
         for child in node.get("children", []):
@@ -47,4 +82,5 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    return linear_assembly
+    # Return True if both borylation and Suzuki coupling were found
+    return borylation_found and suzuki_coupling_found

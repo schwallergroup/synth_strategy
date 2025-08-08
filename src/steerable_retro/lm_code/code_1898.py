@@ -2,68 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage amide coupling (depth 0-1) connecting complex fragments.
+    Detects a synthetic route that includes amide coupling between a carboxylic acid and an amine,
+    where at least one component is a heterocycle.
     """
-    late_stage_amide_coupling = False
+    has_heterocycle_amide_coupling = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_amide_coupling
+    def dfs_traverse(node):
+        nonlocal has_heterocycle_amide_coupling
 
-        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0-1)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for amide formation
-                if len(reactants_smiles) >= 2:  # At least two reactants
-                    carboxylic_acid_pattern = Chem.MolFromSmarts("[#8]-[#6](=[#8])")
-                    amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
-                    amide_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#7]")
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                    # Check reactants for acid and amine
-                    has_acid = False
-                    has_amine = False
+            carboxylic_acid_pattern = Chem.MolFromSmarts("C(=O)O")
+            amine_pattern = Chem.MolFromSmarts("[NH2]")
+            amide_pattern = Chem.MolFromSmarts("NC(=O)")
 
-                    for reactant in reactants_smiles:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if reactant_mol.HasSubstructMatch(carboxylic_acid_pattern):
-                                has_acid = True
-                            if reactant_mol.HasSubstructMatch(amine_pattern):
-                                has_amine = True
+            # Heterocycle patterns
+            pyrrolo_pyridine_pattern = Chem.MolFromSmarts("c1cnc2[nH]ccc2c1")
+            imidazo_pyrimidine_pattern = Chem.MolFromSmarts("c1ncn2ccnc2c1")
 
-                    # Check product for amide
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-                    has_amide = product_mol and product_mol.HasSubstructMatch(amide_pattern)
+            has_acid = any(
+                r and r.HasSubstructMatch(carboxylic_acid_pattern) for r in reactant_mols
+            )
+            has_amine = any(r and r.HasSubstructMatch(amine_pattern) for r in reactant_mols)
+            has_amide = product_mol and product_mol.HasSubstructMatch(amide_pattern)
 
-                    if has_acid and has_amine and has_amide:
-                        print(f"Late-stage amide coupling detected at depth {depth}")
-                        late_stage_amide_coupling = True
+            has_heterocycle = any(
+                r
+                and (
+                    r.HasSubstructMatch(pyrrolo_pyridine_pattern)
+                    or r.HasSubstructMatch(imidazo_pyrimidine_pattern)
+                )
+                for r in reactant_mols
+            )
+
+            if has_acid and has_amine and has_amide and has_heterocycle:
+                has_heterocycle_amide_coupling = True
+                print("Found heterocycle amide coupling")
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return late_stage_amide_coupling
+    print(f"Heterocycle amide coupling strategy: {has_heterocycle_amide_coupling}")
+    return has_heterocycle_amide_coupling

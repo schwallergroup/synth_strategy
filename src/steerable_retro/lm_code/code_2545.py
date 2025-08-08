@@ -2,105 +2,99 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear pathway with multiple C-N bond formations.
+    This function detects if the synthesis maintains an indole-benzyl scaffold
+    throughout the synthesis while modifying other parts of the molecule.
     """
-    cn_bond_formations = 0
-    linear_synthesis = True
+    # Track if indole-benzyl scaffold is present throughout
+    scaffold_present_at_all_steps = True
+    steps_analyzed = 0
 
     def dfs_traverse(node):
-        nonlocal cn_bond_formations, linear_synthesis
+        nonlocal scaffold_present_at_all_steps, steps_analyzed
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol" and ("in_stock" not in node or not node["in_stock"]):
+            mol_smiles = node["smiles"]
 
-                # Check if synthesis is linear (only one main reactant per step)
-                # Expanded list of common reagents to exclude
-                main_reactants = [
-                    r
-                    for r in reactants_smiles
-                    if not (
-                        r.startswith("O")
-                        or r.startswith("[O")
-                        or r.startswith("Cl")
-                        or r.startswith("[Cl")
-                        or r.startswith("Br")
-                        or r.startswith("[Br")
-                        or r.startswith("I")
-                        or r.startswith("[I")
-                        or r.startswith("F")
-                        or r.startswith("[F")
-                        or r.startswith("N")
-                        or r.startswith("[N")
-                        or r.startswith("S")
-                        or r.startswith("[S")
-                        or r.startswith("P")
-                        or r.startswith("[P")
-                        or len(r) < 5  # Short SMILES are likely simple reagents
-                    )
-                ]
+            # Check for indole scaffold using checker function
+            has_indole = checker.check_ring("indole", mol_smiles)
 
-                if len(main_reactants) > 1:
-                    print(
-                        f"Non-linear step detected: {len(main_reactants)} main reactants: {main_reactants}"
-                    )
-                    linear_synthesis = False
+            # Check for benzyl group using RDKit pattern matching
+            # Benzyl group is a phenyl ring connected to a CH2 group
+            mol = Chem.MolFromSmiles(mol_smiles)
+            benzyl_pattern = Chem.MolFromSmarts("c1ccccc1C")
+            has_benzyl = mol.HasSubstructMatch(benzyl_pattern) if mol else False
 
-                try:
-                    # Check for C-N bond formation
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+            print(f"Scaffold check for {mol_smiles}: indole={has_indole}, benzyl={has_benzyl}")
 
-                    if product_mol and all(r for r in reactant_mols):
-                        # Look for new C-N bonds in the product that weren't in the reactants
-                        cn_bond_pattern = Chem.MolFromSmarts("[#6]-[#7]")
+            if not (has_indole and has_benzyl):
+                scaffold_present_at_all_steps = False
+                print(f"Indole-benzyl scaffold not complete in molecule: {mol_smiles}")
+            else:
+                print(f"Indole-benzyl scaffold found in molecule: {mol_smiles}")
 
-                        # Count C-N bonds in reactants
-                        reactant_cn_bonds = sum(
-                            len(r.GetSubstructMatches(cn_bond_pattern)) for r in reactant_mols if r
-                        )
+            steps_analyzed += 1
 
-                        # Count C-N bonds in product
-                        product_cn_bonds = len(product_mol.GetSubstructMatches(cn_bond_pattern))
-
-                        if product_cn_bonds > reactant_cn_bonds:
-                            cn_bond_formations += 1
-                            print(f"C-N bond formation detected, total: {cn_bond_formations}")
-                except Exception as e:
-                    print(f"Error in C-N bond formation detection: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Print final status for debugging
-    print(
-        f"Final status: linear_synthesis={linear_synthesis}, cn_bond_formations={cn_bond_formations}"
-    )
+    print(f"Total steps analyzed: {steps_analyzed}")
+    print(f"Scaffold present throughout: {scaffold_present_at_all_steps}")
 
-    # Return True if synthesis is linear and has at least 2 C-N bond formations
-    return linear_synthesis and cn_bond_formations >= 2
+    # We need to have analyzed at least 3 steps and found the scaffold in all of them
+    return scaffold_present_at_all_steps and steps_analyzed >= 3

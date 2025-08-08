@@ -2,110 +2,54 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if aromatic chlorides are maintained throughout the synthesis
+    This function detects if the synthetic route follows a linear strategy
+    rather than a convergent one.
     """
-    # Track molecules with aromatic chlorides at each depth
-    molecules_with_chlorides = []
+    max_reactants_per_step = 0
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol" and "smiles" in node:
-            # Check if molecule contains aromatic chlorides
-            mol_smiles = node["smiles"]
-            if checker.check_fg("Aromatic halide", mol_smiles) and "Cl" in mol_smiles:
-                # Count aromatic chlorides specifically
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if mol:
-                    ar_cl_pattern = Chem.MolFromSmarts("c-[Cl]")
-                    count = len(mol.GetSubstructMatches(ar_cl_pattern))
-                    if count > 0:
-                        print(
-                            f"Found {count} aromatic chlorides at depth {depth} in molecule: {mol_smiles}"
-                        )
-                        molecules_with_chlorides.append((depth, count, mol_smiles))
+    def dfs_traverse(node):
+        nonlocal max_reactants_per_step
 
-        # Continue traversing the synthesis tree
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+
+            # Count number of reactants in this step
+            num_reactants = len(reactants)
+            max_reactants_per_step = max(max_reactants_per_step, num_reactants)
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root (target molecule)
     dfs_traverse(route)
 
-    # If we found at least one molecule with aromatic chlorides
-    if molecules_with_chlorides:
-        # Sort by depth (lowest depth = target molecule, highest depth = starting materials)
-        molecules_with_chlorides.sort(key=lambda x: x[0])
-
-        # Get the target molecule (lowest depth)
-        target_depth, target_count, target_smiles = molecules_with_chlorides[0]
-
-        # Check if target molecule has aromatic chlorides
-        if target_count > 0:
-            print(f"Target molecule has {target_count} aromatic chlorides")
-
-            # Check if there are starting materials or intermediates with aromatic chlorides
-            if len(molecules_with_chlorides) > 1:
-                # Check if any starting material has more aromatic chlorides than the target
-                for depth, count, smiles in molecules_with_chlorides[1:]:
-                    if count > target_count:
-                        print(
-                            f"Molecule at depth {depth} has {count} aromatic chlorides, which exceeds target's {target_count}"
-                        )
-                        return False
-
-                # If we get here, all molecules have equal or fewer aromatic chlorides than the target
-                print(
-                    f"Aromatic chlorides are maintained: target has {target_count}, no intermediate or starting material exceeds this"
-                )
-                return True
-
-    # Default case: no aromatic chlorides maintained
-    return False
+    # If no step has more than 2 reactants, it's likely a linear synthesis
+    is_linear = max_reactants_per_step <= 2
+    print(f"Maximum reactants per step: {max_reactants_per_step}, Is linear: {is_linear}")
+    return is_linear

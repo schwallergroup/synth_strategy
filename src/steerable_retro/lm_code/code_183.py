@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,72 +54,94 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the final product contains a cyanoacetamide group.
+    This function detects the formation of a thiophene heterocycle from acyclic precursors.
     """
-    # The final product is the root node in the synthesis route
-    if route["type"] != "mol":
-        print("Root node is not a molecule")
-        return False
+    heterocycle_formation_detected = False
 
-    product_smiles = route["smiles"]
-    print(f"Checking final product: {product_smiles}")
+    def dfs_traverse(node):
+        nonlocal heterocycle_formation_detected
 
-    # Check for cyanoacetamide using the checker function
-    # Cyanoacetamide is a combination of an amide group and a nitrile group
-    # in a specific arrangement: R-C(=O)-NH-CH2-CN or variations
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-    # First check if the molecule has both amide and nitrile groups
-    has_amide = (
-        checker.check_fg("Primary amide", product_smiles)
-        or checker.check_fg("Secondary amide", product_smiles)
-        or checker.check_fg("Tertiary amide", product_smiles)
-    )
+                print(f"Analyzing reaction: {rsmi}")
 
-    has_nitrile = checker.check_fg("Nitrile", product_smiles)
+                # Check if thiophene or thiazole is in product
+                product_has_thiophene = checker.check_ring("thiophene", product_smiles)
+                product_has_thiazole = checker.check_ring("thiazole", product_smiles)
+                product_has_benzothiophene = checker.check_ring("benzothiophene", product_smiles)
 
-    if not (has_amide and has_nitrile):
-        print("Product does not have both amide and nitrile groups")
-        return False
+                if product_has_thiophene or product_has_thiazole or product_has_benzothiophene:
+                    print(f"Product contains sulfur heterocycle: {product_smiles}")
 
-    # Now check for the specific cyanoacetamide pattern and its variations
-    product_mol = Chem.MolFromSmiles(product_smiles)
-    if product_mol is None:
-        print("Could not parse product SMILES")
-        return False
+                    # Check if reactants are acyclic (don't contain the same heterocycle)
+                    reactants_have_thiophene = any(
+                        checker.check_ring("thiophene", reactant) for reactant in reactants_smiles
+                    )
+                    reactants_have_thiazole = any(
+                        checker.check_ring("thiazole", reactant) for reactant in reactants_smiles
+                    )
+                    reactants_have_benzothiophene = any(
+                        checker.check_ring("benzothiophene", reactant)
+                        for reactant in reactants_smiles
+                    )
 
-    # Classic cyanoacetamide pattern: R-C(=O)-NH-CH2-CN
-    classic_pattern = Chem.MolFromSmarts("[*]-C(=O)-N-C-C#N")
+                    # If product has thiophene but reactants don't, or product has thiazole but reactants don't
+                    if (
+                        (product_has_thiophene and not reactants_have_thiophene)
+                        or (product_has_thiazole and not reactants_have_thiazole)
+                        or (product_has_benzothiophene and not reactants_have_benzothiophene)
+                    ):
+                        print("Reactants do not contain the same sulfur heterocycle")
 
-    # Extended pattern allowing for variations in chain length
-    extended_pattern = Chem.MolFromSmarts("[*]-C(=O)-N-[CH2,CH]-[CH2,CH]-C#N")
+                        # Check if this is a heterocycle formation reaction
+                        # Look for common heterocycle formation reactions
+                        is_heterocycle_formation = any(
+                            [
+                                checker.check_reaction("benzothiophene", rsmi),
+                                checker.check_reaction("thiazole", rsmi),
+                                checker.check_reaction("Paal-Knorr pyrrole", rsmi),
+                                checker.check_reaction("Formation of NOS Heterocycles", rsmi),
+                                checker.check_reaction("{benzothiazole}", rsmi),
+                                checker.check_reaction("{benzothiophene}", rsmi),
+                                checker.check_reaction("{thiazole}", rsmi),
+                            ]
+                        )
 
-    # Pattern specifically for 3-cyanopropanamide: R-C(=O)-NH-CH2-CH2-CN
-    cyano_propanamide = Chem.MolFromSmarts("C(=O)-N-C-C-C#N")
+                        if is_heterocycle_formation:
+                            print("Confirmed heterocycle formation reaction")
+                            heterocycle_formation_detected = True
+                        else:
+                            # Check if reactants have sulfur-containing functional groups
+                            # that could lead to thiophene/thiazole formation
+                            has_sulfur_precursors = any(
+                                checker.check_fg("Aliphatic thiol", reactant)
+                                or checker.check_fg("Aromatic thiol", reactant)
+                                or checker.check_fg("Monosulfide", reactant)
+                                or checker.check_fg("Thiocarbonyl", reactant)
+                                or checker.check_fg("Thiocyanate", reactant)
+                                or checker.check_fg("Isothiocyanate", reactant)
+                                or checker.check_fg("Thioamide", reactant)
+                                or checker.check_fg("Thiourea", reactant)
+                                or "S=" in reactant  # Thione groups
+                                or "SC" in reactant  # General sulfur-carbon bonds
+                                for reactant in reactants_smiles
+                            )
 
-    # Pattern for any amide with a cyano group somewhere in the chain
-    general_pattern = Chem.MolFromSmarts("C(=O)-N-[*]-[*]-C#N")
+                            if has_sulfur_precursors:
+                                print(
+                                    "Detected sulfur heterocycle formation from sulfur-containing precursors"
+                                )
+                                heterocycle_formation_detected = True
 
-    if product_mol.HasSubstructMatch(classic_pattern):
-        print("Detected classic cyanoacetamide in final product")
-        return True
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child)
 
-    if product_mol.HasSubstructMatch(extended_pattern):
-        print("Detected extended cyanoacetamide in final product")
-        return True
+    # Start traversal from the root
+    dfs_traverse(route)
 
-    if product_mol.HasSubstructMatch(cyano_propanamide):
-        print("Detected 3-cyanopropanamide in final product")
-        return True
-
-    if product_mol.HasSubstructMatch(general_pattern):
-        print("Detected general cyanoacetamide-like structure in final product")
-        return True
-
-    # As a final check, look for the specific fragment in the test case
-    test_case_pattern = Chem.MolFromSmarts("NC(=O)CC#N")
-    if product_mol.HasSubstructMatch(test_case_pattern):
-        print("Detected specific cyanoacetamide structure in final product")
-        return True
-
-    print("Cyanoacetamide pattern not found in final product")
-    return False
+    return heterocycle_formation_detected

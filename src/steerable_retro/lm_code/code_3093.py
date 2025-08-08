@@ -2,92 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the reduction of a nitro group to an amine in the synthetic route.
+    This function detects a strategy where a nitrile intermediate is used
+    and later incorporated into heterocycle formation.
     """
-    nitro_reduction_detected = False
+    nitrile_found = False
+    heterocycle_after_nitrile = False
 
-    def dfs_traverse(node):
-        nonlocal nitro_reduction_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal nitrile_found, heterocycle_after_nitrile
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "mol":
+            # Check for nitrile group
+            if node.get("smiles"):
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    nitrile_pattern = Chem.MolFromSmarts("[CX2]#[NX1]")
+                    if mol.HasSubstructMatch(nitrile_pattern):
+                        print(f"Found nitrile at depth {depth}")
+                        nitrile_found = True
 
-            # First check if this is a nitro reduction reaction directly
-            if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
-                print("Detected nitro reduction to amine via reaction check")
-                nitro_reduction_detected = True
-                return
+        elif node["type"] == "reaction" and nitrile_found:
+            # Check if product contains heterocycle after nitrile was found
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                product = rsmi.split(">")[-1]
+                mol = Chem.MolFromSmiles(product)
+                if mol:
+                    isoxazole_pattern = Chem.MolFromSmarts("c1onc(c1)")
+                    pyrazole_pattern = Chem.MolFromSmarts("c1cnn(c1)")
 
-            # If direct check fails, check for functional group transformation
-            product = rsmi.split(">")[-1]
-            reactants = rsmi.split(">")[0].split(".")
+                    if mol.HasSubstructMatch(isoxazole_pattern) or mol.HasSubstructMatch(
+                        pyrazole_pattern
+                    ):
+                        print(f"Found heterocycle formation after nitrile at depth {depth}")
+                        heterocycle_after_nitrile = True
 
-            # Check for nitro reduction by examining functional groups
-            if len(reactants) >= 1:
-                # Check if product contains an amine group
-                if checker.check_fg("Primary amine", product):
-                    # Check if any reactant contains a nitro group
-                    for reactant in reactants:
-                        if checker.check_fg("Nitro group", reactant):
-                            print(f"Detected nitro reduction to amine via functional group check")
-                            print(f"Reactant with nitro: {reactant}")
-                            print(f"Product with amine: {product}")
-                            nitro_reduction_detected = True
-                            return
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    return nitro_reduction_detected
+
+    return nitrile_found and heterocycle_after_nitrile

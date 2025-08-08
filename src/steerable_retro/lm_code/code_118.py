@@ -2,65 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves multiple nitrogen-containing functional groups
-    (amines, amides, carbamates).
+    Detects if stereocenters are preserved throughout the synthesis.
     """
-    has_multiple_n_groups = False
+    has_stereocenter = False
+    stereocenters_preserved = True
 
-    def dfs_traverse(node):
-        nonlocal has_multiple_n_groups
+    def dfs_traverse(node, depth=0):
+        nonlocal has_stereocenter, stereocenters_preserved
 
-        if node["type"] == "mol" and "smiles" in node and not node.get("in_stock", False):
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if not mol:
-                    return
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Define patterns for different N-containing functional groups
-                amine_pattern = Chem.MolFromSmarts("[NX3;H0,H1,H2]")
-                amide_pattern = Chem.MolFromSmarts("[NX3][CX3]=[OX1]")
-                carbamate_pattern = Chem.MolFromSmarts("[NX3][CX3](=[OX1])[OX2]")
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-                # Count different N-containing functional groups
-                n_groups = 0
-                if mol.HasSubstructMatch(amine_pattern):
-                    n_groups += 1
-                if mol.HasSubstructMatch(amide_pattern):
-                    n_groups += 1
-                if mol.HasSubstructMatch(carbamate_pattern):
-                    n_groups += 1
+            if product and all(r for r in reactants):
+                # Check for stereocenters in product
+                product_chiral_centers = Chem.FindMolChiralCenters(product, includeUnassigned=False)
 
-                if n_groups >= 2:
-                    print(
-                        f"Found molecule with {n_groups} different N-containing functional groups"
-                    )
-                    has_multiple_n_groups = True
-            except:
-                pass  # Handle parsing errors gracefully
+                if product_chiral_centers:
+                    has_stereocenter = True
+
+                    # Check if all stereocenters in reactants are preserved
+                    reactant_chiral_centers = []
+                    for r in reactants:
+                        reactant_chiral_centers.extend(
+                            Chem.FindMolChiralCenters(r, includeUnassigned=False)
+                        )
+
+                    # Simple check - if number of stereocenters changes, they're not preserved
+                    if len(product_chiral_centers) != len(reactant_chiral_centers):
+                        stereocenters_preserved = False
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return has_multiple_n_groups
+
+    if has_stereocenter and stereocenters_preserved:
+        print("Detected stereocenter preservation strategy")
+        return True
+    else:
+        print("Stereocenter preservation strategy not detected")
+        return False

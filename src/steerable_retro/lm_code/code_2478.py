@@ -2,76 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the final step (or one of the last steps)
-    in the synthesis is the formation of a sulfonamide group.
+    This function detects if stereochemistry is preserved throughout the synthesis.
     """
-    sulfonamide_at_depth = None
-    min_depth = float("inf")
+    # Track molecules with stereochemistry at each depth
+    stereo_at_depths = {}
 
     def dfs_traverse(node, depth=0):
-        nonlocal sulfonamide_at_depth, min_depth
-
-        if depth < min_depth:
-            min_depth = depth
-
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check for sulfonamide formation
+        if node["type"] == "mol":
+            if "smiles" in node:
                 try:
-                    prod_mol = Chem.MolFromSmiles(product)
-                    sulfonamide_pattern = Chem.MolFromSmarts("[N]-[S](=[O])(=[O])-[C]")
-
-                    if prod_mol and prod_mol.HasSubstructMatch(sulfonamide_pattern):
-                        # Check if reactants don't have sulfonamide
-                        has_sulfonamide_in_reactants = False
-                        for reactant in reactants:
-                            react_mol = Chem.MolFromSmiles(reactant)
-                            if react_mol and react_mol.HasSubstructMatch(sulfonamide_pattern):
-                                has_sulfonamide_in_reactants = True
-                                break
-
-                        if not has_sulfonamide_in_reactants:
-                            print(f"Sulfonamide formation detected at depth {depth}")
-                            if sulfonamide_at_depth is None or depth < sulfonamide_at_depth:
-                                sulfonamide_at_depth = depth
+                    smiles = node["smiles"]
+                    # Check if SMILES contains '@' which indicates stereochemistry
+                    if "@" in smiles:
+                        if depth not in stereo_at_depths:
+                            stereo_at_depths[depth] = 0
+                        stereo_at_depths[depth] += 1
+                        print(f"Found stereochemistry at depth {depth}")
                 except:
                     pass
 
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if sulfonamide formation occurs in the last 30% of steps
-    if sulfonamide_at_depth is not None:
-        is_late_stage = (
-            sulfonamide_at_depth <= min_depth + 1
-        )  # Within first two steps (low depth = late stage)
-        print(f"Sulfonamide formation is late stage: {is_late_stage}")
-        return is_late_stage
-    return False
+    # If stereochemistry is present at multiple depths, it's preserved
+    return len(stereo_at_depths) >= 2

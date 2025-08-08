@@ -2,110 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the final step in the synthesis involves a deprotection,
-    specifically the removal of a tert-butyl group from an ester.
+    Detects if the synthesis route involves formation of a diaryl ether (Ar-O-Ar) linkage.
     """
-    final_step_is_deprotection = False
+    has_diaryl_ether_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal final_step_is_deprotection
+    def dfs_traverse(node):
+        nonlocal has_diaryl_ether_formation
 
-        # The final step is the first reaction we encounter (depth=1)
-        if depth == 1 and node["type"] == "reaction":
-            print(f"Checking final reaction step at depth {depth}")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Check for diaryl ether formation
+            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                print(f"Reaction SMILES: {rsmi}")
-                print(f"Product: {product_smiles}")
-                print(f"Reactants: {reactants_smiles}")
+            if product_mol and all(m for m in reactant_mols):
+                # Look for diaryl ether pattern in product
+                diaryl_ether_pattern = Chem.MolFromSmarts("[c][O][c]")
+                if product_mol.HasSubstructMatch(diaryl_ether_pattern):
+                    # Check if this pattern exists in any single reactant
+                    exists_in_single_reactant = False
+                    for r_mol in reactant_mols:
+                        if r_mol.HasSubstructMatch(diaryl_ether_pattern):
+                            exists_in_single_reactant = True
+                            break
 
-                # Check if this is a deprotection reaction
-                if (
-                    checker.check_reaction("COOH ethyl deprotection", rsmi)
-                    or checker.check_reaction("Boc amine deprotection", rsmi)
-                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
-                ):
-                    print("Detected a known deprotection reaction")
-                    final_step_is_deprotection = True
-                    return
+                    # If not in any single reactant, it was formed in this reaction
+                    if not exists_in_single_reactant:
+                        has_diaryl_ether_formation = True
+                        print(f"Diaryl ether formation detected in reaction: {rsmi}")
 
-                # Check for tert-butyl ester in reactants and carboxylic acid in product
-                for reactant in reactants_smiles:
-                    if checker.check_fg("Ester", reactant):
-                        print(f"Found ester in reactant: {reactant}")
-                        # Check if it's specifically a tert-butyl ester
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            tbutyl_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)")
-                            if reactant_mol.HasSubstructMatch(tbutyl_pattern):
-                                print("Found tert-butyl ester in reactant")
-                                # Check if product has carboxylic acid
-                                if checker.check_fg("Carboxylic acid", product_smiles):
-                                    print("Found carboxylic acid in product")
-                                    final_step_is_deprotection = True
-                                    return
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root (target molecule)
+    # Start traversal
     dfs_traverse(route)
 
-    return final_step_is_deprotection
+    print(f"Diaryl ether formation strategy: {has_diaryl_ether_formation}")
+    return has_diaryl_ether_formation

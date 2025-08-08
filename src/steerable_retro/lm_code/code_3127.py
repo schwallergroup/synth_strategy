@@ -2,78 +2,154 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving aromatic nucleophilic substitution
-    where a piperidine connects to a halogenated pyridine.
+    This function detects a synthetic strategy involving late-stage dehalogenation
+    (dehalogenation in the final step of the synthesis).
     """
-    # Track if we find the pattern
-    found_pattern = False
+    # Track if dehalogenation occurs at the final step
+    has_late_dehalogenation = False
+    first_reaction_found = False
 
-    # SMARTS patterns
-    chloropyridine = Chem.MolFromSmarts("[n]1[cH][c]([Cl])[c][cH][c]1")
-    n_methylpiperidine = Chem.MolFromSmarts("[CH3][N]1[CH2][CH2][CH][CH2][CH2]1")
-    piperidine_pyridine_connection = Chem.MolFromSmarts(
-        "[CH3][N]1[CH2][CH2][CH]([NH][c]2[cH][c][n][cH][c]2)[CH2][CH2]1"
-    )
+    def dfs_traverse(node, current_depth=0):
+        nonlocal has_late_dehalogenation, first_reaction_found
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
+        # Add depth attribute to the node
+        node["depth"] = current_depth
 
         if node["type"] == "reaction":
-            # Extract reactants and products
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            # Check if this is the first reaction node we encounter (final synthetic step)
+            if not first_reaction_found:
+                first_reaction_found = True
 
-            # Check for reactants with chloropyridine and piperidine
-            has_chloropyridine = False
-            has_piperidine = False
+                if "metadata" in node and "rsmi" in node["metadata"]:
+                    rsmi = node["metadata"]["rsmi"]
+                    print(f"Checking final step reaction: {rsmi}")
 
-            for reactant_smiles in reactants_smiles:
-                try:
-                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                    if reactant_mol:
-                        if reactant_mol.HasSubstructMatch(chloropyridine):
-                            has_chloropyridine = True
-                        if reactant_mol.HasSubstructMatch(n_methylpiperidine):
-                            has_piperidine = True
-                except:
-                    continue
+                    # Check if this is a dehalogenation reaction using reaction checkers
+                    if checker.check_reaction("Dehalogenation", rsmi) or checker.check_reaction(
+                        "Aromatic dehalogenation", rsmi
+                    ):
+                        print(f"Detected dehalogenation reaction in final step: {rsmi}")
+                        has_late_dehalogenation = True
+                    else:
+                        # As a fallback, check for halogen reduction manually
+                        reactants_smiles = rsmi.split(">")[0].split(".")
+                        product_smiles = rsmi.split(">")[-1]
 
-            # Check if product has the connection
-            try:
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if product_mol and product_mol.HasSubstructMatch(piperidine_pyridine_connection):
-                    if has_chloropyridine and has_piperidine:
-                        print(f"Found aromatic nucleophilic substitution at depth {depth}")
-                        found_pattern = True
-            except:
-                pass
+                        try:
+                            product_mol = Chem.MolFromSmiles(product_smiles)
+                            if not product_mol:
+                                return
 
-        # Traverse children
+                            # Count halogens in product
+                            product_halogen_count = sum(
+                                1
+                                for atom in product_mol.GetAtoms()
+                                if atom.GetSymbol() in ["F", "Cl", "Br", "I"]
+                            )
+
+                            # Check each reactant for halogens
+                            for reactant_smiles in reactants_smiles:
+                                if not reactant_smiles:
+                                    continue
+
+                                reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                                if not reactant_mol:
+                                    continue
+
+                                # Count halogens in reactant
+                                reactant_halogen_count = sum(
+                                    1
+                                    for atom in reactant_mol.GetAtoms()
+                                    if atom.GetSymbol() in ["F", "Cl", "Br", "I"]
+                                )
+
+                                # Also check for halogen functional groups to be thorough
+                                has_halogen_fg = False
+                                for halogen_fg in [
+                                    "Primary halide",
+                                    "Secondary halide",
+                                    "Tertiary halide",
+                                    "Aromatic halide",
+                                    "Alkenyl halide",
+                                    "Haloalkyne",
+                                ]:
+                                    if checker.check_fg(halogen_fg, reactant_smiles):
+                                        has_halogen_fg = True
+                                        print(f"Found {halogen_fg} in reactant: {reactant_smiles}")
+                                        break
+
+                                # If reactant has more halogens than product, it's a dehalogenation
+                                if (reactant_halogen_count > product_halogen_count) or (
+                                    has_halogen_fg and reactant_halogen_count > 0
+                                ):
+                                    print(f"Detected halogen reduction in final step: {rsmi}")
+                                    print(
+                                        f"Reactant halogen count: {reactant_halogen_count}, Product halogen count: {product_halogen_count}"
+                                    )
+                                    has_late_dehalogenation = True
+                                    break
+
+                        except Exception as e:
+                            print(f"Error processing reaction: {e}")
+
+        # Process children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, current_depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return found_pattern
+
+    print(f"Late-stage dehalogenation strategy detected: {has_late_dehalogenation}")
+    return has_late_dehalogenation

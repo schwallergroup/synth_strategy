@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,69 +54,79 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if a cycloalkyl group is incorporated at a late stage in the synthesis.
-    Late stage is defined as being in the first 1/3 of the synthesis depth.
+    This function detects a synthetic strategy where a heterocyclic scaffold
+    (like benzothiophene) is preserved throughout the synthesis while functional
+    groups are modified.
     """
-    max_depth = 0
-    cycloalkyl_incorporations = []
+    # Track if heterocyclic scaffold is present in all molecules
+    all_mols_have_scaffold = True
+    mol_count = 0
 
-    def find_cycloalkyl_incorporations(node, depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, depth)
+    # List of heterocyclic scaffolds to check
+    heterocyclic_scaffolds = [
+        "benzothiophene",
+        "benzoxazole",
+        "benzimidazole",
+        "indole",
+        "benzofuran",
+        "quinoline",
+        "isoquinoline",
+        "benzothiazole",
+    ]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
-            reactants = rxn_smiles.split(">")[0].split(".")
-            product = rxn_smiles.split(">")[-1]
+    # Track which scaffold is preserved (if any)
+    preserved_scaffold = None
 
-            # Check if any reactant contains a cycloalkyl group that's transferred to the product
-            has_cycloalkyl_transfer = False
-            for reactant in reactants:
-                if (
-                    checker.check_ring("cyclopropane", reactant)
-                    or checker.check_ring("cyclobutane", reactant)
-                    or checker.check_ring("cyclopentane", reactant)
-                    or checker.check_ring("cyclohexane", reactant)
-                    or checker.check_ring("cycloheptane", reactant)
-                    or checker.check_ring("cyclooctane", reactant)
-                ):
+    def dfs_traverse(node):
+        nonlocal all_mols_have_scaffold, mol_count, preserved_scaffold
 
-                    # Verify the cycloalkyl group is in the product
-                    if (
-                        checker.check_ring("cyclopropane", product)
-                        or checker.check_ring("cyclobutane", product)
-                        or checker.check_ring("cyclopentane", product)
-                        or checker.check_ring("cyclohexane", product)
-                        or checker.check_ring("cycloheptane", product)
-                        or checker.check_ring("cyclooctane", product)
-                    ):
-                        has_cycloalkyl_transfer = True
-                        break
+        if node["type"] == "mol":
+            mol_count += 1
+            mol_smiles = node["smiles"]
 
-            if has_cycloalkyl_transfer:
-                cycloalkyl_incorporations.append((rxn_smiles, depth))
+            # Skip small molecules (likely reagents)
+            mol = Chem.MolFromSmiles(mol_smiles)
+            if mol and mol.GetNumAtoms() <= 5:
+                print(f"Skipping small molecule: {mol_smiles}")
+                return
 
+            # Check for heterocyclic scaffolds
+            has_scaffold = False
+
+            for scaffold in heterocyclic_scaffolds:
+                if checker.check_ring(scaffold, mol_smiles):
+                    print(f"Found {scaffold} scaffold in: {mol_smiles}")
+                    has_scaffold = True
+
+                    # If this is the first molecule with a scaffold, set it as the preserved one
+                    if preserved_scaffold is None:
+                        preserved_scaffold = scaffold
+                    # If we already found a different scaffold in previous molecules, ensure consistency
+                    elif preserved_scaffold != scaffold:
+                        print(
+                            f"Different scaffold found: expected {preserved_scaffold}, found {scaffold}"
+                        )
+                        all_mols_have_scaffold = False
+
+                    break
+
+            if not has_scaffold and mol and mol.GetNumAtoms() > 5:
+                print(f"Molecule without heterocyclic scaffold: {mol_smiles}")
+                all_mols_have_scaffold = False
+
+        # Traverse children
         for child in node.get("children", []):
-            find_cycloalkyl_incorporations(child, depth + 1)
+            dfs_traverse(child)
 
-    find_cycloalkyl_incorporations(route)
+    # Start traversal
+    dfs_traverse(route)
 
-    if not cycloalkyl_incorporations or max_depth == 0:
-        return False
+    # Strategy is valid if we have multiple molecules and all have the same scaffold
+    strategy_valid = all_mols_have_scaffold and mol_count > 1 and preserved_scaffold is not None
 
-    # Sort by depth (ascending)
-    cycloalkyl_incorporations.sort(key=lambda x: x[1])
+    print(f"Preserved heterocyclic scaffold strategy detected: {strategy_valid}")
+    print(f"Number of molecules examined: {mol_count}")
+    if preserved_scaffold:
+        print(f"Preserved scaffold: {preserved_scaffold}")
 
-    # Check if any cycloalkyl incorporation happens in the first 1/3 of the synthesis
-    late_stage_threshold = max_depth / 3
-    for _, depth in cycloalkyl_incorporations:
-        if depth <= late_stage_threshold:
-            print(
-                f"Late-stage cycloalkyl incorporation found at depth {depth} (threshold: {late_stage_threshold:.1f})"
-            )
-            return True
-
-    print(
-        f"No late-stage cycloalkyl incorporation found. Earliest at depth {cycloalkyl_incorporations[0][1]} (threshold: {late_stage_threshold:.1f})"
-    )
-    return False
+    return strategy_valid

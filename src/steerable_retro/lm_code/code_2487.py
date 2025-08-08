@@ -2,53 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis uses a convergent approach where 3 or more fragments
-    are combined in a late-stage step.
+    This function detects if the synthetic route involves a convergent synthesis
+    where two complex fragments (>10 atoms each) are joined.
     """
-    convergent_coupling_detected = False
-    late_stage_depth = 1  # Consider depth 0 or 1 as late stage
-    min_fragments = 3
+    # Flag to track if we found the pattern
+    found_pattern = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal convergent_coupling_detected
+    def dfs_traverse(node):
+        nonlocal found_pattern
 
-        if node["type"] == "reaction" and depth <= late_stage_depth:
-            # Extract reactants
+        # Only process reaction nodes
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Get reaction SMILES
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # Count number of distinct reactant fragments
-            if len(reactants_smiles) >= min_fragments:
-                convergent_coupling_detected = True
-                print(
-                    f"Multi-fragment convergent coupling detected at depth {depth} with {len(reactants_smiles)} fragments"
-                )
+            # Extract reactants and products
+            reactants_str = rsmi.split(">")[0]
+            product_str = rsmi.split(">")[-1]
 
-        # Traverse children
+            # Parse reactants and product
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
+            product = Chem.MolFromSmiles(product_str)
+
+            if product and len(reactants) >= 2 and all(r for r in reactants):
+                # Count atoms in each reactant
+                reactant_atom_counts = [r.GetNumAtoms() for r in reactants if r]
+
+                # Check if we have at least two complex fragments (>10 atoms each)
+                complex_fragments = [count for count in reactant_atom_counts if count > 10]
+
+                if len(complex_fragments) >= 2:
+                    print(f"Found convergent synthesis with fragment sizes: {reactant_atom_counts}")
+                    found_pattern = True
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    return convergent_coupling_detected
+    return found_pattern

@@ -2,59 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves manipulation of halogen atoms,
-    specifically looking for introduction or removal of iodine while maintaining fluorine atoms.
+    This function detects if the synthesis route involves fragment coupling via aromatic amination
+    (replacement of aromatic chloride with amine).
     """
-    aryl_iodide_pattern = Chem.MolFromSmarts("c[I]")
-    has_halogen_manipulation = False
+    amination_detected = False
 
     def dfs_traverse(node):
-        nonlocal has_halogen_manipulation
+        nonlocal amination_detected
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                try:
-                    reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check if we have at least 2 reactants (indicating coupling)
+            if len(reactants) >= 2:
+                # Check for aromatic chloride in one reactant
+                ar_cl_pattern = Chem.MolFromSmarts("[c][Cl]")
+                # Check for amine in another reactant
+                amine_pattern = Chem.MolFromSmarts("[N;H1,H2]")
+                # Check for aromatic amine in product
+                ar_amine_pattern = Chem.MolFromSmarts("[c][N]")
 
-                    # Check for iodine addition or removal
-                    if reactants_mol and product_mol:
-                        reactant_has_iodine = reactants_mol.HasSubstructMatch(aryl_iodide_pattern)
-                        product_has_iodine = product_mol.HasSubstructMatch(aryl_iodide_pattern)
+                has_ar_cl = False
+                has_amine = False
 
-                        if reactant_has_iodine != product_has_iodine:
-                            print(f"Detected halogen manipulation in reaction: {rsmi}")
-                            has_halogen_manipulation = True
-                except:
-                    print(f"Error processing reaction SMILES: {rsmi}")
+                for reactant in reactants:
+                    if reactant and Chem.MolFromSmiles(reactant):
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if ar_cl_pattern and reactant_mol.HasSubstructMatch(ar_cl_pattern):
+                                has_ar_cl = True
+                            if amine_pattern and reactant_mol.HasSubstructMatch(amine_pattern):
+                                has_amine = True
+
+                if has_ar_cl and has_amine:
+                    if product and Chem.MolFromSmiles(product) and ar_amine_pattern:
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol and product_mol.HasSubstructMatch(ar_amine_pattern):
+                            amination_detected = True
+                            print("Detected aromatic amination for fragment coupling")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return has_halogen_manipulation
+    return amination_detected

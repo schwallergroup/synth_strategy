@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,71 +54,79 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects the use of Boc protection of amines in the synthesis.
+    This function detects a synthetic strategy involving carbonyl reduction
+    (ketone or aldehyde to secondary alcohol).
     """
-    boc_protection_found = False
+    has_carbonyl_reduction = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal boc_protection_found
+    def dfs_traverse(node):
+        nonlocal has_carbonyl_reduction
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            try:
-                rsmi = node["metadata"]["rsmi"]
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for both Boc protection and deprotection reactions
-                boc_reactions = [
-                    # Protection reactions
-                    "Boc amine protection",
-                    "Boc amine protection explicit",
-                    "Boc amine protection with Boc anhydride",
-                    "Boc amine protection (ethyl Boc)",
-                    "Boc amine protection of secondary amine",
-                    "Boc amine protection of primary amine",
-                    # Deprotection reactions
-                    "Boc amine deprotection",
-                    "Boc amine deprotection of guanidine",
-                    "Boc amine deprotection to NH-NH2",
-                    "Tert-butyl deprotection of amine",
-                ]
+            # Get depth from metadata
+            depth = -1
+            if "ID" in node["metadata"]:
+                depth_str = node["metadata"]["ID"]
+                if "Depth:" in depth_str:
+                    try:
+                        depth = int(depth_str.split("Depth:")[1].split()[0])
+                    except:
+                        pass
 
-                for reaction_type in boc_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Found Boc reaction at depth {depth}: {reaction_type}")
-                        boc_protection_found = True
-                        # Continue traversal to find all instances
+            print(f"Checking reaction at depth {depth}: {rsmi}")
 
-                # If no direct reaction match, check for Boc group addition/removal
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check for Boc addition (protection)
-                product_has_boc = checker.check_fg("Carbamic ester", product)
-                reactants_have_boc = any(checker.check_fg("Carbamic ester", r) for r in reactants)
-
-                if product_has_boc and not reactants_have_boc:
-                    print(f"Found Boc protection via functional group analysis at depth {depth}")
-                    boc_protection_found = True
-
-                # Check for Boc removal (deprotection)
-                product_has_amine = checker.check_fg("Primary amine", product) or checker.check_fg(
-                    "Secondary amine", product
+            # Check for carbonyl reduction using specific reaction types
+            if checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi):
+                print(f"Found specific ketone reduction reaction at depth {depth}")
+                has_carbonyl_reduction = True
+            elif checker.check_reaction("Reduction of aldehydes and ketones to alcohols", rsmi):
+                # Verify it's specifically carbonyl to secondary alcohol
+                carbonyl_in_reactants = any(
+                    checker.check_fg("Ketone", r) or checker.check_fg("Aldehyde", r)
+                    for r in reactants
                 )
-                if product_has_amine and reactants_have_boc:
-                    print(f"Found Boc deprotection via functional group analysis at depth {depth}")
-                    boc_protection_found = True
+                sec_alcohol_in_product = checker.check_fg("Secondary alcohol", product)
+                sec_alcohol_in_reactants = any(
+                    checker.check_fg("Secondary alcohol", r) for r in reactants
+                )
 
-            except Exception as e:
-                print(f"Error analyzing reaction at depth {depth}: {e}")
+                if (
+                    carbonyl_in_reactants
+                    and sec_alcohol_in_product
+                    and not sec_alcohol_in_reactants
+                ):
+                    print(
+                        f"Found general reduction reaction with carbonyl to secondary alcohol at depth {depth}"
+                    )
+                    has_carbonyl_reduction = True
+            else:
+                # Alternative check: look for carbonyl in reactants and secondary alcohol in product
+                reactants_str = ".".join(reactants)
+                for reactant in reactants:
+                    if (
+                        checker.check_fg("Ketone", reactant)
+                        or checker.check_fg("Aldehyde", reactant)
+                    ) and not checker.check_fg("Secondary alcohol", reactant):
+                        if checker.check_fg("Secondary alcohol", product) and not (
+                            checker.check_fg("Ketone", product)
+                            and checker.check_fg("Aldehyde", product)
+                        ):
+                            print(
+                                f"Detected carbonyl reduction by functional group analysis at depth {depth}"
+                            )
+                            has_carbonyl_reduction = True
+                            break
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
 
-    if boc_protection_found:
-        print("Detected Boc protection strategy")
-    else:
-        print("No Boc protection strategy detected")
-
-    return boc_protection_found
+    print(f"Final result: carbonyl reduction detected = {has_carbonyl_reduction}")
+    return has_carbonyl_reduction

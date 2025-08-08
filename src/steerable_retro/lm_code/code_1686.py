@@ -2,87 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route includes a deprotection step
-    (acetamide to amine) followed by an amidation reaction.
+    This function detects preservation of stereochemistry throughout the synthesis.
     """
-    # Track reactions in sequence
-    reaction_sequence = []
+    stereocenters_by_depth = {}
 
-    def dfs_traverse(node):
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Find chiral centers
+                chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=True)
+                if chiral_centers:
+                    print(f"Found {len(chiral_centers)} chiral centers at depth {depth}")
+                    stereocenters_by_depth[depth] = len(chiral_centers)
 
-            # Check reaction type
-            product_mol = Chem.MolFromSmiles(product_smiles)
-
-            if product_mol:
-                # Check for deprotection (acetamide to amine)
-                acetamide_pattern = Chem.MolFromSmarts("[#6][#6](=[#8])[#7]")
-                amine_pattern = Chem.MolFromSmarts("[#7;H2]")
-
-                is_deprotection = False
-                for reactant in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if (
-                        reactant_mol
-                        and reactant_mol.HasSubstructMatch(acetamide_pattern)
-                        and product_mol.HasSubstructMatch(amine_pattern)
-                    ):
-                        is_deprotection = True
-                        reaction_sequence.append("deprotection")
-                        print("Detected acetamide deprotection")
-                        break
-
-                # Check for amidation
-                if not is_deprotection:
-                    amide_pattern = Chem.MolFromSmarts("[#6](=[#8])[#7]")
-                    if product_mol.HasSubstructMatch(amide_pattern):
-                        # Check if this is a new amide formation
-                        amide_count_product = len(product_mol.GetSubstructMatches(amide_pattern))
-                        amide_count_reactants = 0
-
-                        for reactant in reactants_smiles:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                amide_count_reactants += len(
-                                    reactant_mol.GetSubstructMatches(amide_pattern)
-                                )
-
-                        if amide_count_product > amide_count_reactants:
-                            reaction_sequence.append("amidation")
-                            print("Detected amide formation")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if deprotection is followed by amidation
-    for i in range(len(reaction_sequence) - 1):
-        if reaction_sequence[i] == "deprotection" and reaction_sequence[i + 1] == "amidation":
+    # Check if stereocenter count is consistent throughout
+    if len(stereocenters_by_depth) >= 2:  # At least two steps with stereocenters
+        stereocenter_counts = list(stereocenters_by_depth.values())
+        if all(count == stereocenter_counts[0] for count in stereocenter_counts):
+            print("Stereochemistry preserved throughout synthesis")
             return True
 
     return False

@@ -2,141 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving C-C bond disconnection at a benzylic position.
+    Detects synthesis routes that use late-stage amide coupling as a key strategy.
     """
-    has_cc_disconnection = False
+    found_late_amide_coupling = False
+    max_depth = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_cc_disconnection
+        nonlocal found_late_amide_coupling, max_depth
 
-        if node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1].split(".")
+        # Track maximum depth to determine what's "late-stage"
+        max_depth = max(max_depth, depth)
 
-                # In retrosynthetic analysis, we're looking at reactions where
-                # one product is formed from multiple reactants (C-C bond formation)
-                if len(reactants) >= 2 and len(product) == 1:
-                    product_mol = Chem.MolFromSmiles(product[0])
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                    # Check if the product has a benzylic carbon
-                    # This includes various benzylic patterns
-                    benzylic_patterns = [
-                        "[c;R]-[CH2;!R]",  # Benzylic CH2
-                        "[c;R]-[CH;!R]",  # Benzylic CH
-                        "[c;R]-[C;!R]",  # Benzylic C
-                    ]
+            # Check for amide coupling
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-                    for pattern in benzylic_patterns:
-                        if product_mol and product_mol.HasSubstructMatch(
-                            Chem.MolFromSmarts(pattern)
-                        ):
-                            print(f"Found potential benzylic position in product: {product[0]}")
+            if all(reactant_mols) and product_mol:
+                # Look for carboxylic acid in reactants
+                acid_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#8;H1]")
+                amine_pattern = Chem.MolFromSmarts("[#7;!$(N=*);!$(NC=O)]")
+                amide_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#7]")
 
-                            # Check if reactants contain carbonyl compounds (aldehydes, ketones)
-                            has_carbonyl = False
-                            for reactant in reactants:
-                                if checker.check_fg("Aldehyde", reactant) or checker.check_fg(
-                                    "Ketone", reactant
-                                ):
-                                    has_carbonyl = True
-                                    print(f"Found carbonyl group in reactant: {reactant}")
+                has_acid = any(mol.HasSubstructMatch(acid_pattern) for mol in reactant_mols)
+                has_amine = any(mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols)
+                has_amide_product = product_mol.HasSubstructMatch(amide_pattern)
 
-                            # Check if this is a known C-C bond forming reaction
-                            cc_forming_reactions = [
-                                "Aldol condensation",
-                                "Grignard_carbonyl",
-                                "Wittig",
-                                "Suzuki",
-                                "Negishi",
-                                "Heck_terminal_vinyl",
-                                "Stille",
-                            ]
+                if (
+                    has_acid and has_amine and has_amide_product and depth <= 1
+                ):  # Depth <= 1 means late-stage
+                    found_late_amide_coupling = True
+                    print(f"Found late-stage amide coupling at depth {depth}")
 
-                            for rxn_type in cc_forming_reactions:
-                                if checker.check_reaction(rxn_type, rsmi):
-                                    print(f"Detected {rxn_type} reaction: {rsmi}")
-                                    has_cc_disconnection = True
-                                    return
-
-                            # If no specific reaction detected, check for general C-C bond formation
-                            # by examining if an aromatic ring is present in both product and one reactant
-                            if has_carbonyl:
-                                aromatic_in_product = False
-                                aromatic_in_reactant = False
-
-                                if checker.check_ring("benzene", product[0]) or checker.check_ring(
-                                    "thiophene", product[0]
-                                ):
-                                    aromatic_in_product = True
-
-                                for reactant in reactants:
-                                    if checker.check_ring(
-                                        "benzene", reactant
-                                    ) or checker.check_ring("thiophene", reactant):
-                                        aromatic_in_reactant = True
-
-                                if aromatic_in_product and aromatic_in_reactant:
-                                    print(
-                                        f"Detected C-C bond disconnection at benzylic position: {rsmi}"
-                                    )
-                                    has_cc_disconnection = True
-                                    return
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return has_cc_disconnection
+
+    print(f"Late-stage amide coupling strategy detected: {found_late_amide_coupling}")
+    return found_late_amide_coupling

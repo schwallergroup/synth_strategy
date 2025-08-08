@@ -2,55 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy (as opposed to convergent).
-    Linear synthesis typically has one main intermediate that is sequentially modified.
+    Detects if the synthetic route follows a linear fragment assembly pattern
+    with at least 3 distinct fragments
     """
-    # Track the number of reactants in each step
-    reactant_counts = []
+    fragment_count = 0
+    is_linear = True
 
     def dfs_traverse(node, depth=0):
+        nonlocal fragment_count, is_linear
+
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
-                reactant_counts.append((len(reactants), depth))
 
+                # Count number of reactants as a proxy for fragments
+                if len(reactants) > 1:
+                    fragment_count += 1
+
+                # If any reaction has more than 2 reactants, it might not be linear
+                if len(reactants) > 2:
+                    is_linear = False
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Sort by depth
-    reactant_counts.sort(key=lambda x: x[1])
+    # A linear assembly should have at least 3 fragment combinations
+    # and maintain a linear pattern (mostly 2 reactants per step)
+    result = fragment_count >= 3 and is_linear
+    if result:
+        print(f"Found linear fragment assembly with {fragment_count} fragment combinations")
 
-    # Check if most steps have exactly 2 reactants (typical for linear synthesis)
-    two_reactant_steps = sum(1 for count, _ in reactant_counts if count == 2)
-
-    # If more than 75% of steps have 2 reactants, consider it linear
-    is_linear = two_reactant_steps >= 0.75 * len(reactant_counts)
-
-    if is_linear:
-        print("Detected linear synthesis strategy")
-
-    return is_linear
+    return result

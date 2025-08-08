@@ -2,120 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a convergent synthesis strategy where two complex fragments
-    are combined in the final step.
+    This function detects a late-stage functionalization strategy, particularly
+    with trifluoromethyl-containing groups.
     """
-    convergent_synthesis_found = False
+    late_stage_functionalization = False
 
-    def dfs_traverse(node):
-        nonlocal convergent_synthesis_found
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_functionalization
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
-            reactants = reactants_part.split(".")
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check if we have at least 2 reactants
-            if len(reactants) >= 2:
-                # Check if reactants are complex enough
-                reactant_mols = []
-                complex_reactants = 0
+            # Check for trifluoromethyl group in product
+            trifluoromethyl_pattern = Chem.MolFromSmarts("[#6]([#9])([#9])[#9]")
 
-                for reactant in reactants:
-                    try:
+            # Check if this is a late-stage reaction (depth <= 2)
+            if depth <= 2:
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(trifluoromethyl_pattern):
+                    # Check if any reactant doesn't have trifluoromethyl
+                    for reactant in reactants:
                         mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            reactant_mols.append(mol)
-                            # Define "complex" as having more than 7 atoms and at least 1 ring
-                            if mol.GetNumAtoms() > 7 and rdMolDescriptors.CalcNumRings(mol) > 0:
-                                complex_reactants += 1
-                    except Exception as e:
-                        print(f"Error processing reactant: {e}")
-                        continue
+                        if mol and not mol.HasSubstructMatch(trifluoromethyl_pattern):
+                            late_stage_functionalization = True
+                            print(
+                                f"Detected late-stage functionalization with trifluoromethyl group: {rsmi}"
+                            )
+                            break
 
-                # Check if product is formed
-                try:
-                    product_mol = Chem.MolFromSmiles(product_part)
-
-                    # Convergent synthesis criteria:
-                    # 1. At least 2 complex reactants
-                    # 2. Check for common coupling reactions
-                    is_coupling_reaction = (
-                        checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                        or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                        or checker.check_reaction("N-arylation", rsmi)
-                        or checker.check_reaction("Buchwald-Hartwig", rsmi)
-                        or checker.check_reaction("Sonogashira", rsmi)
-                        or checker.check_reaction("Heck", rsmi)
-                        or checker.check_reaction("Negishi coupling", rsmi)
-                        or checker.check_reaction("Stille reaction", rsmi)
-                    )
-
-                    if complex_reactants >= 2 or (complex_reactants >= 1 and is_coupling_reaction):
-                        print(
-                            f"Convergent synthesis detected with {complex_reactants} complex fragments"
-                        )
-                        print(f"Reaction SMILES: {rsmi}")
-                        print(f"Is coupling reaction: {is_coupling_reaction}")
-                        convergent_synthesis_found = True
-
-                except Exception as e:
-                    print(f"Error processing product: {e}")
-
-        # Continue traversing
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    return convergent_synthesis_found
+
+    print(f"Late-stage functionalization strategy detected: {late_stage_functionalization}")
+    return late_stage_functionalization

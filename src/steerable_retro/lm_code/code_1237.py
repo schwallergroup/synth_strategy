@@ -2,108 +2,121 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear pattern
-    (each step builds on a single previous product).
-
-    A linear synthesis is defined as a route where:
-    1. Each reaction node has at most one reaction child
-    2. The main structural backbone is preserved throughout the synthesis
+    Detects if the synthesis involves nitration in a late stage (low depth).
     """
-    is_linear = True
+    late_nitration_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+    def dfs_traverse(node):
+        nonlocal late_nitration_found
 
-        # Check if this is a reaction node
-        if node["type"] == "reaction" and "children" in node:
-            # Get product and reactants
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Checking reaction: {rsmi}")
 
-                reactants_smiles = reactants_part.split(".")
-                product_mol = Chem.MolFromSmiles(product_part)
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Count reaction children (non-leaf mol nodes that lead to reactions)
-                reaction_children = 0
-                for child in node.get("children", []):
-                    if child["type"] == "mol" and not child.get("in_stock", False):
-                        if any(
-                            grandchild["type"] == "reaction"
-                            for grandchild in child.get("children", [])
-                        ):
-                            reaction_children += 1
+            # Extract depth information with a default value
+            depth_match = re.search(r"Depth: (\d+)", node.get("metadata", {}).get("ID", ""))
+            depth = int(depth_match.group(1)) if depth_match else 0
 
-                # If more than one reaction child, it's not linear
-                if reaction_children > 1:
-                    print(f"Non-linear synthesis detected (branching at depth {depth}): {rsmi}")
-                    is_linear = False
-                    return
+            # Only consider late stage reactions (depth 0, 1, or 2)
+            if depth <= 2:
+                print(f"Checking late-stage reaction at depth {depth}")
 
-                # If we have multiple reactants, check if one is clearly the main contributor
-                if len(reactants_smiles) > 1 and product_mol:
-                    reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-                    reactant_mols = [mol for mol in reactant_mols if mol]  # Filter out None values
+                # Check for nitration reactions using the checker function
+                nitration_reaction_types = [
+                    "Aromatic nitration with HNO3",
+                    "Aromatic nitration with NO3 salt",
+                    "Aromatic nitration with NO2 salt",
+                    "Aromatic nitration with alkyl NO2",
+                    "Non-aromatic nitration with HNO3",
+                ]
 
-                    # Skip if we couldn't parse molecules
-                    if not reactant_mols:
-                        return
+                is_nitration = False
+                for rxn_type in nitration_reaction_types:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        is_nitration = True
+                        print(f"Found nitration reaction type: {rxn_type}")
+                        break
 
-                    # Find the reactant with the largest common substructure with the product
-                    max_mcs_size = 0
-                    for reactant_mol in reactant_mols:
-                        if (
-                            reactant_mol.GetNumAtoms() < 3
-                        ):  # Skip very small molecules (likely reagents)
-                            continue
+                # If not identified as a standard nitration reaction, check for nitro group appearance
+                if not is_nitration:
+                    # Check if nitro group appears in product but not in reactants
+                    has_nitro_in_product = checker.check_fg("Nitro group", product)
+                    has_nitro_in_reactants = any(
+                        checker.check_fg("Nitro group", reactant) for reactant in reactants
+                    )
 
-                        mcs = rdFMCS.FindMCS(
-                            [reactant_mol, product_mol],
-                            atomCompare=rdFMCS.AtomCompare.CompareElements,
-                            bondCompare=rdFMCS.BondCompare.CompareOrder,
-                            completeRingsOnly=True,
-                            timeout=1,
-                        )
+                    if has_nitro_in_product and not has_nitro_in_reactants:
+                        # Additional check to confirm this is actually a nitration reaction
+                        # and not just a reaction where a nitro group appears for other reasons
+                        is_nitration = True
+                        print(f"Found nitration by nitro group appearance at depth {depth}")
 
-                        if mcs.numAtoms > max_mcs_size:
-                            max_mcs_size = mcs.numAtoms
+                if is_nitration:
+                    late_nitration_found = True
+                    print(f"Found late-stage nitration at depth {depth}")
+                    print(f"Reaction SMILES: {rsmi}")
 
-                    # If no significant common substructure with any reactant, might be convergent
-                    product_size = product_mol.GetNumAtoms()
-                    if max_mcs_size < product_size * 0.5:  # Less than 50% similarity
-                        print(
-                            f"Potentially non-linear synthesis detected (low structural similarity): {rsmi}"
-                        )
-                        # We don't set is_linear=False here as this is just a warning
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return is_linear
+
+    if not late_nitration_found:
+        print("No late-stage nitration found in the route")
+
+    return late_nitration_found

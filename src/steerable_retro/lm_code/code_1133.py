@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,73 +54,163 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving the use of azide as a synthetic intermediate.
+    This function detects a convergent synthesis strategy involving heterocycle formation.
     """
-    azide_formation = False
-    azide_conversion = False
+    # List of heterocycles to check
+    heterocycles = [
+        "tetrazole",
+        "triazole",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "indole",
+        "benzotriazole",
+        "furan",
+        "thiophene",
+        "pyrrole",
+        "pyridine",
+    ]
 
-    def dfs_traverse(node):
-        nonlocal azide_formation, azide_conversion
+    # Heterocycle formation reaction types
+    heterocycle_rxn_types = [
+        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
+        "Huisgen 1,3 dipolar cycloaddition",
+        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
+        "Pyrazole formation",
+        "Azide-nitrile click cycloaddition to tetrazole",
+        "Azide-nitrile click cycloaddition to triazole",
+        "{tetrazole_terminal}",
+        "{tetrazole_connect_regioisomere_1}",
+        "{tetrazole_connect_regioisomere_2}",
+        "{Huisgen_Cu-catalyzed_1,4-subst}",
+        "{Huisgen_Ru-catalyzed_1,5_subst}",
+        "{1,2,4-triazole_acetohydrazide}",
+        "{1,2,4-triazole_carboxylic-acid/ester}",
+        "{pyrazole}",
+        "{benzimidazole_derivatives_carboxylic-acid/ester}",
+        "{benzimidazole_derivatives_aldehyde}",
+        "{benzothiazole}",
+        "{benzoxazole_arom-aldehyde}",
+        "{benzoxazole_carboxylic-acid}",
+        "{thiazole}",
+        "benzimidazole formation from aldehyde",
+        "benzimidazole formation from acyl halide",
+        "benzimidazole formation from ester/carboxylic acid",
+        "benzoxazole formation from aldehyde",
+        "benzoxazole formation from acyl halide",
+        "benzoxazole formation from ester/carboxylic acid",
+        "benzoxazole formation (intramolecular)",
+        "benzothiazole formation from aldehyde",
+        "benzothiazole formation from acyl halide",
+        "benzothiazole formation from ester/carboxylic acid",
+        "Formation of NOS Heterocycles",
+        "Paal-Knorr pyrrole synthesis",
+        "{Paal-Knorr pyrrole}",
+        "{Fischer indole}",
+        "{indole}",
+        "{oxadiazole}",
+        "A3 coupling to imidazoles",
+        "Alkyne-imine cycloaddition",
+    ]
 
+    convergent_steps = []
+    heterocycle_formations = []
+
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            metadata = node.get("metadata", {})
-            rsmi = metadata.get("rsmi", "")
-            if not rsmi:
-                return
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Split reaction SMILES into reactants and products
-            parts = rsmi.split(">")
-            if len(parts) >= 3:
-                reactants_smiles = parts[0]
-                product_smiles = parts[-1]
+                # Check for convergent step (multiple reactants)
+                if len(reactants) >= 2:
+                    print(f"Found convergent step with {len(reactants)} fragments at depth {depth}")
+                    # Track all convergent steps
+                    convergent_steps.append(depth)
 
-                # Check for azide formation
-                if checker.check_fg("Azide", product_smiles) and not checker.check_fg(
-                    "Azide", reactants_smiles
-                ):
-                    print(f"Found azide formation in reaction: {rsmi}")
-                    azide_formation = True
+                    # Check if this reaction forms a heterocycle
+                    heterocycle_formed = False
 
-                    # Check for specific azide formation reactions
-                    if (
-                        checker.check_reaction("Formation of Azides from halogens", rsmi)
-                        or checker.check_reaction("Formation of Azides from boronic acids", rsmi)
-                        or checker.check_reaction("Alcohol to azide", rsmi)
-                        or checker.check_reaction("Amine to azide", rsmi)
-                    ):
-                        print(f"Confirmed azide formation reaction: {rsmi}")
+                    # Check if the reaction is a known heterocycle formation reaction
+                    for rxn_type in heterocycle_rxn_types:
+                        if checker.check_reaction(rxn_type, rsmi):
+                            print(f"Detected heterocycle formation reaction: {rxn_type}")
+                            heterocycle_formed = True
+                            heterocycle_formations.append(depth)
+                            break
 
-                # Check for azide conversion
-                if checker.check_fg("Azide", reactants_smiles) and not checker.check_fg(
-                    "Azide", product_smiles
-                ):
-                    print(f"Found azide conversion in reaction: {rsmi}")
-                    azide_conversion = True
+                    # If not a known reaction type, check if a heterocycle appears in the product but not in ALL reactants
+                    if not heterocycle_formed:
+                        for heterocycle in heterocycles:
+                            if checker.check_ring(heterocycle, product):
+                                # Check if the heterocycle is present in all reactants
+                                reactants_with_heterocycle = 0
+                                for reactant in reactants:
+                                    if checker.check_ring(heterocycle, reactant):
+                                        reactants_with_heterocycle += 1
 
-                    # Check for specific azide conversion reactions
-                    if (
-                        checker.check_reaction("Azide to amine reduction (Staudinger)", rsmi)
-                        or checker.check_reaction(
-                            "Huisgen alkyne-azide 1,3 dipolar cycloaddition", rsmi
-                        )
-                        or checker.check_reaction("Huisgen 1,3 dipolar cycloaddition", rsmi)
-                        or checker.check_reaction(
-                            "Huisgen alkene-azide 1,3 dipolar cycloaddition", rsmi
-                        )
-                        or checker.check_reaction("Huisgen_Cu-catalyzed_1,4-subst", rsmi)
-                        or checker.check_reaction("Huisgen_Ru-catalyzed_1,5_subst", rsmi)
-                        or checker.check_reaction("Huisgen_disubst-alkyne", rsmi)
-                    ):
-                        print(f"Confirmed azide conversion reaction: {rsmi}")
+                                # If heterocycle is in product but not in all reactants, it's likely being formed or modified
+                                if reactants_with_heterocycle < len(reactants):
+                                    print(
+                                        f"Detected heterocycle formation or modification: {heterocycle} at depth {depth}"
+                                    )
+                                    heterocycle_formed = True
+                                    heterocycle_formations.append(depth)
+                                    break
 
-        # Process children
+                    # Additional check for reactions that might form heterocycles but aren't in our predefined lists
+                    if not heterocycle_formed:
+                        # Check if any heterocycle is in the product
+                        product_heterocycles = set()
+                        for heterocycle in heterocycles:
+                            if checker.check_ring(heterocycle, product):
+                                product_heterocycles.add(heterocycle)
+
+                        # Check reactants for heterocycles
+                        reactant_heterocycles = set()
+                        for reactant in reactants:
+                            for heterocycle in heterocycles:
+                                if checker.check_ring(heterocycle, reactant):
+                                    reactant_heterocycles.add(heterocycle)
+
+                        # If there's a heterocycle in the product that's not in any reactant
+                        new_heterocycles = product_heterocycles - reactant_heterocycles
+                        if new_heterocycles:
+                            print(
+                                f"Detected new heterocycle(s) in product: {new_heterocycles} at depth {depth}"
+                            )
+                            heterocycle_formed = True
+                            heterocycle_formations.append(depth)
+
+        # Check if this is the final target molecule and contains a heterocycle
+        elif node["type"] == "mol" and depth == 0:
+            for heterocycle in heterocycles:
+                if checker.check_ring(heterocycle, node["smiles"]):
+                    print(f"Final target molecule contains heterocycle: {heterocycle}")
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(f"Azide formation detected: {azide_formation}")
-    print(f"Azide conversion detected: {azide_conversion}")
+    # Strategy is present if there's at least one convergent step that forms a heterocycle in late-stage synthesis
+    late_stage_convergent_heterocycle = any(
+        depth in convergent_steps and depth <= 4 for depth in heterocycle_formations
+    )
 
-    return azide_formation and azide_conversion
+    print(f"Convergent steps: {convergent_steps}")
+    print(f"Heterocycle formations: {heterocycle_formations}")
+    print(f"Result: {late_stage_convergent_heterocycle}")
+    return late_stage_convergent_heterocycle

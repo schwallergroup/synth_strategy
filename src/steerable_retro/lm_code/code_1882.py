@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,203 +54,95 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the route contains sequential carbonyl reductions (ester→alcohol, aldehyde→alcohol, ketone→alcohol)
+    Detects if the final product contains a trifluoromethyl group,
+    which is introduced via a coupling reaction.
     """
-    carbonyl_reductions = []
+    has_cf3_coupling = False
 
     def dfs_traverse(node, depth=0):
-        print(f"Traversing node at depth {depth}, type: {node['type']}")
+        nonlocal has_cf3_coupling
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and depth == 0:  # Final product
+            final_product_smiles = node["smiles"]
+            print(f"Analyzing final product: {final_product_smiles}")
 
-            print(f"Checking reaction at depth {depth}: {rsmi}")
+            # Check if final product contains CF3 group
+            if not checker.check_fg("Trifluoro group", final_product_smiles):
+                print("Final product does not contain CF3 group")
+                return
 
-            # Check for various carbonyl reductions
-            is_reduction = False
+            print("Final product contains CF3 group")
 
-            # Check for ester reduction
-            if checker.check_reaction("Reduction of ester to primary alcohol", rsmi):
-                for reactant in reactants:
-                    if checker.check_fg("Ester", reactant) and checker.check_fg(
-                        "Primary alcohol", product
-                    ):
-                        print(f"Found ester reduction at depth {depth}")
-                        carbonyl_reductions.append((depth, "ester", rsmi))
-                        is_reduction = True
-                        break
+            # Check if any of the reactions leading to this product is a coupling reaction
+            # that introduced the CF3 group
+            for child in node.get("children", []):
+                if child["type"] == "reaction":
+                    try:
+                        rsmi = child["metadata"]["rsmi"]
+                        reactants = rsmi.split(">")[0].split(".")
+                        product = rsmi.split(">")[-1]
 
-            # Check for Grignard reactions with aldehydes (also a form of carbonyl reduction)
-            elif checker.check_reaction("Grignard from aldehyde to alcohol", rsmi):
-                for reactant in reactants:
-                    if (
-                        checker.check_fg("Aldehyde", reactant)
-                        and checker.check_fg("Primary alcohol", product)
-                        or checker.check_fg("Secondary alcohol", product)
-                    ):
-                        print(f"Found Grignard aldehyde reduction at depth {depth}")
-                        carbonyl_reductions.append((depth, "aldehyde", rsmi))
-                        is_reduction = True
-                        break
+                        print(f"Checking reaction: {rsmi}")
 
-            # Check for aldehyde/ketone reduction
-            elif checker.check_reaction("Reduction of aldehydes and ketones to alcohols", rsmi):
-                for reactant in reactants:
-                    if checker.check_fg("Aldehyde", reactant) and checker.check_fg(
-                        "Primary alcohol", product
-                    ):
-                        print(f"Found aldehyde reduction at depth {depth}")
-                        carbonyl_reductions.append((depth, "aldehyde", rsmi))
-                        is_reduction = True
-                        break
-                    elif checker.check_fg("Ketone", reactant) and checker.check_fg(
-                        "Secondary alcohol", product
-                    ):
-                        print(f"Found ketone reduction at depth {depth}")
-                        carbonyl_reductions.append((depth, "ketone", rsmi))
-                        is_reduction = True
-                        break
+                        # Check if this is a coupling reaction
+                        coupling_reactions = [
+                            "Suzuki coupling with boronic acids",
+                            "Suzuki coupling with boronic acids OTf",
+                            "Suzuki coupling with boronic esters",
+                            "Suzuki coupling with boronic esters OTf",
+                            "Suzuki coupling with sulfonic esters",
+                            "Negishi coupling",
+                            "Stille reaction_aryl",
+                            "Stille reaction_vinyl",
+                            "Stille reaction_benzyl",
+                            "Stille reaction_allyl",
+                            "Stille reaction_aryl OTf",
+                            "Stille reaction_vinyl OTf",
+                            "Sonogashira alkyne_aryl halide",
+                            "Sonogashira acetylene_aryl halide",
+                            "Sonogashira alkyne_aryl OTf",
+                            "Sonogashira acetylene_aryl OTf",
+                            "Hiyama-Denmark Coupling",
+                            "Kumada cross-coupling",
+                            "Buchwald-Hartwig",
+                            "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
+                            "{Suzuki}",
+                        ]
 
-            # Check for carboxylic acid reduction
-            elif checker.check_reaction("Reduction of carboxylic acid to primary alcohol", rsmi):
-                for reactant in reactants:
-                    if checker.check_fg("Carboxylic acid", reactant) and checker.check_fg(
-                        "Primary alcohol", product
-                    ):
-                        print(f"Found carboxylic acid reduction at depth {depth}")
-                        carbonyl_reductions.append((depth, "carboxylic acid", rsmi))
-                        is_reduction = True
-                        break
+                        is_coupling = False
+                        for rxn_type in coupling_reactions:
+                            if checker.check_reaction(rxn_type, rsmi):
+                                print(f"Detected coupling reaction: {rxn_type}")
+                                is_coupling = True
+                                break
 
-            # Additional reduction patterns
-            elif checker.check_reaction("Reduction of nitrile to amine", rsmi):
-                for reactant in reactants:
-                    if checker.check_fg("Nitrile", reactant) and checker.check_fg(
-                        "Primary amine", product
-                    ):
-                        print(f"Found nitrile reduction at depth {depth}")
-                        carbonyl_reductions.append((depth, "nitrile", rsmi))
-                        is_reduction = True
-                        break
+                        if not is_coupling:
+                            # Check if it's a general coupling by looking for key patterns
+                            if "Pd" in rsmi or "Ni" in rsmi:
+                                print("Detected potential coupling reaction with Pd or Ni catalyst")
+                                is_coupling = True
+                            else:
+                                print("Not a coupling reaction")
+                                continue
 
-            # Check for amide reductions
-            elif any(
-                checker.check_reaction(rxn, rsmi)
-                for rxn in [
-                    "Reduction of primary amides to amines",
-                    "Reduction of secondary amides to amines",
-                    "Reduction of tertiary amides to amines",
-                ]
-            ):
-                for reactant in reactants:
-                    if (
-                        checker.check_fg("Primary amide", reactant)
-                        or checker.check_fg("Secondary amide", reactant)
-                        or checker.check_fg("Tertiary amide", reactant)
-                    ) and (
-                        checker.check_fg("Primary amine", product)
-                        or checker.check_fg("Secondary amine", product)
-                        or checker.check_fg("Tertiary amine", product)
-                    ):
-                        print(f"Found amide reduction at depth {depth}")
-                        carbonyl_reductions.append((depth, "amide", rsmi))
-                        is_reduction = True
-                        break
+                        print("Found a coupling reaction")
 
-            # Check for functional group changes that indicate reductions
-            if not is_reduction:
-                # Check for ester to alcohol conversion (may not be caught by specific reaction check)
-                for reactant in reactants:
-                    if checker.check_fg("Ester", reactant) and checker.check_fg(
-                        "Primary alcohol", product
-                    ):
-                        print(f"Found ester to alcohol conversion at depth {depth}")
-                        carbonyl_reductions.append((depth, "ester", rsmi))
-                        is_reduction = True
-                        break
+                        # Check if any reactant contains CF3 group
+                        for i, reactant in enumerate(reactants):
+                            if checker.check_fg("Trifluoro group", reactant):
+                                print(f"Found CF3 group in reactant {i}: {reactant}")
+                                has_cf3_coupling = True
+                                return
 
-                # Check for aldehyde to alcohol conversion
-                for reactant in reactants:
-                    if checker.check_fg("Aldehyde", reactant) and (
-                        checker.check_fg("Primary alcohol", product)
-                        or checker.check_fg("Secondary alcohol", product)
-                    ):
-                        print(f"Found aldehyde to alcohol conversion at depth {depth}")
-                        carbonyl_reductions.append((depth, "aldehyde", rsmi))
-                        is_reduction = True
-                        break
+                        print("No reactant contains CF3 group")
+                    except Exception as e:
+                        print(f"Error analyzing reaction: {e}")
 
-                # Check for ketone to alcohol conversion
-                for reactant in reactants:
-                    if checker.check_fg("Ketone", reactant) and checker.check_fg(
-                        "Secondary alcohol", product
-                    ):
-                        print(f"Found ketone to alcohol conversion at depth {depth}")
-                        carbonyl_reductions.append((depth, "ketone", rsmi))
-                        is_reduction = True
-                        break
-
-                # Check for carboxylic acid to alcohol conversion
-                for reactant in reactants:
-                    if checker.check_fg("Carboxylic acid", reactant) and checker.check_fg(
-                        "Primary alcohol", product
-                    ):
-                        print(f"Found carboxylic acid to alcohol conversion at depth {depth}")
-                        carbonyl_reductions.append((depth, "carboxylic acid", rsmi))
-                        is_reduction = True
-                        break
-
-                # Check for nitrile to amine conversion
-                for reactant in reactants:
-                    if checker.check_fg("Nitrile", reactant) and checker.check_fg(
-                        "Primary amine", product
-                    ):
-                        print(f"Found nitrile to amine conversion at depth {depth}")
-                        carbonyl_reductions.append((depth, "nitrile", rsmi))
-                        is_reduction = True
-                        break
-
-            # Check for oxidation of alcohol to aldehyde (reverse of reduction in retrosynthesis)
-            if not is_reduction:
-                for reactant in reactants:
-                    if checker.check_fg("Primary alcohol", reactant) and checker.check_fg(
-                        "Aldehyde", product
-                    ):
-                        print(
-                            f"Found alcohol oxidation to aldehyde at depth {depth} (reverse reduction)"
-                        )
-                        carbonyl_reductions.append((depth, "alcohol_to_aldehyde", rsmi))
-                        is_reduction = True
-                        break
-                    elif checker.check_fg("Secondary alcohol", reactant) and checker.check_fg(
-                        "Ketone", product
-                    ):
-                        print(
-                            f"Found alcohol oxidation to ketone at depth {depth} (reverse reduction)"
-                        )
-                        carbonyl_reductions.append((depth, "alcohol_to_ketone", rsmi))
-                        is_reduction = True
-                        break
-
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Found {len(carbonyl_reductions)} carbonyl reductions: {carbonyl_reductions}")
-
-    # Sort reductions by depth
-    carbonyl_reductions.sort(key=lambda x: x[0])
-
-    # Check if we have at least 2 reductions and they are sequential (within 2 steps of each other)
-    if len(carbonyl_reductions) >= 2:
-        for i in range(len(carbonyl_reductions) - 1):
-            if abs(carbonyl_reductions[i][0] - carbonyl_reductions[i + 1][0]) <= 2:
-                print(
-                    f"Found sequential carbonyl reductions: {carbonyl_reductions[i][1]} at depth {carbonyl_reductions[i][0]} and {carbonyl_reductions[i+1][1]} at depth {carbonyl_reductions[i+1][0]}"
-                )
-                return True
-
-    return False
+    return has_cf3_coupling

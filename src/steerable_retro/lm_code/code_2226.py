@@ -2,109 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a synthesis preserves a heterocyclic core structure
-    (specifically benzo[b]thiophene) throughout the synthesis.
+    This function detects if the synthetic route involves nitro reduction to amine as a late-stage transformation.
     """
-    # Track if the benzothiophene core is preserved throughout the synthesis
-    core_preserved = True
+    late_stage_nitro_reduction = False
 
-    # Check if the final product (depth 0) has the benzothiophene core
-    if route["type"] == "mol" and "smiles" in route:
-        final_product_has_core = checker.check_ring("benzothiophene", route["smiles"])
-        if not final_product_has_core:
-            print("Final product does not contain benzothiophene core")
-            return False
-
-    # Function to check if the core is preserved in a reaction
-    def check_reaction_preserves_core(reaction_node):
-        if "metadata" not in reaction_node or "rsmi" not in reaction_node["metadata"]:
-            return True  # Skip if no reaction SMILES available
-
-        rsmi = reaction_node["metadata"]["rsmi"]
-        reactants = rsmi.split(">")[0].split(".")
-        product = rsmi.split(">")[-1]
-
-        # Check if product has the core
-        product_has_core = checker.check_ring("benzothiophene", product)
-
-        # Check if any reactant has the core
-        reactant_has_core = any(checker.check_ring("benzothiophene", r) for r in reactants)
-
-        # Core is preserved if it's in both product and at least one reactant
-        return product_has_core == reactant_has_core
-
-    # Traverse the synthesis route
     def dfs_traverse(node):
-        nonlocal core_preserved
+        nonlocal late_stage_nitro_reduction
 
-        # If this is a reaction node, check if it preserves the core
-        if node["type"] == "reaction" and not check_reaction_preserves_core(node):
-            print(
-                f"Core not preserved in reaction: {node.get('metadata', {}).get('rsmi', 'unknown')}"
-            )
-            core_preserved = False
-            return
+        if node["type"] == "reaction" and node.get("depth", 0) == 0:  # Check if it's the final step
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        # Process children
+                try:
+                    # Look for nitro group in reactants and amine in product
+                    nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
+                    amine_pattern = Chem.MolFromSmarts("[NH2]")
+
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol and product_mol.HasSubstructMatch(amine_pattern):
+                        for reactant in reactants:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
+                                print(f"Found late-stage nitro reduction: {rsmi}")
+                                late_stage_nitro_reduction = True
+                except Exception as e:
+                    print(f"Error in nitro reduction detection: {e}")
+
+        # Traverse children
         for child in node.get("children", []):
-            if core_preserved:  # Only continue if core is still preserved
-                dfs_traverse(child)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    if core_preserved:
-        print("Heterocyclic core (benzothiophene) is preserved throughout synthesis")
-    else:
-        print("Heterocyclic core is not preserved throughout synthesis")
-
-    return core_preserved
+    return late_stage_nitro_reduction

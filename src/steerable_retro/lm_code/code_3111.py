@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,118 +54,56 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves a nitrile intermediate that is transformed
-    into a heterocycle in the final steps.
+    Detects a convergent synthesis strategy that maintains a CF3 group
+    throughout the synthesis.
     """
-    has_nitrile_intermediate = False
-    nitrile_to_heterocycle = False
+    found_convergent_step = False
+
+    # Check if target molecule has CF3
+    if route["type"] == "mol" and not checker.check_fg("Trifluoro group", route["smiles"]):
+        print(f"Target molecule does not have CF3 group")
+        return False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_nitrile_intermediate, nitrile_to_heterocycle
+        nonlocal found_convergent_step
 
-        if node["type"] == "mol":
-            # Check if molecule is a nitrile intermediate
-            if checker.check_fg("Nitrile", node["smiles"]) and depth > 0:
-                has_nitrile_intermediate = True
-                print(f"Nitrile intermediate found at depth {depth}: {node['smiles']}")
-
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Check if reaction converts nitrile to heterocycle
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if any reactant has nitrile
-            nitrile_reactants = [r for r in reactants if r and checker.check_fg("Nitrile", r)]
-            reactant_has_nitrile = len(nitrile_reactants) > 0
+            # Check for convergent synthesis (multiple fragments coming together)
+            if len(reactants_smiles) >= 2:
+                # Check if this is a significant fragment coupling
+                significant_fragments = 0
+                for r in reactants_smiles:
+                    mol = Chem.MolFromSmiles(r)
+                    if (
+                        mol and mol.GetNumHeavyAtoms() > 5
+                    ):  # Consider fragments with >5 atoms significant
+                        significant_fragments += 1
 
-            # Comprehensive list of heterocyclic rings that can be formed from nitriles
-            heterocycle_rings = [
-                "pyrazole",
-                "tetrazole",
-                "triazole",
-                "oxadiazole",
-                "thiadiazole",
-                "isoxazole",
-                "isothiazole",
-                "imidazole",
-                "oxazole",
-                "thiazole",
-                "pyrimidine",
-                "pyridazine",
-                "pyrazine",
-                "pyridine",
-            ]
+                if significant_fragments >= 2:
+                    found_convergent_step = True
+                    print(f"Found convergent synthesis step at depth {depth}")
 
-            # Check if product has any heterocyclic ring
-            product_has_heterocycle = any(
-                checker.check_ring(ring, product) for ring in heterocycle_rings
-            )
+            # Check if CF3 is maintained in this reaction
+            reactant_has_cf3 = any(checker.check_fg("Trifluoro group", r) for r in reactants_smiles)
+            product_has_cf3 = checker.check_fg("Trifluoro group", product_smiles)
 
-            # Check if reactants already have the heterocycle
-            reactants_combined = ".".join(reactants)
-            reactants_have_heterocycle = any(
-                checker.check_ring(ring, reactants_combined) for ring in heterocycle_rings
-            )
+            # If reactant had CF3 but product doesn't, CF3 wasn't maintained
+            if reactant_has_cf3 and not product_has_cf3:
+                print(f"CF3 group not maintained at depth {depth}")
+                return False
 
-            # Check for specific nitrile-to-heterocycle reactions
-            nitrile_to_heterocycle_reactions = [
-                "Azide-nitrile click cycloaddition to tetrazole",
-                "Azide-nitrile click cycloaddition to triazole",
-                "pyrazole",
-                "tetrazole_terminal",
-                "tetrazole_connect_regioisomere_1",
-                "tetrazole_connect_regioisomere_2",
-                "1,2,4-triazole_acetohydrazide",
-                "1,2,4-triazole_carboxylic-acid/ester",
-                "3-nitrile-pyridine",
-                "oxadiazole",
-                "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-                "Huisgen 1,3 dipolar cycloaddition",
-            ]
-
-            reaction_is_nitrile_to_heterocycle = any(
-                checker.check_reaction(rxn, rsmi) for rxn in nitrile_to_heterocycle_reactions
-            )
-
-            # If no specific reaction detected, check for general pattern of nitrile conversion to heterocycle
-            if reactant_has_nitrile and product_has_heterocycle and not reactants_have_heterocycle:
-                # This is a more general check for nitrile to heterocycle transformation
-                if not reaction_is_nitrile_to_heterocycle:
-                    # Check if the product has a new heterocycle not present in reactants
-                    new_heterocycle = False
-                    for ring in heterocycle_rings:
-                        if checker.check_ring(ring, product) and not checker.check_ring(
-                            ring, reactants_combined
-                        ):
-                            new_heterocycle = True
-                            print(f"New heterocycle {ring} detected in product")
-                            break
-
-                    reaction_is_nitrile_to_heterocycle = new_heterocycle
-
-            # Check if this is a late-stage reaction (depth <= 3)
-            if (
-                reactant_has_nitrile
-                and product_has_heterocycle
-                and reaction_is_nitrile_to_heterocycle
-                and depth <= 3
-            ):
-                nitrile_to_heterocycle = True
-                print(f"Nitrile to heterocycle transformation found at depth {depth}")
-                print(f"Reaction SMILES: {rsmi}")
-                print(f"Nitrile reactant: {nitrile_reactants[0] if nitrile_reactants else 'None'}")
-                print(f"Heterocycle product: {product}")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if not dfs_traverse(child, depth + 1):
+                return False
 
-    dfs_traverse(route)
+        return True
 
-    result = has_nitrile_intermediate and nitrile_to_heterocycle
-    print(f"Has nitrile intermediate: {has_nitrile_intermediate}")
-    print(f"Has nitrile to heterocycle transformation: {nitrile_to_heterocycle}")
-    print(f"Final result: {result}")
+    # Start traversal and check if CF3 is maintained throughout
+    cf3_maintained = dfs_traverse(route)
 
-    return result
+    return found_convergent_step and cf3_maintained

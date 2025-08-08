@@ -2,67 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects sequential functionalization of a triazine core
-    with at least two substitution steps.
+    Detects if the synthesis follows a linear strategy rather than a convergent one.
+    Linear synthesis typically has one main reactant and one smaller fragment in each step.
     """
-    triazine_substitution_count = 0
-    triazine_pattern = Chem.MolFromSmarts("[#6]1[#7][#6][#7][#6][#7]1")
+    is_linear = True
+    step_count = 0
 
     def dfs_traverse(node):
-        nonlocal triazine_substitution_count
+        nonlocal is_linear, step_count
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            step_count += 1
 
-                # Check if this is a nucleophilic aromatic substitution on triazine
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(triazine_pattern):
-                    # Look for chlorine replacement on triazine
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(triazine_pattern):
-                            # Check if reactant has Cl attached to triazine
-                            cl_triazine_pattern = Chem.MolFromSmarts(
-                                "[Cl]-[#6]1[#7][#6][#7][#6][#7]1"
-                            )
-                            if reactant_mol.HasSubstructMatch(cl_triazine_pattern):
-                                triazine_substitution_count += 1
-                                print(f"Found triazine substitution: {rsmi}")
+            # If any step has more than 2 reactants, it might be convergent
+            if len(reactants) > 2:
+                is_linear = False
+                print(
+                    f"Detected potential convergent step with {len(reactants)} reactants at depth {node['metadata'].get('depth', 'unknown')}"
+                )
 
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Return True if we found at least 2 sequential triazine substitutions
-    result = triazine_substitution_count >= 2
-    print(
-        f"Triazine sequential functionalization detected: {result} (count: {triazine_substitution_count})"
-    )
-    return result
+    # Must have at least 3 steps to be considered a meaningful linear synthesis
+    return is_linear and step_count >= 3

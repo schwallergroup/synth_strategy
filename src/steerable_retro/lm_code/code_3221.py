@@ -2,49 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear rather than convergent strategy.
+    Detects if the synthesis involves a thiol deprotection step.
     """
-    max_branch_factor = 0
+    thiol_deprotection_detected = False
 
     def dfs_traverse(node):
-        nonlocal max_branch_factor
+        nonlocal thiol_deprotection_detected
 
         if node["type"] == "reaction":
-            # Count number of reactants in this reaction
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
-                branch_factor = len(reactants)
-                max_branch_factor = max(max_branch_factor, branch_factor)
+                product = rsmi.split(">")[-1]
+
+                # Check for thiol in product
+                thiol_pattern = Chem.MolFromSmarts("[#6]-[#16H]")
+                product_mol = Chem.MolFromSmiles(product)
+
+                if product_mol and product_mol.HasSubstructMatch(thiol_pattern):
+                    # Check if reactants don't have free thiol
+                    has_free_thiol_in_reactants = False
+
+                    for r in reactants:
+                        r_mol = Chem.MolFromSmiles(r)
+                        if r_mol and r_mol.HasSubstructMatch(thiol_pattern):
+                            has_free_thiol_in_reactants = True
+
+                    if not has_free_thiol_in_reactants:
+                        print("Thiol deprotection detected")
+                        thiol_deprotection_detected = True
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # If max branch factor is 1 or 2, consider it a linear synthesis
-    # (allowing for 2 to account for reagents that aren't part of the main skeleton)
-    is_linear = max_branch_factor <= 2
-    print(f"Maximum branch factor: {max_branch_factor}, Linear synthesis: {is_linear}")
-    return is_linear
+    return thiol_deprotection_detected

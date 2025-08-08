@@ -2,83 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy where a trifluoromethyl group is preserved
-    throughout the synthesis.
+    Detects if the synthetic route contains protection-deprotection sequences,
+    particularly focusing on Boc protection/deprotection and nitro reduction.
     """
-    # Track if CF3 is present in all molecules
-    cf3_present_in_all = True
+    has_boc_protection = False
+    has_boc_deprotection = False
+    has_nitro_reduction = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal cf3_present_in_all
+    def dfs_traverse(node):
+        nonlocal has_boc_protection, has_boc_deprotection, has_nitro_reduction
 
-        if node["type"] == "mol" and not node.get("in_stock", False):
-            # Check for CF3 group in non-starting materials
-            print(f"Checking molecule at depth {depth}: {node['smiles']}")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Use the checker function to detect trifluoromethyl group
-            has_cf3 = checker.check_fg("Trifluoro group", node["smiles"])
+            # Check for Boc protection
+            if any("C(=O)OC(C)(C)C" not in r for r in reactants) and "C(=O)OC(C)(C)C" in product:
+                print("Found Boc protection")
+                has_boc_protection = True
 
-            if not has_cf3:
-                cf3_present_in_all = False
-                print(f"Molecule without CF3 group found: {node['smiles']}")
-            else:
-                print(f"CF3 group found in molecule: {node['smiles']}")
+            # Check for Boc deprotection
+            if "C(=O)OC(C)(C)C" in "".join(reactants) and "C(=O)OC(C)(C)C" not in product:
+                print("Found Boc deprotection")
+                has_boc_deprotection = True
 
-        # Traverse children
+            # Check for nitro reduction
+            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
+            amine_pattern = Chem.MolFromSmarts("[NX3;H2]")
+
+            try:
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
+
+                if (
+                    any(mol and mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols)
+                    and product_mol
+                    and product_mol.HasSubstructMatch(amine_pattern)
+                    and not product_mol.HasSubstructMatch(nitro_pattern)
+                ):
+                    print("Found nitro reduction")
+                    has_nitro_reduction = True
+            except:
+                pass  # Handle parsing errors gracefully
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(f"CF3 preservation strategy detected: {cf3_present_in_all}")
-    return cf3_present_in_all
+    # Return True if at least two protection/deprotection operations are found
+    return (
+        (has_boc_protection and has_boc_deprotection)
+        or has_nitro_reduction
+        or (has_boc_protection and has_nitro_reduction)
+        or (has_boc_deprotection and has_nitro_reduction)
+    )

@@ -2,100 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves reductive amination (aldehyde/ketone + amine → amine).
+    Detects if the synthetic route involves incorporation of a morpholine group
+    in a late-stage reaction.
     """
-    reductive_amination_detected = False
+    morpholine_late_stage = False
 
     def dfs_traverse(node):
-        nonlocal reductive_amination_detected
+        nonlocal morpholine_late_stage
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            depth = node.get("metadata", {}).get("depth", -1)
 
-            # Check if this is a reductive amination reaction
-            if (
-                checker.check_reaction("reductive amination with aldehyde", rsmi)
-                or checker.check_reaction("reductive amination with ketone", rsmi)
-                or checker.check_reaction("reductive amination with alcohol", rsmi)
-            ):
-                print(f"Detected reductive amination: {rsmi}")
-                reductive_amination_detected = True
+            # Check if this is a late-stage reaction (depth 0 or 1)
+            if depth <= 1:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
 
-            # If direct reaction check fails, check for components
-            if not reductive_amination_detected:
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
-                reactants = reactants_str.split(".")
+                reactants = reactants_part.split(".")
 
-                # Check for aldehyde/ketone and amine in reactants
-                has_aldehyde = any(checker.check_fg("Aldehyde", r) for r in reactants)
-                has_ketone = any(checker.check_fg("Ketone", r) for r in reactants)
-                has_amine = any(
-                    checker.check_fg("Primary amine", r) or checker.check_fg("Secondary amine", r)
-                    for r in reactants
-                )
+                # Check for morpholine pattern in reactants
+                morpholine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#8][#6][#6]1")
 
-                # Check if product has amine but not imine (completed reduction)
-                if (
-                    has_amine
-                    and (has_aldehyde or has_ketone)
-                    and checker.check_fg("Secondary amine", product_str)
-                    or checker.check_fg("Tertiary amine", product_str)
-                ):
-                    print(f"Detected possible reductive amination components: {rsmi}")
-                    reductive_amination_detected = True
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(morpholine_pattern):
+                        # Check if product also has morpholine
+                        product_mol = Chem.MolFromSmiles(product_part)
+                        if product_mol and product_mol.HasSubstructMatch(morpholine_pattern):
+                            print("Found late-stage morpholine incorporation")
+                            morpholine_late_stage = True
 
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return reductive_amination_detected
+    return morpholine_late_stage

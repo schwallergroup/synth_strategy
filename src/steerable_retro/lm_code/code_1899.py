@@ -2,85 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects an ester hydrolysis followed by amide formation sequence.
+    Detects a synthetic route that includes nitration of an aromatic system.
     """
-    ester_hydrolysis_reactions = []
-    amide_formation_reactions = []
+    has_aromatic_nitration = False
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node):
+        nonlocal has_aromatic_nitration
+
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for ester hydrolysis
-                ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])")
-                acid_pattern = Chem.MolFromSmarts("[#8]-[#6](=[#8])")
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check for nitric acid or nitronium ion
+            nitric_acid_pattern = Chem.MolFromSmarts("O[N+](=O)[O-]")
 
-                # Check for ester in reactants and acid in product
-                if product_mol and product_mol.HasSubstructMatch(acid_pattern):
-                    for reactant in reactants_smiles:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(ester_pattern):
-                            ester_hydrolysis_reactions.append((depth, node))
-                            print(f"Ester hydrolysis detected at depth {depth}")
-                            break
+            # Check for aromatic system in reactants and nitro-aromatic in product
+            aromatic_pattern = Chem.MolFromSmarts("c")
+            nitro_aromatic_pattern = Chem.MolFromSmarts("c[N+](=O)[O-]")
 
-                # Check for amide formation
-                amide_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#7]")
-                amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
+            has_nitric_acid = any(
+                r and r.HasSubstructMatch(nitric_acid_pattern) for r in reactant_mols
+            )
+            has_aromatic = any(r and r.HasSubstructMatch(aromatic_pattern) for r in reactant_mols)
+            has_nitro_aromatic = product_mol and product_mol.HasSubstructMatch(
+                nitro_aromatic_pattern
+            )
 
-                if product_mol and product_mol.HasSubstructMatch(amide_pattern):
-                    has_acid = False
-                    has_amine = False
-
-                    for reactant in reactants_smiles:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if reactant_mol.HasSubstructMatch(acid_pattern):
-                                has_acid = True
-                            if reactant_mol.HasSubstructMatch(amine_pattern):
-                                has_amine = True
-
-                    if has_acid and has_amine:
-                        amide_formation_reactions.append((depth, node))
-                        print(f"Amide formation detected at depth {depth}")
+            if (
+                (has_nitric_acid or "NO2" in "".join(reactants_smiles))
+                and has_aromatic
+                and has_nitro_aromatic
+            ):
+                has_aromatic_nitration = True
+                print("Found aromatic nitration")
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Check if ester hydrolysis is followed by amide formation
-    if ester_hydrolysis_reactions and amide_formation_reactions:
-        for ester_depth, _ in ester_hydrolysis_reactions:
-            for amide_depth, _ in amide_formation_reactions:
-                if amide_depth < ester_depth:  # Lower depth means later in synthesis
-                    print("Ester hydrolysis followed by amide formation strategy detected")
-                    return True
-
-    return False
+    print(f"Aromatic nitration strategy: {has_aromatic_nitration}")
+    return has_aromatic_nitration

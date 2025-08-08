@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,241 +54,160 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects late-stage incorporation of an amine via nucleophilic substitution
-    or other common methods like reductive amination.
+    Detects if a tricyclic scaffold is preserved throughout the synthesis.
     """
-    late_stage_amine = False
-    incorporation_depth = -1
+    # First identify if the final product has a tricyclic scaffold
+    final_product = None
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_amine, incorporation_depth
-
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
-
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
-
-                # Check for N-alkylation reactions
-                is_n_alkylation = any(
-                    [
-                        checker.check_reaction(
-                            "N-alkylation of primary amines with alkyl halides", rsmi
-                        ),
-                        checker.check_reaction(
-                            "N-alkylation of secondary amines with alkyl halides", rsmi
-                        ),
-                        checker.check_reaction("Methylation with MeI_primary", rsmi),
-                        checker.check_reaction("Methylation with MeI_secondary", rsmi),
-                        checker.check_reaction("Methylation with MeI_tertiary", rsmi),
-                        checker.check_reaction("Methylation", rsmi),
-                        checker.check_reaction("DMS Amine methylation", rsmi),
-                        checker.check_reaction("N-methylation", rsmi),
-                        checker.check_reaction("Eschweiler-Clarke Primary Amine Methylation", rsmi),
-                        checker.check_reaction(
-                            "Eschweiler-Clarke Secondary Amine Methylation", rsmi
-                        ),
-                        checker.check_reaction(
-                            "Reductive methylation of primary amine with formaldehyde", rsmi
-                        ),
-                        checker.check_reaction("Alkylation of amines", rsmi),
-                        checker.check_reaction(
-                            "Williamson Ether Synthesis", rsmi
-                        ),  # Sometimes misclassified
-                    ]
-                )
-
-                # Check for reductive amination reactions
-                is_reductive_amination = any(
-                    [
-                        checker.check_reaction("Reductive amination with aldehyde", rsmi),
-                        checker.check_reaction("Reductive amination with ketone", rsmi),
-                        checker.check_reaction("Reductive amination with alcohol", rsmi),
-                        checker.check_reaction("reductive amination", rsmi),
-                        checker.check_reaction("Mignonac reaction", rsmi),
-                    ]
-                )
-
-                # Check for other amine incorporation methods
-                is_other_amine_incorporation = any(
-                    [
-                        checker.check_reaction("Reduction of primary amides to amines", rsmi),
-                        checker.check_reaction("Reduction of secondary amides to amines", rsmi),
-                        checker.check_reaction("Reduction of tertiary amides to amines", rsmi),
-                        checker.check_reaction("Reduction of nitrile to amine", rsmi),
-                        checker.check_reaction("Azide to amine reduction (Staudinger)", rsmi),
-                        checker.check_reaction("Reduction of nitro groups to amines", rsmi),
-                        checker.check_reaction(
-                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
-                        ),
-                        checker.check_reaction(
-                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
-                        ),
-                        checker.check_reaction(
-                            "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
-                        ),
-                        checker.check_reaction("Amine to azide", rsmi),  # Reverse reaction
-                        checker.check_reaction(
-                            "Primary amine to fluoride", rsmi
-                        ),  # Reverse reaction
-                        checker.check_reaction(
-                            "Primary amine to chloride", rsmi
-                        ),  # Reverse reaction
-                        checker.check_reaction(
-                            "Primary amine to bromide", rsmi
-                        ),  # Reverse reaction
-                        checker.check_reaction("Primary amine to iodide", rsmi),  # Reverse reaction
-                    ]
-                )
-
-                # Manual pattern recognition for N-alkylation when reaction checks fail
-                if not (is_n_alkylation or is_reductive_amination or is_other_amine_incorporation):
-                    # Check if reactants contain halide and amine, and product contains a more substituted amine
-                    has_halide = any(
-                        checker.check_fg("Primary halide", r)
-                        or checker.check_fg("Secondary halide", r)
-                        or checker.check_fg("Tertiary halide", r)
-                        or checker.check_fg("Aromatic halide", r)
-                        or "Cl" in r
-                        or "Br" in r
-                        or "I" in r
-                        for r in reactants_smiles
-                    )
-
-                    has_amine = any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        or checker.check_fg("Tertiary amine", r)
-                        or "NH" in r
-                        or "N(" in r
-                        for r in reactants_smiles
-                    )
-
-                    product_has_amine = (
-                        checker.check_fg("Primary amine", product_smiles)
-                        or checker.check_fg("Secondary amine", product_smiles)
-                        or checker.check_fg("Tertiary amine", product_smiles)
-                    )
-
-                    print(
-                        f"Manual check - Has halide: {has_halide}, Has amine: {has_amine}, Product has amine: {product_has_amine}"
-                    )
-
-                    if has_halide and has_amine and product_has_amine:
-                        is_n_alkylation = True
-                        print("Manually identified potential N-alkylation reaction")
-
-                if is_n_alkylation:
-                    print("N-alkylation reaction detected")
-                    # Verify reactants have appropriate functional groups
-                    has_alkyl_halide = any(
-                        checker.check_fg("Primary halide", r)
-                        or checker.check_fg("Secondary halide", r)
-                        or checker.check_fg("Tertiary halide", r)
-                        or checker.check_fg("Aromatic halide", r)
-                        or "Cl" in r
-                        or "Br" in r
-                        or "I" in r
-                        for r in reactants_smiles
-                    )
-
-                    has_amine = any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        or checker.check_fg("Tertiary amine", r)
-                        or "NH" in r
-                        or "N(" in r
-                        for r in reactants_smiles
-                    )
-
-                    # Verify product has an amine
-                    product_has_amine = (
-                        checker.check_fg("Primary amine", product_smiles)
-                        or checker.check_fg("Secondary amine", product_smiles)
-                        or checker.check_fg("Tertiary amine", product_smiles)
-                    )
-
-                    print(
-                        f"Has alkyl halide: {has_alkyl_halide}, Has amine: {has_amine}, Product has amine: {product_has_amine}"
-                    )
-
-                    if has_alkyl_halide and has_amine and product_has_amine:
-                        late_stage_amine = True
-                        incorporation_depth = depth
-                        print(f"Amine incorporation via N-alkylation detected at depth {depth}")
-
-                elif is_reductive_amination:
-                    print("Reductive amination reaction detected")
-                    # Verify reactants have appropriate functional groups
-                    has_carbonyl = any(
-                        checker.check_fg("Aldehyde", r)
-                        or checker.check_fg("Ketone", r)
-                        or checker.check_fg("Formaldehyde", r)
-                        for r in reactants_smiles
-                    )
-
-                    has_amine = any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        or "NH" in r
-                        for r in reactants_smiles
-                    )
-
-                    # Verify product has an amine
-                    product_has_amine = (
-                        checker.check_fg("Primary amine", product_smiles)
-                        or checker.check_fg("Secondary amine", product_smiles)
-                        or checker.check_fg("Tertiary amine", product_smiles)
-                    )
-
-                    print(
-                        f"Has carbonyl: {has_carbonyl}, Has amine: {has_amine}, Product has amine: {product_has_amine}"
-                    )
-
-                    if has_carbonyl and has_amine and product_has_amine:
-                        late_stage_amine = True
-                        incorporation_depth = depth
-                        print(
-                            f"Amine incorporation via reductive amination detected at depth {depth}"
-                        )
-
-                elif is_other_amine_incorporation:
-                    print("Other amine incorporation reaction detected")
-                    # Verify product has an amine
-                    product_has_amine = (
-                        checker.check_fg("Primary amine", product_smiles)
-                        or checker.check_fg("Secondary amine", product_smiles)
-                        or checker.check_fg("Tertiary amine", product_smiles)
-                    )
-
-                    if product_has_amine:
-                        late_stage_amine = True
-                        incorporation_depth = depth
-                        print(f"Amine incorporation via other method detected at depth {depth}")
-
-                # Special case for the test example - direct pattern matching
-                if depth == 3 and not late_stage_amine:
-                    # Check if this is the specific reaction in the test case
-                    if "Cl[CH2" in rsmi and "NH" in rsmi and "N1" in product_smiles:
-                        print("Special case: Detected N-alkylation pattern in test case")
-                        late_stage_amine = True
-                        incorporation_depth = depth
-
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
-
-        # Traverse children
+    def find_final_product(node):
+        nonlocal final_product
+        if node["type"] == "mol" and final_product is None:
+            final_product = node["smiles"]
+            return
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            find_final_product(child)
 
-    # Start traversal
-    dfs_traverse(route)
+    find_final_product(route)
 
-    print(
-        f"Final result: late_stage_amine={late_stage_amine}, incorporation_depth={incorporation_depth}"
-    )
-    # Late stage is defined as depth <= 3 (closer to final product)
-    return late_stage_amine and incorporation_depth <= 3
+    if not final_product:
+        print("No final product found")
+        return False
+
+    final_mol = Chem.MolFromSmiles(final_product)
+    if not final_mol:
+        print(f"Could not parse final product SMILES: {final_product}")
+        return False
+
+    # Check if final product has a tricyclic scaffold
+    ring_info = final_mol.GetRingInfo()
+    print(f"Final product has {ring_info.NumRings()} rings")
+
+    # Expanded list of tricyclic scaffolds to check
+    tricyclic_rings = [
+        "anthracene",
+        "phenanthrene",
+        "acridine",
+        "carbazole",
+        "dibenzofuran",
+        "dibenzothiophene",
+        "phenothiazine",
+        "phenoxazine",
+        "xanthene",
+        "thioxanthene",
+        "purine",
+        "pteridin",
+        "benzotriazole",
+        "indazole",
+        "benzimidazole",
+        "benzothiazole",
+        "benzoxazole",
+    ]
+
+    # Check if final product contains any of these tricyclic scaffolds
+    final_product_scaffold = None
+    for ring in tricyclic_rings:
+        if checker.check_ring(ring, final_product):
+            final_product_scaffold = ring
+            print(f"Final product contains {ring} scaffold")
+            break
+
+    # If no known tricyclic scaffold is found, check for bicyclic scaffolds that might be part of synthesis
+    bicyclic_rings = [
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "naphthalene",
+        "benzothiophene",
+        "benzofuran",
+        "indazole",
+        "benzimidazole",
+        "benzothiazole",
+        "benzoxazole",
+    ]
+
+    if not final_product_scaffold:
+        # Check for bicyclic scaffolds
+        for ring in bicyclic_rings:
+            if checker.check_ring(ring, final_product):
+                final_product_scaffold = ring
+                print(f"Final product contains bicyclic {ring} scaffold")
+                break
+
+    # If still no scaffold found, check if it has at least 2 connected rings
+    if not final_product_scaffold:
+        if ring_info.NumRings() >= 2:
+            print("Final product has at least 2 rings, using general bicyclic/tricyclic detection")
+            final_product_scaffold = "general_polycyclic"
+        else:
+            print("Final product does not have a suitable polycyclic scaffold")
+            return False
+
+    # Now trace the synthesis route to check if the scaffold is preserved
+    scaffold_preserved = [True]  # Use a list to allow modification in nested function
+
+    def check_scaffold_preservation(node, depth=0):
+        if not scaffold_preserved[0]:
+            return  # Early termination if we already know scaffold is not preserved
+
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            product = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+
+            # Check if the product has the scaffold
+            product_has_scaffold = False
+            if final_product_scaffold not in ["general_polycyclic"]:
+                product_has_scaffold = checker.check_ring(final_product_scaffold, product)
+            else:
+                # For general polycyclic, check number of rings
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    product_ring_info = product_mol.GetRingInfo()
+                    product_has_scaffold = product_ring_info.NumRings() >= 2
+
+            # Check if at least one reactant has the scaffold
+            reactant_has_scaffold = False
+            for reactant in reactants:
+                if final_product_scaffold not in ["general_polycyclic"]:
+                    if checker.check_ring(final_product_scaffold, reactant):
+                        reactant_has_scaffold = True
+                        break
+                else:
+                    # For general polycyclic, check number of rings
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        reactant_ring_info = reactant_mol.GetRingInfo()
+                        if reactant_ring_info.NumRings() >= 2:
+                            reactant_has_scaffold = True
+                            break
+
+            # If product has scaffold but no reactant does, scaffold is not preserved
+            if product_has_scaffold and not reactant_has_scaffold:
+                print(
+                    f"Scaffold not preserved at depth {depth}: Polycyclic scaffold created in this step"
+                )
+                print(f"Reaction: {rsmi}")
+                scaffold_preserved[0] = False
+                return
+
+            # If product doesn't have scaffold but a reactant does, scaffold is not preserved
+            if not product_has_scaffold and reactant_has_scaffold:
+                print(
+                    f"Scaffold not preserved at depth {depth}: Polycyclic scaffold broken in this step"
+                )
+                print(f"Reaction: {rsmi}")
+                scaffold_preserved[0] = False
+                return
+
+        # Continue traversing the route
+        for child in node.get("children", []):
+            check_scaffold_preservation(child, depth + 1)
+
+    check_scaffold_preservation(route)
+
+    if scaffold_preserved[0]:
+        print(f"Polycyclic scaffold ({final_product_scaffold}) preserved throughout synthesis")
+    else:
+        print(f"Polycyclic scaffold ({final_product_scaffold}) not preserved throughout synthesis")
+
+    return scaffold_preserved[0]

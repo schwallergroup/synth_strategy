@@ -2,63 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis preserves stereochemistry from starting materials.
+    Detects if the synthesis route employs C-N bond formation as a key step,
+    particularly in late-stage fragment coupling.
     """
-    has_stereochemistry = False
-    preserves_stereochemistry = True
+    result = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_stereochemistry, preserves_stereochemistry
+        nonlocal result
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and depth <= 1 and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for stereochemistry in SMILES
-            stereo_pattern = re.compile(r"[@]")
+            # Check if we have at least 2 reactants
+            if len(reactants) >= 2:
+                # Look for patterns indicating C-N bond formation
+                # One reactant should have an amine, the other should have a leaving group
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-            # Check product for stereochemistry
-            if stereo_pattern.search(product_smiles):
-                has_stereochemistry = True
-                print(f"Found stereochemistry in product at depth {depth}")
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    # Look for C-N bonds in product that weren't in reactants
+                    cn_bond_pattern = Chem.MolFromSmarts("[#6]-[#7]")
+                    product_cn_bonds = len(product_mol.GetSubstructMatches(cn_bond_pattern))
 
-            # Check if stereochemistry is preserved from reactants
-            reactants_have_stereo = any(stereo_pattern.search(r) for r in reactants_smiles)
-            product_has_stereo = stereo_pattern.search(product_smiles)
+                    # Check reactants
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                    reactant_cn_bonds = sum(
+                        len(mol.GetSubstructMatches(cn_bond_pattern))
+                        for mol in reactant_mols
+                        if mol
+                    )
 
-            if reactants_have_stereo and not product_has_stereo:
-                preserves_stereochemistry = False
-                print(f"Stereochemistry lost at depth {depth}")
+                    # If product has more C-N bonds than reactants combined, and one reactant has NH2
+                    if product_cn_bonds > reactant_cn_bonds and any(
+                        mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols if mol
+                    ):
+                        print(f"Found C-N bond formation at depth {depth}")
+                        result = True
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return True if stereochemistry is present and preserved
-    return has_stereochemistry and preserves_stereochemistry
+    return result

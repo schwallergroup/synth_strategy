@@ -2,62 +2,88 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves fragment joining via amide coupling.
-    This is a common strategy for connecting molecular fragments.
+    Detects a borylation followed by Suzuki coupling sequence.
     """
-    amide_coupling_detected = False
+    # Initialize flags
+    found_borylation = False
+    found_suzuki = False
 
-    def dfs_traverse(node):
-        nonlocal amide_coupling_detected
+    # Track depths
+    borylation_depth = -1
+    suzuki_depth = -1
+
+    def dfs_traverse(node, depth=0):
+        nonlocal found_borylation, found_suzuki, borylation_depth, suzuki_depth
 
         if node["type"] == "reaction":
             # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
+            reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Check for carboxylic acid and amine patterns in reactants and amide in product
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
-            amine_pattern = Chem.MolFromSmarts("[NH2]")
-            amide_pattern = Chem.MolFromSmarts("[C](=O)[NH]")
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-            product_mol = Chem.MolFromSmiles(product_smiles)
+            if not product or not all(reactants):
+                return
 
-            if reactants_mol and product_mol:
-                # Check if carboxylic acid and amine are in reactants and amide is in product
-                if (
-                    reactants_mol.HasSubstructMatch(carboxylic_acid_pattern)
-                    and reactants_mol.HasSubstructMatch(amine_pattern)
-                    and product_mol.HasSubstructMatch(amide_pattern)
-                ):
-                    print("Amide coupling for fragment joining detected")
-                    amide_coupling_detected = True
+            # Check for borylation
+            br_pattern = Chem.MolFromSmarts("[c]-[Br]")
+            boron_pattern = Chem.MolFromSmarts("[c]-[B]")
+
+            if any(
+                r.HasSubstructMatch(br_pattern) for r in reactants
+            ) and product.HasSubstructMatch(boron_pattern):
+                found_borylation = True
+                borylation_depth = depth
+                print(f"Detected borylation at depth {depth}")
+
+            # Check for Suzuki coupling
+            if any(r.HasSubstructMatch(boron_pattern) for r in reactants) and any(
+                r.HasSubstructMatch(br_pattern) for r in reactants
+            ):
+                # Check if product has a biaryl bond
+                biaryl_pattern = Chem.MolFromSmarts("c-c")
+                if product.HasSubstructMatch(biaryl_pattern):
+                    found_suzuki = True
+                    suzuki_depth = depth
+                    print(f"Detected Suzuki coupling at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return amide_coupling_detected
+
+    # Check if both transformations were found in the correct order
+    correct_sequence = found_borylation and found_suzuki and borylation_depth > suzuki_depth
+
+    print(f"Cross-coupling sequence detected: {correct_sequence}")
+    return correct_sequence

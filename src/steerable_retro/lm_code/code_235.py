@@ -2,59 +2,89 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy rather than convergent.
-    Linear synthesis is characterized by each reaction having only one non-commercial reactant.
+    This function detects the construction of a complex heterocyclic system
+    with multiple heterocycles (e.g., thiazole and pyridine).
     """
-    is_linear = True
+    # Track heterocycles at each depth
+    heterocycles_by_depth = {}
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        if node["type"] == "mol":
+            smiles = node["smiles"]
+            depth = node.get("depth", -1)
 
-        if node["type"] == "reaction":
-            # Count non-commercial (non-leaf) reactants
-            non_commercial_reactants = 0
+            mol = Chem.MolFromSmiles(smiles)
+            if mol:
+                # Define patterns for different heterocycles
+                thiazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#16][#6][#6]1")
+                pyridine_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6][#7][#6]1")
 
-            for child in node.get("children", []):
-                if child["type"] == "mol":
-                    if not child.get("in_stock", False):
-                        non_commercial_reactants += 1
+                # Count heterocycles
+                thiazole_count = len(mol.GetSubstructMatches(thiazole_pattern))
+                pyridine_count = len(mol.GetSubstructMatches(pyridine_pattern))
 
-            # If more than one non-commercial reactant, it's not strictly linear
-            if non_commercial_reactants > 1:
-                is_linear = False
-                print(
-                    f"Non-linear (convergent) step detected with {non_commercial_reactants} non-commercial reactants"
-                )
+                heterocycles_by_depth[depth] = {
+                    "thiazole": thiazole_count,
+                    "pyridine": pyridine_count,
+                    "total": thiazole_count + pyridine_count,
+                }
+
+                if thiazole_count > 0 or pyridine_count > 0:
+                    print(
+                        f"At depth {depth}: Found {thiazole_count} thiazoles and {pyridine_count} pyridines"
+                    )
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Call dfs_traverse on the root node
+    # Start traversal
     dfs_traverse(route)
 
-    if is_linear:
-        print("Synthesis follows a linear strategy")
+    # Analyze if we're constructing a complex heterocyclic system
+    depths = sorted(heterocycles_by_depth.keys())
 
-    return is_linear
+    if not depths:
+        return False
+
+    # Check if the final product has multiple heterocycles
+    min_depth = min(depths)
+    complex_system = heterocycles_by_depth[min_depth]["total"] >= 2
+
+    # Check if heterocycles are being added during synthesis
+    if len(depths) > 1:
+        max_depth = max(depths)
+        heterocycle_construction = (
+            heterocycles_by_depth[min_depth]["total"] > heterocycles_by_depth[max_depth]["total"]
+        )
+
+        if heterocycle_construction:
+            print("Heterocycles are being constructed during synthesis")
+
+    print(f"Complex heterocyclic system construction strategy detected: {complex_system}")
+    return complex_system

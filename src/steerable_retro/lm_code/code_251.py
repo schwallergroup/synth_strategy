@@ -2,90 +2,281 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a sequential functional group interconversion strategy:
-    nitro → amine → sulfonamide → N-alkylated sulfonamide
+    Detects if the synthesis route involves a late-stage fragment coupling (C-C bond formation)
+    between two heterocyclic fragments in the second half of the synthesis.
     """
-    # Track if we've seen each transformation in the correct order
-    seen_nitro = False
-    seen_amine = False
-    seen_sulfonamide = False
-    seen_n_alkylated_sulfonamide = False
+    late_stage_coupling = False
 
-    # Track the depth at which each functional group appears
-    nitro_depth = -1
-    amine_depth = -1
-    sulfonamide_depth = -1
-    n_alkylated_depth = -1
+    # List of heterocyclic rings to check
+    heterocycles = [
+        "pyrimidine",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "triazole",
+        "tetrazole",
+        "furan",
+        "thiophene",
+        "pyrrole",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "oxolane",
+        "oxane",
+        "dioxolane",
+        "dioxolene",
+        "trioxane",
+        "dioxepane",
+        "pyridazine",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "thiomorpholine",
+        "aziridine",
+        "azetidine",
+        "azepane",
+        "diazepane",
+        "purine",
+        "carbazole",
+        "acridine",
+        "thiopyran",
+        "thiirane",
+        "thietane",
+        "thiolane",
+        "thiane",
+        "dithiane",
+        "dithiolane",
+        "benzothiophene",
+        "oxathiolane",
+        "dioxathiolane",
+        "thiazolidine",
+        "oxazolidine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+    ]
+
+    # List of C-C coupling reactions to check
+    coupling_reactions = [
+        "Suzuki",
+        "Negishi",
+        "Stille",
+        "Heck",
+        "Sonogashira",
+        "decarboxylative_coupling",
+        "Suzuki coupling with boronic acids",
+        "Suzuki coupling with boronic acids OTf",
+        "Suzuki coupling with sulfonic esters",
+        "Suzuki coupling with boronic esters OTf",
+        "Suzuki coupling with boronic esters",
+        "Stille reaction_vinyl",
+        "Stille reaction_aryl",
+        "Stille reaction_benzyl",
+        "Stille reaction_allyl",
+        "Stille reaction_vinyl OTf",
+        "Stille reaction_aryl OTf",
+        "Stille reaction_benzyl OTf",
+        "Stille reaction_allyl OTf",
+        "Stille reaction_other",
+        "Stille reaction_other OTf",
+        "Heck terminal vinyl",
+        "Oxidative Heck reaction",
+        "Oxidative Heck reaction with vinyl ester",
+        "Heck reaction with vinyl ester and amine",
+        "Negishi coupling",
+        "Hiyama-Denmark Coupling",
+        "Kumada cross-coupling",
+        "Aryllithium cross-coupling",
+        "beta C(sp3) arylation",
+        "Catellani reaction ortho",
+        "Catellani reaction para",
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal seen_nitro, seen_amine, seen_sulfonamide, seen_n_alkylated_sulfonamide
-        nonlocal nitro_depth, amine_depth, sulfonamide_depth, n_alkylated_depth
+        nonlocal late_stage_coupling
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for nitro group
-                if mol.HasSubstructMatch(Chem.MolFromSmarts("[N+](=O)[O-]")):
-                    seen_nitro = True
-                    nitro_depth = depth
-                    print(f"Found nitro group at depth {depth}")
+        if node["type"] == "reaction" and depth <= 3:  # Late stage (second half of synthesis)
+            print(f"Examining reaction at depth {depth}")
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                print(f"Reaction SMILES: {rsmi}")
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for primary amine
-                if mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2]")):
-                    seen_amine = True
-                    amine_depth = depth
-                    print(f"Found primary amine at depth {depth}")
+                print(f"Number of reactants: {len(reactants)}")
+                for i, r in enumerate(reactants):
+                    print(f"Reactant {i+1}: {r}")
+                print(f"Product: {product}")
 
-                # Check for sulfonamide
-                if mol.HasSubstructMatch(Chem.MolFromSmarts("[NH]S(=O)(=O)[#6]")):
-                    seen_sulfonamide = True
-                    sulfonamide_depth = depth
-                    print(f"Found sulfonamide at depth {depth}")
+                # Check if this is a C-C coupling reaction
+                is_coupling = False
+                for reaction_type in coupling_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(f"Detected {reaction_type} coupling reaction")
+                        is_coupling = True
+                        break
 
-                # Check for N-alkylated sulfonamide
-                if mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("[#6][N]S(=O)(=O)[#6]")
-                ) and not mol.HasSubstructMatch(Chem.MolFromSmarts("[NH]S(=O)(=O)[#6]")):
-                    seen_n_alkylated_sulfonamide = True
-                    n_alkylated_depth = depth
-                    print(f"Found N-alkylated sulfonamide at depth {depth}")
+                if not is_coupling:
+                    # Try to detect C-C coupling by checking for specific patterns
+                    # This is a fallback in case the reaction checker doesn't identify the coupling
+                    print("Checking for C-C bond formation manually...")
 
-        # Process children
+                    # Convert SMILES to molecules
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+
+                    if product_mol and all(reactant_mols):
+                        # Check if the product contains heterocycles
+                        product_heterocycles = []
+                        for cycle in heterocycles:
+                            if checker.check_ring(cycle, product):
+                                product_heterocycles.append(cycle)
+
+                        print(f"Product contains heterocycles: {product_heterocycles}")
+
+                        # Need at least two heterocycles in the product
+                        if len(product_heterocycles) >= 2:
+                            # Check if reactants separately contain the heterocycles
+                            reactant_heterocycles = [[] for _ in range(len(reactants))]
+                            for i, reactant in enumerate(reactants):
+                                for cycle in heterocycles:
+                                    if checker.check_ring(cycle, reactant):
+                                        reactant_heterocycles[i].append(cycle)
+
+                            print(f"Reactants contain heterocycles: {reactant_heterocycles}")
+
+                            # Check if we have at least two reactants with heterocycles
+                            heterocycle_containing_reactants = sum(
+                                1 for r_cycles in reactant_heterocycles if r_cycles
+                            )
+
+                            if heterocycle_containing_reactants >= 2:
+                                print("At least two reactants contain heterocycles")
+                                # This is likely a fragment coupling between heterocycles
+                                print("Detected late-stage fragment coupling between heterocycles")
+                                late_stage_coupling = True
+                            else:
+                                print("Not enough reactants contain heterocycles")
+                        else:
+                            print("Product doesn't contain at least two heterocycles")
+                elif len(reactants) < 2:
+                    print("Not enough reactants for fragment coupling")
+                else:
+                    # Check if product contains heterocycles
+                    product_heterocycles = []
+                    for cycle in heterocycles:
+                        if checker.check_ring(cycle, product):
+                            product_heterocycles.append(cycle)
+
+                    print(f"Product contains heterocycles: {product_heterocycles}")
+
+                    # Need at least two heterocycles in the product
+                    if len(product_heterocycles) >= 2:
+                        # Check if reactants separately contain the heterocycles
+                        reactant_heterocycles = [[] for _ in range(len(reactants))]
+                        for i, reactant in enumerate(reactants):
+                            for cycle in heterocycles:
+                                if checker.check_ring(cycle, reactant):
+                                    reactant_heterocycles[i].append(cycle)
+
+                        print(f"Reactants contain heterocycles: {reactant_heterocycles}")
+
+                        # Check if we have at least two reactants with heterocycles
+                        heterocycle_containing_reactants = sum(
+                            1 for r_cycles in reactant_heterocycles if r_cycles
+                        )
+
+                        if heterocycle_containing_reactants >= 2:
+                            # Verify that the heterocycles from different reactants are preserved in the product
+                            # This confirms they were actually coupled together
+
+                            # Check if heterocycles from different reactants are present in product
+                            reactant_indices_with_heterocycles = [
+                                i for i, cycles in enumerate(reactant_heterocycles) if cycles
+                            ]
+
+                            if len(reactant_indices_with_heterocycles) >= 2:
+                                # At least two reactants have heterocycles
+                                print(
+                                    "Verified heterocycles from different reactants are present in product"
+                                )
+                                print("Detected late-stage fragment coupling between heterocycles")
+                                late_stage_coupling = True
+                            else:
+                                print("Heterocycles not distributed across multiple reactants")
+                        else:
+                            print("Not enough reactants contain heterocycles")
+                    else:
+                        print("Product doesn't contain at least two heterocycles")
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if all transformations were found in the correct order
-    correct_sequence = (
-        seen_nitro
-        and seen_amine
-        and seen_sulfonamide
-        and seen_n_alkylated_sulfonamide
-        and nitro_depth > amine_depth > sulfonamide_depth > n_alkylated_depth
-    )
-
-    print(f"Nitro to amine to sulfonamide strategy detected: {correct_sequence}")
-    return correct_sequence
+    return late_stage_coupling

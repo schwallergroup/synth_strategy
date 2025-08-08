@@ -2,85 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving activation of an alcohol as a mesylate
-    followed by nucleophilic substitution with a sulfur nucleophile.
+    Detects the use of Boc protection/deprotection in the synthetic route.
     """
-    # Initialize tracking variables
-    has_alcohol_to_mesylate = False
-    has_mesylate_displacement = False
-
-    # SMARTS patterns
-    alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
-    mesylate_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#16](=[#8])(=[#8])-[#6]")
-    thiol_pattern = Chem.MolFromSmarts("[#6]-[#16;H1]")
-    thioether_pattern = Chem.MolFromSmarts("[#6]-[#16]-[#6]")
+    boc_protection_found = False
 
     def dfs_traverse(node):
-        nonlocal has_alcohol_to_mesylate, has_mesylate_displacement
+        nonlocal boc_protection_found
 
         if node["type"] == "reaction":
-            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            try:
-                # Convert to RDKit molecules
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check for Boc group in product
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if product_mol:
+                boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")
+                if product_mol.HasSubstructMatch(boc_pattern):
+                    # Check if Boc was introduced in this step
+                    boc_in_reactants = False
+                    for r in reactants_smiles:
+                        r_mol = Chem.MolFromSmiles(r)
+                        if r_mol and r_mol.HasSubstructMatch(boc_pattern):
+                            boc_in_reactants = True
+                            break
 
-                # Check for alcohol to mesylate transformation
-                if any(
-                    mol.HasSubstructMatch(alcohol_pattern) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(mesylate_pattern):
-                    print("Detected alcohol to mesylate transformation")
-                    has_alcohol_to_mesylate = True
+                    if not boc_in_reactants:
+                        boc_protection_found = True
+                        print(f"Found Boc protection: {rsmi}")
 
-                # Check for mesylate displacement by thiol
-                if (
-                    any(mol.HasSubstructMatch(mesylate_pattern) for mol in reactant_mols)
-                    and any(mol.HasSubstructMatch(thiol_pattern) for mol in reactant_mols)
-                    and product_mol.HasSubstructMatch(thioether_pattern)
-                    and not product_mol.HasSubstructMatch(mesylate_pattern)
-                ):
-                    print("Detected mesylate displacement by thiol")
-                    has_mesylate_displacement = True
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if the strategy is present
-    strategy_present = has_alcohol_to_mesylate and has_mesylate_displacement
-
-    print(
-        f"Mesylate activation for nucleophilic substitution strategy detected: {strategy_present}"
-    )
-    return strategy_present
+    return boc_protection_found

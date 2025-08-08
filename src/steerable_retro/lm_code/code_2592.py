@@ -2,121 +2,91 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving late-stage reductive amination
-    (aldehyde/ketone + amine → amine bond formation in the final steps).
+    Detects a synthesis strategy that uses alkyl bromide linkers (particularly 1,3-dibromopropane)
+    to connect fragments through ether formations.
     """
-    found_reductive_amination = False
+    # Track key features
+    alkyl_bromide_linker_used = False
+    ether_formations = 0
+
+    # Define SMARTS patterns
+    alkyl_bromide_pattern = Chem.MolFromSmarts("[Br][CH2][CH2][CH2][Br]")
+    mono_bromide_pattern = Chem.MolFromSmarts("[Br][CH2][CH2][CH2][O]")
+    ether_pattern = Chem.MolFromSmarts("[#6]-[O]-[#6]")
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_reductive_amination
+        nonlocal alkyl_bromide_linker_used, ether_formations
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if this is a reductive amination reaction
-            is_reductive_amination = (
-                checker.check_reaction("Reductive amination with aldehyde", rsmi)
-                or checker.check_reaction("Reductive amination with ketone", rsmi)
-                or checker.check_reaction("Reductive amination with alcohol", rsmi)
+            # Check for alkyl bromide linker
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
+
+            for reactant in reactant_mols:
+                if reactant and reactant.HasSubstructMatch(alkyl_bromide_pattern):
+                    alkyl_bromide_linker_used = True
+                    print(f"1,3-dibromopropane linker detected at depth {depth}")
+
+            # Check for mono-bromide intermediate (partially coupled linker)
+            for reactant in reactant_mols:
+                if reactant and reactant.HasSubstructMatch(mono_bromide_pattern):
+                    print(f"Partially coupled linker detected at depth {depth}")
+
+            # Count ethers in reactants and product
+            reactant_ethers = sum(
+                len(mol.GetSubstructMatches(ether_pattern)) for mol in reactant_mols if mol
+            )
+            product_ethers = (
+                len(product_mol.GetSubstructMatches(ether_pattern)) if product_mol else 0
             )
 
-            # If direct reaction check fails, try checking by functional groups
-            if not is_reductive_amination:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                has_carbonyl = False
-                has_amine = False
-
-                for reactant in reactants:
-                    if not reactant:
-                        continue
-
-                    # Check for aldehyde or ketone in reactants
-                    if checker.check_fg("Aldehyde", reactant) or checker.check_fg(
-                        "Ketone", reactant
-                    ):
-                        has_carbonyl = True
-                        print(f"Found carbonyl group in reactant: {reactant}")
-
-                    # Check for primary or secondary amine in reactants
-                    if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                        "Secondary amine", reactant
-                    ):
-                        has_amine = True
-                        print(f"Found amine group in reactant: {reactant}")
-
-                # Check if product has a new C-N bond that wasn't in reactants
-                if has_carbonyl and has_amine:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if (
-                        product_mol
-                        and checker.check_fg("Tertiary amine", product)
-                        or checker.check_fg("Secondary amine", product)
-                    ):
-                        print(f"Found potential reductive amination at depth {depth}: {rsmi}")
-                        is_reductive_amination = True
-
-            # If this is a late-stage reaction (depth <= 1) and is reductive amination
-            if depth <= 1 and is_reductive_amination:
-                found_reductive_amination = True
-                print(f"Detected late-stage reductive amination at depth {depth}: {rsmi}")
+            if product_ethers > reactant_ethers:
+                ether_formations += 1
+                print(f"Ether formation detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Late-stage reductive amination strategy detected: {found_reductive_amination}")
-    return found_reductive_amination
+    # Check if the strategy is present
+    strategy_present = alkyl_bromide_linker_used and ether_formations >= 2
+
+    print(f"Alkyl linker fragment coupling strategy detection:")
+    print(f"  1,3-dibromopropane linker used: {alkyl_bromide_linker_used}")
+    print(f"  Ether formations: {ether_formations}")
+    print(f"  Strategy present: {strategy_present}")
+
+    return strategy_present

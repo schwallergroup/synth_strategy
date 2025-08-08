@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,219 +54,128 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects synthetic routes involving the cleavage of polyethylene glycol chains
-    into smaller fragments.
+    This function detects a synthetic strategy involving amide coupling with
+    halogenated aromatic compounds (specifically difluorobenzene).
     """
-    # Track if we found evidence of PEG chain cleavage
-    has_peg_cleavage = False
-
-    # Define minimum number of ether groups to consider as a PEG chain
-    MIN_ETHER_COUNT = 3
-
-    # PEG pattern - repeating ethylene glycol units
-    PEG_PATTERN = "[OX2](-[CX4]-[CX4])-[CX4]-[CX4]-[OX2]"
-
-    def is_peg_chain(mol_smiles):
-        """Check if molecule contains a PEG-like structure with consecutive ethers"""
-        try:
-            # Check for minimum number of ethers
-            ether_indices = checker.get_fg_atom_indices("Ether", mol_smiles)
-            if not ether_indices or len(ether_indices) < MIN_ETHER_COUNT:
-                return False
-
-            # Check for consecutive ethers (typical PEG structure)
-            mol = Chem.MolFromSmiles(mol_smiles)
-            if not mol:
-                return False
-
-            # Look for ethylene glycol repeating units
-            peg_pattern = Chem.MolFromSmarts(PEG_PATTERN)
-            if mol.HasSubstructMatch(peg_pattern):
-                print(f"Found PEG-like structure with {len(ether_indices)} ether groups")
-                return True
-
-            # Alternative check: look for multiple adjacent ether groups
-            # This helps catch PEG variants
-            ether_atoms = set()
-            for indices_tuple in ether_indices:
-                for atom_idx in indices_tuple[0]:
-                    ether_atoms.add(atom_idx)
-
-            # Check if ether oxygens are connected by short carbon chains
-            connected_ethers = 0
-            for i, indices_i in enumerate(ether_indices):
-                o_i = indices_i[0][1]  # Oxygen atom index
-                for j, indices_j in enumerate(ether_indices):
-                    if i != j:
-                        o_j = indices_j[0][1]  # Oxygen atom index
-                        # Check if these oxygens are separated by 2-3 atoms (typical for PEG)
-                        path = Chem.GetShortestPath(mol, o_i, o_j)
-                        if 3 <= len(path) <= 4:  # Path length includes start and end atoms
-                            connected_ethers += 1
-                            break
-
-            if connected_ethers >= MIN_ETHER_COUNT - 1:
-                print(f"Found PEG-like structure with {connected_ethers} connected ether groups")
-                return True
-
-            return False
-        except Exception as e:
-            print(f"Error in is_peg_chain: {e}")
-            return False
+    # Track if we've found the pattern
+    found_halogenated_aromatic_amide = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_peg_cleavage
-
-        if has_peg_cleavage:
-            return  # Early exit if we already found evidence
+        nonlocal found_halogenated_aromatic_amide
 
         if node["type"] == "reaction":
-            # Extract reactants and products
             try:
-                rsmi = node["metadata"].get("rsmi", "")
-                if not rsmi:
-                    return
+                # Extract reactants and product
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                parts = rsmi.split(">")
-                if len(parts) < 3:
-                    return
+                print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                reactants = parts[0].split(".")
-                products = parts[2].split(".")
+                # Check if this is an amide coupling reaction - check multiple reaction types
+                is_amide_coupling = (
+                    checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                    )
+                    or checker.check_reaction("Acylation of primary amines", rsmi)
+                    or checker.check_reaction("Acylation of secondary amines", rsmi)
+                    or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
+                )
 
-                # Forward direction: Check for PEG cleavage (1 reactant → multiple products)
-                if len(reactants) == 1 and len(products) >= 2:
-                    reactant_smiles = reactants[0]
+                if is_amide_coupling:
+                    print(f"Found amide coupling reaction at depth {depth}")
 
-                    # Check if reactant has PEG-like structure
-                    if is_peg_chain(reactant_smiles):
-                        # Check for known ether cleavage reactions
-                        if (
-                            checker.check_reaction("Ether cleavage to primary alcohol", rsmi)
-                            or checker.check_reaction(
-                                "Cleavage of methoxy ethers to alcohols", rsmi
-                            )
-                            or checker.check_reaction("Cleavage of alkoxy ethers to alcohols", rsmi)
-                            or checker.check_reaction("Williamson Ether Synthesis", rsmi)
-                        ):
-                            print(f"Detected ether cleavage reaction")
-                            has_peg_cleavage = True
-                            return
+                    # Check for halogenated aromatic carboxylic acid in reactants
+                    for reactant in reactants:
+                        if checker.check_fg("Carboxylic acid", reactant) and "F" in reactant:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol:
+                                # Check if it's a difluorobenzene
+                                smiles = Chem.MolToSmiles(mol)
 
-                        # Count ether groups in products
-                        ether_containing_products = 0
-                        total_product_ethers = 0
+                                # Look for patterns indicating difluorobenzene
+                                has_difluoro = False
+                                for pattern in [
+                                    "c(F)c(F)",
+                                    "c(F)cc(F)",
+                                    "c(F)ccc(F)",
+                                    "c1c(F)cccc1F",
+                                ]:
+                                    if pattern in smiles:
+                                        has_difluoro = True
+                                        break
 
-                        for product in products:
-                            if checker.check_fg("Ether", product):
-                                ether_containing_products += 1
-                                product_ether_indices = checker.get_fg_atom_indices(
-                                    "Ether", product
-                                )
-                                total_product_ethers += len(product_ether_indices)
-                                print(f"Product contains {len(product_ether_indices)} ether groups")
+                                # Alternative check using substructure matching
+                                if not has_difluoro:
+                                    difluoro_patterns = [
+                                        "c1c(F)c(F)ccc1",
+                                        "c1c(F)cc(F)cc1",
+                                        "c1c(F)ccc(F)c1",
+                                    ]
+                                    for pattern in difluoro_patterns:
+                                        pattern_mol = Chem.MolFromSmiles(pattern)
+                                        if pattern_mol and mol.HasSubstructMatch(pattern_mol):
+                                            has_difluoro = True
+                                            break
 
-                        # Check if we have multiple products with ethers
-                        if ether_containing_products >= 2:
-                            print(f"Multiple ether-containing products detected")
-                            has_peg_cleavage = True
-                            return
+                                if has_difluoro:
+                                    print(
+                                        f"Found difluorinated aromatic carboxylic acid at depth {depth}"
+                                    )
 
-                        # Check if total ether count decreased (indicating cleavage)
-                        reactant_ether_indices = checker.get_fg_atom_indices(
-                            "Ether", reactant_smiles
+                                    # Check if product has an amide group and preserves the fluorine
+                                    if (
+                                        checker.check_fg("Primary amide", product)
+                                        or checker.check_fg("Secondary amide", product)
+                                        or checker.check_fg("Tertiary amide", product)
+                                    ) and "F" in product:
+                                        print(
+                                            f"Confirmed halogenated aromatic amide coupling at depth {depth}"
+                                        )
+                                        found_halogenated_aromatic_amide = True
+                                        return  # Found what we're looking for, no need to continue
+                else:
+                    # Check if this is an ester hydrolysis to carboxylic acid
+                    is_ester_hydrolysis = checker.check_reaction(
+                        "Ester saponification (methyl deprotection)", rsmi
+                    ) or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
+
+                    if (
+                        is_ester_hydrolysis
+                        and "F" in product
+                        and checker.check_fg("Carboxylic acid", product)
+                    ):
+                        print(
+                            f"Found ester hydrolysis to fluorinated carboxylic acid at depth {depth}"
                         )
-                        if (
-                            total_product_ethers < len(reactant_ether_indices)
-                            and ether_containing_products > 0
-                        ):
-                            print(
-                                f"Ether count decreased: {len(reactant_ether_indices)} -> {total_product_ethers}"
-                            )
-                            has_peg_cleavage = True
-                            return
+                        # This is part of the strategy - preparing the fluorinated acid for coupling
 
-                        # Check for alcohol formation (common in PEG cleavage)
-                        alcohol_products = 0
-                        for product in products:
-                            if (
-                                checker.check_fg("Primary alcohol", product)
-                                or checker.check_fg("Secondary alcohol", product)
-                                or checker.check_fg("Tertiary alcohol", product)
-                            ):
-                                alcohol_products += 1
-
-                        if alcohol_products >= 2:
-                            print(f"Multiple alcohol products from PEG chain cleavage detected")
-                            has_peg_cleavage = True
-                            return
-
-                # Retrosynthetic direction: Check for PEG formation (multiple reactants → 1 product)
-                # This appears as cleavage when traversing retrosynthetically
-                if len(products) == 1 and len(reactants) >= 2:
-                    product_smiles = products[0]
-
-                    # Check if product has PEG-like structure
-                    if is_peg_chain(product_smiles):
-                        # Check for ether formation reactions in reverse
-                        if checker.check_reaction("Williamson Ether Synthesis", rsmi):
-                            print(f"Detected ether formation reaction (retrosynthetic cleavage)")
-                            has_peg_cleavage = True
-                            return
-
-                        # Count ether groups in reactants
-                        ether_containing_reactants = 0
-                        total_reactant_ethers = 0
-
+                    # Check for amide formation with difluorobenzene carboxylic acid
+                    if "F" in product and (
+                        checker.check_fg("Primary amide", product)
+                        or checker.check_fg("Secondary amide", product)
+                        or checker.check_fg("Tertiary amide", product)
+                    ):
                         for reactant in reactants:
-                            if checker.check_fg("Ether", reactant):
-                                ether_containing_reactants += 1
-                                reactant_ether_indices = checker.get_fg_atom_indices(
-                                    "Ether", reactant
-                                )
-                                total_reactant_ethers += len(reactant_ether_indices)
-
-                        # Check if product has more ethers than sum of reactants (ether formation)
-                        product_ether_indices = checker.get_fg_atom_indices("Ether", product_smiles)
-                        if (
-                            len(product_ether_indices) > total_reactant_ethers
-                            and ether_containing_reactants > 0
-                        ):
-                            print(
-                                f"Ether count increased: {total_reactant_ethers} -> {len(product_ether_indices)}"
-                            )
-                            has_peg_cleavage = True
-                            return
-
-                        # Check for alcohol consumption (common in PEG formation)
-                        alcohol_reactants = 0
-                        for reactant in reactants:
-                            if (
-                                checker.check_fg("Primary alcohol", reactant)
-                                or checker.check_fg("Secondary alcohol", reactant)
-                                or checker.check_fg("Tertiary alcohol", reactant)
-                            ):
-                                alcohol_reactants += 1
-
-                        if alcohol_reactants >= 2 and ether_containing_reactants > 0:
-                            print(f"Multiple alcohol reactants forming PEG chain detected")
-                            has_peg_cleavage = True
-                            return
+                            if checker.check_fg("Carboxylic acid", reactant) and "F" in reactant:
+                                mol = Chem.MolFromSmiles(reactant)
+                                if mol:
+                                    # Check for difluorobenzene pattern
+                                    difluoro_patterns = [
+                                        "c1c(F)c(F)ccc1",
+                                        "c1c(F)cc(F)cc1",
+                                        "c1c(F)ccc(F)c1",
+                                    ]
+                                    for pattern in difluoro_patterns:
+                                        pattern_mol = Chem.MolFromSmiles(pattern)
+                                        if pattern_mol and mol.HasSubstructMatch(pattern_mol):
+                                            print(
+                                                f"Found difluorinated aromatic carboxylic acid coupling at depth {depth}"
+                                            )
+                                            found_halogenated_aromatic_amide = True
+                                            return
             except Exception as e:
-                print(f"Error analyzing reaction: {e}")
-
-        # Check if current molecule is a PEG
-        elif node["type"] == "mol" and not node.get("in_stock", False):
-            try:
-                mol_smiles = node["smiles"]
-                if is_peg_chain(mol_smiles):
-                    # If we find a PEG molecule that's not a starting material,
-                    # it might be involved in a cleavage strategy
-                    print(f"Found intermediate PEG-like molecule: {mol_smiles}")
-                    # We don't set has_peg_cleavage=True here because we need to confirm
-                    # with an actual cleavage reaction
-            except Exception as e:
-                print(f"Error analyzing molecule: {e}")
+                print(f"Error processing reaction node: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -272,5 +184,5 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    print(f"PEG chain cleavage strategy detected: {has_peg_cleavage}")
-    return has_peg_cleavage
+    # Return True if the pattern is found
+    return found_halogenated_aromatic_amide

@@ -2,110 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if Suzuki coupling (aryl-aryl bond formation) is used in the synthesis.
+    This function detects the use of trifluoroacetamide as a protecting group for amines.
+    It looks for the formation and subsequent removal of trifluoroacetamide groups.
     """
-    suzuki_coupling_detected = False
+    trifluoroacetamide_pattern = Chem.MolFromSmarts("[NH]C(=O)C(F)(F)F")
+    trifluoroacetamide_formations = 0
 
     def dfs_traverse(node):
-        nonlocal suzuki_coupling_detected
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        nonlocal trifluoroacetamide_formations
+
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for any Suzuki coupling reaction type
-            suzuki_reaction_types = [
-                "Suzuki coupling with boronic acids",
-                "Suzuki coupling with boronic acids OTf",
-                "Suzuki coupling with sulfonic esters",
-                "Suzuki coupling with boronic esters OTf",
-                "Suzuki coupling with boronic esters",
-                "Suzuki",
-            ]
+            # Check for trifluoroacetamide formation
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if product_mol and product_mol.HasSubstructMatch(trifluoroacetamide_pattern):
+                # Check if trifluoroacetamide was not in reactants
+                trifluoroacetamide_in_reactants = False
+                for reactant_smiles in reactants_smiles:
+                    reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(trifluoroacetamide_pattern):
+                        trifluoroacetamide_in_reactants = True
+                        break
 
-            # First check if any of the known Suzuki reaction types match
-            for reaction_type in suzuki_reaction_types:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"{reaction_type} detected in reaction: {rsmi}")
-                    suzuki_coupling_detected = True
-                    break
+                if not trifluoroacetamide_in_reactants:
+                    print("Trifluoroacetamide formation detected")
+                    trifluoroacetamide_formations += 1
 
-            # If no match found by name, check for characteristic Suzuki coupling pattern
-            if not suzuki_coupling_detected:
-                try:
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
-
-                    # Check for boronic acid/ester in reactants
-                    has_boronic = any(
-                        checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
-                        for r in reactants
-                    )
-
-                    # Check for aromatic halide in reactants
-                    has_aryl_halide = any(checker.check_fg("Aromatic halide", r) for r in reactants)
-
-                    # Check for triflate in reactants (alternative leaving group)
-                    has_triflate = any(checker.check_fg("Triflate", r) for r in reactants)
-
-                    # If we have the characteristic reactants for Suzuki coupling
-                    if has_boronic and (has_aryl_halide or has_triflate):
-                        print(f"Suzuki coupling pattern detected in reaction: {rsmi}")
-                        suzuki_coupling_detected = True
-                except Exception as e:
-                    print(f"Error analyzing reaction: {e}")
-
-        # Continue traversing the synthesis route
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Suzuki coupling strategy detected: {suzuki_coupling_detected}")
-    return suzuki_coupling_detected
+    return trifluoroacetamide_formations >= 1

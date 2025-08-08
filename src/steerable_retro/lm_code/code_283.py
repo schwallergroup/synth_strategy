@@ -2,117 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects aromatic fragment coupling via nucleophilic aromatic substitution.
+    This function detects an N-alkylation strategy, specifically
+    alkylation of an indole or similar heterocycle nitrogen.
     """
-    found_snar = False
+    # Track if we found N-alkylation
+    found_n_alkylation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_snar
+    def dfs_traverse(node):
+        nonlocal found_n_alkylation
 
         if node["type"] == "reaction":
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-
-                # Check for nucleophilic aromatic substitution reactions directly
-                if (
-                    checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
-                    or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
-                    or checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
-                ):
-                    found_snar = True
-                    print(
-                        f"Nucleophilic aromatic substitution detected at depth {depth} with reaction type check"
-                    )
-                    return
-
-                # If direct reaction check fails, check for characteristic patterns
+            # Get reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if rsmi:
                 reactants_smiles = rsmi.split(">")[0].split(".")
                 product_smiles = rsmi.split(">")[-1]
 
-                # Check for aromatic halide in reactants
-                has_aromatic_halide = any(
-                    checker.check_fg("Aromatic halide", r) for r in reactants_smiles
-                )
+                # Check for N-alkylation pattern
+                nh_pattern = Chem.MolFromSmarts("[nH]")
+                n_alkyl_pattern = Chem.MolFromSmarts("[n][C]")
+                alkyl_halide_pattern = Chem.MolFromSmarts("[C][Br,Cl,I]")
 
-                if has_aromatic_halide:
-                    # Check for nitrogen nucleophiles in reactants
-                    has_nitrogen_nucleophile = any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        or checker.check_fg("Tertiary amine", r)
-                        or checker.check_fg("Azide", r)
-                        or checker.check_fg("Aniline", r)
-                        for r in reactants_smiles
+                # Convert SMILES to molecules
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+
+                if product_mol and len(reactant_mols) >= 2:
+                    # Check if any reactant has NH and any has alkyl halide
+                    has_nh = any(mol and mol.HasSubstructMatch(nh_pattern) for mol in reactant_mols)
+                    has_alkyl_halide = any(
+                        mol and mol.HasSubstructMatch(alkyl_halide_pattern) for mol in reactant_mols
                     )
 
-                    if has_nitrogen_nucleophile:
-                        # Check if product has new N-aromatic connection
-                        product_mol = Chem.MolFromSmiles(product_smiles)
-                        if product_mol:
-                            # If we have both aromatic halide and nitrogen nucleophile in reactants,
-                            # and the product is formed, it's likely a nucleophilic aromatic substitution
-                            found_snar = True
-                            print(
-                                f"Nucleophilic aromatic substitution detected at depth {depth} with FG checks"
-                            )
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
+                    # Check if product has N-alkyl
+                    has_n_alkyl = product_mol.HasSubstructMatch(n_alkyl_pattern)
+
+                    if has_nh and has_alkyl_halide and has_n_alkyl:
+                        found_n_alkylation = True
+                        print("Found N-alkylation reaction")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    return found_snar
+    return found_n_alkylation

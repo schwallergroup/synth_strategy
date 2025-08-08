@@ -2,77 +2,185 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthetic route contains a reductive amination step
-    (aldehyde + amine -> alkylated amine)
+    This function detects if the synthetic route involves multiple protection and deprotection steps.
+    Returns True if there are at least 2 protection/deprotection steps combined.
     """
-    found_reductive_amination = False
+    protection_count = 0
+    deprotection_count = 0
+
+    # List of common protecting groups
+    protecting_groups = [
+        "Boc",
+        "Silyl protective group",
+        "TMS ether protective group",
+        "Acetal/Ketal",
+        "Carbamic ester",
+    ]
+
+    # List of protection/deprotection reaction types
+    protection_reactions = [
+        "Alcohol protection with silyl ethers",
+        "Boc amine protection",
+        "Boc amine protection explicit",
+        "Boc amine protection with Boc anhydride",
+        "Boc amine protection (ethyl Boc)",
+        "Boc amine protection of secondary amine",
+        "Boc amine protection of primary amine",
+        "Protection of carboxylic acid",
+        "Aldehyde or ketone acetalization",
+        "Diol acetalization",
+    ]
+
+    deprotection_reactions = [
+        "Alcohol deprotection from silyl ethers",
+        "Alcohol deprotection from silyl ethers (double)",
+        "Alcohol deprotection from silyl ethers (diol)",
+        "Boc amine deprotection",
+        "Boc amine deprotection of guanidine",
+        "Boc amine deprotection to NH-NH2",
+        "Deprotection of carboxylic acid",
+        "Acetal hydrolysis to diol",
+        "Acetal hydrolysis to aldehyde",
+        "Ketal hydrolysis to ketone",
+        "Tert-butyl deprotection of amine",
+        "TMS deprotection from alkyne",
+        "COOH ethyl deprotection",
+        "Hydroxyl benzyl deprotection",
+        "Carboxyl benzyl deprotection",
+        "Cleavage of methoxy ethers to alcohols",
+        "Cleavage of alkoxy ethers to alcohols",
+        "Ether cleavage to primary alcohol",
+        "N-glutarimide deprotection",
+        "Phthalimide deprotection",
+    ]
 
     def dfs_traverse(node):
-        nonlocal found_reductive_amination
+        nonlocal protection_count, deprotection_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reaction_found = False
 
-            # Check if we have an aldehyde in reactants
-            aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
+                # Check for protection reactions
+                for reaction_type in protection_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        protection_count += 1
+                        print(f"Found protection step ({reaction_type}), count: {protection_count}")
+                        reaction_found = True
+                        break
 
-            # Check if we have a secondary amine in reactants
-            amine_pattern = Chem.MolFromSmarts("[N;H1]")
+                # Check for deprotection reactions if no protection reaction was found
+                if not reaction_found:
+                    for reaction_type in deprotection_reactions:
+                        if checker.check_reaction(reaction_type, rsmi):
+                            deprotection_count += 1
+                            print(
+                                f"Found deprotection step ({reaction_type}), count: {deprotection_count}"
+                            )
+                            reaction_found = True
+                            break
 
-            # Check for tertiary amine in product (specifically with a CH2 connected)
-            tertiary_amine_pattern = Chem.MolFromSmarts("[#6]-[N](-[#6])-[#6]")
+                # If no specific reaction type was found, check for protecting group changes
+                if not reaction_found:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-            reactants = reactants_part.split(".")
-            has_aldehyde = False
-            has_amine = False
+                    # Check for protection (protecting group in product but not in reactants)
+                    product_protecting_groups = []
+                    for pg in protecting_groups:
+                        if checker.check_fg(pg, product):
+                            product_protecting_groups.append(pg)
 
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(aldehyde_pattern):
-                        has_aldehyde = True
-                    if mol and mol.HasSubstructMatch(amine_pattern):
-                        has_amine = True
-                except:
-                    continue
+                    reactant_protecting_groups = []
+                    for reactant in reactants:
+                        for pg in protecting_groups:
+                            if checker.check_fg(pg, reactant):
+                                reactant_protecting_groups.append(pg)
 
-            try:
-                product_mol = Chem.MolFromSmiles(product_part)
-                has_tertiary_amine = product_mol and product_mol.HasSubstructMatch(
-                    tertiary_amine_pattern
-                )
-            except:
-                has_tertiary_amine = False
+                    # New protecting groups added (protection)
+                    new_protecting_groups = [
+                        pg
+                        for pg in product_protecting_groups
+                        if pg not in reactant_protecting_groups
+                    ]
+                    if new_protecting_groups:
+                        protection_count += 1
+                        print(
+                            f"Found protection step (detected {new_protecting_groups[0]}), count: {protection_count}"
+                        )
 
-            if has_aldehyde and has_amine and has_tertiary_amine:
-                print("Found reductive amination: aldehyde + amine -> tertiary amine")
-                found_reductive_amination = True
+                    # Protecting groups removed (deprotection)
+                    removed_protecting_groups = [
+                        pg
+                        for pg in reactant_protecting_groups
+                        if pg not in product_protecting_groups
+                    ]
+                    if removed_protecting_groups:
+                        deprotection_count += 1
+                        print(
+                            f"Found deprotection step (removed {removed_protecting_groups[0]}), count: {deprotection_count}"
+                        )
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return found_reductive_amination
+
+    print(f"Total protection steps: {protection_count}")
+    print(f"Total deprotection steps: {deprotection_count}")
+
+    # Return True if there are at least 2 protection/deprotection steps combined
+    return (protection_count + deprotection_count) >= 2

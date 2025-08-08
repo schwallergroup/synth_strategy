@@ -2,143 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthesis strategy involving multiple C-O bond formations.
+    Detects a synthetic strategy involving multiple heterocyclic moieties
+    (thiophene, benzimidazole, and indole).
     """
-    co_formation_reactions = []
+    has_thiophene = False
+    has_benzimidazole = False
+    has_indole = False
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            print(f"Depth {depth}, Examining reaction: {rsmi}")
+    def dfs_traverse(node):
+        nonlocal has_thiophene, has_benzimidazole, has_indole
 
-            # Check for various C-O bond formation reactions
-            co_formation_reaction_types = [
-                "Williamson Ether Synthesis",
-                "Esterification of Carboxylic Acids",
-                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
-                "Schotten-Baumann to ester",
-                "Transesterification",
-                "Alcohol protection with silyl ethers",
-                "O-alkylation of carboxylic acids with diazo compounds",
-                "Formation of Sulfonic Esters",
-                "Oxidative esterification of primary alcohols",
-                "Mitsunobu esterification",
-                "Mitsunobu aryl ether",
-                "Chan-Lam alcohol",
-                "Chan-Lam etherification",
-                "Acetic anhydride and alcohol to ester",
-                "Alcohol to ether",
-                "Williamson Ether Synthesis (intra to epoxy)",
-                "Oxidation of alcohol to carboxylic acid",
-                "Oxidation of aldehydes to carboxylic acids",
-                "Oxidation of alcohol and aldehyde to ester",
-            ]
+        if node["type"] == "mol" and "smiles" in node:
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Check for heterocycles
+                    thiophene_pattern = Chem.MolFromSmarts("c1cscc1")
+                    benzimidazole_pattern = Chem.MolFromSmarts("c1nc2ccccc2[nH]1")
+                    indole_pattern = Chem.MolFromSmarts("c1[nH]c2ccccc2c1")
 
-            found_co_formation = False
-            for reaction_type in co_formation_reaction_types:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Found C-O bond formation: {reaction_type}")
-                    co_formation_reactions.append((depth, reaction_type, rsmi))
-                    found_co_formation = True
-                    break
+                    if mol.HasSubstructMatch(thiophene_pattern):
+                        has_thiophene = True
+                        print("Found thiophene moiety")
 
-            # If no specific reaction type was found, check for C-O bond formation by examining
-            # functional groups in reactants and products
-            if not found_co_formation:
-                try:
-                    reactants_part = rsmi.split(">")[0]
-                    products_part = rsmi.split(">")[-1]
+                    if mol.HasSubstructMatch(benzimidazole_pattern):
+                        has_benzimidazole = True
+                        print("Found benzimidazole moiety")
 
-                    # Check for alcohol, ether, or ester formation
-                    reactants_have_alcohol = any(
-                        checker.check_fg("Primary alcohol", r)
-                        or checker.check_fg("Secondary alcohol", r)
-                        or checker.check_fg("Tertiary alcohol", r)
-                        or checker.check_fg("Aromatic alcohol", r)
-                        for r in reactants_part.split(".")
-                    )
+                    if mol.HasSubstructMatch(indole_pattern):
+                        has_indole = True
+                        print("Found indole moiety")
+            except:
+                print(f"Error processing molecule SMILES: {node['smiles']}")
 
-                    product_has_ether = checker.check_fg("Ether", products_part)
-                    product_has_ester = checker.check_fg("Ester", products_part)
-
-                    if reactants_have_alcohol and (product_has_ether or product_has_ester):
-                        print(f"Found C-O bond formation through FG analysis")
-                        co_formation_reactions.append((depth, "C-O bond formation", rsmi))
-                except Exception as e:
-                    print(f"Error in FG analysis: {e}")
-
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Total C-O bond formations found: {len(co_formation_reactions)}")
-    for depth, reaction_type, rsmi in co_formation_reactions:
-        print(f"Depth {depth}: {reaction_type} - {rsmi}")
-
-    # Check if we have at least 2 C-O bond formations
-    if len(co_formation_reactions) < 2:
-        return False
-
-    # Sort reactions by depth to check if they're sequential
-    co_formation_reactions.sort(key=lambda x: x[0])
-
-    # Check if the reactions are in different branches or in sequence
-    # For simplicity, we'll consider them sequential if they occur at different depths
-    depths = [d for d, _, _ in co_formation_reactions]
-    unique_depths = set(depths)
-
-    print(f"Reaction depths: {depths}")
-    print(f"Unique depths: {unique_depths}")
-
-    # If we have at least 2 different depths, consider it sequential
-    return len(unique_depths) >= 2
+    # Strategy is present if at least two different heterocycles are found
+    heterocycle_count = sum([has_thiophene, has_benzimidazole, has_indole])
+    return heterocycle_count >= 2

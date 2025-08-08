@@ -2,61 +2,51 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route follows a linear synthesis pattern
-    (as opposed to convergent synthesis with multiple complex fragments).
+    This function detects retention of aryl halide (specifically aryl iodide) throughout the synthesis.
+    It checks if aryl iodide is present in all molecules along the main synthetic path.
     """
-    # Track the maximum number of complex reactants in any step
-    max_complex_reactants = 0
+    aryl_iodide_present_in_all = True
 
     def dfs_traverse(node):
-        nonlocal max_complex_reactants
+        nonlocal aryl_iodide_present_in_all
 
-        if node["type"] == "reaction":
-            # Extract reactants
-            rsmi = node["metadata"].get("rsmi", "")
-            if rsmi:
-                reactants_smiles = rsmi.split(">")[0].split(".")
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                aryl_iodide_pattern = Chem.MolFromSmarts("[c][I]")
+                if not mol.HasSubstructMatch(aryl_iodide_pattern):
+                    # If this is a main product (not a reagent), check for aryl iodide
+                    if not node.get("in_stock", False):
+                        aryl_iodide_present_in_all = False
+                        print(f"Aryl iodide not found in molecule: {node['smiles']}")
 
-                # Count complex reactants (those with more than 10 atoms)
-                complex_reactant_count = 0
-                for r in reactants_smiles:
-                    r_mol = Chem.MolFromSmiles(r)
-                    if r_mol and r_mol.GetNumAtoms() > 10:
-                        complex_reactant_count += 1
-
-                max_complex_reactants = max(max_complex_reactants, complex_reactant_count)
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # If no step has more than one complex reactant, it's a linear synthesis
-    is_linear = max_complex_reactants <= 1
-    if is_linear:
-        print("Linear synthesis strategy detected")
-
-    return is_linear
+    return aryl_iodide_present_in_all

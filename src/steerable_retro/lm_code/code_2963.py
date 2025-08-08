@@ -2,154 +2,105 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving propargylation of a ketone
-    to form a propargyl alcohol.
+    Detects if the synthesis follows a linear (non-convergent) strategy.
+
+    A linear synthesis has each reaction step using only one non-starting material
+    (one molecule that needs to be synthesized). If any reaction step combines
+    multiple complex molecules (non-starting materials), the synthesis is considered
+    convergent.
+
+    Args:
+        route: A synthesis route tree following the SynthesisRoute schema
+
+    Returns:
+        bool: True if the synthesis is linear, False if convergent
     """
-    from rdkit import Chem
-    from rdkit.Chem import AllChem
+    is_linear = True
+    debug = False  # Set to True to enable debug prints
 
-    has_propargylation = False
-
-    def dfs_traverse(node):
-        nonlocal has_propargylation
+    def dfs_traverse(node, depth=0):
+        nonlocal is_linear
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                try:
-                    rsmi = node["metadata"]["rsmi"]
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+            # Extract reaction SMILES
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = [r for r in rsmi.split(">")[0].split(".") if r.strip()]
 
-                    # Check for ketone in reactants
-                    ketone_in_reactants = False
-                    ketone_reactant = None
-                    for reactant in reactants:
-                        if checker.check_fg("Ketone", reactant):
-                            ketone_in_reactants = True
-                            ketone_reactant = reactant
-                            break
+            # Get non-starting material children that are used as reactants
+            non_starting_material_children = []
 
-                    # Check for propargyl alcohol in product
-                    has_alcohol = checker.check_fg(
-                        "Secondary alcohol", product
-                    ) or checker.check_fg("Tertiary alcohol", product)
-                    has_alkyne = checker.check_fg("Alkyne", product)
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", True):
+                    # Check if this non-starting material is actually used in the reaction
+                    # We need to compare the child SMILES with reactant SMILES
+                    # This is challenging due to atom mapping differences, so we'll use a basic approach
 
-                    # Check for propargyl reagent in reactants
-                    has_propargyl_reagent = False
-                    for reactant in reactants:
-                        if checker.check_fg("Alkyne", reactant):
-                            # Check if it's a terminal alkyne or propargyl-like structure
-                            mol = Chem.MolFromSmiles(reactant)
-                            if mol:
-                                # Check for terminal alkyne or propargyl group
-                                terminal_alkyne_pattern = Chem.MolFromSmarts("C#C[H]")
-                                propargyl_pattern = Chem.MolFromSmarts("C#CC")
-                                if mol.HasSubstructMatch(
-                                    terminal_alkyne_pattern
-                                ) or mol.HasSubstructMatch(propargyl_pattern):
-                                    has_propargyl_reagent = True
+                    # Get the unmapped SMILES for comparison
+                    child_mol = Chem.MolFromSmiles(child["smiles"])
+                    if child_mol:
+                        child_smiles_unmapped = Chem.MolToSmiles(child_mol)
+
+                        # Check if this child appears in any of the reactants
+                        # We'll consider it a match if it's a substring of a reactant
+                        # or if a reactant is a substring of it (accounting for atom mapping differences)
+                        is_reactant = False
+                        for reactant in reactants_smiles:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol:
+                                reactant_smiles_unmapped = Chem.MolToSmiles(reactant_mol)
+
+                                # Check if either is a substructure of the other
+                                if (
+                                    child_smiles_unmapped in reactant_smiles_unmapped
+                                    or reactant_smiles_unmapped in child_smiles_unmapped
+                                ):
+                                    is_reactant = True
                                     break
 
-                    # Check for relevant reaction types
-                    is_relevant_reaction = (
-                        checker.check_reaction("Grignard from ketone to alcohol", rsmi)
-                        or checker.check_reaction(
-                            "Reaction of alkyl halides with organometallic coumpounds", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Addition of primary amines to ketones/thiocarbonyls", rsmi
-                        )
-                        or checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi)
-                        or checker.check_reaction("Grignard with CO2 to carboxylic acid", rsmi)
-                        or checker.check_reaction(
-                            "Olefination of ketones with Grignard reagents", rsmi
-                        )
+                        if is_reactant:
+                            non_starting_material_children.append(child)
+
+            # If more than one non-starting material, it's convergent
+            if len(non_starting_material_children) > 1:
+                if debug:
+                    print(
+                        f"Depth {depth}: Convergent step detected with {len(non_starting_material_children)} non-starting materials"
                     )
-
-                    # Check if the alkyne is near the alcohol in the product
-                    is_propargyl_alcohol = False
-                    if has_alcohol and has_alkyne:
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol:
-                            # Look for propargyl alcohol pattern (alkyne within 3 bonds of OH)
-                            propargyl_alcohol_pattern = Chem.MolFromSmarts("C#CC[OH]")
-                            propargyl_alcohol_pattern2 = Chem.MolFromSmarts("C#CC([OH])")
-                            propargyl_alcohol_pattern3 = Chem.MolFromSmarts("C#CCC[OH]")
-                            if (
-                                product_mol.HasSubstructMatch(propargyl_alcohol_pattern)
-                                or product_mol.HasSubstructMatch(propargyl_alcohol_pattern2)
-                                or product_mol.HasSubstructMatch(propargyl_alcohol_pattern3)
-                            ):
-                                is_propargyl_alcohol = True
-
-                    # Check if this is a propargylation reaction
-                    if (
-                        ketone_in_reactants
-                        and is_propargyl_alcohol
-                        and (is_relevant_reaction or has_propargyl_reagent)
-                    ):
-                        print(f"Found propargylation of ketone: {rsmi}")
-                        has_propargylation = True
-
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
+                    print(f"Reaction SMILES: {rsmi}")
+                    for i, child in enumerate(non_starting_material_children):
+                        print(f"  Non-starting material {i+1}: {child['smiles']}")
+                is_linear = False
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    print(f"Propargylation of ketone strategy detected: {has_propargylation}")
-    return has_propargylation
+    return is_linear

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,136 +54,219 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if a carbonyl addition reaction (like aldol) is present in the synthesis.
+    This function detects if the synthetic route involves modification of an amino acid
+    side chain while preserving the amino acid backbone.
     """
-    carbonyl_addition_found = False
+    # Track amino acid backbone and modifications
+    amino_acid_backbone_present = False
+    side_chain_modifications = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal carbonyl_addition_found
-
-        # If we already found a carbonyl addition, no need to continue traversal
-        if carbonyl_addition_found:
-            return
+    def dfs_traverse(node):
+        nonlocal amino_acid_backbone_present, side_chain_modifications
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
+                reactants_smiles = reactants_part.split(".")
 
-                # Check for specific carbonyl addition reactions
-                carbonyl_addition_reactions = [
-                    "Aldol condensation",
-                    "Michael addition",
-                    "Michael addition methyl",
-                    "aza-Michael addition aromatic",
-                    "aza-Michael addition secondary",
-                    "aza-Michael addition primary",
-                    "thia-Michael addition",
-                    "oxa-Michael addition",
-                    "Henry Reaction",
-                    "Knoevenagel Condensation",
-                    "Grignard_carbonyl",
-                    "Grignard from aldehyde to alcohol",
-                    "Grignard from ketone to alcohol",
-                    "reductive amination with aldehyde",
-                    "reductive amination with ketone",
-                    "reductive amination with alcohol",
-                    "Addition of primary amines to aldehydes/thiocarbonyls",
-                    "Addition of primary amines to ketones/thiocarbonyls",
-                    "Addition of secondary amines to ketones/thiocarbonyls",
-                    "Addition of secondary amines to aldehydes/thiocarbonyls",
-                ]
+                # Check for amino acid backbone in reactants and product
+                reactant_has_aa = any(has_amino_acid_backbone(r) for r in reactants_smiles)
+                product_has_aa = has_amino_acid_backbone(product_part)
 
-                for reaction_type in carbonyl_addition_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        carbonyl_addition_found = True
-                        print(f"Found carbonyl addition reaction: {reaction_type}")
-                        return
+                if reactant_has_aa and product_has_aa:
+                    amino_acid_backbone_present = True
+                    print(f"Found amino acid backbone in reaction: {rsmi}")
 
-                # If specific reaction checks failed, check for general carbonyl addition pattern
-                try:
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                    # Check for side chain modifications
+                    if is_side_chain_modification(rsmi):
+                        side_chain_modifications += 1
+                        print(f"Found side chain modification: {rsmi}")
 
-                    # Check for carbonyl groups in reactants
-                    carbonyl_fgs = [
-                        "Aldehyde",
-                        "Ketone",
-                        "Ester",
-                        "Carboxylic acid",
-                        "Amide",
-                        "Primary amide",
-                        "Secondary amide",
-                        "Tertiary amide",
-                        "Anhydride",
-                    ]
-
-                    carbonyl_found = False
-                    carbonyl_reactant = None
-
-                    for reactant in reactants:
-                        for fg in carbonyl_fgs:
-                            if checker.check_fg(fg, reactant):
-                                carbonyl_found = True
-                                carbonyl_reactant = reactant
-                                print(f"Found carbonyl group ({fg}) in reactant: {reactant}")
-                                break
-                        if carbonyl_found:
-                            break
-
-                    # If carbonyl found in reactants, check for nucleophilic addition
-                    if carbonyl_found and carbonyl_reactant:
-                        # Check if this is a nucleophilic addition to carbonyl
-                        reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                        product_mol = Chem.MolFromSmiles(product) if product else None
-                        carbonyl_mol = (
-                            Chem.MolFromSmiles(carbonyl_reactant) if carbonyl_reactant else None
-                        )
-
-                        if product_mol and carbonyl_mol:
-                            # Check for typical carbonyl addition patterns in product
-                            addition_patterns = [
-                                Chem.MolFromSmarts("[C]-[C]-[O;H1]"),  # C-C-OH (alcohol)
-                                Chem.MolFromSmarts("[C]-[C]-[N]"),  # C-C-N (amine)
-                                Chem.MolFromSmarts(
-                                    "[C]-[C]=[C]"
-                                ),  # C-C=C (alkene from condensation)
-                                Chem.MolFromSmarts("[C]-[C](=[O])-[C]"),  # C-C(=O)-C (new ketone)
-                            ]
-
-                            # Check if product has a new pattern that wasn't in the reactants
-                            for pattern in addition_patterns:
-                                if pattern and product_mol.HasSubstructMatch(pattern):
-                                    # Check if this pattern wasn't in the reactants
-                                    if not any(
-                                        r and r.HasSubstructMatch(pattern) for r in reactant_mols
-                                    ):
-                                        carbonyl_addition_found = True
-                                        print(
-                                            f"Found general carbonyl addition pattern: new structural motif in product"
-                                        )
-                                        return
-
-                            # Check if the carbonyl carbon has a new bond in the product
-                            # This would require atom mapping analysis which is complex
-                            # For simplicity, we'll check if the carbonyl group is consumed
-                            for fg in carbonyl_fgs:
-                                if checker.check_fg(fg, carbonyl_reactant) and not checker.check_fg(
-                                    fg, product
-                                ):
-                                    print(f"Carbonyl group {fg} was consumed in the reaction")
-                                    carbonyl_addition_found = True
-                                    return
-
-                except Exception as e:
-                    print(f"Error in general carbonyl addition check: {e}")
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
+
+    def has_amino_acid_backbone(smiles):
+        """Check if molecule has an amino acid backbone (amine + carboxylic acid in correct arrangement)"""
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return False
+
+        # Check for standard amino acid backbone
+        # N-C-C(=O)-O or protected versions
+        patterns = [
+            # Standard amino acid: N-C-C(=O)-O
+            "[NX3;!$(NC=O)]C([*])C(=O)[O,N]",
+            # N-protected amino acid: C(=O)-N-C-C(=O)-O
+            "[CX3](=O)[NX3]C([*])C(=O)[O,N]",
+            # N-Boc protected: O=C(O[C])[NX3]C([*])C(=O)[O,N]
+            "O=C(O[C])[NX3]C([*])C(=O)[O,N]",
+            # N-Fmoc protected: O=C(OCC1c2ccccc2-c2ccccc21)[NX3]C([*])C(=O)[O,N]",
+            "O=C(OCC1c2ccccc2-c2ccccc21)[NX3]C([*])C(=O)[O,N]",
+            # C-protected (ester): N-C-C(=O)-OC
+            "[NX3;!$(NC=O)]C([*])C(=O)O[C]",
+            # C-protected (amide): N-C-C(=O)-N
+            "[NX3;!$(NC=O)]C([*])C(=O)[NX3]",
+        ]
+
+        for pattern in patterns:
+            patt = Chem.MolFromSmarts(pattern)
+            if mol.HasSubstructMatch(patt):
+                return True
+
+        return False
+
+    def is_side_chain_modification(rsmi):
+        """Check if the reaction modifies the side chain while preserving the backbone"""
+        reactants_part = rsmi.split(">")[0]
+        product_part = rsmi.split(">")[-1]
+
+        # Check for common side chain modification reactions
+        common_modifications = [
+            "Oxidation of aldehydes to carboxylic acids",
+            "Oxidation of alcohols to carboxylic acids",
+            "Oxidation of primary alcohols",
+            "Reduction of carboxylic acid to primary alcohol",
+            "Reduction of ester to primary alcohol",
+            "Esterification of Carboxylic Acids",
+            "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
+            "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+            "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+            "Protection of carboxylic acid",
+            "Deprotection of carboxylic acid",
+            "Boc amine protection",
+            "Boc amine deprotection",
+            "Alcohol protection with silyl ethers",
+            "Alcohol deprotection from silyl ethers",
+            "Williamson Ether Synthesis",
+            "Alkylation of amines",
+            "Reductive amination with aldehyde",
+            "Reductive amination with ketone",
+            "Acylation of primary amines",
+            "Acylation of secondary amines",
+            "Sulfonamide synthesis (Schotten-Baumann) primary amine",
+            "Sulfonamide synthesis (Schotten-Baumann) secondary amine",
+        ]
+
+        for rxn_type in common_modifications:
+            if checker.check_reaction(rxn_type, rsmi):
+                # Verify the amino acid backbone is preserved
+                if backbone_preserved(reactants_part, product_part):
+                    return True
+
+        # Check for functional group transformations on side chains
+        reactants = reactants_part.split(".")
+        reactant_with_aa = None
+
+        # Find the reactant with amino acid backbone
+        for r in reactants:
+            if has_amino_acid_backbone(r):
+                reactant_with_aa = r
+                break
+
+        if not reactant_with_aa:
+            return False
+
+        # Check for changes in functional groups that might be on side chains
+        fg_types = [
+            "Primary alcohol",
+            "Secondary alcohol",
+            "Tertiary alcohol",
+            "Carboxylic acid",
+            "Ester",
+            "Primary amide",
+            "Secondary amide",
+            "Primary amine",
+            "Secondary amine",
+            "Tertiary amine",
+            "Thiol",
+            "Thioester",
+            "Nitrile",
+            "Aldehyde",
+            "Ketone",
+            "Phenol",
+            "Aromatic halide",
+            "Primary halide",
+            "Secondary halide",
+            "Tertiary halide",
+            "Azide",
+            "Alkyne",
+            "Aromatic alcohol",
+            "Sulfonamide",
+            "Sulfone",
+            "Sulfoxide",
+        ]
+
+        for fg in fg_types:
+            reactant_has_fg = checker.check_fg(fg, reactant_with_aa)
+            product_has_fg = checker.check_fg(fg, product_part)
+
+            if reactant_has_fg != product_has_fg:
+                # Verify the amino acid backbone is preserved
+                if backbone_preserved(reactants_part, product_part):
+                    return True
+
+        return False
+
+    def backbone_preserved(reactants_smiles, product_smiles):
+        """Check if the amino acid backbone is preserved between reactants and product"""
+        # Check for amino acid patterns in both reactants and product
+        patterns = [
+            # Standard amino acid: N-C-C(=O)-O
+            "[NX3;!$(NC=O)]C([*])C(=O)[O,N]",
+            # N-protected amino acid: C(=O)-N-C-C(=O)-O
+            "[CX3](=O)[NX3]C([*])C(=O)[O,N]",
+            # N-Boc protected: O=C(O[C])[NX3]C([*])C(=O)[O,N]
+            "O=C(O[C])[NX3]C([*])C(=O)[O,N]",
+            # N-Fmoc protected: O=C(OCC1c2ccccc2-c2ccccc21)[NX3]C([*])C(=O)[O,N]",
+            "O=C(OCC1c2ccccc2-c2ccccc21)[NX3]C([*])C(=O)[O,N]",
+            # C-protected (ester): N-C-C(=O)-OC
+            "[NX3;!$(NC=O)]C([*])C(=O)O[C]",
+            # C-protected (amide): N-C-C(=O)-N
+            "[NX3;!$(NC=O)]C([*])C(=O)[NX3]",
+        ]
+
+        reactants_list = reactants_smiles.split(".")
+        reactant_with_aa = None
+
+        # Find reactant with amino acid backbone
+        for r in reactants_list:
+            mol = Chem.MolFromSmiles(r)
+            if not mol:
+                continue
+
+            for pattern in patterns:
+                patt = Chem.MolFromSmarts(pattern)
+                if mol.HasSubstructMatch(patt):
+                    reactant_with_aa = r
+                    break
+            if reactant_with_aa:
+                break
+
+        if not reactant_with_aa:
+            return False
+
+        # Check if product has amino acid backbone
+        product_mol = Chem.MolFromSmiles(product_smiles)
+        if not product_mol:
+            return False
+
+        for pattern in patterns:
+            patt = Chem.MolFromSmarts(pattern)
+            if product_mol.HasSubstructMatch(patt):
+                return True
+
+        return False
 
     # Start traversal
     dfs_traverse(route)
-    print(f"Final result: carbonyl_addition_found = {carbonyl_addition_found}")
 
-    return carbonyl_addition_found
+    # Check if amino acid side chain modification strategy was used
+    result = amino_acid_backbone_present and side_chain_modifications >= 1
+    print(f"Amino acid side chain modification strategy detected: {result}")
+    print(f"  Amino acid backbone present: {amino_acid_backbone_present}")
+    print(f"  Number of side chain modifications: {side_chain_modifications}")
+
+    return result

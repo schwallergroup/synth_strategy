@@ -2,135 +2,90 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a cyano group is maintained throughout the synthesis route.
-
-    Returns True if a cyano group is present in the target molecule and persists
-    throughout the entire synthesis route (i.e., is present in all molecules and
-    preserved across all reactions).
+    Detects if the synthesis route uses a late-stage amide coupling strategy.
+    This checks if an amide bond is formed in the final or penultimate step.
     """
-    # Check if target molecule has a cyano group
-    if not route or route["type"] != "mol" or not route["smiles"]:
-        print("Invalid route or no target molecule")
-        return False
-
-    target_has_cyano = checker.check_fg("Nitrile", route["smiles"])
-    if not target_has_cyano:
-        print(f"Target molecule has no cyano group: {route['smiles']}")
-        return False
-
-    # Get cyano atom indices in target molecule
-    target_cyano_indices = checker.get_fg_atom_indices("Nitrile", route["smiles"])
-    if not target_cyano_indices:
-        print(f"Could not identify cyano group atoms in target: {route['smiles']}")
-        return False
-
-    print(f"Target molecule has cyano group(s): {target_cyano_indices}")
-
-    # Track if cyano group persists through non-starting material molecules
-    cyano_persists = True
-
-    # Keep track of atom mappings for cyano groups
-    cyano_atom_mappings = {}
+    amide_formation_depth = None
 
     def dfs_traverse(node, depth=0):
-        nonlocal cyano_persists
+        nonlocal amide_formation_depth
 
-        if not cyano_persists:  # Early termination if we already found an issue
-            return
-
-        if node["type"] == "mol" and node["smiles"]:
-            # Skip check for starting materials
-            if node.get("in_stock", False):
-                print(f"Depth {depth}: Starting material (skipping cyano check): {node['smiles']}")
-                return
-
-            # Check if molecule has a cyano group
-            has_cyano = checker.check_fg("Nitrile", node["smiles"])
-            if not has_cyano:
-                cyano_persists = False
-                print(f"Depth {depth}: Molecule without cyano group found: {node['smiles']}")
-                return
-            print(f"Depth {depth}: Molecule has cyano group: {node['smiles']}")
-
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            print(f"Depth {depth}: Processing reaction: {rsmi}")
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if reaction preserves cyano group
-            # For reactions, we need to verify the cyano group is preserved
-            try:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Check for amide formation
+            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                # Check if product has cyano group
-                if not checker.check_fg("Nitrile", product):
-                    cyano_persists = False
-                    print(f"Depth {depth}: Reaction product doesn't have cyano group: {product}")
-                    return
+            if product_mol and all(m for m in reactant_mols):
+                # Look for amide pattern in product but not in reactants
+                amide_pattern = Chem.MolFromSmarts("[C;$(C=O)][N;!$(N=*)]")
+                product_matches = product_mol.GetSubstructMatches(amide_pattern)
 
-                # Check if at least one reactant has cyano group
-                reactant_has_cyano = any(checker.check_fg("Nitrile", r) for r in reactants)
-                if not reactant_has_cyano:
-                    cyano_persists = False
-                    print(f"Depth {depth}: No reactant has cyano group, but product does: {rsmi}")
-                    return
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
+                # Check if any reactant has the same amide bond
+                new_amide_formed = False
+                for match in product_matches:
+                    amide_bond = (match[0], match[1])
+                    # Check if this bond exists in any reactant
+                    exists_in_reactants = False
+                    for r_mol in reactant_mols:
+                        if r_mol.HasSubstructMatch(amide_pattern):
+                            r_matches = r_mol.GetSubstructMatches(amide_pattern)
+                            for r_match in r_matches:
+                                # If same atoms are connected in reactant, it's not a new bond
+                                if (
+                                    product_mol.GetAtomWithIdx(match[0]).GetSymbol()
+                                    == r_mol.GetAtomWithIdx(r_match[0]).GetSymbol()
+                                    and product_mol.GetAtomWithIdx(match[1]).GetSymbol()
+                                    == r_mol.GetAtomWithIdx(r_match[1]).GetSymbol()
+                                ):
+                                    exists_in_reactants = True
+                                    break
+
+                    if not exists_in_reactants:
+                        new_amide_formed = True
+                        break
+
+                if new_amide_formed:
+                    amide_formation_depth = depth
+                    print(f"Amide formation detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
 
-    return cyano_persists
+    # Check if amide formation occurred in the late stage (depth 0 or 1)
+    is_late_stage = amide_formation_depth is not None and amide_formation_depth <= 1
+    print(f"Late-stage amide coupling: {is_late_stage} (depth: {amide_formation_depth})")
+    return is_late_stage

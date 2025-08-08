@@ -2,65 +2,52 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy with multiple amide bond formations
-    throughout the synthesis.
+    This function detects a synthetic strategy where a pyridine scaffold is
+    maintained throughout the synthesis.
     """
-    amide_formation_count = 0
+    pyridine_steps = 0
+    total_steps = 0
 
     def dfs_traverse(node):
-        nonlocal amide_formation_count
+        nonlocal pyridine_steps, total_steps
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            total_steps += 1
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for amide formation
-            prod_mol = Chem.MolFromSmiles(product)
-            if prod_mol:
-                amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
-                if prod_mol.HasSubstructMatch(amide_pattern):
-                    # Check if reactants contain amine and carboxylic acid/acyl chloride
-                    has_amine = False
-                    has_carbonyl = False
+            # Check for pyridine scaffold in product
+            product_mol = Chem.MolFromSmiles(product)
+            pyridine_pattern = Chem.MolFromSmarts("c1cncc[c]1")
 
-                    for reactant in reactants:
-                        react_mol = Chem.MolFromSmiles(reactant)
-                        if react_mol:
-                            amine_pattern = Chem.MolFromSmarts("[N;!$(N=*);!$(NC=O)]")
-                            carbonyl_pattern = Chem.MolFromSmarts("[C](=[O])[O,Cl]")
-
-                            if react_mol.HasSubstructMatch(amine_pattern):
-                                has_amine = True
-                            if react_mol.HasSubstructMatch(carbonyl_pattern):
-                                has_carbonyl = True
-
-                    if has_amine and has_carbonyl:
-                        amide_formation_count += 1
-                        print(
-                            f"Detected amide formation at depth {node['metadata'].get('depth', 'unknown')}"
-                        )
+            if product_mol and product_mol.HasSubstructMatch(pyridine_pattern):
+                pyridine_steps += 1
+                print(f"Pyridine scaffold detected in step {total_steps}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -69,5 +56,5 @@ def main(route):
     # Start traversal from the root
     dfs_traverse(route)
 
-    # Return True if there are at least 2 amide formations
-    return amide_formation_count >= 2
+    # Return True if pyridine scaffold is present in all steps
+    return total_steps > 0 and pyridine_steps == total_steps

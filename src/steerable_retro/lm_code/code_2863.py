@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,142 +54,152 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects multiple halogenation steps (hydroxyl to halide) in the synthesis.
+    This function detects a strategy involving late-stage amide coupling
+    as the final step in the synthesis.
     """
-    halogenation_count = 0
-    halogenation_reactions = []
+    has_late_amide_coupling = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal halogenation_count
+        nonlocal has_late_amide_coupling
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+        # Check if this is a reaction node at a late stage (depth <= 2)
+        if node["type"] == "reaction" and depth <= 2:
+            # Extract reactants and product
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_product = rsmi.split(">")
-                if len(reactants_product) >= 3:
-                    reactants = reactants_product[0].split(".")
-                    product = reactants_product[2]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                reagents_smiles = rsmi.split(">")[1].split(".") if len(rsmi.split(">")) > 2 else []
+                product_smiles = rsmi.split(">")[-1]
 
-                    # Method 1: Check for known halogenation reaction types
-                    halogenation_reaction_types = [
-                        # Chlorination reactions
-                        "Alcohol to chloride_sulfonyl chloride",
-                        "Alcohol to chloride_SOCl2",
-                        "Alcohol to chloride_CHCl3",
-                        "Alcohol to chloride_CH2Cl2",
-                        "Alcohol to chloride_PCl5_ortho",
-                        "Alcohol to chloride_POCl3_ortho",
-                        "Alcohol to chloride_POCl3_para",
-                        "Alcohol to chloride_POCl3",
-                        "Alcohol to chloride_HCl",
-                        "Alcohol to chloride_Salt",
-                        "Alcohol to chloride_Other",
-                        # Other halogenation reactions
-                        "Aromatic fluorination",
-                        "Aromatic chlorination",
-                        "Aromatic bromination",
-                        "Aromatic iodination",
-                        "Chlorination",
-                        "Fluorination",
-                        "Iodination",
-                        "Bromination",
-                        "Alkyl chlorides from alcohols",
-                        "Alkyl bromides from alcohols",
-                        "Alkyl iodides from alcohols",
-                        "Primary amine to fluoride",
-                        "Primary amine to chloride",
-                        "Primary amine to bromide",
-                        "Primary amine to iodide",
-                        "Wohl-Ziegler bromination benzyl primary",
-                        "Wohl-Ziegler bromination benzyl secondary",
-                        "Wohl-Ziegler bromination benzyl tertiary",
-                        "Wohl-Ziegler bromination allyl primary",
-                        "Wohl-Ziegler bromination allyl secondary",
-                        "Wohl-Ziegler bromination allyl tertiary",
-                        "Wohl-Ziegler bromination carbonyl primary",
-                        "Wohl-Ziegler bromination carbonyl secondary",
-                        "Wohl-Ziegler bromination carbonyl tertiary",
-                        "Halodeboronation of boronic acids",
-                        "Halodeboronation of boronic esters",
-                        "Appel reaction",
+                print(f"Checking potential late-stage reaction at depth {depth}: {rsmi}")
+
+                # Check if this is an amide coupling reaction using the checker functions
+                is_amide_coupling = any(
+                    [
+                        checker.check_reaction(
+                            "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                        ),
+                        checker.check_reaction(
+                            "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                            rsmi,
+                        ),
+                        checker.check_reaction(
+                            "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+                        ),
+                        checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi),
+                        checker.check_reaction("Ester with primary amine to amide", rsmi),
+                        checker.check_reaction("Ester with secondary amine to amide", rsmi),
+                        checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi),
+                        checker.check_reaction("Acyl chloride with ammonia to amide", rsmi),
+                        checker.check_reaction("Ester with ammonia to amide", rsmi),
+                        checker.check_reaction("Schotten-Baumann_amide", rsmi),
+                        checker.check_reaction("Acylation of primary amines", rsmi),
+                        checker.check_reaction("Acylation of secondary amines", rsmi),
+                        checker.check_reaction("Carboxylic acid to amide conversion", rsmi),
                     ]
+                )
 
-                    is_halogenation = False
-                    for reaction_type in halogenation_reaction_types:
-                        if checker.check_reaction(reaction_type, rsmi):
-                            print(f"Found halogenation step at depth {depth}: {reaction_type}")
-                            print(f"Reaction SMILES: {rsmi}")
-                            is_halogenation = True
-                            break
+                # If not directly identified, check for common coupling patterns
+                if not is_amide_coupling:
+                    # Check for presence of coupling reagents in the reaction
+                    coupling_reagents_present = any(
+                        ["CCN=C=NCCCN(C)C" in reagent for reagent in reagents_smiles]
+                    ) or any(["CCN=C=NCCCN(C)C" in reactant for reactant in reactants_smiles])
 
-                    # Method 2: Check for alcohol/amine in reactants and halide in product with atom mapping
-                    if not is_halogenation:
-                        # Check for alcohols or amines in reactants
-                        alcohol_fg_types = [
-                            "Primary alcohol",
-                            "Secondary alcohol",
-                            "Tertiary alcohol",
-                            "Aromatic alcohol",
-                            "Primary amine",
-                            "Secondary amine",
-                            "Tertiary amine",
+                    # Check for amide formation pattern manually
+                    has_carboxylic_acid = any(
+                        [checker.check_fg("Carboxylic acid", r) for r in reactants_smiles]
+                    )
+                    has_amine = any(
+                        [
+                            checker.check_fg("Primary amine", r)
+                            or checker.check_fg("Secondary amine", r)
+                            or checker.check_fg("Tertiary amine", r)
+                            for r in reactants_smiles
                         ]
-                        halide_fg_types = [
-                            "Primary halide",
-                            "Secondary halide",
-                            "Tertiary halide",
-                            "Aromatic halide",
-                            "Alkenyl halide",
-                            "Haloalkyne",
+                    )
+
+                    # Check if product has an amide
+                    has_amide_in_product = any(
+                        [
+                            checker.check_fg("Secondary amide", product_smiles),
+                            checker.check_fg("Primary amide", product_smiles),
+                            checker.check_fg("Tertiary amide", product_smiles),
                         ]
+                    )
 
-                        # Get atom-mapped molecules
-                        reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r.strip()]
-                        product_mol = Chem.MolFromSmiles(product) if product.strip() else None
+                    # If we have coupling reagents, acid, amine, and amide in product, it's likely an amide coupling
+                    if (
+                        coupling_reagents_present
+                        and has_carboxylic_acid
+                        and has_amine
+                        and has_amide_in_product
+                    ):
+                        is_amide_coupling = True
+                        print(f"Detected amide coupling with coupling reagents at depth {depth}")
 
-                        if product_mol:
-                            # Check if any reactant has an alcohol/amine and product has a halide
-                            for reactant_idx, reactant in enumerate(reactants):
-                                if not reactant.strip():
-                                    continue
+                if is_amide_coupling:
+                    print(f"Found amide coupling reaction at depth {depth}")
 
-                                has_alcohol_or_amine = any(
-                                    checker.check_fg(fg, reactant) for fg in alcohol_fg_types
+                    # Verify that an amide is formed in the product
+                    has_amide_in_product = any(
+                        [
+                            checker.check_fg("Secondary amide", product_smiles),
+                            checker.check_fg("Primary amide", product_smiles),
+                            checker.check_fg("Tertiary amide", product_smiles),
+                        ]
+                    )
+
+                    if has_amide_in_product:
+                        print(f"Confirmed amide in product: {product_smiles}")
+
+                        # Check if reactants have the necessary components for amide coupling
+                        has_amine = False
+                        has_carboxylic_acid_or_derivative = False
+
+                        for reactant in reactants_smiles:
+                            if (
+                                checker.check_fg("Primary amine", reactant)
+                                or checker.check_fg("Secondary amine", reactant)
+                                or checker.check_fg("Tertiary amine", reactant)
+                                or checker.check_fg("Aniline", reactant)
+                            ):
+                                has_amine = True
+                                print(f"Found amine in reactant: {reactant}")
+
+                            if (
+                                checker.check_fg("Carboxylic acid", reactant)
+                                or checker.check_fg("Acyl halide", reactant)
+                                or checker.check_fg("Ester", reactant)
+                                or checker.check_fg("Anhydride", reactant)
+                            ):
+                                has_carboxylic_acid_or_derivative = True
+                                print(
+                                    f"Found carboxylic acid or derivative in reactant: {reactant}"
                                 )
-                                has_halide = any(
-                                    checker.check_fg(fg, product) for fg in halide_fg_types
-                                )
 
-                                if has_alcohol_or_amine and has_halide:
-                                    # Check if product contains a halogen atom (F, Cl, Br, I)
-                                    halogen_found = False
-                                    for atom in product_mol.GetAtoms():
-                                        if atom.GetSymbol() in ["F", "Cl", "Br", "I"]:
-                                            halogen_found = True
-                                            break
+                        # If we don't find both components but have coupling reagents, it might still be an amide coupling
+                        if (
+                            has_amine and has_carboxylic_acid_or_derivative
+                        ) or coupling_reagents_present:
+                            has_late_amide_coupling = True
+                            print(f"Confirmed late-stage amide coupling at depth {depth}")
+                        else:
+                            print(f"Missing required reactants for amide coupling")
+                    else:
+                        print(f"No amide found in product despite reaction match")
+                else:
+                    print(f"Not an amide coupling reaction at depth {depth}")
 
-                                    if halogen_found:
-                                        print(
-                                            f"Found halogenation step at depth {depth} (FG analysis)"
-                                        )
-                                        print(f"Reaction SMILES: {rsmi}")
-                                        is_halogenation = True
-                                        break
+            except Exception as e:
+                print(f"Error processing reaction at depth {depth}: {e}")
 
-                    if is_halogenation:
-                        halogenation_count += 1
-                        halogenation_reactions.append((depth, rsmi))
-
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Total halogenation steps found: {halogenation_count}")
-    if halogenation_count > 0:
-        print("Halogenation reactions found:")
-        for depth, rsmi in halogenation_reactions:
-            print(f"  Depth {depth}: {rsmi}")
+    print(f"Final result: has_late_amide_coupling = {has_late_amide_coupling}")
 
-    # The test case shows we need to return True even with just one halogenation step
-    # This is likely because there are other halogenation steps that the original code missed
-    return halogenation_count >= 1  # Return True if at least 1 halogenation step is found
+    return has_late_amide_coupling

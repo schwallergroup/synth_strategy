@@ -2,80 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route employs a strategy of forming
-    a heterocyclic ring (specifically pyrazole) in the early stages of synthesis.
+    This function detects whether a thiazole-pyrimidine heterocyclic scaffold
+    is preserved throughout the synthesis.
     """
-    # Track if we found a heterocycle formation
-    heterocycle_formation_found = False
-    heterocycle_formation_depth = None
+    scaffold_preserved = True
+    thiazole_pattern = Chem.MolFromSmarts("[#6]1[#6][#16][#6][#6]1")
+    pyrimidine_pattern = Chem.MolFromSmarts("[#6]1[#7][#6][#7][#6][#6]1")
 
-    def dfs_traverse(node, depth=0):
-        nonlocal heterocycle_formation_found, heterocycle_formation_depth
+    def dfs_traverse(node):
+        nonlocal scaffold_preserved
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                has_thiazole = mol.HasSubstructMatch(thiazole_pattern)
+                has_pyrimidine = mol.HasSubstructMatch(pyrimidine_pattern)
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+                # If this is a significant molecule (not just a reagent)
+                # and it doesn't have both scaffolds, mark as not preserved
+                if not (has_thiazole and has_pyrimidine) and not node.get("in_stock", False):
+                    scaffold_preserved = False
+                    print(f"Scaffold not preserved in molecule: {node['smiles']}")
 
-            if product and any(reactants):
-                # Check for hydrazine in reactants
-                hydrazine_pattern = Chem.MolFromSmarts("[NH2][NH]")
-                reactants_with_hydrazine = any(
-                    mol.HasSubstructMatch(hydrazine_pattern) for mol in reactants if mol
-                )
-
-                # Check for pyrazole in product
-                pyrazole_pattern = Chem.MolFromSmarts("c1nn[c]c1")  # Basic pyrazole pattern
-                product_has_pyrazole = (
-                    product.HasSubstructMatch(pyrazole_pattern) if product else False
-                )
-
-                # Check if this reaction forms a pyrazole
-                if (
-                    reactants_with_hydrazine and product_has_pyrazole and depth >= 3
-                ):  # Depth >= 3 means early stage
-                    print(f"Found pyrazole formation at depth {depth}")
-                    heterocycle_formation_found = True
-                    heterocycle_formation_depth = depth
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Strategy is present if we found a heterocycle formation at early stage
-    strategy_present = heterocycle_formation_found
+    if scaffold_preserved:
+        print("Heterocyclic scaffold preserved throughout synthesis")
 
-    print(f"Heterocycle formation strategy detected: {strategy_present}")
-    if strategy_present:
-        print(f"Heterocycle formation occurred at depth {heterocycle_formation_depth}")
-
-    return strategy_present
+    return scaffold_preserved

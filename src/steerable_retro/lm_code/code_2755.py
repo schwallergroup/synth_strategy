@@ -2,57 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves reduction of alkyne to alkane linker.
+    Detects if the synthesis route has a late-stage amide coupling reaction
+    (depth 0 or 1) that forms a key C-N bond.
     """
-    alkyne_reduction = False
+    found_amide_coupling = False
 
-    def dfs_traverse(node):
-        nonlocal alkyne_reduction
+    def dfs_traverse(node, depth=0):
+        nonlocal found_amide_coupling
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_str = rsmi.split(">")[0]
+                product_str = rsmi.split(">")[-1]
 
-            # Check for alkyne reduction
-            for reactant in reactants:
-                r_mol = Chem.MolFromSmiles(reactant)
-                p_mol = Chem.MolFromSmiles(product)
+                # Check for acid chloride or similar activated carboxylic acid
+                acid_pattern = Chem.MolFromSmarts("[C](=[O])[Cl,Br,I,O]")
+                # Check for amine nucleophile
+                amine_pattern = Chem.MolFromSmarts("[N;H1,H2]")
+                # Check for amide in product
+                amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
 
-                if r_mol and p_mol:
-                    # Alkyne in reactant
-                    if r_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[C]#[C]-[c]")):
-                        # Corresponding alkane in product
-                        if p_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[CH2]-[CH2]-[c]")):
-                            alkyne_reduction = True
-                            print(
-                                f"Detected alkyne reduction at depth {node.get('depth', 'unknown')}"
-                            )
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".")]
+                product = Chem.MolFromSmiles(product_str)
 
-        # Traverse children
+                # Check if reactants contain acid chloride and amine
+                has_acid = any(
+                    r is not None and r.HasSubstructMatch(acid_pattern) for r in reactants
+                )
+                has_amine = any(
+                    r is not None and r.HasSubstructMatch(amine_pattern) for r in reactants
+                )
+
+                # Check if product contains amide
+                has_amide_product = product is not None and product.HasSubstructMatch(amide_pattern)
+
+                if has_acid and has_amine and has_amide_product:
+                    print(f"Found late-stage amide coupling at depth {depth}")
+                    found_amide_coupling = True
+
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return alkyne_reduction
+    return found_amide_coupling

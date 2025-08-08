@@ -2,141 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the final step in the synthesis is an esterification reaction.
-    This is a common diversification strategy.
+    This function detects a linear synthesis strategy where a CF3-containing building block
+    is introduced in the late stage of the synthesis.
     """
-    final_step_is_esterification = False
+    cf3_introduction_depth = None
+    max_depth = 0
 
-    # Find the target molecule (root of the tree)
-    target_mol = None
-    if route["type"] == "mol":
-        target_mol = route["smiles"]
+    def dfs_traverse(node, depth=0):
+        nonlocal cf3_introduction_depth, max_depth
 
-    def dfs_traverse(node, depth=0, path_to_root=None):
-        nonlocal final_step_is_esterification, target_mol
+        if depth > max_depth:
+            max_depth = depth
 
-        if path_to_root is None:
-            path_to_root = []
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        current_path = path_to_root.copy()
-        current_path.append(node)
+            # Check for CF3 introduction
+            cf3_pattern = Chem.MolFromSmarts("[#6]-[C]([F])([F])[F]")
+            product_mol = Chem.MolFromSmiles(product)
 
-        print(f"Traversing node at depth {depth}, type: {node['type']}")
-
-        # If this is a reaction node that produces the target molecule or is one step away from it
-        if node["type"] == "reaction" and depth <= 1:
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                print(f"Examining potential late-stage reaction: {rsmi}")
-
-                # Check for various esterification reactions
-                if (
-                    checker.check_reaction("Esterification of Carboxylic Acids", rsmi)
-                    or checker.check_reaction("Schotten-Baumann to ester", rsmi)
-                    or checker.check_reaction(
-                        "O-alkylation of carboxylic acids with diazo compounds", rsmi
-                    )
-                    or checker.check_reaction("Transesterification", rsmi)
-                ):
-                    print(f"Detected esterification reaction directly: {rsmi}")
-                    final_step_is_esterification = True
-                    return
-
-                # Fallback to functional group analysis
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check for carboxylic acid in reactants
-                acid_found = False
-                alcohol_found = False
-
+            # Check if product has CF3
+            if product_mol and product_mol.HasSubstructMatch(cf3_pattern):
+                # Check if any reactant doesn't have CF3
+                cf3_in_all_reactants = True
                 for reactant in reactants:
-                    if not reactant:
-                        continue
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and not reactant_mol.HasSubstructMatch(cf3_pattern):
+                        cf3_in_all_reactants = False
+                        break
 
-                    print(f"Checking reactant: {reactant}")
+                if not cf3_in_all_reactants:
+                    print(f"Found CF3 introduction at depth {depth}")
+                    cf3_introduction_depth = depth
 
-                    if checker.check_fg("Carboxylic acid", reactant):
-                        acid_found = True
-                        print("Found carboxylic acid in reactant")
-
-                    # Check for various types of alcohols
-                    if (
-                        checker.check_fg("Primary alcohol", reactant)
-                        or checker.check_fg("Secondary alcohol", reactant)
-                        or checker.check_fg("Tertiary alcohol", reactant)
-                        or checker.check_fg("Aromatic alcohol", reactant)
-                        or checker.check_fg("Phenol", reactant)
-                    ):
-                        alcohol_found = True
-                        print("Found alcohol in reactant")
-
-                # Check for ester in product
-                ester_found = False
-                if product:
-                    print(f"Checking product: {product}")
-                    if checker.check_fg("Ester", product):
-                        ester_found = True
-                        print("Found ester in product")
-
-                if acid_found and alcohol_found and ester_found:
-                    print("Detected esterification based on functional groups")
-                    final_step_is_esterification = True
-                    return
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1, current_path)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from root
     dfs_traverse(route)
-    print(f"Final result: {final_step_is_esterification}")
-    return final_step_is_esterification
+
+    # Check if CF3 was introduced in the late stage (first half of synthesis)
+    if cf3_introduction_depth is not None and cf3_introduction_depth <= max_depth / 2:
+        print(f"CF3 introduced in late stage (depth {cf3_introduction_depth} of {max_depth})")
+        return True
+    return False

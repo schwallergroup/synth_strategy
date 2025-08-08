@@ -2,72 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a late-stage sulfonamide formation
-    (in the final or penultimate step).
+    Detects if the synthesis route involves an SNAr coupling between
+    an aniline and a chloropyrimidine.
     """
-    sulfonamide_formed = False
-    depth_of_formation = float("inf")
+    result = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal sulfonamide_formed, depth_of_formation
+        nonlocal result
 
         if node["type"] == "reaction":
-            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check if this reaction forms a sulfonamide
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            sulfonamide_pattern = Chem.MolFromSmarts("[N][S](=O)(=O)[C]")
+            # Check if we have two reactants (potential coupling)
+            if len(reactants) == 2:
+                for r1, r2 in [(0, 1), (1, 0)]:  # Try both combinations
+                    reactant1 = Chem.MolFromSmiles(reactants[r1])
+                    reactant2 = Chem.MolFromSmiles(reactants[r2])
+                    product_mol = Chem.MolFromSmiles(product)
 
-            reactant_has_sulfonamide = False
-            for reactant in reactants_smiles:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(sulfonamide_pattern):
-                    reactant_has_sulfonamide = True
-                    break
+                    if reactant1 and reactant2 and product_mol:
+                        # Check for aniline pattern in one reactant
+                        aniline_pattern = Chem.MolFromSmarts("[c][NH2]")
+                        # Check for chloropyrimidine pattern in the other reactant
+                        chloro_pattern = Chem.MolFromSmarts("[c][Cl]")
+                        # Check for coupled product pattern
+                        coupled_pattern = Chem.MolFromSmarts("[c][NH][c]")
 
-            if (
-                product_mol
-                and product_mol.HasSubstructMatch(sulfonamide_pattern)
-                and not reactant_has_sulfonamide
-            ):
-                sulfonamide_formed = True
-                depth_of_formation = min(depth, depth_of_formation)
-                print(f"Sulfonamide formation detected at depth {depth}")
+                        if (
+                            reactant1.HasSubstructMatch(aniline_pattern)
+                            and reactant2.HasSubstructMatch(chloro_pattern)
+                            and product_mol.HasSubstructMatch(coupled_pattern)
+                        ):
+                            print(f"Found SNAr coupling at depth {depth}")
+                            result = True
 
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-
-    # Consider it late-stage if it happens at depth 0 or 1
-    is_late_stage = sulfonamide_formed and depth_of_formation <= 1
-    print(
-        f"Late-stage sulfonamide formation: {is_late_stage} (formed at depth {depth_of_formation})"
-    )
-    return is_late_stage
+    return result

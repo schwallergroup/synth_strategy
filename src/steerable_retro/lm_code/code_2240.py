@@ -2,61 +2,118 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves formation of a urea linker
-    connecting two aromatic systems.
+    Detects synthesis routes that form benzothiazole rings from thiourea intermediates.
     """
-    urea_formation_detected = False
+    # Track if we found the strategy
+    found_thiourea = False
+    found_benzothiazole_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal urea_formation_detected
+    def dfs_traverse(node):
+        nonlocal found_thiourea, found_benzothiazole_formation
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            # Check for thiourea in molecules
+            if checker.check_fg("Thiourea", node["smiles"]):
+                found_thiourea = True
+                print(f"Found thiourea intermediate: {node['smiles']}")
 
-            # Check for urea pattern in product
-            urea_pattern = Chem.MolFromSmarts("[c,n][NH][C](=[O])[NH][c,n]")
-            product_mol = Chem.MolFromSmiles(product)
+        elif node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-            if product_mol and product_mol.HasSubstructMatch(urea_pattern):
-                # Check if urea wasn't present in reactants
-                urea_in_reactants = False
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(urea_pattern):
-                        urea_in_reactants = True
-                        break
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                if not urea_in_reactants:
-                    urea_formation_detected = True
-                    print(f"Urea linker formation detected at depth {depth}")
+            # Check if this is a benzothiazole formation reaction
+            if checker.check_reaction("benzothiazole", rsmi) or checker.check_reaction(
+                "{benzothiazole}", rsmi
+            ):
+                print(f"Found benzothiazole formation reaction: {rsmi}")
 
-        # Continue traversing
+                # Check if product contains benzothiazole ring
+                if checker.check_ring("benzothiazole", product_smiles):
+                    print(f"Product contains benzothiazole ring: {product_smiles}")
+
+                    # Check if any reactant has thiourea
+                    for reactant in reactants_smiles:
+                        if checker.check_fg("Thiourea", reactant):
+                            found_benzothiazole_formation = True
+                            print(f"Found benzothiazole formation from thiourea")
+                            break
+
+            # Alternative check: look for benzothiazole formation without specific reaction type
+            if not found_benzothiazole_formation:
+                # Check if product contains benzothiazole ring
+                if checker.check_ring("benzothiazole", product_smiles):
+                    # Check if any reactant has thiourea but not benzothiazole
+                    for reactant in reactants_smiles:
+                        if checker.check_fg("Thiourea", reactant) and not checker.check_ring(
+                            "benzothiazole", reactant
+                        ):
+                            found_benzothiazole_formation = True
+                            print(f"Found benzothiazole formation from thiourea (pattern-based)")
+                            break
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-    return urea_formation_detected
+
+    # Return True if both conditions are met
+    return found_thiourea and found_benzothiazole_formation

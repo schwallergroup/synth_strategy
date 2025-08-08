@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,158 +54,144 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route follows a linear synthesis strategy
-    without convergent steps.
-
-    A linear synthesis strategy is characterized by:
-    1. Each reaction step has only one significant reactant (excluding reagents/solvents)
-    2. The route doesn't branch into multiple parallel paths
-    3. Certain reaction types (protection, deprotection, etc.) are considered linear
-       even if they have multiple reactants
+    Detects a linear synthesis strategy where a halogen substituent
+    (typically on an aromatic ring) is preserved throughout the synthesis.
     """
+    # Track if synthesis is linear and if halogen is preserved
     is_linear = True
+    halogen_present = False
 
-    # List of reaction types that are inherently linear despite multiple reactants
-    linear_reaction_types = [
-        # Protection/deprotection reactions
-        "Boc amine protection",
-        "Boc amine deprotection",
-        "Alcohol protection with silyl ethers",
-        "Alcohol deprotection from silyl ethers",
-        "Protection of carboxylic acid",
-        "Deprotection of carboxylic acid",
-        "Hydroxyl benzyl deprotection",
-        "Carboxyl benzyl deprotection",
-        "TMS deprotection from alkyne",
-        "Tert-butyl deprotection of amine",
-        # Common coupling reactions used in linear synthesis
-        "Suzuki coupling with boronic acids",
-        "Suzuki coupling with boronic esters",
-        "Suzuki coupling with boronic acids OTf",
-        "Suzuki coupling with boronic esters OTf",
-        "Sonogashira acetylene_aryl halide",
-        "Sonogashira alkyne_aryl halide",
-        "Heck terminal vinyl",
-        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-        # Other common linear synthesis reactions
-        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-        "Esterification of Carboxylic Acids",
-        "Williamson Ether Synthesis",
-        "Reductive amination with aldehyde",
-        "Reductive amination with ketone",
-    ]
-
-    def is_common_reagent(smiles):
-        """Check if a molecule is likely a common reagent rather than a significant reactant"""
-        try:
-            mol = Chem.MolFromSmiles(smiles)
-            if not mol:
-                return False
-
-            # Common reagents typically have fewer heavy atoms
-            if mol.GetNumHeavyAtoms() <= 5:
-                return True
-
-            # Check for common reagent functional groups
-            if (
-                checker.check_fg("Triflate", smiles)
-                or checker.check_fg("Tosylate", smiles)
-                or checker.check_fg("Mesylate", smiles)
-            ):
-                return True
-
-            # Check for simple alcohols, acids, etc.
-            if smiles in [
-                "O",
-                "OO",
-                "CO",
-                "CCO",
-                "[OH-]",
-                "[H+]",
-                "O=C=O",
-                "CC(=O)O",
-                "C(=O)O",
-                "CN",
-            ]:
-                return True
-
-            return False
-        except:
-            return False
-
-    def is_boronic_derivative(smiles):
-        """Check if a molecule is a boronic acid or ester"""
-        try:
-            return checker.check_fg("Boronic acid", smiles) or checker.check_fg(
-                "Boronic ester", smiles
-            )
-        except:
-            return False
+    # Track halogen atoms by their atom mapping
+    halogen_atom_maps = set()
 
     def dfs_traverse(node, depth=0):
-        nonlocal is_linear
+        nonlocal is_linear, halogen_present
 
-        # Check for branching structure (multiple children for a molecule node)
-        if node["type"] == "mol" and len(node.get("children", [])) > 1:
-            print(f"Branching detected at depth {depth} - molecule has multiple reaction paths")
-            is_linear = False
-            return
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            # Check for halogen on aromatic ring in molecules
+            if checker.check_fg("Aromatic halide", mol_smiles):
+                halogen_present = True
+                print(f"Depth {depth}: Found aromatic halide in molecule: {mol_smiles}")
 
-        if node["type"] == "reaction":
-            # Check number of reactants in this reaction
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                reactants = reactants_part.split(".")
+                # Track atom mappings of halogens in starting materials
+                if node.get("in_stock", False):
+                    mol = Chem.MolFromSmiles(mol_smiles)
+                    if mol:
+                        for atom in mol.GetAtoms():
+                            if atom.GetSymbol() in ["F", "Cl", "Br", "I"] and atom.GetIsAromatic():
+                                if atom.HasProp("molAtomMapNumber"):
+                                    map_num = atom.GetProp("molAtomMapNumber")
+                                    halogen_atom_maps.add(map_num)
+                                    print(
+                                        f"Depth {depth}: Found mapped aromatic halide atom {atom.GetSymbol()} with map number {map_num} in starting material"
+                                    )
 
-                # Check if this is a known linear reaction type
-                is_linear_reaction_type = False
-                for rxn_type in linear_reaction_types:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Linear reaction type detected: {rxn_type}")
-                        is_linear_reaction_type = True
-                        break
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            agents_part = rsmi.split(">")[1]
+            product_part = rsmi.split(">")[2]
 
-                # Check for Suzuki-type coupling if not already identified
-                if not is_linear_reaction_type:
-                    # Count boronic derivatives - common in linear synthesis coupling reactions
-                    boronic_count = sum(1 for r in reactants if is_boronic_derivative(r))
-                    if boronic_count > 0 and len(reactants) <= 3:
-                        print(
-                            f"Potential coupling reaction with boronic derivative detected at depth {depth}"
-                        )
-                        is_linear_reaction_type = True
+            reactants = reactants_part.split(".")
+            product = product_part
 
-                if not is_linear_reaction_type:
-                    # Filter out common reagents
-                    significant_reactants = [r for r in reactants if not is_common_reagent(r)]
+            # Check if this is a convergent step (more than one significant reactant)
+            significant_reactants = [r for r in reactants if not is_likely_reagent(r)]
 
-                    # If we have more than one significant reactant, it might be convergent
-                    if len(significant_reactants) > 1:
-                        # Additional check for reactions that might be linear despite multiple reactants
-                        # For example, if one reactant is much larger than others, it might be the main scaffold
-                        main_scaffold_found = False
-                        for r in significant_reactants:
-                            mol = Chem.MolFromSmiles(r)
-                            if (
-                                mol and mol.GetNumHeavyAtoms() > 15
-                            ):  # Larger threshold for main scaffold
-                                main_scaffold_found = True
-                                break
+            # Only consider it non-linear if multiple significant reactants AND
+            # more than one contains an aromatic halide
+            halogen_containing_reactants = [
+                r for r in significant_reactants if checker.check_fg("Aromatic halide", r)
+            ]
+            if len(significant_reactants) > 1 and len(halogen_containing_reactants) > 1:
+                is_linear = False
+                print(
+                    f"Depth {depth}: Non-linear step detected with {len(halogen_containing_reactants)} halogen-containing reactants"
+                )
 
-                        if not main_scaffold_found and len(significant_reactants) > 1:
-                            print(
-                                f"Convergent step detected with multiple significant reactants at depth {depth}"
-                            )
-                            for r in significant_reactants:
-                                print(f"Reactant SMILES: {r}")
-                            is_linear = False
-            else:
-                print(f"Warning: Reaction node at depth {depth} missing metadata or rsmi")
+            # Check for halogen preservation in this reaction
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                # Track halogen atom mappings in product
+                product_has_halogen = checker.check_fg("Aromatic halide", product)
+                if product_has_halogen:
+                    for atom in product_mol.GetAtoms():
+                        if atom.GetSymbol() in ["F", "Cl", "Br", "I"] and atom.GetIsAromatic():
+                            if atom.HasProp("molAtomMapNumber"):
+                                map_num = atom.GetProp("molAtomMapNumber")
+                                halogen_atom_maps.add(map_num)
+                                print(
+                                    f"Depth {depth}: Found mapped aromatic halide atom {atom.GetSymbol()} with map number {map_num} in product"
+                                )
 
-        # Continue traversal
+                # Track halogen atom mappings in reactants
+                for reactant in significant_reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and checker.check_fg("Aromatic halide", reactant):
+                        for atom in reactant_mol.GetAtoms():
+                            if atom.GetSymbol() in ["F", "Cl", "Br", "I"] and atom.GetIsAromatic():
+                                if atom.HasProp("molAtomMapNumber"):
+                                    map_num = atom.GetProp("molAtomMapNumber")
+                                    halogen_atom_maps.add(map_num)
+                                    print(
+                                        f"Depth {depth}: Found mapped aromatic halide atom {atom.GetSymbol()} with map number {map_num} in reactant"
+                                    )
+
+        # Process children (reactants in retrosynthetic direction)
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+        return True
+
+    def is_likely_reagent(smiles):
+        """Helper function to identify common reagents that shouldn't count for convergent synthesis"""
+        # Common reagents and small molecules
+        common_reagents = [
+            "O",
+            "N",
+            "C",
+            "CC",
+            "[NH3]",
+            "CO",
+            "CCO",
+            "CN",
+            "H2O",
+            "HCl",
+            "NaOH",
+            "KOH",
+            "H2SO4",
+        ]
+
+        # Check if it's in our list of common reagents
+        if smiles in common_reagents:
+            return True
+
+        # Check if it's a very small molecule (likely a reagent) but not if it contains an aromatic halide
+        if len(smiles) < 4 and not checker.check_fg("Aromatic halide", smiles):
+            return True
+
+        # Try to identify common reagent patterns
+        mol = Chem.MolFromSmiles(smiles)
+        if mol:
+            # Very small molecules with few atoms are likely reagents, unless they contain an aromatic halide
+            if mol.GetNumAtoms() < 3 and not checker.check_fg("Aromatic halide", smiles):
+                return True
+
+            # Check for common acid/base reagents
+            if (
+                checker.check_fg("Carboxylic acid", smiles)
+                and mol.GetNumAtoms() < 5
+                and not checker.check_fg("Aromatic halide", smiles)
+            ):
+                return True
+
+        return False
+
+    # Start traversal
     dfs_traverse(route)
-    return is_linear
+
+    # Check if we found any halogen atoms and if the synthesis is linear
+    result = is_linear and halogen_present
+    print(f"Final result: is_linear={is_linear}, halogen_present={halogen_present}")
+    return result

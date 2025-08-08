@@ -2,67 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving biaryl formation via Suzuki coupling.
+    This function detects a synthetic strategy involving multiple SNAr reactions.
+    SNAr reactions typically involve displacement of a halogen on an electron-deficient
+    aromatic ring by a nitrogen nucleophile.
     """
-    has_suzuki_coupling = False
+    snar_count = 0
 
     def dfs_traverse(node):
-        nonlocal has_suzuki_coupling
+        nonlocal snar_count
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            parts = rsmi.split(">")
-            if len(parts) < 3:
-                return
+                # Check for SNAr pattern: halogen on aromatic being replaced by nitrogen
+                # Look for nitrogen nucleophile in reactants
+                nitrogen_nucleophile = False
+                for reactant in reactants:
+                    if "[NH" in reactant or "[N:" in reactant:
+                        nitrogen_nucleophile = True
+                        break
 
-            reactants = parts[0].split(".")
-            product = parts[2]
+                # Look for halogen on aromatic in reactants
+                halogen_aromatic = False
+                for reactant in reactants:
+                    if ("[Cl" in reactant or "[Br" in reactant or "[F" in reactant) and (
+                        "[c" in reactant or "[n" in reactant
+                    ):
+                        halogen_aromatic = True
+                        break
 
-            # Check for Suzuki coupling
-            boronic_acid_pattern = re.compile(r"[cB]|B\(O\)|OB\(O\)")
-            halogen_pattern = re.compile(r"[cBrI]|Br|I|Cl")
+                # Check if C-N bond formed where halogen was
+                if nitrogen_nucleophile and halogen_aromatic:
+                    # This is a simplified check - a more robust implementation would use actual reaction mapping
+                    snar_count += 1
+                    print(f"SNAr reaction detected at depth: {node.get('depth', 'unknown')}")
 
-            has_boronic_acid = any(boronic_acid_pattern.search(r) for r in reactants)
-            has_halogen = any(halogen_pattern.search(r) for r in reactants)
-
-            if has_boronic_acid and has_halogen:
-                # Further verify it's likely a Suzuki by checking for aromatic rings
-                if any("c" in r for r in reactants):
-                    has_suzuki_coupling = True
-                    print(f"Detected Suzuki coupling: {rsmi}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Biaryl formation via Suzuki: {has_suzuki_coupling}")
-
-    return has_suzuki_coupling
+    # Return True if multiple SNAr reactions are detected
+    return snar_count >= 2

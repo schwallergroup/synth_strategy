@@ -2,66 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects the use of Williamson ether synthesis for aryl methyl ether formation
-    as part of the overall synthetic strategy.
+    Detects halogen exchange or manipulation strategy in the synthesis.
     """
-    found_ether_synthesis = False
+    found_halogen_exchange = False
 
     def dfs_traverse(node):
-        nonlocal found_ether_synthesis
+        nonlocal found_halogen_exchange
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for Williamson ether synthesis
-                if len(reactants) == 2:
-                    phenol_pattern = Chem.MolFromSmarts("[OH][c]")
-                    methyl_halide_pattern = Chem.MolFromSmarts("[CH3][I,Br,Cl,F]")
-                    methoxy_pattern = Chem.MolFromSmarts("[CH3][O][c]")
+            try:
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product = Chem.MolFromSmiles(product_smiles)
 
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-                    product_mol = Chem.MolFromSmiles(product)
+                if product:
+                    # Check for halogen patterns
+                    halogen_patterns = {
+                        "Br": Chem.MolFromSmarts("c[Br]"),
+                        "I": Chem.MolFromSmarts("c[I]"),
+                        "Cl": Chem.MolFromSmarts("c[Cl]"),
+                    }
 
-                    if (
-                        product_mol
-                        and any(m and m.HasSubstructMatch(phenol_pattern) for m in reactant_mols)
-                        and any(
-                            m and m.HasSubstructMatch(methyl_halide_pattern) for m in reactant_mols
-                        )
-                        and product_mol.HasSubstructMatch(methoxy_pattern)
-                    ):
-                        print("Found Williamson ether synthesis")
-                        found_ether_synthesis = True
+                    # Check if product has a different halogen than reactants
+                    reactant_halogens = set()
+                    for mol in reactants:
+                        if mol:
+                            for halogen, pattern in halogen_patterns.items():
+                                if mol.HasSubstructMatch(pattern):
+                                    reactant_halogens.add(halogen)
 
-        # Traverse children
+                    product_halogens = set()
+                    for halogen, pattern in halogen_patterns.items():
+                        if product.HasSubstructMatch(pattern):
+                            product_halogens.add(halogen)
+
+                    if product_halogens and product_halogens != reactant_halogens:
+                        print("Found halogen exchange or manipulation")
+                        found_halogen_exchange = True
+            except:
+                print("Error processing reaction SMILES for halogen exchange detection")
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-
-    return found_ether_synthesis
+    return found_halogen_exchange

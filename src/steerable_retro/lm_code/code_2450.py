@@ -2,63 +2,105 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves an O-demethylation step
-    (conversion of methoxy to hydroxyl).
+    This function detects if the synthesis incorporates multiple heteroaromatic rings.
     """
-    has_demethylation = False
+    # List of common heteroaromatic rings to check
+    heteroaromatic_rings = [
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "thiazole",
+        "oxazole",
+        "furan",
+        "thiophene",
+        "pyrimidine",
+        "pyrazine",
+        "indole",
+        "benzimidazole",
+        "benzothiazole",
+        "benzoxazole",
+        "quinoline",
+        "isoquinoline",
+        "triazole",
+        "tetrazole",
+        "isoxazole",
+        "isothiazole",
+    ]
+
+    # Use a set to track found heteroaromatic rings
+    found_rings = set()
 
     def dfs_traverse(node):
-        nonlocal has_demethylation
+        if node["type"] == "mol" and "smiles" in node:
+            mol_smiles = node["smiles"]
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+            # Check for each heteroaromatic ring type
+            for ring_type in heteroaromatic_rings:
+                if checker.check_ring(ring_type, mol_smiles) and ring_type not in found_rings:
+                    found_rings.add(ring_type)
+                    print(f"Found {ring_type} ring in molecule: {mol_smiles}")
 
-                # Create molecules
-                reactants_mol = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
-                product_mol = Chem.MolFromSmiles(product_part)
-
-                if product_mol:
-                    # Define patterns
-                    methoxy_pattern = Chem.MolFromSmarts("[c][O][C;H3]")
-                    phenol_pattern = Chem.MolFromSmarts("[c][O;H1]")
-
-                    # Check if product has phenol but not methoxy
-                    if product_mol.HasSubstructMatch(phenol_pattern):
-                        # Check if any reactant has methoxy
-                        for r_mol in reactants_mol:
-                            if r_mol and r_mol.HasSubstructMatch(methoxy_pattern):
-                                has_demethylation = True
-                                print(f"Found O-demethylation step: {rsmi}")
-                                break
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Synthesis {'includes' if has_demethylation else 'does not include'} O-demethylation")
-    return has_demethylation
+
+    print(f"Found heteroaromatic rings: {found_rings}")
+    print(f"Total unique heteroaromatic rings found: {len(found_rings)}")
+
+    # Return True if at least 2 different heteroaromatic rings are found
+    return len(found_rings) >= 2

@@ -2,65 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route employs thiazole formation
-    from α-bromoketone and thiourea.
+    This function detects a synthetic strategy involving nitrile hydrolysis to
+    carboxylic acid or derivative.
     """
-    thiazole_formed = False
+    nitrile_hydrolysis_detected = False
 
     def dfs_traverse(node):
-        nonlocal thiazole_formed
+        nonlocal nitrile_hydrolysis_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
+            reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Define SMARTS patterns for α-bromoketone, thiourea, and thiazole
-            bromoketone_pattern = Chem.MolFromSmarts("C(=O)C(Br)")
-            thiourea_pattern = Chem.MolFromSmarts("NC(=S)N")
-            thiazole_pattern = Chem.MolFromSmarts("c1nc(N)sc1")
+            # Check for nitrile in reactants
+            nitrile_in_reactants = False
+            for r_smi in reactants_smiles:
+                try:
+                    r_mol = Chem.MolFromSmiles(r_smi)
+                    if r_mol and r_mol.HasSubstructMatch(Chem.MolFromSmarts("C#N")):
+                        nitrile_in_reactants = True
+                        break
+                except:
+                    continue
 
-            try:
-                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check for carboxylic acid in product
+            if nitrile_in_reactants:
+                try:
+                    p_mol = Chem.MolFromSmiles(product_smiles)
+                    if p_mol and p_mol.HasSubstructMatch(Chem.MolFromSmarts("C(=O)O")):
+                        nitrile_hydrolysis_detected = True
+                        print("Nitrile hydrolysis detected")
+                except:
+                    pass
 
-                if reactants_mol and product_mol:
-                    # Check if reactants contain α-bromoketone and thiourea, and product contains thiazole
-                    if (
-                        reactants_mol.HasSubstructMatch(bromoketone_pattern)
-                        and reactants_mol.HasSubstructMatch(thiourea_pattern)
-                        and product_mol.HasSubstructMatch(thiazole_pattern)
-                    ):
-                        print("Detected thiazole formation from α-bromoketone and thiourea")
-                        thiazole_formed = True
-            except:
-                print("Error processing SMILES in thiazole formation detection")
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-    return thiazole_formed
+
+    return nitrile_hydrolysis_detected

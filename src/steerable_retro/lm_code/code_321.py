@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,67 +54,83 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route involves ester hydrolysis to form a carboxylic acid.
+    This function detects a synthetic strategy where a pyrazole ring is formed
+    in the final step of a linear synthesis.
     """
-    ester_hydrolysis_found = False
+    # Track if we found pyrazole formation in the final step
+    pyrazole_formation_found = False
 
-    def dfs_traverse(node):
-        nonlocal ester_hydrolysis_found
+    def dfs_traverse(node, depth=0):
+        nonlocal pyrazole_formation_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        print(f"Traversing node type: {node['type']} at depth: {depth}")
 
-            print(f"Analyzing reaction: {rsmi}")
+        # Check if this is a reaction node
+        if node["type"] == "reaction":
+            try:
+                # Get reactants and product
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            # First check if this is an ester hydrolysis reaction
-            if checker.check_reaction(
-                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-            ):
-                print("Detected ester hydrolysis reaction type")
+                print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                # Check for ester in reactants
-                ester_found = False
-                for reactant in reactants:
-                    if checker.check_fg("Ester", reactant):
-                        print(f"Found ester in reactant: {reactant}")
-                        ester_found = True
-                        break
+                # Check if this is the final reaction step (depth 1)
+                if depth == 1:
+                    print("This is the final reaction step")
 
-                # Check for carboxylic acid in product
-                if ester_found and checker.check_fg("Carboxylic acid", product):
-                    print(f"Found carboxylic acid in product: {product}")
-                    print("Ester hydrolysis confirmed")
-                    ester_hydrolysis_found = True
+                    # Check if product contains pyrazole
+                    if checker.check_ring("pyrazole", product_smiles):
+                        print("Product contains pyrazole ring")
 
-            # Alternative check: look for ester to acid conversion even if reaction type doesn't match
-            else:
-                print("Not a standard ester hydrolysis reaction, checking functional groups")
+                        # Check if any reactant is hydrazine or a hydrazine derivative
+                        hydrazine_found = False
+                        for reactant in reactants_smiles:
+                            if checker.check_fg("Hydrazine", reactant) or checker.check_fg(
+                                "Hydrazone", reactant
+                            ):
+                                print(
+                                    f"Found hydrazine/hydrazone derivative in reactant: {reactant}"
+                                )
+                                hydrazine_found = True
+                                break
 
-                # Check for ester in reactants
-                ester_found = False
-                for reactant in reactants:
-                    if checker.check_fg("Ester", reactant):
-                        print(f"Found ester in reactant: {reactant}")
-                        ester_found = True
-                        break
+                        # Check if reactants already contain pyrazole
+                        reactant_has_pyrazole = any(
+                            checker.check_ring("pyrazole", r) for r in reactants_smiles
+                        )
 
-                # Check for carboxylic acid in product
-                if ester_found and checker.check_fg("Carboxylic acid", product):
-                    print(f"Found carboxylic acid in product: {product}")
-                    print("Ester to acid conversion detected (possible hydrolysis)")
-                    ester_hydrolysis_found = True
+                        # Check if this is a pyrazole formation reaction
+                        if hydrazine_found and not reactant_has_pyrazole:
+                            # Check if this is a known pyrazole formation reaction
+                            if checker.check_reaction("pyrazole", rsmi):
+                                print("Confirmed pyrazole formation reaction")
+                                pyrazole_formation_found = True
+                            # Check for various pyrazole formation reactions
+                            elif any(
+                                checker.check_reaction(rxn_type, rsmi)
+                                for rxn_type in [
+                                    "[3+2]-cycloaddition of hydrazone and alkyne",
+                                    "[3+2]-cycloaddition of hydrazone and alkene",
+                                    "Michael-induced ring closure from hydrazone",
+                                    "{pyrazole}",
+                                ]
+                            ):
+                                print("Confirmed pyrazole formation via specific reaction")
+                                pyrazole_formation_found = True
+                            else:
+                                print("Detected potential pyrazole formation (new ring in product)")
+                                pyrazole_formation_found = True
+            except Exception as e:
+                print(f"Error analyzing reaction: {e}")
 
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            if (
-                not ester_hydrolysis_found
-            ):  # Stop traversal if we already found what we're looking for
-                dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
+    print("Starting traversal of synthesis route")
     dfs_traverse(route)
-    print(f"Final result: Ester hydrolysis found = {ester_hydrolysis_found}")
+    print(f"Pyrazole formation found: {pyrazole_formation_found}")
 
-    return ester_hydrolysis_found
+    return pyrazole_formation_found

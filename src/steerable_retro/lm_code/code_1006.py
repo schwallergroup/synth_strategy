@@ -2,105 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves multiple ester hydrolysis steps,
-    specifically methyl ester to carboxylic acid conversions.
+    This function detects if the synthetic route involves sulfonamide formation.
     """
-    ester_hydrolysis_count = 0
+    sulfonamide_formed = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal ester_hydrolysis_count
+    def dfs_traverse(node):
+        nonlocal sulfonamide_formed
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-            try:
-                # Check for ester hydrolysis reaction directly
-                if (
-                    checker.check_reaction("Ester saponification (methyl deprotection)", rsmi)
-                    or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
-                    or checker.check_reaction(
-                        "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-                    )
-                ):
-                    ester_hydrolysis_count += 1
-                    print(f"Detected ester hydrolysis reaction at depth {depth}")
-                else:
-                    # Fallback check: product has carboxylic acid and reactant has ester
-                    # Make sure carboxylic acid appears in product but not in reactants
-                    if checker.check_fg("Carboxylic acid", product) and not any(
-                        checker.check_fg("Carboxylic acid", r) for r in reactants
+                # Check if reactants contain sulfonamide
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
+                reactants_have_sulfonamide = False
+                for r in reactants:
+                    if r is not None and r.HasSubstructMatch(
+                        Chem.MolFromSmarts("[#7]-[#16](=[#8])(=[#8])-[#6]")
                     ):
-                        for reactant in reactants:
-                            # Make sure ester appears in reactant but not in product
-                            if checker.check_fg("Ester", reactant) and not checker.check_fg(
-                                "Ester", product
-                            ):
-                                ester_hydrolysis_count += 1
-                                print(
-                                    f"Detected ester hydrolysis via functional groups at depth {depth}"
-                                )
-                                break
-            except Exception as e:
-                print(f"Error in ester hydrolysis detection: {e}")
+                        reactants_have_sulfonamide = True
+                        break
 
-        # Continue traversal
+                # Check if product contains sulfonamide
+                product = Chem.MolFromSmiles(product_smiles)
+                product_has_sulfonamide = False
+                if product is not None and product.HasSubstructMatch(
+                    Chem.MolFromSmarts("[#7]-[#16](=[#8])(=[#8])-[#6]")
+                ):
+                    product_has_sulfonamide = True
+
+                # If sulfonamide is in product but not in reactants, it was formed
+                if product_has_sulfonamide and not reactants_have_sulfonamide:
+                    sulfonamide_formed = True
+                    print("Sulfonamide formation detected")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    print(f"Total ester hydrolysis reactions found: {ester_hydrolysis_count}")
-
-    # Based on the test case, it appears we should return True for at least 1 ester hydrolysis
-    return ester_hydrolysis_count >= 1
+    return sulfonamide_formed

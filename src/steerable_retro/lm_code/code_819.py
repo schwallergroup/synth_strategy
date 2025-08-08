@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,54 +54,85 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the route contains formation of a tertiary alcohol from a methylene group.
+    This function detects if carbamate formation/cleavage occurs in the late stage of synthesis.
     """
-    found_tertiary_alcohol = False
+    late_stage_carbamate = False
 
-    def dfs_traverse(node):
-        nonlocal found_tertiary_alcohol
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_carbamate
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+        if (
+            node["type"] == "reaction"
+            and "metadata" in node
+            and "rsmi" in node["metadata"]
+            and depth <= 2
+        ):
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check if tertiary alcohol is in product but not in reactants
-            if checker.check_fg("Tertiary alcohol", product_part) and not checker.check_fg(
-                "Tertiary alcohol", reactants_part
-            ):
-                # Check for relevant reaction types that form tertiary alcohols
+                # Check for carbamate-related reactions directly
+                carbamate_reactions = [
+                    "Boc amine protection",
+                    "Boc amine deprotection",
+                    "Boc amine protection explicit",
+                    "Boc amine protection with Boc anhydride",
+                    "Boc amine protection (ethyl Boc)",
+                    "Boc amine protection of secondary amine",
+                    "Boc amine protection of primary amine",
+                    "Boc amine deprotection of guanidine",
+                    "Boc amine deprotection to NH-NH2",
+                    "Tert-butyl deprotection of amine",
+                    "Urea synthesis via isocyanate and primary amine",
+                    "Urea synthesis via isocyanate and secondary amine",
+                    "Urea synthesis via isocyanate and diazo",
+                    "Urea synthesis via isocyanate and sulfonamide",
+                ]
+
+                for reaction_name in carbamate_reactions:
+                    if checker.check_reaction(reaction_name, rsmi):
+                        print(
+                            f"Detected carbamate reaction {reaction_name} at depth {depth}: {rsmi}"
+                        )
+                        late_stage_carbamate = True
+                        return
+
+                # Check for functional group changes if specific reaction check failed
+                # Check for carbamate-related functional groups in reactants
+                carbamate_fgs = ["Urea", "Carbonic Ester", "Carbonic Acid"]
+                carbamate_in_reactants = any(
+                    any(checker.check_fg(fg, r) for fg in carbamate_fgs) for r in reactants_smiles
+                )
+                carbamate_in_product = any(
+                    checker.check_fg(fg, product_smiles) for fg in carbamate_fgs
+                )
+
+                # Check for amine functional groups in reactants and products
+                amine_fgs = ["Primary amine", "Secondary amine", "Tertiary amine"]
+                amine_in_reactants = any(
+                    any(checker.check_fg(fg, r) for fg in amine_fgs) for r in reactants_smiles
+                )
+                amine_in_product = any(checker.check_fg(fg, product_smiles) for fg in amine_fgs)
+
+                # Check for isocyanate which is often involved in carbamate formation
+                isocyanate_in_reactants = any(
+                    checker.check_fg("Isocyanate", r) for r in reactants_smiles
+                )
+
+                # Check for carbamate formation or cleavage
                 if (
-                    checker.check_reaction("Grignard from ketone to alcohol", rsmi)
-                    or checker.check_reaction("Grignard from aldehyde to alcohol", rsmi)
-                    or checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi)
+                    (amine_in_reactants and carbamate_in_product)
+                    or (carbamate_in_reactants and amine_in_product)
+                    or (isocyanate_in_reactants and (carbamate_in_product or amine_in_product))
                 ):
+                    print(f"Detected carbamate formation/cleavage at depth {depth}: {rsmi}")
+                    late_stage_carbamate = True
+            except Exception as e:
+                print(f"Error processing reaction at depth {depth}: {e}")
 
-                    # Check for methylene or vinyl group in reactants
-                    if checker.check_fg("Vinyl", reactants_part) or checker.check_fg(
-                        "Ethylene", reactants_part
-                    ):
-                        print(f"Found tertiary alcohol formation reaction: {rsmi}")
-                        found_tertiary_alcohol = True
-
-                # Additional check for other reaction types that might form tertiary alcohols
-                elif checker.check_fg("Alkyne", reactants_part) and "OH" in product_part:
-                    print(f"Found tertiary alcohol formation from alkyne: {rsmi}")
-                    found_tertiary_alcohol = True
-
-                # Check for addition to carbonyl compounds
-                elif (
-                    checker.check_fg("Aldehyde", reactants_part)
-                    or checker.check_fg("Ketone", reactants_part)
-                ) and "OH" in product_part:
-                    print(f"Found tertiary alcohol formation from carbonyl: {rsmi}")
-                    found_tertiary_alcohol = True
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return found_tertiary_alcohol
+    return late_stage_carbamate

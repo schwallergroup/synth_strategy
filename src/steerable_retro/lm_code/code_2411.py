@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,69 +54,89 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy involving late-stage sulfonamide formation
-    (typically in the final step of the synthesis).
+    Detects late-stage aromatic halogenation (C-H to C-X transformation in the final step)
     """
-    found_sulfonamide_formation = False
+    # Track if we found the halogenation at depth 1 (final step)
+    found_late_stage_halogenation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_sulfonamide_formation
+        nonlocal found_late_stage_halogenation
 
-        if (
-            node["type"] == "reaction" and depth <= 1
-        ):  # Check if it's a late-stage reaction (depth 0 or 1)
-            # Extract reactants and product
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
+
+        if node["type"] == "reaction" and depth == 1:  # Final step (depth 1 in retrosynthesis)
             try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                reactants = reactants_part.split(".")
-                product = rsmi.split(">")[-1]
+                if "rsmi" in node.get("metadata", {}):
+                    rsmi = node["metadata"]["rsmi"]
+                    print(f"Analyzing reaction SMILES at depth {depth}: {rsmi}")
 
-                # Check if this is a sulfonamide synthesis reaction
-                if checker.check_reaction(
-                    "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
-                ) or checker.check_reaction(
-                    "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
-                ):
-                    print(f"Found sulfonamide synthesis reaction: {rsmi}")
-                    found_sulfonamide_formation = True
-                else:
-                    # Fallback to checking functional groups if reaction check fails
-                    has_sulfonyl_chloride = False
-                    has_amine = False
-                    has_sulfonamide_product = False
+                    # Check for specific aromatic halogenation reaction types
+                    halogenation_reactions = [
+                        "Aromatic fluorination",
+                        "Aromatic chlorination",
+                        "Aromatic bromination",
+                        "Aromatic iodination",
+                    ]
 
-                    # Check reactants for required functional groups
-                    for reactant in reactants:
-                        if checker.check_fg("Sulfonyl halide", reactant):
-                            has_sulfonyl_chloride = True
-                            print(f"Found sulfonyl halide in reactant: {reactant}")
-                        if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                            "Secondary amine", reactant
-                        ):
-                            has_amine = True
-                            print(f"Found amine in reactant: {reactant}")
+                    for reaction_type in halogenation_reactions:
+                        if checker.check_reaction(reaction_type, rsmi):
+                            print(f"Detected late-stage {reaction_type}")
+                            found_late_stage_halogenation = True
 
-                    # Check product for sulfonamide group
-                    if checker.check_fg("Sulfonamide", product):
-                        has_sulfonamide_product = True
-                        print(f"Found sulfonamide in product: {product}")
+                    # If specific reaction check failed, verify by checking functional groups
+                    if not found_late_stage_halogenation:
+                        product = rsmi.split(">")[-1]
+                        reactants = rsmi.split(">")[0].split(".")
 
-                    # If all conditions are met, mark as found
-                    if has_sulfonyl_chloride and has_amine and has_sulfonamide_product:
-                        found_sulfonamide_formation = True
-                        print(
-                            f"Found late-stage sulfonamide formation through functional group analysis: {rsmi}"
-                        )
+                        print(f"Product: {product}")
+                        print(f"Reactants: {reactants}")
+
+                        # Check if product has aromatic halide functional group
+                        if checker.check_fg("Aromatic halide", product):
+                            print("Product contains aromatic halide")
+
+                            # Define common aromatic rings
+                            aromatic_rings = [
+                                "benzene",
+                                "naphthalene",
+                                "anthracene",
+                                "pyridine",
+                                "pyrrole",
+                                "furan",
+                                "thiophene",
+                                "imidazole",
+                                "pyrazole",
+                                "oxazole",
+                                "thiazole",
+                                "indole",
+                                "quinoline",
+                                "isoquinoline",
+                            ]
+
+                            # Check if any reactant doesn't have aromatic halide
+                            # This would indicate a halogenation occurred
+                            for reactant in reactants:
+                                print(f"Checking reactant: {reactant}")
+                                if not checker.check_fg("Aromatic halide", reactant):
+                                    print("Reactant does not contain aromatic halide")
+                                    # Verify this is an aromatic ring
+                                    if any(
+                                        checker.check_ring(ring, reactant)
+                                        for ring in aromatic_rings
+                                    ):
+                                        print(
+                                            "Detected late-stage aromatic halogenation by functional group analysis"
+                                        )
+                                        found_late_stage_halogenation = True
             except Exception as e:
-                print(f"Error processing reaction: {e}")
+                print(f"Error analyzing reaction: {e}")
 
-        # Traverse children
+        # Process children with incremented depth
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
+    print(f"Final result: {found_late_stage_halogenation}")
 
-    print(f"Late-stage sulfonamide formation strategy detected: {found_sulfonamide_formation}")
-    return found_sulfonamide_formation
+    return found_late_stage_halogenation

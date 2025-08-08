@@ -2,77 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving functionalization of a piperazine scaffold
-    that is maintained throughout the synthesis.
+    Detects a synthetic strategy involving biaryl formation via Suzuki coupling.
     """
-    # Track if we found piperazine scaffold and its functionalization
-    found_piperazine = False
-    found_functionalization = False
+    has_suzuki_coupling = False
 
     def dfs_traverse(node):
-        nonlocal found_piperazine, found_functionalization
+        nonlocal has_suzuki_coupling
 
-        if node["type"] == "mol" and "smiles" in node:
-            # Check if molecule contains piperazine scaffold
-            piperazine_pattern = Chem.MolFromSmarts("[#7]1-[#6]-[#6]-[#7]-[#6]-[#6]-1")
-            mol = Chem.MolFromSmiles(node["smiles"])
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-            if mol and mol.HasSubstructMatch(piperazine_pattern):
-                found_piperazine = True
-                print(f"Found piperazine scaffold in molecule: {node['smiles']}")
+            parts = rsmi.split(">")
+            if len(parts) < 3:
+                return
 
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants = parts[0].split(".")
+            product = parts[2]
 
-            # Check for functionalization reactions on piperazine
-            piperazine_pattern = Chem.MolFromSmarts("[#7]1-[#6]-[#6]-[#7]-[#6]-[#6]-1")
+            # Check for Suzuki coupling
+            boronic_acid_pattern = re.compile(r"[cB]|B\(O\)|OB\(O\)")
+            halogen_pattern = re.compile(r"[cBrI]|Br|I|Cl")
 
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol and product_mol.HasSubstructMatch(piperazine_pattern):
-                # Check if this is a functionalization reaction
-                # (We're looking for reactions that modify the piperazine but keep its core intact)
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(piperazine_pattern):
-                        # If both reactant and product have piperazine, it's a functionalization
-                        found_functionalization = True
-                        print(f"Found piperazine functionalization in reaction: {rsmi}")
-                        break
+            has_boronic_acid = any(boronic_acid_pattern.search(r) for r in reactants)
+            has_halogen = any(halogen_pattern.search(r) for r in reactants)
 
-        # Traverse children
+            if has_boronic_acid and has_halogen:
+                # Further verify it's likely a Suzuki by checking for aromatic rings
+                if any("c" in r for r in reactants):
+                    has_suzuki_coupling = True
+                    print(f"Detected Suzuki coupling: {rsmi}")
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Strategy is present if we found piperazine scaffold and its functionalization
-    strategy_present = found_piperazine and found_functionalization
+    print(f"Biaryl formation via Suzuki: {has_suzuki_coupling}")
 
-    if strategy_present:
-        print("Detected strategy: Piperazine scaffold functionalization")
-
-    return strategy_present
+    return has_suzuki_coupling

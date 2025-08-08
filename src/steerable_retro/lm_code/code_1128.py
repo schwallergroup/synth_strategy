@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,65 +54,59 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a synthesis strategy involving iodination of an aromatic ring.
+    This function detects if the synthesis route preserves a cyclopropane ring
+    from early starting materials through to the final product.
     """
-    found_iodination = False
+    # Track if cyclopropane is preserved through the entire route
+    preserved_through_route = [False]  # Using list for mutable reference in nested function
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_iodination
+    def dfs_traverse(node, path=None):
+        if path is None:
+            path = []
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            try:
-                rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "mol":
+            # Check if this molecule contains a cyclopropane
+            has_cyclopropane = checker.check_ring("cyclopropane", node["smiles"])
 
-                # Primary check using the reaction checker
-                if checker.check_reaction("Aromatic iodination", rsmi):
-                    print(f"Found aromatic iodination reaction at depth {depth}: {rsmi}")
-                    found_iodination = True
-                    return
+            # If this is the final product (depth 0), check if it has cyclopropane
+            if len(path) == 0 and has_cyclopropane:
+                print(f"Final product has cyclopropane: {node['smiles']}")
+                path.append({"has_cyclopropane": has_cyclopropane, "smiles": node["smiles"]})
+            elif has_cyclopropane:
+                print(f"Intermediate at depth {len(path)} has cyclopropane: {node['smiles']}")
+                path.append({"has_cyclopropane": has_cyclopropane, "smiles": node["smiles"]})
+            else:
+                print(f"Molecule at depth {len(path)} does NOT have cyclopropane: {node['smiles']}")
+                path.append({"has_cyclopropane": False, "smiles": node["smiles"]})
 
-                # Secondary check: verify iodination manually
-                reactants_part = rsmi.split(">")[0]
-                product = rsmi.split(">")[-1]
+            # If we've reached a starting material (leaf node)
+            if node.get("in_stock", False) and len(node.get("children", [])) == 0:
+                # Check if cyclopropane is preserved throughout this path
+                cyclopropane_count = sum(1 for item in path if item["has_cyclopropane"])
+                if cyclopropane_count == len(path) and len(path) > 1:
+                    print(
+                        f"Found complete path preserving cyclopropane from starting material to product!"
+                    )
+                    preserved_through_route[0] = True
 
-                # Skip if product doesn't have aromatic halide
-                if not checker.check_fg("Aromatic halide", product):
-                    pass
-                elif "I" in product:  # Only proceed if product contains iodine
-                    product_mol = Chem.MolFromSmiles(product)
+                    # Print the path for debugging
+                    for i, item in enumerate(path):
+                        print(
+                            f"Depth {i}: {'Has cyclopropane' if item['has_cyclopropane'] else 'No cyclopropane'} - {item['smiles']}"
+                        )
 
-                    # Check if any reactant contains iodine reagent
-                    reactants = reactants_part.split(".")
-                    iodine_reagent_present = any("I" in r for r in reactants)
+        elif node["type"] == "reaction":
+            # For reaction nodes, just continue traversal without modifying the path
+            pass
 
-                    if product_mol and iodine_reagent_present:
-                        # Check for iodine attached to aromatic ring in product
-                        for atom in product_mol.GetAtoms():
-                            if atom.GetSymbol() == "I":
-                                # Check if iodine is attached to an aromatic atom
-                                neighbors = atom.GetNeighbors()
-                                if neighbors and any(n.GetIsAromatic() for n in neighbors):
-                                    # Verify this is an addition (not already in reactants)
-                                    # Check if any reactant already has aromatic iodide
-                                    reactant_has_aromatic_iodide = any(
-                                        checker.check_fg("Aromatic halide", r) and "I" in r
-                                        for r in reactants
-                                    )
-
-                                    if not reactant_has_aromatic_iodide:
-                                        print(
-                                            f"Found aromatic iodination (manual check) at depth {depth}: {rsmi}"
-                                        )
-                                        found_iodination = True
-                                        return
-            except Exception as e:
-                print(f"Error analyzing reaction at depth {depth}: {e}")
-
-        # Traverse children (retrosynthetic direction)
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            # Create a copy of the path for this branch
+            child_path = path.copy()
+            dfs_traverse(child, child_path)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return found_iodination
+    print(f"Cyclopropane preservation throughout route: {preserved_through_route[0]}")
+    return preserved_through_route[0]

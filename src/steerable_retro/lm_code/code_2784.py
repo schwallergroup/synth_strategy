@@ -2,150 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a convergent synthesis strategy where multiple complex fragments
-    are combined in late-stage reactions.
+    Detects late-stage SNAr coupling (final step) of two complex fragments.
     """
-    convergent_detected = False
+    snar_coupling_found = False
 
-    def dfs_traverse(node, current_depth=0):
-        nonlocal convergent_detected
+    def dfs_traverse(node):
+        nonlocal snar_coupling_found
 
+        # We're looking for the final step (depth 0)
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Extract depth from ID if available, otherwise use current_depth
-            node_depth = current_depth
-            depth_match = re.search(r"Depth: (\d+)", node.get("metadata", {}).get("ID", ""))
-            if depth_match:
-                node_depth = int(depth_match.group(1))
+            # Check if this is a final step (no parent reaction)
+            if product:
+                product_mol = Chem.MolFromSmiles(product)
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
 
-            print(f"Examining reaction at depth {node_depth}, with {len(reactants)} reactants")
+                if product_mol and len(reactant_mols) >= 2:
+                    # Look for halogen on heteroaromatic in reactants
+                    halo_heteroaromatic = Chem.MolFromSmarts("[n]([c][Cl,Br,I,F])")
+                    # Look for amine nucleophile in reactants
+                    amine_pattern = Chem.MolFromSmarts("[NH2][c]")
 
-            # Check if this is a late-stage reaction (depth 0, 1, 2, or 3)
-            if node_depth <= 3:
-                # Check if we have multiple reactants
-                if len(reactants) >= 2:
-                    complex_fragments = 0
-                    non_complex_fragments = []
-
-                    for r in reactants:
-                        mol = Chem.MolFromSmiles(r)
-                        if mol:
-                            # Define "complex" as having significant structure
-                            ring_info = mol.GetRingInfo()
-                            num_rings = ring_info.NumRings()
-                            num_atoms = mol.GetNumHeavyAtoms()
-
-                            # A complex fragment has either multiple rings or is relatively large
-                            if (num_rings >= 2 and num_atoms >= 8) or num_atoms >= 12:
-                                complex_fragments += 1
-                                print(
-                                    f"Found complex fragment: {r} with {num_rings} rings and {num_atoms} atoms"
-                                )
-                            else:
-                                non_complex_fragments.append((r, num_rings, num_atoms))
-
-                    # Check if this is a coupling reaction
-                    is_coupling = False
-                    coupling_reactions = [
-                        "Suzuki",
-                        "Negishi",
-                        "Stille",
-                        "Heck",
-                        "Sonogashira",
-                        "Buchwald-Hartwig",
-                        "Ullmann",
-                        "Chan-Lam",
-                        "Kumada",
-                        "Hiyama-Denmark",
-                        "N-arylation",
-                    ]
-
-                    for rxn_name in coupling_reactions:
-                        if checker.check_reaction(rxn_name, rsmi):
-                            is_coupling = True
-                            print(f"Detected {rxn_name} coupling reaction")
-                            break
-
-                    # Consider convergent if:
-                    # 1. We have multiple complex fragments regardless of reaction type
-                    # 2. We have a coupling reaction with at least one complex fragment
-                    # 3. We have one complex fragment and at least one meaningful fragment (≥5 atoms)
-                    has_meaningful_fragment = any(
-                        atoms >= 5 for _, _, atoms in non_complex_fragments
+                    has_halo = any(
+                        mol.HasSubstructMatch(halo_heteroaromatic) for mol in reactant_mols if mol
+                    )
+                    has_amine = any(
+                        mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols if mol
                     )
 
-                    if complex_fragments >= 2:
-                        print(
-                            f"Detected convergent synthesis with {complex_fragments} complex fragments"
-                        )
-                        convergent_detected = True
-                    elif is_coupling and complex_fragments >= 1:
-                        print(
-                            f"Detected convergent synthesis with coupling reaction and {complex_fragments} complex fragment"
-                        )
-                        convergent_detected = True
-                    elif complex_fragments >= 1 and has_meaningful_fragment:
-                        print(
-                            f"Detected convergent synthesis with {complex_fragments} complex fragment and meaningful smaller fragments"
-                        )
-                        convergent_detected = True
+                    # Look for C-N bond formation in product
+                    cn_bond_pattern = Chem.MolFromSmarts("[n]([c][N][c])")
+                    has_cn_bond = (
+                        product_mol.HasSubstructMatch(cn_bond_pattern) if product_mol else False
+                    )
 
-        # Traverse children with incremented depth
+                    if has_halo and has_amine and has_cn_bond:
+                        # Check if this is a complex coupling (both fragments have significant complexity)
+                        complex_fragments = sum(
+                            1 for mol in reactant_mols if mol and mol.GetNumAtoms() > 8
+                        )
+
+                        if complex_fragments >= 2:
+                            snar_coupling_found = True
+                            print("Found late-stage SNAr coupling of complex fragments")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final convergent_detected status: {convergent_detected}")
-    return convergent_detected
+
+    return snar_coupling_found

@@ -2,96 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves a sequence of
-    ester reduction followed by alcohol oxidation.
+    This function detects early-stage heterocycle formation, specifically oxazole ring formation.
     """
-    ester_reduction_depths = []
-    alcohol_oxidation_depths = []
+    heterocycle_formation_found = False
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
+        nonlocal heterocycle_formation_found
+
+        if node["type"] == "reaction" and depth >= 2:  # Early stage (high depth)
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for ester reduction
-                ester_pattern = Chem.MolFromSmarts("[C](=O)[O][C]")
-                alcohol_pattern = Chem.MolFromSmarts("[CH2][OH]")
+                # Check for oxazole in product but not in reactants
+                oxazole_pattern = Chem.MolFromSmarts("[#6]1:[#7]:[#6]:[#8]:[#6]:1")
 
-                # Check for alcohol oxidation
-                aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
+                has_oxazole_in_reactants = False
+                for reactant in reactants:
+                    try:
+                        r_mol = Chem.MolFromSmiles(reactant)
+                        if r_mol and r_mol.HasSubstructMatch(oxazole_pattern):
+                            has_oxazole_in_reactants = True
+                            break
+                    except:
+                        continue
 
-                # Check for ester reduction
-                ester_in_reactants = any(
-                    Chem.MolFromSmiles(r) is not None
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(ester_pattern)
-                    for r in reactants
-                    if r
-                )
-                alcohol_in_product = Chem.MolFromSmiles(product) is not None and Chem.MolFromSmiles(
-                    product
-                ).HasSubstructMatch(alcohol_pattern)
+                if not has_oxazole_in_reactants:
+                    try:
+                        p_mol = Chem.MolFromSmiles(product)
+                        if p_mol and p_mol.HasSubstructMatch(oxazole_pattern):
+                            print("Detected early-stage heterocycle (oxazole) formation")
+                            heterocycle_formation_found = True
+                    except:
+                        pass
 
-                if ester_in_reactants and alcohol_in_product:
-                    print(f"Found ester reduction at depth {depth}")
-                    ester_reduction_depths.append(depth)
-
-                # Check for alcohol oxidation
-                alcohol_in_reactants = any(
-                    Chem.MolFromSmiles(r) is not None
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(alcohol_pattern)
-                    for r in reactants
-                    if r
-                )
-                aldehyde_in_product = Chem.MolFromSmiles(
-                    product
-                ) is not None and Chem.MolFromSmiles(product).HasSubstructMatch(aldehyde_pattern)
-
-                if alcohol_in_reactants and aldehyde_in_product:
-                    print(f"Found alcohol oxidation at depth {depth}")
-                    alcohol_oxidation_depths.append(depth)
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal from root
     dfs_traverse(route)
-
-    # Check if we have both ester reduction and alcohol oxidation in the correct sequence
-    if ester_reduction_depths and alcohol_oxidation_depths:
-        # In retrosynthetic direction, the alcohol oxidation should be at a lower depth
-        # than the ester reduction (meaning it happens after the reduction in the forward direction)
-        for er_depth in ester_reduction_depths:
-            for ao_depth in alcohol_oxidation_depths:
-                if (
-                    ao_depth < er_depth
-                ):  # In retrosynthesis, lower depth = later in forward synthesis
-                    print(
-                        f"Found oxidation-reduction sequence: ester reduction at depth {er_depth}, alcohol oxidation at depth {ao_depth}"
-                    )
-                    return True
-
-    return False
+    return heterocycle_formation_found

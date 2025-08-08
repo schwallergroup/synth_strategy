@@ -2,65 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves O-methylation of a phenol
+    Detects the use of multiple different halogen types (F, Cl, Br, I)
+    in the synthetic route.
     """
-    has_o_methylation = False
+    halogen_types = set()
 
     def dfs_traverse(node):
-        nonlocal has_o_methylation
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for each halogen type
+                for halogen, symbol in [("[F]", "F"), ("[Cl]", "Cl"), ("[Br]", "Br"), ("[I]", "I")]:
+                    pattern = Chem.MolFromSmarts(halogen)
+                    if mol.HasSubstructMatch(pattern):
+                        halogen_types.add(symbol)
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check for O-methylation of phenol
-                phenol_patt = Chem.MolFromSmarts("[c][OH]")
-                methoxy_patt = Chem.MolFromSmarts("[c][O][CH3]")
-                methyl_donor_patt = Chem.MolFromSmarts("[CH3][I,Br]")
-
-                product_mol = Chem.MolFromSmiles(product)
-
-                if product_mol and product_mol.HasSubstructMatch(methoxy_patt):
-                    has_phenol = False
-                    has_methyl_donor = False
-
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if reactant_mol.HasSubstructMatch(phenol_patt):
-                                has_phenol = True
-                            if reactant_mol.HasSubstructMatch(methyl_donor_patt):
-                                has_methyl_donor = True
-
-                    if has_phenol and has_methyl_donor:
-                        has_o_methylation = True
-                        print("Found O-methylation of phenol")
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            for part in rsmi.split(">"):
+                for smiles in part.split("."):
+                    if smiles:
+                        mol = Chem.MolFromSmiles(smiles)
+                        if mol:
+                            for halogen, symbol in [
+                                ("[F]", "F"),
+                                ("[Cl]", "Cl"),
+                                ("[Br]", "Br"),
+                                ("[I]", "I"),
+                            ]:
+                                pattern = Chem.MolFromSmarts(halogen)
+                                if mol.HasSubstructMatch(pattern):
+                                    halogen_types.add(symbol)
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return has_o_methylation
+
+    if len(halogen_types) >= 3:
+        print(f"Multiple halogen types detected: {', '.join(halogen_types)}")
+        return True
+    return False

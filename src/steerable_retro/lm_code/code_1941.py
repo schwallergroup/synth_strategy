@@ -2,76 +2,107 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a mid-stage amide bond formation.
+    This function detects if the final product contains multiple (>3) connected aromatic rings.
     """
-    amide_formation_found = False
-    amide_formation_depth = -1
-    max_depth = -1
+    has_multi_aromatic = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_formation_found, amide_formation_depth, max_depth
+    def dfs_traverse(node, is_root=True):
+        nonlocal has_multi_aromatic
 
-        max_depth = max(max_depth, depth)
+        if node["type"] == "mol" and is_root:  # Final product node (root)
+            try:
+                mol_smiles = node["smiles"]
+                print(f"Analyzing final product: {mol_smiles}")
+                mol = Chem.MolFromSmiles(mol_smiles)
+                if mol:
+                    # Get all aromatic rings
+                    aromatic_rings = []
+                    ring_info = mol.GetRingInfo()
+                    for ring_atoms in ring_info.AtomRings():
+                        is_aromatic = True
+                        for atom_idx in ring_atoms:
+                            atom = mol.GetAtomWithIdx(atom_idx)
+                            if not atom.GetIsAromatic():
+                                is_aromatic = False
+                                break
+                        if is_aromatic:
+                            aromatic_rings.append(set(ring_atoms))
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                    print(f"Found {len(aromatic_rings)} aromatic rings")
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                    # Check if we have more than 3 aromatic rings
+                    if len(aromatic_rings) > 3:
+                        print(f"Final product contains more than 3 aromatic rings: {mol_smiles}")
+                        has_multi_aromatic = True
+                        return
 
-            # Check for amide formation
-            if product_mol:
-                amide_pattern = Chem.MolFromSmarts("[#6](=[O])[#7]")
-                acid_pattern = Chem.MolFromSmarts("[#6](=[O])[O]")
-                amine_pattern = Chem.MolFromSmarts("[#7;!$(N=*);!$(N#*)]")
+                    # Check if rings are connected (share atoms or bonds)
+                    if len(aromatic_rings) >= 2:
+                        # Build a graph of connected rings
+                        connected_rings = {}
+                        for i in range(len(aromatic_rings)):
+                            connected_rings[i] = []
+                            for j in range(len(aromatic_rings)):
+                                if i != j and aromatic_rings[i].intersection(aromatic_rings[j]):
+                                    connected_rings[i].append(j)
 
-                if product_mol.HasSubstructMatch(amide_pattern):
-                    # Check if reactants contain acid and amine
-                    has_acid = False
-                    has_amine = False
+                        # Count connected components and their sizes
+                        visited = set()
+                        connected_components = []
 
-                    for r_smiles in reactants_smiles:
-                        r_mol = Chem.MolFromSmiles(r_smiles)
-                        if r_mol:
-                            if r_mol.HasSubstructMatch(acid_pattern):
-                                has_acid = True
-                            if r_mol.HasSubstructMatch(amine_pattern):
-                                has_amine = True
+                        def dfs_rings(ring_idx, component):
+                            visited.add(ring_idx)
+                            component.append(ring_idx)
+                            for neighbor in connected_rings[ring_idx]:
+                                if neighbor not in visited:
+                                    dfs_rings(neighbor, component)
 
-                    if has_acid and has_amine:
-                        amide_formation_found = True
-                        amide_formation_depth = depth
-                        print(f"Amide formation found at depth {depth}")
+                        for i in range(len(aromatic_rings)):
+                            if i not in visited:
+                                component = []
+                                dfs_rings(i, component)
+                                connected_components.append(component)
 
-        # Traverse children
+                        # Check if any component has more than 3 rings
+                        for component in connected_components:
+                            print(f"Found connected component with {len(component)} rings")
+                            if len(component) > 3:
+                                print(
+                                    f"Final product contains a connected system of more than 3 aromatic rings"
+                                )
+                                has_multi_aromatic = True
+                                return
+            except Exception as e:
+                print(f"Error analyzing molecule: {e}")
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, is_root=False)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Consider it mid-stage if it's in the middle third of the synthesis
-    return amide_formation_found and max_depth / 3 < amide_formation_depth < 2 * max_depth / 3
+    print(f"Multi-aromatic system found: {has_multi_aromatic}")
+    return has_multi_aromatic

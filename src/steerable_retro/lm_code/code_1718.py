@@ -2,77 +2,51 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves multiple nitrogen deprotection steps
-    (e.g., Boc deprotection, sulfonyl deprotection).
+    Detects if a stereocenter is preserved throughout the synthesis.
     """
-    deprotection_count = 0
+    stereocenters_by_depth = {}
 
-    def dfs_traverse(node):
-        nonlocal deprotection_count
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "mol" and node["smiles"]:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Look for @H or @@H in SMILES as a simple stereocenter check
+                if "@H" in node["smiles"]:
+                    stereocenters_by_depth[depth] = True
+                    print(f"Found stereocenter at depth {depth}: {node['smiles']}")
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
-
-                # Boc deprotection pattern
-                boc_protected = Chem.MolFromSmarts("[NH][C](=[O])[O][C]([C])([C])[C]")
-                free_amine = Chem.MolFromSmarts("[NH2]")
-
-                # Sulfonyl deprotection pattern
-                sulfonyl_protected = Chem.MolFromSmarts("[n][S](=[O])(=[O])[c]")
-                free_indole_nh = Chem.MolFromSmarts("[nH]")
-
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".")]
-                product = Chem.MolFromSmiles(product_str)
-
-                # Check for Boc deprotection
-                has_boc_reactant = any(
-                    r is not None and r.HasSubstructMatch(boc_protected) for r in reactants
-                )
-                has_free_amine_product = product is not None and product.HasSubstructMatch(
-                    free_amine
-                )
-
-                # Check for sulfonyl deprotection
-                has_sulfonyl_reactant = any(
-                    r is not None and r.HasSubstructMatch(sulfonyl_protected) for r in reactants
-                )
-                has_free_indole_product = product is not None and product.HasSubstructMatch(
-                    free_indole_nh
-                )
-
-                if (has_boc_reactant and has_free_amine_product) or (
-                    has_sulfonyl_reactant and has_free_indole_product
-                ):
-                    print("Found nitrogen deprotection step")
-                    deprotection_count += 1
-
-        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return deprotection_count >= 2  # At least two deprotection steps
+
+    # Check if stereocenters are present at multiple depths
+    if len(stereocenters_by_depth) >= 2:
+        print(f"Stereocenters preserved across {len(stereocenters_by_depth)} steps")
+        return True
+    return False

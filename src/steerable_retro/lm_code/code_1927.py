@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,102 +54,118 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects the use of Williamson ether synthesis in the route,
-    specifically looking for the reaction between a benzyl halide and a phenol.
+    This function detects a protection-deprotection strategy using Boc group.
+    It looks for Boc protection followed by later deprotection.
     """
-    has_williamson_ether = False
+    # Track protected molecules and their depths
+    protected_molecules = {}  # Map of molecule SMILES to protection depth
+    deprotected_molecules = {}  # Map of molecule SMILES to deprotection depth
 
-    def dfs_traverse(node):
-        nonlocal has_williamson_ether
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Examining reaction at depth {depth}: {rsmi}")
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+            try:
+                # Extract reactants and product
+                reactants_part = rsmi.split(">")[0]
+                reactants = reactants_part.split(".")
+                product_part = rsmi.split(">")[-1]
+                products = product_part.split(".")
 
-                # First check if this is a Williamson ether synthesis reaction by name
-                if checker.check_reaction(
-                    "Williamson Ether Synthesis", rsmi
-                ) or checker.check_reaction("{Williamson ether}", rsmi):
-                    print(f"Detected Williamson ether synthesis by reaction name: {rsmi}")
-                    has_williamson_ether = True
+                # Check for Boc protection reactions
+                if (
+                    checker.check_reaction("Boc amine protection", rsmi)
+                    or checker.check_reaction("Boc amine protection explicit", rsmi)
+                    or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
+                    or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
+                    or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
+                    or checker.check_reaction("Boc amine protection of primary amine", rsmi)
+                ):
 
-                # Alternative check for specific case of benzyl halide + phenol
-                elif not has_williamson_ether:
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                    print(f"Potential Boc protection detected at depth {depth}")
 
-                    print(f"Analyzing reaction: {rsmi}")
+                    # Verify Boc group is present in product but not in reactants (excluding Boc reagents)
+                    boc_in_product = any(checker.check_fg("Boc", p) for p in products)
 
-                    # Check for phenol in reactants - expanded definition
-                    has_phenol = any(
-                        checker.check_fg("Phenol", reactant)
-                        or (
-                            ("[OH]" in reactant or "OH" in reactant)
-                            and checker.check_ring("benzene", reactant)
-                        )
-                        for reactant in reactants
-                    )
-                    print(f"Has phenol: {has_phenol}")
+                    if boc_in_product:
+                        print(f"Confirmed Boc protection at depth {depth}")
+                        # Store the protected molecule with its depth
+                        for p in products:
+                            if checker.check_fg("Boc", p):
+                                protected_molecules[p] = depth
+                                print(f"Added protected molecule: {p}")
 
-                    # Check for benzyl halide (halogen attached to CH2 connected to benzene)
-                    has_benzyl_halide = False
-                    benzyl_halide_reactant = None
-                    for reactant in reactants:
-                        # Check for primary halide attached to benzene (benzyl halide)
-                        if (
-                            checker.check_fg("Primary halide", reactant)
-                            or checker.check_fg("Secondary halide", reactant)
-                            or checker.check_fg("Tertiary halide", reactant)
-                        ) and checker.check_ring("benzene", reactant):
-                            # Additional check for CH2 group
-                            if "[CH2]" in reactant or "CH2" in reactant:
-                                has_benzyl_halide = True
-                                benzyl_halide_reactant = reactant
-                                print(f"Found benzyl halide: {reactant}")
-                                break
+                # Check for Boc deprotection reactions
+                if (
+                    checker.check_reaction("Boc amine deprotection", rsmi)
+                    or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
+                    or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
+                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
+                ):
 
-                    # Check if product has ether and benzene ring
-                    has_ether = checker.check_fg("Ether", product)
-                    has_benzene_in_product = checker.check_ring("benzene", product)
-                    print(
-                        f"Has ether in product: {has_ether}, Has benzene in product: {has_benzene_in_product}"
-                    )
+                    print(f"Potential Boc deprotection detected at depth {depth}")
 
-                    # Check for the specific reaction pattern
-                    if has_phenol and has_benzyl_halide and has_ether and has_benzene_in_product:
-                        print(
-                            f"Detected Williamson ether synthesis (benzyl halide + phenol): {rsmi}"
-                        )
-                        has_williamson_ether = True
-                    # Also check for general Williamson pattern (any halide + phenol)
-                    elif (
-                        has_phenol
-                        and any(
-                            checker.check_fg("Primary halide", reactant)
-                            or checker.check_fg("Secondary halide", reactant)
-                            or checker.check_fg("Tertiary halide", reactant)
-                            for reactant in reactants
-                        )
-                        and has_ether
-                    ):
-                        print(f"Detected general Williamson ether synthesis: {rsmi}")
-                        has_williamson_ether = True
-                    # Check for benzyl halide + any OH group forming an ether
-                    elif (
-                        has_benzyl_halide
-                        and has_ether
-                        and has_benzene_in_product
-                        and any("[OH]" in reactant or "OH" in reactant for reactant in reactants)
-                    ):
-                        print(
-                            f"Detected Williamson-like ether synthesis (benzyl halide + OH): {rsmi}"
-                        )
-                        has_williamson_ether = True
+                    # Verify Boc group is present in reactants but not in product
+                    boc_in_reactants = any(checker.check_fg("Boc", r) for r in reactants)
 
-        # Traverse children
+                    if boc_in_reactants:
+                        print(f"Confirmed Boc deprotection at depth {depth}")
+                        # Store the deprotected molecule with its depth
+                        for r in reactants:
+                            if checker.check_fg("Boc", r):
+                                deprotected_molecules[r] = depth
+                                print(f"Added deprotected molecule: {r}")
+
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+
+        # Recursively process children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_williamson_ether
+
+    print(f"Protected molecules: {protected_molecules}")
+    print(f"Deprotected molecules: {deprotected_molecules}")
+
+    # Check if we have any protection-deprotection pairs
+    for protected_mol, protection_depth in protected_molecules.items():
+        for deprotected_mol, deprotection_depth in deprotected_molecules.items():
+            # In retrosynthetic routes, higher depth means earlier in the forward synthesis
+            # So protection should have higher depth than deprotection
+            if protection_depth > deprotection_depth:
+                print(
+                    f"Found valid protection-deprotection strategy: protection at depth {protection_depth}, deprotection at depth {deprotection_depth}"
+                )
+                return True
+
+    # If we have both protections and deprotections but no valid pairs
+    if protected_molecules and deprotected_molecules:
+        print("Found both protection and deprotection, but not in correct order")
+
+    # Alternative approach: check if any molecule has "Boc" functional group
+    # This is a fallback in case the reaction detection failed
+    boc_molecules = []
+
+    def check_for_boc(node):
+        if node["type"] == "mol" and "smiles" in node:
+            mol_smiles = node["smiles"]
+            if checker.check_fg("Boc", mol_smiles):
+                boc_molecules.append(mol_smiles)
+                print(f"Found molecule with Boc group: {mol_smiles}")
+
+        for child in node.get("children", []):
+            check_for_boc(child)
+
+    if not (protected_molecules or deprotected_molecules):
+        print("No protection/deprotection reactions detected, checking for Boc groups directly")
+        check_for_boc(route)
+        if boc_molecules:
+            print(f"Found {len(boc_molecules)} molecules with Boc groups")
+            # If we found Boc groups but no protection/deprotection reactions,
+            # this might indicate a protection-deprotection strategy that wasn't properly detected
+            return True
+
+    return False

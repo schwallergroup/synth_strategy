@@ -2,86 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route employs multiple C-N bond formations
-    (at least 3 different types: SNAr, amidation, sulfonamidation).
+    This function detects a late-stage O-alkylation, specifically
+    the formation of a methoxymethyl ether in the final synthetic step.
     """
-    c_n_bond_types = set()
+    o_alkylation_detected = False
+    depth_of_alkylation = float("inf")
 
-    def dfs_traverse(node):
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal o_alkylation_detected, depth_of_alkylation
 
-            # Check for different types of C-N bond formations
-            product_mol = Chem.MolFromSmiles(product_smiles)
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            if product_mol:
-                # Check for sulfonamide formation
-                sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])[#7]")
-                if product_mol.HasSubstructMatch(sulfonamide_pattern):
-                    sulfonamide_in_reactants = False
-                    for reactant in reactants_smiles:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(sulfonamide_pattern):
-                            sulfonamide_in_reactants = True
-                            break
+                # Check for alcohol in reactants
+                alcohol_pattern = Chem.MolFromSmarts("[OH]")
 
-                    if not sulfonamide_in_reactants:
-                        c_n_bond_types.add("sulfonamidation")
-                        print("Detected sulfonamide formation")
+                # Check for chloromethyl ether in reactants
+                chloromethyl_ether_pattern = Chem.MolFromSmarts("Cl[CH2]O[CH3]")
 
-                # Check for amide formation
-                amide_pattern = Chem.MolFromSmarts("[#6](=[#8])[#7]")
-                if product_mol.HasSubstructMatch(amide_pattern):
-                    # Check if this is a new amide formation
-                    amide_count_product = len(product_mol.GetSubstructMatches(amide_pattern))
-                    amide_count_reactants = 0
+                # Check for methoxymethyl ether in product
+                methoxymethyl_ether_pattern = Chem.MolFromSmarts("[#6]O[CH2]O[CH3]")
 
-                    for reactant in reactants_smiles:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            amide_count_reactants += len(
-                                reactant_mol.GetSubstructMatches(amide_pattern)
-                            )
+                # Convert SMILES to RDKit molecules
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-                    if amide_count_product > amide_count_reactants:
-                        c_n_bond_types.add("amidation")
-                        print("Detected amide formation")
+                if (
+                    product_mol
+                    and any(mol and mol.HasSubstructMatch(alcohol_pattern) for mol in reactant_mols)
+                    and any(
+                        mol and mol.HasSubstructMatch(chloromethyl_ether_pattern)
+                        for mol in reactant_mols
+                    )
+                    and product_mol.HasSubstructMatch(methoxymethyl_ether_pattern)
+                ):
+                    print(f"Detected O-alkylation at depth {depth}")
+                    o_alkylation_detected = True
+                    depth_of_alkylation = min(depth_of_alkylation, depth)
 
-                # Check for SNAr reaction (aromatic C-N bond formation with nitro group)
-                snar_reactant_pattern = Chem.MolFromSmarts("[F][c][c]([N+](=[O])[O-])")
-                for reactant in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(snar_reactant_pattern):
-                        # Check if product has new C-N bond where F was
-                        c_n_bond_types.add("SNAr")
-                        print("Detected SNAr reaction")
-                        break
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return len(c_n_bond_types) >= 3
+
+    # Consider it late-stage if it occurs at depth 0 or 1
+    return o_alkylation_detected and depth_of_alkylation <= 1

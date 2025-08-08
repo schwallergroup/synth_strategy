@@ -2,43 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear fragment assembly strategy (as opposed to convergent).
+    This function detects a synthesis strategy that involves sequential functional group
+    transformations at a benzylic carbon position (CH3 → CH2Br → CH2CN → COOH).
     """
-    reaction_counts = 0
-    multi_reactant_counts = 0
+    # Track if we've found the required functional group transformations
+    found_benzylic_methyl = False
+    found_benzyl_bromide = False
+    found_benzyl_nitrile = False
+    found_benzylic_carboxylic_acid = False
+
+    # SMARTS patterns for the functional groups
+    benzylic_methyl_pattern = Chem.MolFromSmarts("[c]-[CH3]")
+    benzyl_bromide_pattern = Chem.MolFromSmarts("[c]-[CH2][Br]")
+    benzyl_nitrile_pattern = Chem.MolFromSmarts("[c]-[CH2][C]#[N]")
+    benzylic_carboxylic_acid_pattern = Chem.MolFromSmarts("[c]-[CH2][C](=[O])[OH]")
 
     def dfs_traverse(node):
-        nonlocal reaction_counts, multi_reactant_counts
+        nonlocal found_benzylic_methyl, found_benzyl_bromide, found_benzyl_nitrile, found_benzylic_carboxylic_acid
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-
-            reaction_counts += 1
-            if len(reactants) >= 2:
-                multi_reactant_counts += 1
-                print(f"Detected multi-reactant step: {rsmi}")
+        if node["type"] == "mol":
+            # Check for functional groups in molecule nodes
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                if mol.HasSubstructMatch(benzylic_methyl_pattern):
+                    found_benzylic_methyl = True
+                    print(f"Found benzylic methyl in: {node['smiles']}")
+                if mol.HasSubstructMatch(benzyl_bromide_pattern):
+                    found_benzyl_bromide = True
+                    print(f"Found benzyl bromide in: {node['smiles']}")
+                if mol.HasSubstructMatch(benzyl_nitrile_pattern):
+                    found_benzyl_nitrile = True
+                    print(f"Found benzyl nitrile in: {node['smiles']}")
+                if mol.HasSubstructMatch(benzylic_carboxylic_acid_pattern):
+                    found_benzylic_carboxylic_acid = True
+                    print(f"Found benzylic carboxylic acid in: {node['smiles']}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -47,10 +69,17 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Linear synthesis has most steps with single reactant or simple transformations
-    # If more than 70% of reactions have multiple reactants, it's likely convergent
-    is_linear = reaction_counts > 0 and (multi_reactant_counts / reaction_counts) < 0.7
-    print(
-        f"Linear fragment assembly detected: {is_linear} (multi-reactant steps: {multi_reactant_counts}/{reaction_counts})"
+    # Check if we found at least 3 of the 4 functional groups
+    # This indicates the benzylic carbon functionalization strategy
+    functional_groups_found = sum(
+        [
+            found_benzylic_methyl,
+            found_benzyl_bromide,
+            found_benzyl_nitrile,
+            found_benzylic_carboxylic_acid,
+        ]
     )
-    return is_linear
+
+    strategy_detected = functional_groups_found >= 3
+    print(f"Benzylic carbon functionalization strategy detected: {strategy_detected}")
+    return strategy_detected

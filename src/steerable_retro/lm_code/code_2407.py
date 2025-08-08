@@ -2,234 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a synthetic route involves formation of heterocycles.
+    This function detects if the synthetic route involves a hydroxyl → chloro → amino
+    transformation sequence on a pyrimidine ring.
     """
-    # List of heterocycles to check
-    heterocycles = [
-        "furan",
-        "pyran",
-        "dioxane",
-        "tetrahydrofuran",
-        "tetrahydropyran",
-        "oxirane",
-        "oxetane",
-        "oxolane",
-        "oxane",
-        "dioxolane",
-        "dioxolene",
-        "trioxane",
-        "dioxepane",
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "isoxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "pyrrolidine",
-        "piperidine",
-        "piperazine",
-        "morpholine",
-        "thiomorpholine",
-        "aziridine",
-        "azetidine",
-        "azepane",
-        "diazepane",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "purine",
-        "carbazole",
-        "acridine",
-        "thiophene",
-        "thiopyran",
-        "thiirane",
-        "thietane",
-        "thiolane",
-        "thiane",
-        "dithiane",
-        "dithiolane",
-        "benzothiophene",
-        "oxathiolane",
-        "dioxathiolane",
-        "thiazolidine",
-        "oxazolidine",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
-        "pteridin",
-        "phenothiazine",
-        "phenoxazine",
-        "dibenzofuran",
-        "dibenzothiophene",
-        "xanthene",
-        "thioxanthene",
-        "pyrroline",
-        "pyrrolidone",
-        "imidazolidine",
-        "porphyrin",
-        "indazole",
-        "benzotriazole",
-    ]
+    # Track if we've seen each transformation
+    hydroxyl_to_chloro = False
+    chloro_to_amino = False
 
-    # Track heterocycle formations
-    heterocycle_formations = []
+    def dfs_traverse(node):
+        nonlocal hydroxyl_to_chloro, chloro_to_amino
 
-    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            try:
-                # Extract reactants and product from reaction SMILES
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                print(f"Analyzing reaction at depth {depth}")
-                print(f"Product: {product_smiles}")
-                print(f"Reactants: {reactants_smiles}")
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                # Check which heterocycles are in the product
-                product_heterocycles = []
-                for heterocycle in heterocycles:
-                    if checker.check_ring(heterocycle, product_smiles):
-                        product_heterocycles.append(heterocycle)
-                        print(f"Product contains {heterocycle}")
+            # Check for hydroxyl to chloro transformation on pyrimidine
+            hydroxypyrimidine = Chem.MolFromSmarts("[#8H1]-c1ncncc1")
+            chloropyrimidine = Chem.MolFromSmarts("[#17]-c1ncncc1")
 
-                # If no heterocycles in product, skip further checks
-                if not product_heterocycles:
-                    print("No heterocycles found in product")
-                else:
-                    # Check which heterocycles are in the reactants
-                    reactant_heterocycles = set()
-                    for reactant_smiles in reactants_smiles:
-                        for heterocycle in heterocycles:
-                            if checker.check_ring(heterocycle, reactant_smiles):
-                                reactant_heterocycles.add(heterocycle)
-                                print(f"Reactant contains {heterocycle}")
+            reactant_has_hydroxypyrimidine = any(
+                r is not None and r.HasSubstructMatch(hydroxypyrimidine) for r in reactants
+            )
+            product_has_chloropyrimidine = product is not None and product.HasSubstructMatch(
+                chloropyrimidine
+            )
 
-                    # Find heterocycles that are in product but not in reactants
-                    for heterocycle in product_heterocycles:
-                        if heterocycle not in reactant_heterocycles:
-                            heterocycle_formations.append((heterocycle, depth))
-                            print(f"Heterocycle formation detected: {heterocycle} at depth {depth}")
+            if reactant_has_hydroxypyrimidine and product_has_chloropyrimidine:
+                print("Detected hydroxyl to chloro transformation on pyrimidine")
+                hydroxyl_to_chloro = True
 
-                            # Check if this is a known heterocycle formation reaction
-                            if checker.check_reaction("Formation of NOS Heterocycles", rsmi):
-                                print("Confirmed as NOS Heterocycle formation reaction")
-                            elif checker.check_reaction("Paal-Knorr pyrrole synthesis", rsmi):
-                                print("Confirmed as Paal-Knorr pyrrole synthesis")
-                            elif checker.check_reaction(
-                                "{benzimidazole_derivatives_carboxylic-acid/ester}", rsmi
-                            ):
-                                print(
-                                    "Confirmed as benzimidazole formation from carboxylic acid/ester"
-                                )
-                            elif checker.check_reaction(
-                                "{benzimidazole_derivatives_aldehyde}", rsmi
-                            ):
-                                print("Confirmed as benzimidazole formation from aldehyde")
-                            elif checker.check_reaction("{benzothiazole}", rsmi):
-                                print("Confirmed as benzothiazole formation")
-                            elif checker.check_reaction("{benzoxazole_arom-aldehyde}", rsmi):
-                                print("Confirmed as benzoxazole formation from aromatic aldehyde")
-                            elif checker.check_reaction("{benzoxazole_carboxylic-acid}", rsmi):
-                                print("Confirmed as benzoxazole formation from carboxylic acid")
-                            elif checker.check_reaction("{thiazole}", rsmi):
-                                print("Confirmed as thiazole formation")
-                            elif checker.check_reaction("{tetrazole_terminal}", rsmi):
-                                print("Confirmed as tetrazole formation")
-                            elif checker.check_reaction("{1,2,4-triazole_acetohydrazide}", rsmi):
-                                print("Confirmed as 1,2,4-triazole formation from acetohydrazide")
-                            elif checker.check_reaction(
-                                "{1,2,4-triazole_carboxylic-acid/ester}", rsmi
-                            ):
-                                print(
-                                    "Confirmed as 1,2,4-triazole formation from carboxylic acid/ester"
-                                )
-                            elif checker.check_reaction("{pyrazole}", rsmi):
-                                print("Confirmed as pyrazole formation")
-                            elif checker.check_reaction("{Paal-Knorr pyrrole}", rsmi):
-                                print("Confirmed as Paal-Knorr pyrrole formation")
-                            elif checker.check_reaction("{Fischer indole}", rsmi):
-                                print("Confirmed as Fischer indole synthesis")
-                            elif checker.check_reaction("{benzofuran}", rsmi):
-                                print("Confirmed as benzofuran formation")
-                            elif checker.check_reaction("{benzothiophene}", rsmi):
-                                print("Confirmed as benzothiophene formation")
-                            elif checker.check_reaction("{indole}", rsmi):
-                                print("Confirmed as indole formation")
-                            elif checker.check_reaction("{oxadiazole}", rsmi):
-                                print("Confirmed as oxadiazole formation")
+            # Check for chloro to amino transformation on pyrimidine
+            aminopyrimidine = Chem.MolFromSmarts("[#7;!H0,!$(N-[#6]=O)]-c1ncncc1")
 
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
+            reactant_has_chloropyrimidine = any(
+                r is not None and r.HasSubstructMatch(chloropyrimidine) for r in reactants
+            )
+            product_has_aminopyrimidine = product is not None and product.HasSubstructMatch(
+                aminopyrimidine
+            )
 
-            # Continue traversal
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1)
-        else:  # node["type"] == "mol"
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1)
+            if reactant_has_chloropyrimidine and product_has_aminopyrimidine:
+                print("Detected chloro to amino transformation on pyrimidine")
+                chloro_to_amino = True
+
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-
-    # Check if we found heterocycle formations
-    if heterocycle_formations:
-        print(f"Found heterocycle formations: {heterocycle_formations}")
-        return True
-
-    return False
+    return hydroxyl_to_chloro and chloro_to_amino

@@ -2,60 +2,117 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy (mostly one reactant per step).
+    This function detects a synthetic strategy that proceeds through sulfonyl chloride and
+    isocyanate intermediates to form a sulfonylurea derivative.
     """
-    linear_steps = 0
-    total_steps = 0
+    # Initialize tracking variables
+    has_sulfonyl_chloride = False
+    has_sulfonamide = False
+    has_isocyanate = False
+    has_urea_or_sulfonylurea = False
+
+    # SMARTS patterns for functional group detection
+    sulfonyl_chloride_pattern = Chem.MolFromSmarts("[Cl][S](=[O])(=[O])[#6]")
+    sulfonamide_pattern = Chem.MolFromSmarts("[NX3][S](=[O])(=[O])[#6]")
+    isocyanate_pattern = Chem.MolFromSmarts("[#6][N]=[C]=[O]")
+    urea_pattern = Chem.MolFromSmarts("[#7][C](=[O])[#7]")
 
     def dfs_traverse(node):
-        nonlocal linear_steps, total_steps
+        nonlocal has_sulfonyl_chloride, has_sulfonamide, has_isocyanate, has_urea_or_sulfonylurea
 
-        if node["type"] == "reaction":
-            total_steps += 1
+        if node["type"] == "mol":
+            # Check for functional groups in molecule nodes
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    if mol.HasSubstructMatch(sulfonyl_chloride_pattern):
+                        has_sulfonyl_chloride = True
+                        print(f"Found sulfonyl chloride: {node['smiles']}")
 
-            # Get reaction SMILES
+                    if mol.HasSubstructMatch(sulfonamide_pattern):
+                        has_sulfonamide = True
+                        print(f"Found sulfonamide: {node['smiles']}")
+
+                    if mol.HasSubstructMatch(isocyanate_pattern):
+                        has_isocyanate = True
+                        print(f"Found isocyanate: {node['smiles']}")
+
+                    if mol.HasSubstructMatch(urea_pattern):
+                        has_urea_or_sulfonylurea = True
+                        print(f"Found urea/sulfonylurea: {node['smiles']}")
+            except:
+                print(f"Error processing molecule: {node['smiles']}")
+
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Analyze reaction
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # If there are at most two reactants, consider it a linear step
-            # This accounts for main reactant + simple reagent scenarios
-            if reactants and len(reactants) <= 2:
-                linear_steps += 1
-                print(
-                    f"Detected linear step {total_steps} with {len(reactants)} reactants: {reactants}"
-                )
-            else:
-                print(f"Non-linear step {total_steps} with {len(reactants)} reactants: {reactants}")
+            # Check for functional groups in reactants and products
+            for smiles in reactants + [product]:
+                try:
+                    mol = Chem.MolFromSmiles(smiles)
+                    if mol:
+                        if mol.HasSubstructMatch(sulfonyl_chloride_pattern):
+                            has_sulfonyl_chloride = True
+                            print(f"Found sulfonyl chloride in reaction: {smiles}")
 
-        # Continue traversal
+                        if mol.HasSubstructMatch(sulfonamide_pattern):
+                            has_sulfonamide = True
+                            print(f"Found sulfonamide in reaction: {smiles}")
+
+                        if mol.HasSubstructMatch(isocyanate_pattern):
+                            has_isocyanate = True
+                            print(f"Found isocyanate in reaction: {smiles}")
+
+                        if mol.HasSubstructMatch(urea_pattern):
+                            has_urea_or_sulfonylurea = True
+                            print(f"Found urea/sulfonylurea in reaction: {smiles}")
+                except:
+                    print(f"Error processing molecule in reaction: {smiles}")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Linear steps: {linear_steps}, Total steps: {total_steps}")
+    # Strategy is present if we found at least 3 of the 4 key functional groups
+    strategy_present = (
+        sum([has_sulfonyl_chloride, has_sulfonamide, has_isocyanate, has_urea_or_sulfonylurea]) >= 3
+    )
 
-    # Return True if most steps (>50%) are linear
-    return total_steps > 0 and linear_steps / total_steps > 0.5
+    print(f"Sulfonamide-isocyanate-urea strategy detected: {strategy_present}")
+    print(f"Found sulfonyl chloride: {has_sulfonyl_chloride}")
+    print(f"Found sulfonamide: {has_sulfonamide}")
+    print(f"Found isocyanate: {has_isocyanate}")
+    print(f"Found urea/sulfonylurea: {has_urea_or_sulfonylurea}")
+
+    return strategy_present

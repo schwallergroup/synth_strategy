@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,85 +54,104 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects late-stage isoxazole formation strategy.
-    It looks for the creation of an isoxazole ring in the final or penultimate synthetic step.
+    Detects a synthetic strategy involving late-stage formation of a sulfonamide group.
+    Late-stage means in the second half of the synthesis (higher depth values in retrosynthesis).
     """
-    isoxazole_formed = False
+    found_sulfonamide_formation = False
+    sulfonamide_formation_depth = float("inf")  # Initialize to infinity
+    max_depth = -1
 
     def dfs_traverse(node, depth=0):
-        nonlocal isoxazole_formed
+        nonlocal found_sulfonamide_formation, sulfonamide_formation_depth, max_depth
 
-        # Check final step (depth 0) and penultimate step (depth 1)
-        if node["type"] == "reaction" and depth <= 1:
-            # Extract reactants and product
-            try:
-                rsmi = node.get("metadata", {}).get("rsmi", "")
-                if not rsmi:
-                    print(f"No reaction SMILES found in metadata at depth {depth}")
-                    return
+        # Track maximum depth to determine synthesis length
+        max_depth = max(max_depth, depth)
 
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
-                print(f"Product: {product_smiles}")
-                print(f"Reactants: {reactants_smiles}")
+            reactants = reactants_part.split(".")
 
-                # Check if isoxazole is in product
-                if checker.check_ring("isoxazole", product_smiles):
-                    print(f"Found isoxazole ring in product at depth {depth}")
+            # Check if product has sulfonamide
+            product_has_sulfonamide = checker.check_fg("Sulfonamide", product_part)
 
-                    # Check if isoxazole is not in any reactant
-                    isoxazole_in_reactants = False
-                    for reactant in reactants_smiles:
-                        if checker.check_ring("isoxazole", reactant):
-                            print(f"Isoxazole found in reactant: {reactant}")
-                            isoxazole_in_reactants = True
-                            break
+            # Check if this is a sulfonamide formation reaction
+            is_sulfonamide_reaction = (
+                checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+                )
+                or checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
+                )
+                or checker.check_reaction("sulfon_amide", rsmi)
+                or checker.check_reaction("Schotten-Baumann to ester", rsmi)
+            )
 
-                    if not isoxazole_in_reactants:
-                        print(
-                            f"Isoxazole not found in reactants at depth {depth} - confirming late-stage formation"
-                        )
+            if is_sulfonamide_reaction and product_has_sulfonamide:
+                # Check if any reactant doesn't have the sulfonamide
+                has_reactant_without_sulfonamide = any(
+                    not checker.check_fg("Sulfonamide", reactant) for reactant in reactants
+                )
 
-                        # Check if this is a known isoxazole formation reaction
-                        isoxazole_reaction = False
+                if has_reactant_without_sulfonamide:
+                    # If we find a sulfonamide formation at a lower depth (later stage),
+                    # or if this is the first one we've found, record it
+                    if not found_sulfonamide_formation or depth < sulfonamide_formation_depth:
+                        found_sulfonamide_formation = True
+                        sulfonamide_formation_depth = depth
+                        print(f"Found sulfonamide formation at depth {depth}, reaction: {rsmi}")
 
-                        # List of reactions that can form isoxazoles
-                        isoxazole_forming_reactions = [
-                            "Huisgen 1,3 dipolar cycloaddition",
-                            "[3+2]-cycloaddition of hydrazone and alkyne",
-                            "[3+2]-cycloaddition of hydrazone and alkene",
-                            "[3+2]-cycloaddition of diazoalkane and alkyne",
-                            "[3+2]-cycloaddition of diazoalkane and alkene",
-                            "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-                            "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-                            "oxadiazole",
-                            "pyrazole formation",
-                        ]
+            # Additional check for sulfonamide formation by looking at functional groups
+            elif product_has_sulfonamide:
+                # Check if any reactant doesn't have the sulfonamide
+                has_reactant_without_sulfonamide = any(
+                    not checker.check_fg("Sulfonamide", reactant) for reactant in reactants
+                )
 
-                        for reaction_type in isoxazole_forming_reactions:
-                            if checker.check_reaction(reaction_type, rsmi):
-                                print(f"Confirmed isoxazole formation reaction: {reaction_type}")
-                                isoxazole_reaction = True
-                                break
+                if has_reactant_without_sulfonamide:
+                    # Check if reactants have sulfonyl chloride and amine
+                    has_sulfonyl_chloride = any(
+                        checker.check_fg("Sulfonyl halide", reactant) for reactant in reactants
+                    )
+                    has_amine = any(
+                        checker.check_fg("Primary amine", reactant)
+                        or checker.check_fg("Secondary amine", reactant)
+                        or checker.check_fg("Aniline", reactant)
+                        for reactant in reactants
+                    )
 
-                        # Even if not a known reaction type, if isoxazole appears in product but not reactants,
-                        # we'll consider it an isoxazole formation
-                        if isoxazole_reaction or depth <= 1:
+                    if has_sulfonyl_chloride and has_amine:
+                        # This is likely a sulfonamide formation reaction not captured by the reaction checks
+                        if not found_sulfonamide_formation or depth < sulfonamide_formation_depth:
+                            found_sulfonamide_formation = True
+                            sulfonamide_formation_depth = depth
                             print(
-                                f"Isoxazole formed at depth {depth} - this is late-stage formation"
+                                f"Found sulfonamide formation via functional groups at depth {depth}"
                             )
-                            isoxazole_formed = True
-            except Exception as e:
-                print(f"Error analyzing reaction at depth {depth}: {e}")
 
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: isoxazole_formed = {isoxazole_formed}")
 
-    return isoxazole_formed
+    # Check if sulfonamide formation is late-stage (in the second half of synthesis)
+    # In retrosynthesis, higher depth values are later in the forward synthesis
+    late_stage = False
+    if found_sulfonamide_formation and max_depth > 0:
+        midpoint = max_depth / 2
+        # Late stage means depth is greater than or equal to midpoint (deeper in the tree)
+        late_stage = sulfonamide_formation_depth >= midpoint
+        print(
+            f"Max depth: {max_depth}, Midpoint: {midpoint}, Sulfonamide formation depth: {sulfonamide_formation_depth}"
+        )
+        print(
+            f"Is late stage? {late_stage} (depth {sulfonamide_formation_depth} >= midpoint {midpoint})"
+        )
+    else:
+        print(f"Max depth: {max_depth}, Sulfonamide formation not found or max_depth is 0")
+
+    return late_stage

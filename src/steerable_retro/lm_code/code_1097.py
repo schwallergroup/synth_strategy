@@ -2,74 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects functionalization of a triazolopyrimidine core.
+    Detects if the synthesis involves a Heck coupling reaction (C=C bond formation
+    between aryl halide and alkene).
     """
-    # Track if we've found the core heterocycle and its functionalization
-    found_triazolopyrimidine = False
-    found_functionalization = False
-
-    # SMARTS for triazolopyrimidine core
-    triazolopyrimidine_pattern = Chem.MolFromSmarts(
-        "[#6]1:[#7]:[#6]:[#7]:[#6]2:[#7]:[#7]:[#6]:[#6]:12"
-    )
+    heck_coupling_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_triazolopyrimidine, found_functionalization
+        nonlocal heck_coupling_detected
 
-        if node["type"] == "mol":
-            if "smiles" in node:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol and mol.HasSubstructMatch(triazolopyrimidine_pattern):
-                    found_triazolopyrimidine = True
-                    print(f"Found triazolopyrimidine core at depth {depth}")
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        elif node["type"] == "reaction":
-            if found_triazolopyrimidine and "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+            # Check for aryl halide and alkene in reactants, and C=C-aryl in product
+            # or the reverse in retrosynthesis
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product)
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
-                product = Chem.MolFromSmiles(product_str) if product_str else None
+            if product_mol and all(reactant_mols):
+                # For retrosynthesis: product has C=C-aryl, reactants have aryl-X and alkene
+                aryl_halide_pattern = Chem.MolFromSmarts("[c][Cl,Br,I]")
+                alkene_pattern = Chem.MolFromSmarts("[C]=[C]")
+                conjugated_pattern = Chem.MolFromSmarts("[c]/[C]=[C]/[C,c]")
 
-                # Check if both reactants and product contain the core
-                reactants_have_core = any(
-                    r and r.HasSubstructMatch(triazolopyrimidine_pattern) for r in reactants
+                has_aryl_halide = any(
+                    mol.HasSubstructMatch(aryl_halide_pattern) for mol in reactant_mols
                 )
-                product_has_core = product and product.HasSubstructMatch(triazolopyrimidine_pattern)
+                has_alkene = any(mol.HasSubstructMatch(alkene_pattern) for mol in reactant_mols)
+                has_conjugated = product_mol.HasSubstructMatch(conjugated_pattern)
 
-                if reactants_have_core and product_has_core:
-                    found_functionalization = True
-                    print(f"Found functionalization of triazolopyrimidine at depth {depth}")
+                if has_aryl_halide and has_alkene and has_conjugated:
+                    heck_coupling_detected = True
+                    print(f"Heck coupling detected at depth {depth}")
 
-        # Process children
+                # For forward synthesis: reactant has C=C-aryl, products have disconnected parts
+                if not heck_coupling_detected:
+                    has_product_aryl_halide = product_mol.HasSubstructMatch(aryl_halide_pattern)
+                    has_product_alkene = product_mol.HasSubstructMatch(alkene_pattern)
+                    has_reactant_conjugated = any(
+                        mol.HasSubstructMatch(conjugated_pattern) for mol in reactant_mols
+                    )
+
+                    if has_product_aryl_halide and has_product_alkene and has_reactant_conjugated:
+                        heck_coupling_detected = True
+                        print(f"Heck coupling (reverse) detected at depth {depth}")
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    strategy_present = found_triazolopyrimidine and found_functionalization
-    print(f"Heterocycle functionalization strategy detected: {strategy_present}")
-    return strategy_present
+    return heck_coupling_detected

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,78 +54,124 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves a Suzuki coupling reaction
-    (aryl halide + boronic acid/ester → C-C bond between aromatic rings).
+    This function detects lactam ring formation in the synthetic route.
     """
-    suzuki_found = False
+    lactam_formed = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal suzuki_found
+    def dfs_traverse(node):
+        nonlocal lactam_formed
 
-        # Print node information for debugging
-        indent = "  " * depth
-        if node["type"] == "mol":
-            print(f"{indent}Molecule: {node['smiles']}")
-        else:
-            print(f"{indent}Reaction node")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            print(f"{indent}Checking reaction SMILES: {rsmi}")
-
-            # Use the checker function to directly check for Suzuki coupling reactions
-            if checker.check_reaction("Suzuki coupling with boronic acids", rsmi):
-                print(f"{indent}Found Suzuki coupling with boronic acids: {rsmi}")
-                suzuki_found = True
-            elif checker.check_reaction("Suzuki coupling with boronic esters", rsmi):
-                print(f"{indent}Found Suzuki coupling with boronic esters: {rsmi}")
-                suzuki_found = True
-            elif checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi):
-                print(f"{indent}Found Suzuki coupling with boronic acids OTf: {rsmi}")
-                suzuki_found = True
-            elif checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi):
-                print(f"{indent}Found Suzuki coupling with boronic esters OTf: {rsmi}")
-                suzuki_found = True
-            elif checker.check_reaction("Suzuki coupling with sulfonic esters", rsmi):
-                print(f"{indent}Found Suzuki coupling with sulfonic esters: {rsmi}")
-                suzuki_found = True
-            elif checker.check_reaction("{Suzuki}", rsmi):
-                print(f"{indent}Found generic Suzuki coupling: {rsmi}")
-                suzuki_found = True
-
-            # Fallback: Manual check for Suzuki coupling patterns
-            if not suzuki_found:
                 try:
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                    # Split reactants into individual molecules
+                    reactants_list = reactants_smiles.split(".")
 
-                    # Check for boronic acid/ester in reactants
-                    has_boronic = False
-                    has_aryl_halide = False
+                    # Check for lactam rings in product
+                    lactam_in_product = False
+                    if checker.check_ring("pyrrolidone", product_smiles):
+                        lactam_in_product = True
+                        print(f"Pyrrolidone (5-membered lactam) found in product: {product_smiles}")
 
-                    for reactant in reactants:
-                        if checker.check_fg("Boronic acid", reactant) or checker.check_fg(
-                            "Boronic ester", reactant
+                    # Check for other common lactam-containing rings
+                    if not lactam_in_product and checker.check_fg(
+                        "Secondary amide", product_smiles
+                    ):
+                        # Check if the amide is part of a ring
+                        product_mol = Chem.MolFromSmiles(product_smiles)
+                        if product_mol:
+                            # Check if the product has a ring that contains both N and C=O
+                            ring_info = product_mol.GetRingInfo()
+                            if ring_info.NumRings() > 0:
+                                for atom in product_mol.GetAtoms():
+                                    if atom.GetSymbol() == "N" and atom.IsInRing():
+                                        # Check if this nitrogen is part of an amide in a ring
+                                        for neighbor in atom.GetNeighbors():
+                                            if neighbor.GetSymbol() == "C":
+                                                for bond in neighbor.GetBonds():
+                                                    other_atom = bond.GetOtherAtom(neighbor)
+                                                    if (
+                                                        other_atom.GetSymbol() == "O"
+                                                        and bond.GetBondType()
+                                                        == Chem.BondType.DOUBLE
+                                                    ):
+                                                        if ring_info.AreAtomsInSameRing(
+                                                            atom.GetIdx(), neighbor.GetIdx()
+                                                        ):
+                                                            lactam_in_product = True
+                                                            print(
+                                                                f"Lactam structure found in product: {product_smiles}"
+                                                            )
+                                                            break
+
+                    # If lactam is in product, check if it's in any reactant
+                    if lactam_in_product:
+                        lactam_in_reactants = False
+                        for reactant in reactants_list:
+                            if checker.check_ring("pyrrolidone", reactant):
+                                lactam_in_reactants = True
+                                print(f"Pyrrolidone found in reactant: {reactant}")
+                                break
+
+                            # Check for other lactam structures in reactants
+                            if checker.check_fg("Secondary amide", reactant):
+                                reactant_mol = Chem.MolFromSmiles(reactant)
+                                if reactant_mol:
+                                    ring_info = reactant_mol.GetRingInfo()
+                                    if ring_info.NumRings() > 0:
+                                        for atom in reactant_mol.GetAtoms():
+                                            if atom.GetSymbol() == "N" and atom.IsInRing():
+                                                for neighbor in atom.GetNeighbors():
+                                                    if neighbor.GetSymbol() == "C":
+                                                        for bond in neighbor.GetBonds():
+                                                            other_atom = bond.GetOtherAtom(neighbor)
+                                                            if (
+                                                                other_atom.GetSymbol() == "O"
+                                                                and bond.GetBondType()
+                                                                == Chem.BondType.DOUBLE
+                                                            ):
+                                                                if ring_info.AreAtomsInSameRing(
+                                                                    atom.GetIdx(), neighbor.GetIdx()
+                                                                ):
+                                                                    lactam_in_reactants = True
+                                                                    print(
+                                                                        f"Lactam structure found in reactant: {reactant}"
+                                                                    )
+                                                                    break
+
+                        # If lactam is in product but not in reactants, it was formed in this reaction
+                        if not lactam_in_reactants:
+                            lactam_formed = True
+                            print(f"Lactam formation detected in reaction: {rsmi}")
+
+                        # Also check specific reaction types that might form lactams
+                        if (
+                            checker.check_reaction(
+                                "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                            )
+                            or checker.check_reaction(
+                                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                                rsmi,
+                            )
+                            or checker.check_reaction(
+                                "Intramolecular transesterification/Lactone formation", rsmi
+                            )
                         ):
-                            print(f"{indent}Found boronic acid/ester in reactant: {reactant}")
-                            has_boronic = True
+                            if not lactam_in_reactants and lactam_in_product:
+                                lactam_formed = True
+                                print(
+                                    f"Lactam formation via specific reaction type detected: {rsmi}"
+                                )
 
-                        # Check for aromatic halide
-                        if checker.check_fg("Aromatic halide", reactant):
-                            print(f"{indent}Found aromatic halide in reactant: {reactant}")
-                            has_aryl_halide = True
-
-                    # If both components are present, it's likely a Suzuki coupling
-                    if has_boronic and has_aryl_halide:
-                        print(f"{indent}Detected Suzuki coupling pattern manually: {rsmi}")
-                        suzuki_found = True
                 except Exception as e:
-                    print(f"{indent}Error in manual pattern check: {e}")
+                    print(f"Error processing reaction SMILES: {e}")
 
-        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    print(f"Final result: Suzuki coupling found = {suzuki_found}")
-    return suzuki_found
+    return lactam_formed

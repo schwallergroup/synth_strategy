@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,70 +54,82 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis route preserves both fluorine atoms
-    and a cyano group throughout multiple steps.
+    Detects if the synthesis involves a nucleophilic aromatic substitution on a pyrimidine ring.
     """
-    # Track paths with preserved functional groups
-    preservation_paths = []
+    nas_found = False
 
-    def dfs_traverse(node, current_path=None, depth=0):
-        if current_path is None:
-            current_path = []
+    def dfs_traverse(node, depth=0):
+        nonlocal nas_found
 
-        # For molecule nodes, check for fluorine and cyano groups
-        if node["type"] == "mol" and node.get("smiles"):
-            mol_smiles = node["smiles"]
-            has_fluorine = checker.check_fg("Trifluoro group", mol_smiles) or checker.check_fg(
-                "Aromatic halide", mol_smiles
-            )
-            has_cyano = checker.check_fg("Nitrile", mol_smiles)
+        if node["type"] == "reaction" and depth <= 1:  # Late in synthesis (low depth)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Create or update the current path information
-            current_info = {
-                "depth": depth,
-                "has_fluorine": has_fluorine,
-                "has_cyano": has_cyano,
-                "smiles": mol_smiles,
-            }
+                try:
+                    # Check if any reactant has a pyrimidine ring with a halide
+                    reactant_has_pyrimidine_halide = False
+                    for reactant in reactants:
+                        if checker.check_ring("pyrimidine", reactant) and checker.check_fg(
+                            "Aromatic halide", reactant
+                        ):
+                            print(f"Found pyrimidine with aromatic halide in reactant: {reactant}")
+                            reactant_has_pyrimidine_halide = True
+                            break
 
-            # Add to the current path
-            new_path = current_path + [current_info]
+                    # Check if product has a pyrimidine ring
+                    product_has_pyrimidine = checker.check_ring("pyrimidine", product)
 
-            # If this is a leaf node (starting material), save the path
-            if node.get("in_stock", False) or not node.get("children"):
-                if len(new_path) > 1:  # Only save paths with multiple nodes
-                    preservation_paths.append(new_path)
+                    # Check if this is a nucleophilic aromatic substitution reaction
+                    is_nas_reaction = (
+                        checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
+                        or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
+                        or checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
+                    )
 
-            # Continue traversal with updated path
-            for child in node.get("children", []):
-                dfs_traverse(child, new_path, depth + 1)
+                    # Additional check: if reaction types don't match, look for amine/nitrogen nucleophile in product
+                    if (
+                        not is_nas_reaction
+                        and reactant_has_pyrimidine_halide
+                        and product_has_pyrimidine
+                    ):
+                        # Check if product has an amine group where the halide was
+                        if (
+                            checker.check_fg("Primary amine", product)
+                            or checker.check_fg("Secondary amine", product)
+                            or checker.check_fg("Tertiary amine", product)
+                            or checker.check_fg("Aniline", product)
+                        ):
+                            print(
+                                f"Found potential NAS based on structural changes at depth {depth}"
+                            )
+                            is_nas_reaction = True
 
-        # For reaction nodes, just continue traversal
-        elif node["type"] == "reaction":
-            for child in node.get("children", []):
-                dfs_traverse(child, current_path, depth)
+                    if (
+                        reactant_has_pyrimidine_halide
+                        and product_has_pyrimidine
+                        and is_nas_reaction
+                    ):
+                        print(
+                            f"Nucleophilic aromatic substitution on pyrimidine detected at depth {depth}"
+                        )
+                        nas_found = True
+                    else:
+                        if not reactant_has_pyrimidine_halide:
+                            print(f"No pyrimidine with halide found in reactants at depth {depth}")
+                        if not product_has_pyrimidine:
+                            print(f"No pyrimidine found in product at depth {depth}")
+                        if not is_nas_reaction:
+                            print(
+                                f"Reaction at depth {depth} is not a nucleophilic aromatic substitution"
+                            )
 
-    # Start traversal from the root
+                except Exception as e:
+                    print(f"Error processing reaction at depth {depth}: {e}")
+
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
+
     dfs_traverse(route)
-
-    # Check each path for preservation of both groups for at least 3 consecutive steps
-    for path in preservation_paths:
-        # Sort by depth to ensure correct order (target to starting material)
-        path.sort(key=lambda x: x["depth"])
-
-        # Count consecutive steps with both groups preserved
-        consecutive_count = 0
-        max_consecutive = 0
-
-        for node_info in path:
-            if node_info["has_fluorine"] and node_info["has_cyano"]:
-                consecutive_count += 1
-                max_consecutive = max(max_consecutive, consecutive_count)
-            else:
-                consecutive_count = 0
-
-        if max_consecutive >= 3:
-            print(f"Found preservation path with {max_consecutive} consecutive steps")
-            return True
-
-    return False
+    return nas_found

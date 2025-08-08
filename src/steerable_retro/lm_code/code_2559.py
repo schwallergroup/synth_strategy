@@ -2,76 +2,104 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a reductive amination strategy where a C-N bond
-    is formed between a cyclic ketone and an amine.
+    This function detects if the synthetic route employs a Weinreb amide formation
+    followed by conversion to ketone.
     """
-    reductive_amination_found = False
+    # Track Weinreb amide formation and conversion
+    weinreb_amide_formed = False
+    weinreb_to_ketone = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal reductive_amination_found
+    def dfs_traverse(node):
+        nonlocal weinreb_amide_formed, weinreb_to_ketone
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            # Extract reactants and product from reaction SMILES
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for carbonyl pattern in reactants
-            carbonyl_pattern = "C(=O)C"
-            amine_pattern = "N([C,H])[C,H]"
+            # Check for Weinreb amide formation
+            carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
+            weinreb_amine_pattern = Chem.MolFromSmarts("[N]([CH3])[O][CH3]")
+            weinreb_amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]([CH3])[O][CH3]")
 
-            # Check for C-N bond in product where carbonyl was
-            cn_bond_pattern = "CN([C,H])[C,H]"
+            # Check for Weinreb amide formation
+            acid_in_reactants = False
+            weinreb_in_reactants = False
 
-            # Check if there's a carbonyl in reactants and a C-N bond in product
-            has_carbonyl = any(
-                Chem.MolFromSmiles(r)
-                and Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts(carbonyl_pattern))
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(carboxylic_acid_pattern):
+                            acid_in_reactants = True
+                        if mol.HasSubstructMatch(weinreb_amine_pattern):
+                            weinreb_in_reactants = True
+                except:
+                    continue
 
-            has_amine = any(
-                Chem.MolFromSmiles(r)
-                and Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts(amine_pattern))
-                for r in reactants
-                if Chem.MolFromSmiles(r)
-            )
+            if acid_in_reactants and weinreb_in_reactants:
+                try:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol and product_mol.HasSubstructMatch(weinreb_amide_pattern):
+                        print("Found Weinreb amide formation")
+                        weinreb_amide_formed = True
+                except:
+                    pass
 
-            product_mol = Chem.MolFromSmiles(product)
-            has_cn_bond = product_mol and product_mol.HasSubstructMatch(
-                Chem.MolFromSmarts(cn_bond_pattern)
-            )
+            # Check for Weinreb amide to ketone conversion
+            ketone_pattern = Chem.MolFromSmarts("[C](=[O])[#6]")
 
-            if has_carbonyl and has_amine and has_cn_bond:
-                print(f"Found reductive amination at depth {depth}")
-                reductive_amination_found = True
+            weinreb_in_reactants = False
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(weinreb_amide_pattern):
+                        weinreb_in_reactants = True
+                        break
+                except:
+                    continue
+
+            if weinreb_in_reactants:
+                try:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol and product_mol.HasSubstructMatch(ketone_pattern):
+                        print("Found Weinreb amide to ketone conversion")
+                        weinreb_to_ketone = True
+                except:
+                    pass
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    return reductive_amination_found
+    # Return True if both Weinreb amide formation and conversion to ketone are found
+    return weinreb_amide_formed and weinreb_to_ketone

@@ -2,68 +2,93 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a linear synthesis strategy with multiple protection steps.
+    This function detects a synthetic strategy involving Grignard addition to an
+    α,β-unsaturated system.
     """
-    # Track protection steps and their depths
-    protection_depths = []
+    has_grignard_addition = False
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+        nonlocal has_grignard_addition
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
-
-            if not product or not all(reactants):
-                return
-
-            # Check for protection reactions
-            alcohol_pattern = Chem.MolFromSmarts("[#6]-[OH]")
-            protected_pattern = Chem.MolFromSmarts(
-                "[#6]-[#8]-[!#1;!#6;!#8]"
-            )  # O connected to non-H, non-C, non-O
-
+            # Look for patterns suggesting Grignard addition
             for reactant in reactants:
-                if reactant.HasSubstructMatch(alcohol_pattern):
-                    if product and product.HasSubstructMatch(protected_pattern):
-                        print(f"Found protection at depth {depth}")
-                        protection_depths.append(depth)
+                if "MgBr" in reactant or "BrMg" in reactant:
+                    # Check if other reactant has α,β-unsaturated system
+                    for other_reactant in reactants:
+                        if other_reactant != reactant:
+                            other_mol = Chem.MolFromSmiles(other_reactant)
+                            if other_mol:
+                                # α,β-unsaturated system pattern
+                                unsaturated_pattern = Chem.MolFromSmarts("[#6]=[#6][#6](=[#8,#7])")
+                                if other_mol.HasSubstructMatch(unsaturated_pattern):
+                                    has_grignard_addition = True
+                                    print(f"Found Grignard addition at depth {depth}")
 
-        # Continue traversing
+            # Alternative detection method using reaction pattern
+            if len(reactants) >= 2:
+                # Check if one reactant is aromatic and product has new C-C bond to aromatic
+                aromatic_pattern = Chem.MolFromSmarts("[#6]1:[#6]:[#6]:[#6]:[#6]:[#6]:1")
+                unsaturated_pattern = Chem.MolFromSmarts("[#6]=[#6][#6](=[#8,#7])")
+
+                product_mol = Chem.MolFromSmiles(product)
+
+                has_aromatic_reactant = False
+                has_unsaturated_reactant = False
+
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        if reactant_mol.HasSubstructMatch(aromatic_pattern):
+                            has_aromatic_reactant = True
+                        if reactant_mol.HasSubstructMatch(unsaturated_pattern):
+                            has_unsaturated_reactant = True
+
+                if (
+                    has_aromatic_reactant
+                    and has_unsaturated_reactant
+                    and product_mol
+                    and product_mol.HasSubstructMatch(aromatic_pattern)
+                ):
+                    has_grignard_addition = True
+                    print(f"Found likely Grignard addition at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if we found multiple protection steps at different depths
-    # indicating a linear protection strategy
-    return len(protection_depths) >= 2 and len(set(protection_depths)) >= 2
+    print(f"Grignard addition strategy detected: {has_grignard_addition}")
+
+    return has_grignard_addition

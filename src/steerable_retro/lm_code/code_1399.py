@@ -2,102 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves sequential elaboration of fragments
-    before final coupling.
+    Detects a strategy involving the use of protected nitrogen heterocycles
+    (particularly Boc-protected piperazine) in fragment coupling.
     """
-    # Track fragment modifications and couplings
-    fragment_modifications = {}  # Track modifications by fragment SMILES
-    fragment_lineage = {}  # Track product -> reactant relationships
-    coupling_reactions = []
+    found_boc_piperazine = False
+    found_coupling_with_protected_fragment = False
 
     def dfs_traverse(node, depth=0):
+        nonlocal found_boc_piperazine, found_coupling_with_protected_fragment
+
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if this is a coupling reaction (2+ significant reactants)
-            if len(reactants_smiles) >= 2:
-                significant_fragments = 0
-                for smi in reactants_smiles:
-                    mol = Chem.MolFromSmiles(smi)
-                    if mol and (
-                        Chem.GetSSSR(mol) or mol.GetNumHeavyAtoms() > 5
-                    ):  # Has at least one ring or is substantial
-                        significant_fragments += 1
+                # Check for Boc-protected piperazine
+                boc_piperazine_pattern = Chem.MolFromSmarts("N1CCN(C(=O)OC(C)(C)C)CC1")
 
-                if significant_fragments >= 2:
-                    coupling_reactions.append((depth, rsmi, reactants_smiles))
+                for r in reactants:
+                    r_mol = Chem.MolFromSmiles(r)
+                    if r_mol and r_mol.HasSubstructMatch(boc_piperazine_pattern):
+                        found_boc_piperazine = True
 
-                    # Track which fragments were used in this coupling
-                    for reactant in reactants_smiles:
-                        if reactant in fragment_modifications:
-                            fragment_modifications[reactant].append((depth, rsmi, "coupled"))
+                        # Check if this is a coupling reaction (multiple reactants)
+                        if len(reactants) >= 2:
+                            # Check if other reactant has aromatic halide (typical for coupling)
+                            for other_r in reactants:
+                                if other_r != r:
+                                    other_mol = Chem.MolFromSmiles(other_r)
+                                    if other_mol and other_mol.HasSubstructMatch(
+                                        Chem.MolFromSmarts("c[F,Cl,Br,I]")
+                                    ):
+                                        print(
+                                            f"Found coupling with Boc-protected piperazine at depth {depth}"
+                                        )
+                                        found_coupling_with_protected_fragment = True
 
-            # For all reactions, track reactant -> product relationships
-            for reactant in reactants_smiles:
-                if reactant not in fragment_modifications:
-                    fragment_modifications[reactant] = []
-                fragment_modifications[reactant].append((depth, rsmi, "modified"))
-
-                # Track lineage
-                if product_smiles not in fragment_lineage:
-                    fragment_lineage[product_smiles] = []
-                fragment_lineage[product_smiles].append(reactant)
-
-        # Traverse children
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    # Analyze if modifications occur before couplings
-    has_sequential_elaboration = False
-
-    if coupling_reactions:
-        # Get the depth of the first coupling reaction
-        first_coupling_depth = min(depth for depth, _, _ in coupling_reactions)
-
-        # Check if there are modifications at greater depths (earlier in synthesis)
-        deeper_modifications = [
-            depth
-            for frag, mods in fragment_modifications.items()
-            for depth, _, mod_type in mods
-            if depth > first_coupling_depth and mod_type == "modified"
-        ]
-
-        # We have sequential elaboration if modifications happen before coupling
-        has_sequential_elaboration = len(deeper_modifications) > 0
-
-        print(f"First coupling depth: {first_coupling_depth}")
-        print(f"Deeper modifications: {len(deeper_modifications)}")
-
-    print(f"Sequential fragment elaboration strategy: {has_sequential_elaboration}")
-    print(
-        f"Coupling reactions: {len(coupling_reactions)}, Fragment modifications: {sum(len(mods) for mods in fragment_modifications.values())}"
-    )
-
-    return has_sequential_elaboration
+    # Return True if strategy criteria are met
+    return found_boc_piperazine and found_coupling_with_protected_fragment

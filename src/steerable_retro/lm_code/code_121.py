@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,194 +54,119 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects the use of orthogonal protecting groups (phthalimide and Cbz)
-    for selective functionalization of different amines.
+    This function detects a synthetic strategy involving late-stage alkyne coupling
+    between two complex fragments.
     """
-    # Track molecules with protecting groups
-    molecules_with_phthalimide = set()
-    molecules_with_cbz = set()
+    alkyne_coupling_detected = False
 
-    # Track deprotection reactions and resulting molecules
-    phthalimide_deprotected_molecules = set()
-    cbz_deprotected_molecules = set()
+    def dfs_traverse(node, depth=0):
+        nonlocal alkyne_coupling_detected
 
-    # Track functionalization of deprotected amines
-    functionalized_after_phthalimide = False
-    functionalized_after_cbz = False
-
-    # Track reaction sequences
-    reaction_sequences = []
-
-    def dfs_traverse(node, depth=0, path=None):
-        nonlocal functionalized_after_phthalimide, functionalized_after_cbz
-
-        if path is None:
-            path = []
-
-        current_path = path.copy()
-
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            current_path.append(("mol", mol_smiles))
-
-            # Check for phthalimide protecting groups in molecules
-            # Using multiple detection methods to ensure we catch all instances
-            if (
-                checker.check_fg("Phthalimide", mol_smiles)
-                or checker.check_fg("Unsubstituted dicarboximide", mol_smiles)
-                or checker.check_fg("Substituted dicarboximide", mol_smiles)
-                or "N1C(=O)c2ccccc2C1=O" in mol_smiles
-            ):
-                molecules_with_phthalimide.add(mol_smiles)
-                print(f"Found molecule with phthalimide: {mol_smiles}")
-
-            # Check for Cbz protecting groups in molecules
-            if (
-                checker.check_fg("Carbamic ester", mol_smiles)
-                or "C(=O)OCc1ccccc1" in mol_smiles
-                or "C(=O)OCc2ccccc2" in mol_smiles
-            ):
-                molecules_with_cbz.add(mol_smiles)
-                print(f"Found molecule with Cbz (Carbamic ester): {mol_smiles}")
-
-        elif node["type"] == "reaction":
-            try:
+        if node["type"] == "reaction" and depth <= 1:  # Final or penultimate reaction (late stage)
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
-                current_path.append(("reaction", rsmi))
 
-                # Check for phthalimide deprotection
-                phthalimide_in_reactants = any(
-                    checker.check_fg("Phthalimide", r)
-                    or checker.check_fg("Unsubstituted dicarboximide", r)
-                    or checker.check_fg("Substituted dicarboximide", r)
-                    or "N1C(=O)c2ccccc2C1=O" in r
-                    for r in reactants
+                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+
+                # Check for specific alkyne coupling reactions
+                sonogashira_coupling = (
+                    checker.check_reaction("Sonogashira acetylene_aryl halide", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_aryl halide", rsmi)
+                    or checker.check_reaction("Sonogashira acetylene_aryl OTf", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_aryl OTf", rsmi)
+                    or checker.check_reaction("Sonogashira acetylene_alkenyl halide", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_alkenyl halide", rsmi)
+                    or checker.check_reaction("Sonogashira acetylene_alkenyl OTf", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_alkenyl OTf", rsmi)
+                    or checker.check_reaction("Sonogashira acetylene_acyl halide", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_acyl halide", rsmi)
                 )
 
-                phthalimide_in_product = (
-                    checker.check_fg("Phthalimide", product)
-                    or checker.check_fg("Unsubstituted dicarboximide", product)
-                    or checker.check_fg("Substituted dicarboximide", product)
-                    or "N1C(=O)c2ccccc2C1=O" in product
-                )
+                if sonogashira_coupling:
+                    print(f"Sonogashira coupling detected at depth {depth}")
+                    alkyne_coupling_detected = True
+                    return
 
-                if phthalimide_in_reactants and not phthalimide_in_product:
-                    if (
-                        checker.check_reaction("Phthalimide deprotection", rsmi)
-                        or checker.check_reaction("N-glutarimide deprotection", rsmi)
-                        or checker.check_reaction("Hydrolysis of amides/imides/carbamates", rsmi)
-                        or checker.check_reaction(
-                            "Hydrogenolysis of amides/imides/carbamates", rsmi
-                        )
-                    ):
-                        phthalimide_deprotected_molecules.add(product)
-                        print(f"Found phthalimide deprotection: {rsmi}")
-                        print(f"Deprotected product: {product}")
+                # Check if product contains alkyne
+                product_has_alkyne = checker.check_fg("Alkyne", product)
 
-                # Check for Cbz deprotection
-                cbz_in_reactants = any(
-                    checker.check_fg("Carbamic ester", r)
-                    or "C(=O)OCc1ccccc1" in r
-                    or "C(=O)OCc2ccccc2" in r
-                    for r in reactants
-                )
+                if product_has_alkyne:
+                    print(f"Product contains alkyne at depth {depth}")
 
-                cbz_in_product = (
-                    checker.check_fg("Carbamic ester", product)
-                    or "C(=O)OCc1ccccc1" in product
-                    or "C(=O)OCc2ccccc2" in product
-                )
+                    # Check if we're joining two fragments with an alkyne bond
+                    if len(reactants) >= 2:
+                        # Look for alkyne in reactants
+                        reactant_has_alkyne = [checker.check_fg("Alkyne", r) for r in reactants]
 
-                if cbz_in_reactants and not cbz_in_product:
-                    if (
-                        checker.check_reaction("Carboxyl benzyl deprotection", rsmi)
-                        or checker.check_reaction(
-                            "Hydrogenolysis of amides/imides/carbamates", rsmi
-                        )
-                        or checker.check_reaction("Hydrolysis of amides/imides/carbamates", rsmi)
-                    ):
-                        cbz_deprotected_molecules.add(product)
-                        print(f"Found Cbz deprotection: {rsmi}")
-                        print(f"Deprotected product: {product}")
+                        # Check for terminal alkyne specifically
+                        terminal_alkyne_pattern = Chem.MolFromSmarts("C#C[H]")
+                        reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                        has_terminal_alkyne = [
+                            mol and mol.HasSubstructMatch(terminal_alkyne_pattern)
+                            for mol in reactant_mols
+                            if mol
+                        ]
 
-                # Check for functionalization of deprotected amines
-                if any(r in phthalimide_deprotected_molecules for r in reactants):
-                    # Check if this is a functionalization reaction (not just another deprotection)
-                    if not (
-                        checker.check_reaction("Phthalimide deprotection", rsmi)
-                        or checker.check_reaction("N-glutarimide deprotection", rsmi)
-                        or checker.check_reaction("Carboxyl benzyl deprotection", rsmi)
-                        or checker.check_reaction(
-                            "Hydrogenolysis of amides/imides/carbamates", rsmi
-                        )
-                        or checker.check_reaction("Hydrolysis of amides/imides/carbamates", rsmi)
-                    ):
-                        functionalized_after_phthalimide = True
-                        print(f"Found functionalization after phthalimide deprotection: {rsmi}")
+                        # Check for aryl or vinyl halides
+                        aryl_halide = any(checker.check_fg("Aromatic halide", r) for r in reactants)
+                        vinyl_halide = any(checker.check_fg("Alkenyl halide", r) for r in reactants)
 
-                if any(r in cbz_deprotected_molecules for r in reactants):
-                    # Check if this is a functionalization reaction (not just another deprotection)
-                    if not (
-                        checker.check_reaction("Phthalimide deprotection", rsmi)
-                        or checker.check_reaction("N-glutarimide deprotection", rsmi)
-                        or checker.check_reaction("Carboxyl benzyl deprotection", rsmi)
-                        or checker.check_reaction(
-                            "Hydrogenolysis of amides/imides/carbamates", rsmi
-                        )
-                        or checker.check_reaction("Hydrolysis of amides/imides/carbamates", rsmi)
-                    ):
-                        functionalized_after_cbz = True
-                        print(f"Found functionalization after Cbz deprotection: {rsmi}")
+                        print(f"Reactants with alkyne: {reactant_has_alkyne}")
+                        print(f"Reactants with terminal alkyne: {has_terminal_alkyne}")
+                        print(f"Aryl halide present: {aryl_halide}")
+                        print(f"Vinyl halide present: {vinyl_halide}")
 
-            except (KeyError, IndexError) as e:
-                print(f"Error processing reaction node: {e}")
+                        # If one reactant has terminal alkyne and another has aryl/vinyl halide,
+                        # it's likely an alkyne coupling
+                        if any(has_terminal_alkyne) and (aryl_halide or vinyl_halide):
+                            print(f"Late-stage alkyne coupling detected at depth {depth}")
+                            alkyne_coupling_detected = True
+                            return
 
-        # If we've reached a leaf node, save the path
-        if not node.get("children", []):
-            reaction_sequences.append(current_path)
+                        # If product has alkyne but no reactant does, it might be alkyne formation
+                        if not any(reactant_has_alkyne) and product_has_alkyne:
+                            print(f"Alkyne formation detected at depth {depth}")
+                            alkyne_coupling_detected = True
+                            return
+
+                        # If one reactant has alkyne and another doesn't, check if it's a coupling
+                        if any(reactant_has_alkyne) and not all(reactant_has_alkyne):
+                            # Check if the reaction is likely a coupling
+                            product_mol = Chem.MolFromSmiles(product)
+                            if product_mol:
+                                # Count carbon atoms in product and reactants
+                                product_carbon_count = len(
+                                    [
+                                        atom
+                                        for atom in product_mol.GetAtoms()
+                                        if atom.GetAtomicNum() == 6
+                                    ]
+                                )
+                                reactant_carbon_counts = [
+                                    len(
+                                        [
+                                            atom
+                                            for atom in mol.GetAtoms()
+                                            if atom.GetAtomicNum() == 6
+                                        ]
+                                    )
+                                    for mol in reactant_mols
+                                    if mol
+                                ]
+
+                                # If product has approximately the sum of carbons from reactants,
+                                # it's likely a coupling reaction
+                                if product_carbon_count >= sum(reactant_carbon_counts) - 2:
+                                    print(
+                                        f"Late-stage alkyne coupling detected based on carbon count at depth {depth}"
+                                    )
+                                    alkyne_coupling_detected = True
+                                    return
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1, current_path)
+            dfs_traverse(child, depth + 1)
 
-    # Start the traversal
     dfs_traverse(route)
-
-    # Check if we have evidence of orthogonal protection strategy
-    has_both_protecting_groups = len(molecules_with_phthalimide) > 0 and len(molecules_with_cbz) > 0
-    has_selective_deprotection = (
-        len(phthalimide_deprotected_molecules) > 0 or len(cbz_deprotected_molecules) > 0
-    )
-    has_functionalization = functionalized_after_phthalimide or functionalized_after_cbz
-
-    print(f"Has both protecting groups: {has_both_protecting_groups}")
-    print(f"Has selective deprotection: {has_selective_deprotection}")
-    print(f"Has functionalization after deprotection: {has_functionalization}")
-
-    # Check for true orthogonal strategy - both protecting groups, selective deprotection, and functionalization
-    if has_both_protecting_groups and has_selective_deprotection and has_functionalization:
-        print("Found complete orthogonal protection strategy with phthalimide and Cbz")
-        return True
-
-    # Check if the molecule contains both phthalimide and Cbz in the same molecule
-    # This is a special case for the test case where we see a molecule with both protecting groups
-    for mol_smiles in molecules_with_cbz:
-        if "N1C(=O)c2ccccc2C1=O" in mol_smiles:
-            print(f"Found molecule with both phthalimide and Cbz: {mol_smiles}")
-            return True
-
-    # If we have both protecting groups, consider it an orthogonal strategy even without clear evidence of selective use
-    if has_both_protecting_groups:
-        print("Found both phthalimide and Cbz protecting groups in the synthesis route")
-        return True
-
-    # Special case: If we detect Cbz and the molecule contains a phthalimide structure
-    # This handles cases where the checker might not identify phthalimide correctly
-    if len(molecules_with_cbz) > 0:
-        for mol_smiles in molecules_with_cbz:
-            if "CN1C(=O)c2ccccc2C1=O" in mol_smiles:
-                print(f"Found molecule with both phthalimide and Cbz (special case): {mol_smiles}")
-                return True
-
-    return False
+    return alkyne_coupling_detected

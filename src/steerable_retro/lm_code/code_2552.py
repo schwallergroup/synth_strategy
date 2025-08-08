@@ -2,135 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects conversion of alcohol to alkyl chloride in the synthetic route.
+    This function detects a synthesis strategy involving alcohol oxidation/esterification.
     """
-    transformation_detected = False
+    alcohol_oxidation_found = False
 
     def dfs_traverse(node):
-        nonlocal transformation_detected
+        nonlocal alcohol_oxidation_found
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and products
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0]
+            products_smiles = rsmi.split(">")[-1]
 
-                # Check if this is an alcohol to chloride reaction using the checker
-                alcohol_to_chloride_reactions = [
-                    "Alcohol to chloride_sulfonyl chloride",
-                    "Alcohol to chloride_SOCl2",
-                    "Alcohol to chloride_CHCl3",
-                    "Alcohol to chloride_CH2Cl2",
-                    "Alcohol to chloride_PCl5_ortho",
-                    "Alcohol to chloride_POCl3_ortho",
-                    "Alcohol to chloride_POCl3_para",
-                    "Alcohol to chloride_POCl3",
-                    "Alcohol to chloride_HCl",
-                    "Alcohol to chloride_Salt",
-                    "Alcohol to chloride_Other",
-                ]
+            # Check for alcohol to ester transformation
+            alcohol_pattern = Chem.MolFromSmarts("[#6][#8H]")
+            ester_pattern = Chem.MolFromSmarts("[#6](=[#8])[#8][#6]")
 
-                for reaction_type in alcohol_to_chloride_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Detected {reaction_type} reaction")
-                        transformation_detected = True
-                        break
+            reactant_mol = Chem.MolFromSmiles(reactants_smiles)
+            product_mol = Chem.MolFromSmiles(products_smiles)
 
-                # If no specific reaction type was detected, check for alcohol in reactants and chloride in product
-                if not transformation_detected:
-                    try:
-                        # Check for various alcohol types in reactants
-                        alcohol_types = [
-                            "Primary alcohol",
-                            "Secondary alcohol",
-                            "Tertiary alcohol",
-                            "Aromatic alcohol",
-                        ]
-                        has_alcohol_reactant = False
+            if (
+                reactant_mol is not None
+                and product_mol is not None
+                and alcohol_pattern is not None
+                and ester_pattern is not None
+            ):
+                if reactant_mol.HasSubstructMatch(
+                    alcohol_pattern
+                ) and product_mol.HasSubstructMatch(ester_pattern):
+                    print("Found alcohol oxidation/esterification")
+                    alcohol_oxidation_found = True
 
-                        for reactant in reactants:
-                            for alcohol_type in alcohol_types:
-                                if checker.check_fg(alcohol_type, reactant):
-                                    print(f"Found {alcohol_type} in reactant: {reactant}")
-                                    has_alcohol_reactant = True
-                                    break
-                            if has_alcohol_reactant:
-                                break
-
-                        # Check for chloride in product
-                        has_chloride_product = False
-                        if (
-                            checker.check_fg("Primary halide", product)
-                            or checker.check_fg("Secondary halide", product)
-                            or checker.check_fg("Tertiary halide", product)
-                        ):
-                            # Verify it's specifically a chloride
-                            prod_mol = Chem.MolFromSmiles(product)
-                            if prod_mol and prod_mol.HasSubstructMatch(
-                                Chem.MolFromSmarts("[C]-[Cl]")
-                            ):
-                                print(f"Found chloride in product: {product}")
-                                has_chloride_product = True
-
-                        if has_alcohol_reactant and has_chloride_product:
-                            print(
-                                "Alcohol to chloride conversion detected through functional group analysis"
-                            )
-                            transformation_detected = True
-                    except Exception as e:
-                        print(f"Error in functional group analysis: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return transformation_detected
+    return alcohol_oxidation_found

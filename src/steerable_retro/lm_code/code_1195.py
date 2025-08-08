@@ -2,64 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route maintains an aromatic core with
-    an ester functionality throughout the synthesis while modifying side chains.
+    Detects if the synthesis follows a linear strategy (no convergent steps)
     """
-    # Track if aromatic ester is preserved throughout
-    aromatic_ester_preserved = True
-    steps_with_aromatic_ester = 0
-    total_steps = 0
+    is_linear = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal aromatic_ester_preserved, steps_with_aromatic_ester, total_steps
+    def dfs_traverse(node):
+        nonlocal is_linear
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                total_steps += 1
-                rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
+        if node.get("type") == "reaction":
+            # Count reactants that are not in_stock
+            non_stock_reactants = 0
+            for child in node.get("children", []):
+                if child.get("type") == "mol" and not child.get("in_stock", False):
+                    non_stock_reactants += 1
 
-                # Create pattern for aromatic ester
-                aromatic_ester_pattern = Chem.MolFromSmarts("[c][C](=[O])[O][C]")
+            # If more than one non-stock reactant, it's a convergent step
+            if non_stock_reactants > 1:
+                is_linear = False
+                print("Convergent step detected")
 
-                product_mol = Chem.MolFromSmiles(product)
-
-                if product_mol and product_mol.HasSubstructMatch(aromatic_ester_pattern):
-                    steps_with_aromatic_ester += 1
-                    print(f"Aromatic ester found in product at depth {depth}")
-                else:
-                    aromatic_ester_preserved = False
-                    print(f"Aromatic ester not found in product at depth {depth}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if aromatic ester is preserved in all steps and we have at least 2 steps
-    return (
-        aromatic_ester_preserved and total_steps >= 2 and steps_with_aromatic_ester == total_steps
-    )
+    if is_linear:
+        print("Linear synthesis strategy confirmed")
+
+    return is_linear

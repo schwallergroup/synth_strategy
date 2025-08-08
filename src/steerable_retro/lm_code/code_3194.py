@@ -2,55 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route follows a linear synthesis approach
-    (each step has only one complex reactant from previous step).
+    Detects if the synthesis involves an α-bromoketone intermediate that is later used
+    for heterocycle formation.
     """
-    # For linear synthesis, we need to check that at each reaction step,
-    # there's only one non-commercial reactant
+    has_bromoketone_intermediate = False
+    bromoketone_used_for_heterocycle = False
 
-    is_linear = True
-
-    def dfs_traverse(node):
-        nonlocal is_linear
+    def dfs_traverse(node, depth=0):
+        nonlocal has_bromoketone_intermediate, bromoketone_used_for_heterocycle
 
         if node["type"] == "reaction":
-            complex_reactants = 0
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            # Count children that are molecules and not in_stock
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    complex_reactants += 1
+                # Convert SMILES to RDKit molecules
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            # If more than one complex reactant, it's not linear
-            if complex_reactants > 1:
-                print(f"Non-linear step detected with {complex_reactants} complex reactants")
-                is_linear = False
+                if product and all(reactants):
+                    bromoketone_pattern = Chem.MolFromSmarts("[#6]-C(=O)-C-[Br]")
+                    thiazole_pattern = Chem.MolFromSmarts("c1scnc1")
 
-        # Traverse children
+                    # Check if this reaction produces an α-bromoketone
+                    if product.HasSubstructMatch(bromoketone_pattern) and not any(
+                        r.HasSubstructMatch(bromoketone_pattern) for r in reactants
+                    ):
+                        print(f"Detected α-bromoketone formation at depth {depth}")
+                        has_bromoketone_intermediate = True
+
+                    # Check if this reaction uses an α-bromoketone to form a heterocycle
+                    if any(
+                        r.HasSubstructMatch(bromoketone_pattern) for r in reactants
+                    ) and product.HasSubstructMatch(thiazole_pattern):
+                        print(
+                            f"Detected α-bromoketone used for heterocycle formation at depth {depth}"
+                        )
+                        bromoketone_used_for_heterocycle = True
+
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return is_linear
+
+    # The strategy is detected if both conditions are met
+    strategy_detected = has_bromoketone_intermediate and bromoketone_used_for_heterocycle
+    if strategy_detected:
+        print("Complete α-bromoketone intermediate strategy detected")
+
+    return strategy_detected

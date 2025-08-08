@@ -2,63 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis preserves a dimethoxyphenyl group throughout the route.
+    This function detects the combined strategy: linear synthesis with multiple ether formations
+    and protection/deprotection sequences, featuring late-stage incorporation of a cycloalkyl group
+    via reductive amination.
     """
-    dimethoxyphenyl_pattern = Chem.MolFromSmarts("[c]1[c]([O][C])[c][c][c][c]1[O][C]")
-    has_dimethoxyphenyl_at_all_depths = True
-    depths_checked = set()
+    # Check all individual strategies
+    is_linear = linear_synthesis_strategy(route)
+    has_multiple_ethers = multiple_ether_formation_strategy(route)
+    has_protection_deprotection = protection_deprotection_strategy(route)
+    has_late_cycloalkyl = late_stage_cycloalkyl_incorporation(route)
+    has_reductive_amination = reductive_amination_strategy(route)
 
-    def dfs_traverse(node):
-        nonlocal has_dimethoxyphenyl_at_all_depths, depths_checked
+    # Combined strategy requires most of these elements
+    strategy_count = sum(
+        [
+            is_linear,
+            has_multiple_ethers,
+            has_protection_deprotection,
+            has_late_cycloalkyl,
+            has_reductive_amination,
+        ]
+    )
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol = Chem.MolFromSmiles(node["smiles"])
-            depth = None
+    print(f"Strategy elements detected: {strategy_count}/5")
+    print(f"- Linear synthesis: {is_linear}")
+    print(f"- Multiple ether formations: {has_multiple_ethers}")
+    print(f"- Protection/deprotection: {has_protection_deprotection}")
+    print(f"- Late-stage cycloalkyl: {has_late_cycloalkyl}")
+    print(f"- Reductive amination: {has_reductive_amination}")
 
-            # Try to get depth from parent reaction if this is a product
-            if node.get("children"):
-                for child in node["children"]:
-                    if (
-                        child["type"] == "reaction"
-                        and "metadata" in child
-                        and "depth" in child["metadata"]
-                    ):
-                        depth = child["metadata"]["depth"]
-                        break
-
-            if mol and depth is not None:
-                depths_checked.add(depth)
-                if not mol.HasSubstructMatch(dimethoxyphenyl_pattern):
-                    has_dimethoxyphenyl_at_all_depths = False
-                    print(f"Dimethoxyphenyl group not found at depth {depth}")
-
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child)
-
-    # Start traversal from the root
-    dfs_traverse(route)
-
-    # Only return True if we've checked multiple depths and found the group at all of them
-    return has_dimethoxyphenyl_at_all_depths and len(depths_checked) >= 3
+    # Require at least 3 of the 5 elements to match the combined strategy
+    return strategy_count >= 3

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,103 +54,107 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route employs multiple SNAr reactions
-    to build the molecular scaffold.
+    Detects if the synthesis uses a convergent approach with multiple fragment couplings,
+    specifically looking for C-C bond formations between aromatic systems and olefin formation.
     """
-    snar_reactions = 0
+    # Track fragments and coupling reactions
+    coupling_reactions_count = 0
+    found_biaryl_coupling = False
+    found_olefin_coupling = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal snar_reactions
+        nonlocal coupling_reactions_count, found_biaryl_coupling, found_olefin_coupling
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check if this is an SNAr reaction using the checker functions
-                is_snar = False
+            # Check if this is a coupling reaction with multiple fragments
+            if len(reactants_smiles) >= 2:
+                # Check for biaryl coupling reactions
+                if (
+                    checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
+                    or checker.check_reaction("Stille reaction_aryl", rsmi)
+                    or checker.check_reaction("Stille reaction_aryl OTf", rsmi)
+                    or checker.check_reaction("Negishi coupling", rsmi)
+                    or checker.check_reaction("Ullmann condensation", rsmi)
+                    or checker.check_reaction("Kumada cross-coupling", rsmi)
+                ):
 
-                # Check for specific SNAr reaction types
-                if checker.check_reaction("heteroaromatic_nuc_sub", rsmi):
-                    print(f"Detected heteroaromatic nucleophilic substitution at depth {depth}")
-                    is_snar = True
-                elif checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi):
-                    print(
-                        f"Detected nucleophilic substitution on nitro-activated aromatic at depth {depth}"
+                    found_biaryl_coupling = True
+                    coupling_reactions_count += 1
+                    print(f"Found biaryl coupling at depth {depth}: {rsmi}")
+
+                # Check for olefin formation reactions
+                elif (
+                    checker.check_reaction("Wittig", rsmi)
+                    or checker.check_reaction("Wittig reaction with triphenylphosphorane", rsmi)
+                    or checker.check_reaction("Wittig with Phosphonium", rsmi)
+                    or checker.check_reaction("Julia Olefination", rsmi)
+                    or checker.check_reaction("Heck terminal_vinyl", rsmi)
+                    or checker.check_reaction("Heck_terminal_vinyl", rsmi)
+                    or checker.check_reaction("Heck_non-terminal_vinyl", rsmi)
+                    or checker.check_reaction("Olefination of ketones with Grignard reagents", rsmi)
+                    or checker.check_reaction(
+                        "Olefination of aldehydes with Grignard reagents", rsmi
                     )
-                    is_snar = True
-                elif checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi):
-                    print(
-                        f"Detected nucleophilic substitution on nitro-activated aromatic at depth {depth}"
-                    )
-                    is_snar = True
+                ):
+
+                    found_olefin_coupling = True
+                    coupling_reactions_count += 1
+                    print(f"Found olefin formation at depth {depth}: {rsmi}")
+
+                # If we can't identify the reaction type specifically, check for C-C bond formation
                 else:
-                    # If no specific reaction type matches, check for characteristic patterns
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                    # Check for biaryl coupling using SMARTS pattern as fallback
+                    product = Chem.MolFromSmiles(product_smiles)
+                    if product is not None:
+                        biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
+                        alkene_pattern = Chem.MolFromSmarts("[#6]=[#6]")
 
-                    # Check for aromatic halide in reactants
-                    aromatic_halide_found = False
-                    nucleophile_found = False
+                        # Check if these patterns exist in product but not in all reactants
+                        reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                        reactants = [r for r in reactants if r is not None]
 
-                    for reactant in reactants:
-                        try:
-                            if checker.check_fg("Aromatic halide", reactant):
-                                # Check if it's also a heteroaromatic compound
-                                heteroaromatic = False
-                                for ring in [
-                                    "pyridine",
-                                    "pyrimidine",
-                                    "pyrazine",
-                                    "pyridazine",
-                                    "triazine",
-                                    "tetrazine",
-                                ]:
-                                    if checker.check_ring(ring, reactant):
-                                        heteroaromatic = True
-                                        print(
-                                            f"Found heteroaromatic halide with {ring} ring: {reactant}"
-                                        )
-                                        break
+                        if product.HasSubstructMatch(biaryl_pattern) and not all(
+                            r.HasSubstructMatch(biaryl_pattern) for r in reactants
+                        ):
+                            found_biaryl_coupling = True
+                            coupling_reactions_count += 1
+                            print(f"Found biaryl coupling (pattern) at depth {depth}")
 
-                                if heteroaromatic:
-                                    aromatic_halide_found = True
-
-                            # Check for nucleophiles
-                            if (
-                                checker.check_fg("Primary amine", reactant)
-                                or checker.check_fg("Secondary amine", reactant)
-                                or checker.check_fg("Aniline", reactant)
-                                or checker.check_fg("Phenol", reactant)
-                                or checker.check_fg("Aliphatic thiol", reactant)
-                                or checker.check_fg("Aromatic thiol", reactant)
-                            ):
-                                nucleophile_found = True
-                                print(f"Found nucleophile: {reactant}")
-                        except Exception as e:
-                            print(f"Error processing reactant: {e}")
-                            continue
-
-                    # Check if the product has the expected C-N, C-O, or C-S bond formation
-                    if aromatic_halide_found and nucleophile_found:
-                        try:
-                            # This is a simplified check - in a real implementation,
-                            # we would verify the specific bond formation at the position of the halide
-                            is_snar = True
-                            print(
-                                f"Detected potential SNAr reaction based on reactants and product"
-                            )
-                        except Exception as e:
-                            print(f"Error checking product: {e}")
-
-                if is_snar:
-                    snar_reactions += 1
-                    print(f"Detected SNAr reaction #{snar_reactions} at depth {depth}")
+                        if product.HasSubstructMatch(alkene_pattern) and not all(
+                            r.HasSubstructMatch(alkene_pattern) for r in reactants
+                        ):
+                            found_olefin_coupling = True
+                            coupling_reactions_count += 1
+                            print(f"Found olefin formation (pattern) at depth {depth}")
 
         # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    print(f"Total SNAr reactions found: {snar_reactions}")
-    return snar_reactions >= 2  # Return True if at least 2 SNAr reactions are found
+
+    # Check if the strategy is present
+    # We need at least 2 coupling reactions with at least one biaryl and one olefin formation
+    strategy_present = (
+        coupling_reactions_count >= 2 and found_biaryl_coupling and found_olefin_coupling
+    )
+
+    if strategy_present:
+        print(
+            f"Detected convergent fragment assembly strategy with {coupling_reactions_count} coupling reactions"
+        )
+    else:
+        print(
+            f"Convergent fragment assembly strategy not detected. Found {coupling_reactions_count} coupling reactions, biaryl: {found_biaryl_coupling}, olefin: {found_olefin_coupling}"
+        )
+
+    return strategy_present

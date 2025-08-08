@@ -2,62 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a linear fragment assembly strategy where each step adds one fragment
-    without convergent synthesis patterns.
+    This function detects convergent synthesis with fragment coupling.
+    It looks for reactions where multiple complex fragments are joined.
     """
-    # Track the number of reactions and whether any have more than 2 reactants
-    reaction_count = 0
-    has_convergent_step = False
+    fragment_coupling_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal reaction_count, has_convergent_step
+    def dfs_traverse(node):
+        nonlocal fragment_coupling_detected
 
         if node["type"] == "reaction":
-            reaction_count += 1
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            # Extract reactants from reaction SMILES
-            rsmi = node["metadata"]["rsmi"]
-            reactants = [r for r in rsmi.split(">")[0].split(".") if r]
+                # Check if we have multiple complex reactants (fragments)
+                if len(reactants) >= 2:
+                    complex_fragments = 0
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if (
+                            mol and mol.GetNumAtoms() > 10
+                        ):  # Consider fragments with >10 atoms as complex
+                            complex_fragments += 1
 
-            # If more than 2 reactants, might be convergent synthesis
-            if len(reactants) > 2:
-                has_convergent_step = True
-                print(
-                    f"Found potential convergent step at depth {depth} with {len(reactants)} reactants"
-                )
+                    if complex_fragments >= 2:
+                        print(f"Fragment coupling detected: {rsmi}")
+                        fragment_coupling_detected = True
 
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    # Linear strategy has multiple reactions but no convergent steps
-    strategy_present = reaction_count >= 3 and not has_convergent_step
-
-    print(
-        f"Strategy detection result: {strategy_present} (reactions: {reaction_count}, convergent: {has_convergent_step})"
-    )
-    return strategy_present
+    return fragment_coupling_detected

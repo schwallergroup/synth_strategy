@@ -2,71 +2,99 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis involves multiple amide bond formations.
+    Detects if the synthesis route involves a Suzuki coupling reaction.
     """
-    # Count amide formations
-    amide_formation_count = 0
+    suzuki_coupling_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_formation_count
+    def dfs_traverse(node):
+        nonlocal suzuki_coupling_found
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+
+            # Check if this is a Suzuki coupling reaction using the checker function
+            if (
+                checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
+                or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
+                or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
+                or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
+                or checker.check_reaction("Suzuki coupling with sulfonic esters", rsmi)
+                or checker.check_reaction("Suzuki", rsmi)
+            ):
+
+                print(f"Found Suzuki coupling reaction: {rsmi}")
+                suzuki_coupling_found = True
+
+            # Fallback check using functional groups if specific reaction check fails
+            if not suzuki_coupling_found:
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
+                has_boronic_acid = any(checker.check_fg("Boronic acid", r) for r in reactants)
+                has_boronic_ester = any(checker.check_fg("Boronic ester", r) for r in reactants)
+                has_aryl_halide = any(checker.check_fg("Aromatic halide", r) for r in reactants)
 
-                    if product_mol:
-                        # SMARTS for amide
-                        amide_pattern = Chem.MolFromSmarts("[#6](=[#8])[#7]")
+                if (has_boronic_acid or has_boronic_ester) and has_aryl_halide:
+                    # Additional check for biaryl product formation would be ideal here
+                    print(f"Found potential Suzuki coupling based on functional groups: {rsmi}")
+                    suzuki_coupling_found = True
 
-                        # Count amides in product
-                        product_amides = len(product_mol.GetSubstructMatches(amide_pattern))
-
-                        # Count amides in reactants
-                        reactant_amides = 0
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                reactant_amides += len(
-                                    reactant_mol.GetSubstructMatches(amide_pattern)
-                                )
-
-                        # If product has more amides than reactants, amide formation occurred
-                        if product_amides > reactant_amides:
-                            amide_formation_count += product_amides - reactant_amides
-                            print(f"Found amide formation at depth {depth}")
-                except:
-                    print("Error processing SMILES in multiple_amide_formation_strategy")
-
-        # Process children
+        # Recursively process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if not suzuki_coupling_found:  # Optimization: stop traversal once found
+                dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return amide_formation_count >= 2  # Return True if at least 2 amide formations
+    return suzuki_coupling_found

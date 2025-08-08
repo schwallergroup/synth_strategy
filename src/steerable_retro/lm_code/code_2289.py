@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,104 +54,164 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects late-stage carboxylic acid protection strategy where
-    a carboxylic acid is converted to a tert-butyl ester in the final steps.
-    In retrosynthesis, we look for the reverse: tert-butyl ester being deprotected to carboxylic acid.
+    Detects if the synthesis uses multiple functional group interconversions
+    (e.g., ester to alcohol, amide to amine).
     """
-    protection_detected = False
+    interconversions = 0
+    interconversion_types = set()  # Track unique types of interconversions
 
-    def dfs_traverse(node, depth=0):
-        nonlocal protection_detected
+    def dfs_traverse(node):
+        nonlocal interconversions
 
-        if (
-            node["type"] == "reaction"
-            and "metadata" in node
-            and "rsmi" in node["metadata"]
-            and depth <= 1
-        ):
-            # Only consider reactions at depth 0 or 1 (late stage)
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            print(f"Checking reaction at depth {depth}: {rsmi}")
+            # Check for various functional group interconversions
+            found_interconversion = False
 
-            # In retrosynthesis, product would have carboxylic acid, reactants would have ester
-            product_has_carboxylic_acid = checker.check_fg("Carboxylic acid", product)
-            if product_has_carboxylic_acid:
-                print(f"Found carboxylic acid in product: {product}")
+            # 1. Ester to alcohol reduction
+            if checker.check_reaction("Reduction of ester to primary alcohol", rsmi):
+                print(f"Found ester to primary alcohol reduction: {rsmi}")
+                interconversion_types.add("ester_to_alcohol")
+                found_interconversion = True
 
-            # Check if any reactant contains an ester
-            reactants_with_ester = []
-            for reactant in reactants:
-                if checker.check_fg("Ester", reactant):
-                    reactants_with_ester.append(reactant)
-                    print(f"Found ester in reactant: {reactant}")
-
-            if product_has_carboxylic_acid and reactants_with_ester:
-                # Check if this is a deprotection reaction (protection in forward direction)
-                deprotection_reactions = [
-                    "COOH ethyl deprotection",
-                    "Ester saponification (methyl deprotection)",
-                    "Ester saponification (alkyl deprotection)",
-                    "Deprotection of carboxylic acid",
-                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
+            # 2. Amide to amine reduction
+            elif any(
+                checker.check_reaction(rxn, rsmi)
+                for rxn in [
+                    "Reduction of primary amides to amines",
+                    "Reduction of secondary amides to amines",
+                    "Reduction of tertiary amides to amines",
                 ]
+            ):
+                print(f"Found amide to amine reduction: {rsmi}")
+                interconversion_types.add("amide_to_amine")
+                found_interconversion = True
 
-                for reaction_type in deprotection_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Found deprotection reaction: {reaction_type}")
+            # 3. Nitrile to amine reduction
+            elif checker.check_reaction("Reduction of nitrile to amine", rsmi):
+                print(f"Found nitrile to amine reduction: {rsmi}")
+                interconversion_types.add("nitrile_to_amine")
+                found_interconversion = True
 
-                        # Check if any reactant contains a tert-butyl ester
-                        for reactant in reactants_with_ester:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                # Check for tert-butyl group connected to ester
-                                tert_butyl_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)")
-                                if reactant_mol.HasSubstructMatch(tert_butyl_pattern):
-                                    print(
-                                        f"Late-stage carboxylic acid protection (tert-butyl ester) detected at depth {depth}"
-                                    )
-                                    protection_detected = True
-                                    break
+            # 4. Carboxylic acid to ester
+            elif checker.check_reaction("Esterification of Carboxylic Acids", rsmi):
+                print(f"Found carboxylic acid to ester: {rsmi}")
+                interconversion_types.add("acid_to_ester")
+                found_interconversion = True
 
-                                # Alternative pattern for tert-butyl ester
-                                alt_pattern = Chem.MolFromSmarts("CC(C)(C)O[C,c]=O")
-                                if reactant_mol.HasSubstructMatch(alt_pattern):
-                                    print(
-                                        f"Late-stage carboxylic acid protection (tert-butyl ester) detected at depth {depth}"
-                                    )
-                                    protection_detected = True
-                                    break
+            # 5. Alcohol to ether
+            elif checker.check_reaction("Alcohol to ether", rsmi) or checker.check_reaction(
+                "Williamson Ether Synthesis", rsmi
+            ):
+                print(f"Found alcohol to ether: {rsmi}")
+                interconversion_types.add("alcohol_to_ether")
+                found_interconversion = True
 
-                        if not protection_detected:
-                            print("Deprotection found but not with tert-butyl group")
+            # 6. Alcohol to halide
+            elif any(
+                checker.check_reaction(rxn, rsmi)
+                for rxn in [
+                    "Alcohol to chloride_SOCl2",
+                    "Primary alkyl halide to alcohol",
+                    "Secondary alkyl halide to alcohol",
+                    "Alkyl chlorides from alcohols",
+                    "Alkyl bromides from alcohols",
+                    "Alkyl iodides from alcohols",
+                ]
+            ):
+                print(f"Found alcohol to halide conversion: {rsmi}")
+                interconversion_types.add("alcohol_to_halide")
+                found_interconversion = True
 
-                if not protection_detected:
-                    # Check if it's a general esterification/deprotection reaction
-                    for reactant in reactants_with_ester:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            # Check for tert-butyl group connected to ester
-                            tert_butyl_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)")
-                            alt_pattern = Chem.MolFromSmarts("CC(C)(C)O[C,c]=O")
-                            if reactant_mol.HasSubstructMatch(
-                                tert_butyl_pattern
-                            ) or reactant_mol.HasSubstructMatch(alt_pattern):
-                                print(
-                                    f"Late-stage carboxylic acid protection (tert-butyl ester) detected at depth {depth}"
-                                )
-                                protection_detected = True
-                                break
-            else:
-                if not product_has_carboxylic_acid:
-                    print("No carboxylic acid found in product")
-                if not reactants_with_ester:
-                    print("No ester found in reactants")
+            # 7. Aldehyde/Ketone to alcohol
+            elif checker.check_reaction("Reduction of aldehydes and ketones to alcohols", rsmi):
+                print(f"Found carbonyl to alcohol reduction: {rsmi}")
+                interconversion_types.add("carbonyl_to_alcohol")
+                found_interconversion = True
+
+            # 8. Nitro to amine reduction
+            elif checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                print(f"Found nitro to amine reduction: {rsmi}")
+                interconversion_types.add("nitro_to_amine")
+                found_interconversion = True
+
+            # 9. Alcohol to carboxylic acid oxidation
+            elif checker.check_reaction("Oxidation of alcohol to carboxylic acid", rsmi):
+                print(f"Found alcohol to carboxylic acid oxidation: {rsmi}")
+                interconversion_types.add("alcohol_to_acid")
+                found_interconversion = True
+
+            # 10. Amine to amide
+            elif any(
+                checker.check_reaction(rxn, rsmi)
+                for rxn in [
+                    "Acylation of primary amines",
+                    "Acylation of secondary amines",
+                    "Carboxylic acid with primary amine to amide",
+                ]
+            ):
+                print(f"Found amine to amide conversion: {rsmi}")
+                interconversion_types.add("amine_to_amide")
+                found_interconversion = True
+
+            # If no specific reaction check matched, try checking for functional group changes
+            if not found_interconversion:
+                for reactant in reactants:
+                    # Check for functional group changes by comparing reactant and product
+                    if checker.check_fg("Ester", reactant) and (
+                        checker.check_fg("Primary alcohol", product)
+                        or checker.check_fg("Secondary alcohol", product)
+                        or checker.check_fg("Tertiary alcohol", product)
+                    ):
+                        print(f"Found ester to alcohol conversion (FG check): {rsmi}")
+                        interconversion_types.add("ester_to_alcohol")
+                        found_interconversion = True
+                        break
+
+                    elif (
+                        checker.check_fg("Primary amide", reactant)
+                        or checker.check_fg("Secondary amide", reactant)
+                        or checker.check_fg("Tertiary amide", reactant)
+                    ) and (
+                        checker.check_fg("Primary amine", product)
+                        or checker.check_fg("Secondary amine", product)
+                        or checker.check_fg("Tertiary amine", product)
+                    ):
+                        print(f"Found amide to amine conversion (FG check): {rsmi}")
+                        interconversion_types.add("amide_to_amine")
+                        found_interconversion = True
+                        break
+
+                    elif checker.check_fg("Nitrile", reactant) and (
+                        checker.check_fg("Primary amine", product)
+                        or checker.check_fg("Secondary amine", product)
+                        or checker.check_fg("Tertiary amine", product)
+                    ):
+                        print(f"Found nitrile to amine conversion (FG check): {rsmi}")
+                        interconversion_types.add("nitrile_to_amine")
+                        found_interconversion = True
+                        break
+
+                    elif checker.check_fg("Carboxylic acid", reactant) and checker.check_fg(
+                        "Ester", product
+                    ):
+                        print(f"Found carboxylic acid to ester conversion (FG check): {rsmi}")
+                        interconversion_types.add("acid_to_ester")
+                        found_interconversion = True
+                        break
+
+            if found_interconversion:
+                interconversions += 1
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    print(f"Protection detected: {protection_detected}")
-    return protection_detected
+    print(
+        f"Found {interconversions} functional group interconversions of {len(interconversion_types)} different types"
+    )
+    # Return True if at least 2 interconversions are found
+    return interconversions >= 2

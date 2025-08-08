@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,109 +54,146 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a late-stage nucleophilic aromatic substitution with an amine.
+    This function detects a synthetic strategy involving oxime intermediates
+    leading to isoxazole formation, followed by late-stage amide coupling.
     """
-    found_snar = False
+    # Track the sequence of reactions and intermediates
+    reaction_sequence = []
+
+    # Track if we've found isoxazole in the synthesis
+    isoxazole_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_snar
+        nonlocal isoxazole_found, reaction_sequence
 
-        print(f"Examining node at depth {depth}, type: {node['type']}")
+        # Check for isoxazole in molecule nodes
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            if checker.check_ring("isoxazole", mol_smiles):
+                isoxazole_found = True
+                print(f"Found isoxazole ring at depth {depth}: {mol_smiles}")
 
-        if node["type"] == "reaction" and depth <= 3:  # Late stage (expanded depth check)
-            if "rsmi" in node.get("metadata", {}):
+        # Check reactions
+        elif node["type"] == "reaction":
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                print(f"Checking reaction SMILES: {rsmi}")
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for SNAr or equivalent reactions with amines
-                is_snar = (
-                    checker.check_reaction("Nucleophilic substitution aromatic", rsmi)
-                    or checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
-                    or checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
-                    or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
-                    or checker.check_reaction("N-arylation", rsmi)
-                    or checker.check_reaction(
-                        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
+                # Check for oxime formation
+                if checker.check_fg("Oxime", product_smiles) and any(
+                    checker.check_fg("Aldehyde", r) for r in reactants_smiles
+                ):
+                    reaction_sequence.append(("oxime_formation", depth))
+                    print(f"Detected oxime formation at depth {depth}")
+
+                # Check for chloro-oxime formation
+                if (
+                    any(checker.check_fg("Oxime", r) for r in reactants_smiles)
+                    and checker.check_fg("Substituted imine", product_smiles)
+                    and any("Cl" in r for r in reactants_smiles)
+                ):
+                    reaction_sequence.append(("chloro_oxime", depth))
+                    print(f"Detected chloro-oxime formation at depth {depth}")
+
+                # Check for isoxazole formation
+                if checker.check_ring("isoxazole", product_smiles) and not any(
+                    checker.check_ring("isoxazole", r) for r in reactants_smiles
+                ):
+                    reaction_sequence.append(("isoxazole_formation", depth))
+                    print(f"Detected isoxazole formation at depth {depth}")
+
+                # Check for ester hydrolysis
+                if checker.check_reaction(
+                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+                ):
+                    reaction_sequence.append(("ester_hydrolysis", depth))
+                    print(f"Detected ester hydrolysis at depth {depth}")
+
+                # Check for amide coupling
+                if any(checker.check_fg("Carboxylic acid", r) for r in reactants_smiles) and (
+                    checker.check_fg("Primary amide", product_smiles)
+                    or checker.check_fg("Secondary amide", product_smiles)
+                    or checker.check_fg("Tertiary amide", product_smiles)
+                ):
+                    reaction_sequence.append(("amide_coupling", depth))
+                    print(f"Detected amide coupling at depth {depth}")
+
+                # Alternative check for amide coupling using reaction type
+                if (
+                    checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
                     )
-                    or checker.check_reaction("Buchwald-Hartwig", rsmi)
+                    or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
                     or checker.check_reaction(
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
+                        "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
                     )
-                    or checker.check_reaction(
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
-                    )
-                    or checker.check_reaction("Ullmann-Goldberg Substitution amine", rsmi)
-                    or checker.check_reaction("Goldberg coupling", rsmi)
-                    or checker.check_reaction("Goldberg coupling aryl amine-aryl chloride", rsmi)
-                    or checker.check_reaction("Goldberg coupling aryl amide-aryl chloride", rsmi)
-                    or checker.check_reaction("Ullmann condensation", rsmi)
-                )
+                ):
+                    if not any(rxn == "amide_coupling" for rxn, _ in reaction_sequence):
+                        reaction_sequence.append(("amide_coupling", depth))
+                        print(f"Detected amide coupling reaction at depth {depth}")
 
-                print(f"Is SNAr or related reaction: {is_snar}")
+            except Exception as e:
+                print(f"Error processing reaction at depth {depth}: {e}")
 
-                if is_snar:
-                    print(f"Found potential SNAr or N-arylation reaction at depth {depth}")
-
-                    # Track reactants with specific functional groups
-                    aromatic_halide_reactant = None
-                    amine_reactant = None
-
-                    for reactant in reactants:
-                        print(f"Checking reactant: {reactant}")
-
-                        if checker.check_fg("Aromatic halide", reactant):
-                            aromatic_halide_reactant = reactant
-                            print(f"Found aromatic halide in reactant: {reactant}")
-
-                        # Check for any type of amine or nitrogen nucleophile
-                        if (
-                            checker.check_fg("Primary amine", reactant)
-                            or checker.check_fg("Secondary amine", reactant)
-                            or checker.check_fg("Tertiary amine", reactant)
-                            or checker.check_fg("Aniline", reactant)
-                        ):
-                            amine_reactant = reactant
-                            print(f"Found amine in reactant: {reactant}")
-
-                    # Verify both required reactants are present
-                    if aromatic_halide_reactant and amine_reactant:
-                        # Verify the product no longer has the aromatic halide
-                        if not checker.check_fg("Aromatic halide", product):
-                            # The reaction has been identified as SNAr with amine
-                            print(f"Confirmed SNAr with amine at depth {depth}")
-                            found_snar = True
-                else:
-                    # Try a more general approach if specific reaction checks fail
-                    print("Trying general approach for SNAr detection")
-                    aromatic_halide_found = False
-                    amine_found = False
-
-                    for reactant in reactants:
-                        if checker.check_fg("Aromatic halide", reactant):
-                            aromatic_halide_found = True
-                            print(f"Found aromatic halide in reactant: {reactant}")
-
-                        if (
-                            checker.check_fg("Primary amine", reactant)
-                            or checker.check_fg("Secondary amine", reactant)
-                            or checker.check_fg("Tertiary amine", reactant)
-                            or checker.check_fg("Aniline", reactant)
-                        ):
-                            amine_found = True
-                            print(f"Found amine in reactant: {reactant}")
-
-                    if aromatic_halide_found and amine_found:
-                        # Check if product has lost the aromatic halide
-                        if not checker.check_fg("Aromatic halide", product):
-                            print(
-                                f"Detected potential SNAr reaction by functional group analysis at depth {depth}"
-                            )
-                            found_snar = True
-
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return found_snar
+
+    # Sort reactions by depth to get the sequence
+    reaction_sequence.sort(key=lambda x: x[1], reverse=True)
+    reaction_types = [r[0] for r in reaction_sequence]
+
+    print(f"Detected reaction sequence: {reaction_types}")
+
+    # Check if we have the complete strategy in the correct order
+    # The expected sequence is: oxime_formation -> chloro_oxime -> isoxazole_formation -> ester_hydrolysis -> amide_coupling
+    expected_sequence = [
+        "oxime_formation",
+        "chloro_oxime",
+        "isoxazole_formation",
+        "ester_hydrolysis",
+        "amide_coupling",
+    ]
+
+    # Check if all expected reactions are present
+    all_reactions_present = all(rxn in reaction_types for rxn in expected_sequence)
+
+    # Check if the reactions are in the correct order
+    correct_order = True
+    for i in range(len(expected_sequence) - 1):
+        if expected_sequence[i] in reaction_types and expected_sequence[i + 1] in reaction_types:
+            idx1 = reaction_types.index(expected_sequence[i])
+            idx2 = reaction_types.index(expected_sequence[i + 1])
+            if idx1 > idx2:  # Earlier reaction should have higher depth
+                correct_order = False
+                break
+
+    # If isoxazole is found but not all reactions are detected, we can still consider it a partial match
+    # This handles cases where some intermediate steps might be missing in the route
+    if (
+        isoxazole_found
+        and "isoxazole_formation" in reaction_types
+        and "amide_coupling" in reaction_types
+    ):
+        partial_match = True
+        print("Detected partial isoxazole via oxime strategy (key steps present)")
+    else:
+        partial_match = False
+
+    strategy_present = all_reactions_present and correct_order and isoxazole_found
+
+    if strategy_present:
+        print("Detected complete isoxazole via oxime strategy")
+    else:
+        print("Incomplete strategy detection:")
+        print(f"  All reactions present: {all_reactions_present}")
+        print(f"  Correct reaction order: {correct_order}")
+        print(f"  Isoxazole found: {isoxazole_found}")
+        print(f"  Reaction sequence: {reaction_types}")
+
+    # Return true if we have either a complete match or a partial match with key steps
+    return strategy_present or partial_match

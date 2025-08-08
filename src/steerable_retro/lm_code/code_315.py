@@ -2,78 +2,111 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving N-arylation
-    (formation of C-N bond between aryl halide and amine).
+    This function detects if the synthetic route employs a strategy involving
+    protection and deprotection of phenol groups.
     """
-    n_arylation_found = False
+    # Initialize tracking variables
+    phenol_protection_steps = []
+    phenol_deprotection_steps = []
+
+    # Define SMARTS patterns
+    phenol_pattern = Chem.MolFromSmarts("c[OH]")
+    protected_phenol_pattern = Chem.MolFromSmarts("cO[!H]")  # Phenol with non-hydrogen substituent
 
     def dfs_traverse(node, depth=0):
-        nonlocal n_arylation_found
-
         if node["type"] == "reaction":
+            # Extract reactants and product
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for secondary amine in reactants
-                amine_pattern = Chem.MolFromSmarts("[#7;H1]")
-
-                # Check for aryl halide in reactants
-                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,I,Cl]")
-
-                # Check for aryl-N bond in product that wasn't in reactants
-                aryl_n_pattern = Chem.MolFromSmarts("[c]-[#7]")
-
-                has_amine = False
-                has_aryl_halide = False
-
-                for reactant in reactants:
+                # Check for phenol protection (phenol in reactants, protected phenol in product)
+                has_phenol_reactant = False
+                for reactant_smiles in reactants_smiles:
                     try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(amine_pattern):
-                            has_amine = True
-                        if mol and mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
+                        reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(phenol_pattern):
+                            has_phenol_reactant = True
+                            break
                     except:
-                        continue
+                        print(f"Error processing reactant SMILES: {reactant_smiles}")
 
-                # Check if product has a new C-N bond
-                if has_amine and has_aryl_halide:
+                has_protected_phenol_product = False
+                try:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol and product_mol.HasSubstructMatch(protected_phenol_pattern):
+                        has_protected_phenol_product = True
+                except:
+                    print(f"Error processing product SMILES: {product_smiles}")
+
+                if has_phenol_reactant and has_protected_phenol_product:
+                    print(f"Detected phenol protection at depth {depth}")
+                    phenol_protection_steps.append(depth)
+
+                # Check for phenol deprotection (protected phenol in reactants, phenol in product)
+                has_protected_phenol_reactant = False
+                for reactant_smiles in reactants_smiles:
                     try:
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol and product_mol.HasSubstructMatch(aryl_n_pattern):
-                            print(f"N-arylation detected at depth {depth}")
-                            n_arylation_found = True
+                        reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(
+                            protected_phenol_pattern
+                        ):
+                            has_protected_phenol_reactant = True
+                            break
                     except:
-                        pass
+                        print(f"Error processing reactant SMILES: {reactant_smiles}")
 
-        # Traverse children
+                has_phenol_product = False
+                try:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol and product_mol.HasSubstructMatch(phenol_pattern):
+                        has_phenol_product = True
+                except:
+                    print(f"Error processing product SMILES: {product_smiles}")
+
+                if has_protected_phenol_reactant and has_phenol_product:
+                    print(f"Detected phenol deprotection at depth {depth}")
+                    phenol_deprotection_steps.append(depth)
+
+        # Continue traversing children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    return n_arylation_found
+    # Check if both protection and deprotection occurred
+    has_protection_deprotection = (
+        len(phenol_protection_steps) > 0 and len(phenol_deprotection_steps) > 0
+    )
+
+    if has_protection_deprotection:
+        print("Detected phenol protection-deprotection strategy")
+
+    return has_protection_deprotection

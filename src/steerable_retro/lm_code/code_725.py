@@ -2,74 +2,95 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves nitrile-mediated heterocycle formation,
-    where a nitrile group is maintained through multiple steps before being used in cyclization.
+    This function detects if the synthetic route involves a late-stage amide coupling
+    (in the first half of the synthesis depth).
     """
-    nitrile_present_steps = 0
-    nitrile_used_in_cyclization = False
+    amide_pattern = Chem.MolFromSmarts("C(=O)N")
+    acid_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
+    amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-    def dfs_traverse(node):
-        nonlocal nitrile_present_steps, nitrile_used_in_cyclization
+    max_depth = 0
+    amide_coupling_depth = None
+
+    def find_max_depth(node, current_depth=0):
+        nonlocal max_depth
+        max_depth = max(max_depth, current_depth)
+
+        for child in node.get("children", []):
+            find_max_depth(child, current_depth + 1)
+
+    def dfs_traverse(node, depth=0):
+        nonlocal amide_coupling_depth
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                try:
+                    # Check for acid chloride and amine in reactants
+                    reactants_have_acid_chloride = any(
+                        Chem.MolFromSmiles(r)
+                        and Chem.MolFromSmiles(r).HasSubstructMatch(acid_chloride_pattern)
+                        for r in reactants_smiles
+                        if Chem.MolFromSmiles(r)
+                    )
 
-            if product_mol and all(r for r in reactant_mols if r):
-                # Check for nitrile presence
-                nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
-                pyrazole_pattern = Chem.MolFromSmarts("c1[n]n[c]c1")
+                    reactants_have_amine = any(
+                        Chem.MolFromSmiles(r)
+                        and Chem.MolFromSmiles(r).HasSubstructMatch(amine_pattern)
+                        for r in reactants_smiles
+                        if Chem.MolFromSmiles(r)
+                    )
 
-                reactants_have_nitrile = any(
-                    r.HasSubstructMatch(nitrile_pattern) for r in reactant_mols if r
-                )
-                product_has_nitrile = product_mol.HasSubstructMatch(nitrile_pattern)
+                    # Check for amide in product
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if (
+                        reactants_have_acid_chloride
+                        and reactants_have_amine
+                        and product_mol
+                        and product_mol.HasSubstructMatch(amide_pattern)
+                    ):
+                        amide_coupling_depth = depth
+                        print(f"Detected amide coupling at depth {depth}")
+                except:
+                    pass
 
-                # Count steps where nitrile is present
-                if reactants_have_nitrile or product_has_nitrile:
-                    nitrile_present_steps += 1
-
-                # Check if nitrile is used in heterocycle formation
-                if (
-                    reactants_have_nitrile
-                    and not product_has_nitrile
-                    and product_mol.HasSubstructMatch(pyrazole_pattern)
-                ):
-                    print("Nitrile used in heterocycle formation")
-                    nitrile_used_in_cyclization = True
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    find_max_depth(route)
     dfs_traverse(route)
 
-    # Return True if nitrile is present in multiple steps and used in cyclization
-    return nitrile_present_steps >= 2 and nitrile_used_in_cyclization
+    # Check if amide coupling occurs in the first half of the synthesis
+    if amide_coupling_depth is not None:
+        is_late_stage = amide_coupling_depth <= (max_depth / 2)
+        return is_late_stage
+
+    return False

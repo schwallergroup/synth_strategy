@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,61 +54,62 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves a trifluoromethyl-containing
-    heterocycle as a key building block.
+    Detects if the synthesis route involves Boc protection followed by deprotection.
     """
-    found_cf3_heterocycle = False
+    # Track protection and deprotection reactions
+    protection_reactions = []
+    deprotection_reactions = []
 
-    # List of common heterocycles to check
-    heterocycles = [
-        "pyridine",
-        "pyrrole",
-        "furan",
-        "thiophene",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "benzimidazole",
-        "benzoxazole",
-        "benzothiazole",
-    ]
-
-    def dfs_traverse(node):
-        nonlocal found_cf3_heterocycle
-
-        if node["type"] == "mol":
-            smiles = node["smiles"]
+    def dfs(node, depth=0):
+        if node["type"] == "reaction":
             try:
-                # Check if molecule contains CF3 group
-                has_cf3 = checker.check_fg("Trifluoro group", smiles)
+                rsmi = node["metadata"]["rsmi"]
 
-                if has_cf3:
-                    print(f"Found molecule with CF3 group: {smiles}")
+                # Check for Boc protection reaction
+                if (
+                    checker.check_reaction("Boc amine protection", rsmi)
+                    or checker.check_reaction("Boc amine protection explicit", rsmi)
+                    or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
+                    or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
+                    or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
+                    or checker.check_reaction("Boc amine protection of primary amine", rsmi)
+                ):
+                    protection_reactions.append((depth, rsmi))
+                    print(f"Found Boc protection reaction at depth {depth}: {rsmi}")
 
-                    # Check if molecule also contains a heterocycle
-                    for heterocycle in heterocycles:
-                        if checker.check_ring(heterocycle, smiles):
-                            print(
-                                f"Found trifluoromethyl-containing heterocycle ({heterocycle}): {smiles}"
-                            )
-                            found_cf3_heterocycle = True
-                            break
+                # Check for Boc deprotection reaction
+                if (
+                    checker.check_reaction("Boc amine deprotection", rsmi)
+                    or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
+                    or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
+                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
+                ):
+                    deprotection_reactions.append((depth, rsmi))
+                    print(f"Found Boc deprotection reaction at depth {depth}: {rsmi}")
             except Exception as e:
-                print(f"Error checking molecule {smiles}: {e}")
+                print(f"Error processing reaction node for Boc sequence: {e}")
 
-        # Continue traversing
+        # Recursively process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs(child, depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
-    return found_cf3_heterocycle
+    # Start DFS traversal
+    dfs(route)
+
+    # Check if we found both protection and deprotection
+    has_protection = len(protection_reactions) > 0
+    has_deprotection = len(deprotection_reactions) > 0
+
+    # Check if protection happens before deprotection (higher depth)
+    correct_sequence = False
+    if has_protection and has_deprotection:
+        # Get the minimum depth for each (earliest occurrence)
+        min_protection_depth = min([d for d, _ in protection_reactions])
+        min_deprotection_depth = min([d for d, _ in deprotection_reactions])
+
+        # Protection should happen at a higher depth (earlier in synthesis)
+        correct_sequence = min_protection_depth > min_deprotection_depth
+
+    result = has_protection and has_deprotection and correct_sequence
+    print(f"Boc protection/deprotection sequence: {result}")
+    return result

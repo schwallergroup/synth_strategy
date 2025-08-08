@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,92 +54,98 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if Boc protection is introduced early in the synthesis
-    and maintained until later stages.
+    Detects if the final step (depth 0) in the synthesis is an ester hydrolysis.
     """
-    # Track Boc protection information
-    boc_info = {
-        "protected_molecules": [],  # List of molecules with Boc protection
-        "protection_reactions": [],  # List of Boc protection reactions
-        "deprotection_reactions": [],  # List of Boc deprotection reactions
-        "depths": {},  # Dictionary mapping depths to Boc-protected molecules
-    }
+    final_step_is_hydrolysis = False
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            # Check if molecule has Boc protection
-            if checker.check_fg("Boc", mol_smiles):
-                print(f"Found Boc-protected molecule at depth {depth}: {mol_smiles}")
-                boc_info["protected_molecules"].append(mol_smiles)
-                if depth not in boc_info["depths"]:
-                    boc_info["depths"][depth] = []
-                boc_info["depths"][depth].append(mol_smiles)
+    def is_final_step(node, route):
+        """Helper function to determine if this is the final step when depth isn't available"""
+        try:
+            if node["type"] == "reaction":
+                rsmi = node["metadata"]["rsmi"]
+                product = rsmi.split(">")[-1]
 
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
+                # Check if this product matches the target molecule
+                from rdkit import Chem
 
-            # Check for Boc protection reactions
-            if (
-                checker.check_reaction("Boc amine protection", rxn_smiles)
-                or checker.check_reaction("Boc amine protection explicit", rxn_smiles)
-                or checker.check_reaction("Boc amine protection with Boc anhydride", rxn_smiles)
-                or checker.check_reaction("Boc amine protection (ethyl Boc)", rxn_smiles)
-                or checker.check_reaction("Boc amine protection of secondary amine", rxn_smiles)
-                or checker.check_reaction("Boc amine protection of primary amine", rxn_smiles)
-            ):
-                print(f"Found Boc protection reaction at depth {depth}: {rxn_smiles}")
-                boc_info["protection_reactions"].append((depth, rxn_smiles))
-
-            # Check for Boc deprotection reactions
-            if (
-                checker.check_reaction("Boc amine deprotection", rxn_smiles)
-                or checker.check_reaction("Boc amine deprotection of guanidine", rxn_smiles)
-                or checker.check_reaction("Boc amine deprotection to NH-NH2", rxn_smiles)
-                or checker.check_reaction("Tert-butyl deprotection of amine", rxn_smiles)
-            ):
-                print(f"Found Boc deprotection reaction at depth {depth}: {rxn_smiles}")
-                boc_info["deprotection_reactions"].append((depth, rxn_smiles))
-
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
-
-    # Traverse the route
-    dfs_traverse(route)
-
-    # Analyze the collected information
-    depths = list(boc_info["depths"].keys())
-
-    if not depths:
-        print("No Boc-protected molecules found")
+                product_mol = Chem.MolFromSmiles(product)
+                route_mol = Chem.MolFromSmiles(route["smiles"])
+                if product_mol and route_mol:
+                    return Chem.MolToSmiles(product_mol) == Chem.MolToSmiles(route_mol)
+        except Exception as e:
+            print(f"Error in is_final_step: {e}")
         return False
 
-    # Check if Boc protection is introduced early (high depth)
-    early_protection = max(depths) >= 3
+    def dfs_traverse(node, depth=None, is_root_child=False):
+        nonlocal final_step_is_hydrolysis
 
-    # Check if Boc protection is maintained until late stages (low depth)
-    # Consider depth 2 or less as late stage
-    late_stage_presence = min(depths) <= 2
+        if node["type"] == "reaction":
+            # Get depth from metadata if available
+            if depth is None:
+                depth = node.get("metadata", {}).get("depth")
 
-    # Check if Boc is present in the final product (depth 0)
-    boc_in_final_product = 0 in depths
+            # Check if it's the final step (depth 0 or direct child of root or produces final product)
+            is_final = (depth == 0) or is_root_child or is_final_step(node, route)
 
-    # Check if there are protection reactions
-    has_protection_reactions = len(boc_info["protection_reactions"]) > 0
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-    # Check if Boc is present at multiple depths (maintained through synthesis)
-    multiple_depths = len(depths) >= 2
+                print(f"Checking reaction at depth {depth}, is_final={is_final}, rsmi: {rsmi}")
 
-    print(f"Boc protection depths: {depths}")
-    print(f"Early protection: {early_protection}")
-    print(f"Late stage presence: {late_stage_presence}")
-    print(f"Boc in final product: {boc_in_final_product}")
-    print(f"Has protection reactions: {has_protection_reactions}")
-    print(f"Multiple depths: {multiple_depths}")
+                if is_final:
+                    # Check if any reactant contains an ester
+                    has_ester = any(checker.check_fg("Ester", r) for r in reactants)
+                    # Check if product contains carboxylic acid
+                    has_acid = checker.check_fg("Carboxylic acid", product)
 
-    # Return True if Boc is introduced early and maintained until late stages
-    if early_protection and late_stage_presence and multiple_depths:
-        print("Boc protection strategy detected: introduced early and maintained until late stages")
-        return True
+                    # Verify this is a hydrolysis reaction
+                    is_hydrolysis = (
+                        checker.check_reaction(
+                            "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+                        )
+                        or checker.check_reaction(
+                            "Ester saponification (methyl deprotection)", rsmi
+                        )
+                        or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
+                    )
 
-    return False
+                    print(
+                        f"Final step check: has_ester={has_ester}, has_acid={has_acid}, is_hydrolysis={is_hydrolysis}"
+                    )
+
+                    if has_ester and has_acid and is_hydrolysis:
+                        print("Found ester hydrolysis as final step")
+                        final_step_is_hydrolysis = True
+                    elif has_ester and has_acid:
+                        # Additional check for ester to acid conversion even if reaction type check failed
+                        print("Found ester to acid conversion, checking manually")
+                        # Look for ester in reactants and corresponding acid in product using atom mapping
+                        from rdkit import Chem
+
+                        for reactant in reactants:
+                            if checker.check_fg("Ester", reactant):
+                                r_mol = Chem.MolFromSmiles(reactant)
+                                p_mol = Chem.MolFromSmiles(product)
+                                if r_mol and p_mol:
+                                    # If we have an ester to acid conversion, it's likely a hydrolysis
+                                    final_step_is_hydrolysis = True
+                                    print("Confirmed ester hydrolysis through manual check")
+                                    break
+            except Exception as e:
+                print(f"Error analyzing reaction: {e}")
+
+        # Continue DFS traversal
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1 if depth is not None else None)
+
+    # First check direct children of the root (final steps)
+    for child in route.get("children", []):
+        dfs_traverse(child, depth=0, is_root_child=True)
+
+    # If no hydrolysis found in direct children, do a full traversal
+    if not final_step_is_hydrolysis:
+        dfs_traverse(route)
+
+    return final_step_is_hydrolysis

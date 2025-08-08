@@ -2,60 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear fragment assembly strategy where fragments
-    are sequentially added rather than converging multiple complex fragments.
+    This function detects a strategy where a flexible ethylene linker is converted
+    to a rigid alkyne, creating conformational constraint in the molecule.
     """
-    reaction_depths = []
+    has_alkyne_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal reaction_depths
+        nonlocal has_alkyne_formation
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Store number of reactants at each depth
-            reaction_depths.append((depth, len(reactants)))
+                # Check for alkyne formation
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    product_mol = Chem.MolFromSmiles(product)
 
-        # Recursively traverse children
+                    if reactant_mol and product_mol:
+                        # Check if product has alkyne but reactant doesn't
+                        alkyne_pattern = Chem.MolFromSmarts("[C]#[C]")
+                        ethyl_pattern = Chem.MolFromSmarts("[CH2][CH2]")
+
+                        if (
+                            product_mol.HasSubstructMatch(alkyne_pattern)
+                            and not reactant_mol.HasSubstructMatch(alkyne_pattern)
+                            and reactant_mol.HasSubstructMatch(ethyl_pattern)
+                        ):
+                            print(f"Found alkyne formation at depth {depth}")
+                            has_alkyne_formation = True
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-
-    # Sort by depth
-    reaction_depths.sort(key=lambda x: x[0])
-
-    # Check if most reactions have 2 reactants (binary reactions)
-    # and if they occur in sequence (linear assembly)
-    binary_reactions = sum(1 for _, num_reactants in reaction_depths if num_reactants == 2)
-
-    # Linear strategy typically has most reactions as binary and in sequence
-    is_linear = binary_reactions >= len(reaction_depths) * 0.7
-
-    if is_linear:
-        print("Found linear fragment assembly strategy")
-
-    return is_linear
+    return has_alkyne_formation

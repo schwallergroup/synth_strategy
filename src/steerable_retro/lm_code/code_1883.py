@@ -2,119 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route contains a Grignard reaction (organometallic addition to carbonyl)
+    Detects if the synthesis involves construction of a morpholine core
+    through a ring-forming reaction.
     """
-    has_grignard = False
+    found_morpholine_formation = False
 
     def dfs_traverse(node):
-        nonlocal has_grignard
+        nonlocal found_morpholine_formation
 
-        if node["type"] == "reaction" and "metadata" in node:
-            # Safely extract reaction SMILES
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for various Grignard reaction types using the checker function
-            grignard_reactions = [
-                "Grignard from aldehyde to alcohol",
-                "Grignard from ketone to alcohol",
-                "Formation of Grignard reagents",
-                "Grignard with CO2 to carboxylic acid",
-                "Olefination of ketones with Grignard reagents",
-                "Olefination of aldehydes with Grignard reagents",
-                "Grignard from nitrile to ketone",
-                "Preparation of trialkylsilanes with Grignard reagents",
-                "Grignard_carbonyl",
-                "Grignard_alcohol",
-            ]
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+            product_mol = Chem.MolFromSmiles(product)
 
-            for reaction_type in grignard_reactions:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Found Grignard reaction: {reaction_type}")
-                    print(f"Reaction SMILES: {rsmi}")
-                    has_grignard = True
-                    return  # Exit early once found
+            # Look for morpholine ring in product
+            morpholine_pattern = Chem.MolFromSmarts("[NX3]1-[CX4]-[CX4]-[OX2]-[CX4]-[CX4]-1")
 
-            # If no direct reaction match, check for characteristic functional groups
-            try:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Check if morpholine is in product but not in all reactants
+            has_morpholine_product = product_mol is not None and product_mol.HasSubstructMatch(
+                morpholine_pattern
+            )
+            all_reactants_have_morpholine = all(
+                mol is not None and mol.HasSubstructMatch(morpholine_pattern)
+                for mol in reactant_mols
+                if mol is not None
+            )
 
-                # Check if any reactant contains a magnesium halide (characteristic of Grignard reagents)
-                has_mg_halide = any(
-                    checker.check_fg("Magnesium halide", reactant) for reactant in reactants
-                )
+            if has_morpholine_product and not all_reactants_have_morpholine:
+                found_morpholine_formation = True
+                print("Found morpholine ring formation step")
 
-                # Check if any reactant contains a carbonyl group that Grignard reagents typically react with
-                has_carbonyl = any(
-                    checker.check_fg("Aldehyde", reactant)
-                    or checker.check_fg("Ketone", reactant)
-                    or checker.check_fg("Ester", reactant)
-                    for reactant in reactants
-                )
-
-                # If we have both a Grignard reagent and a suitable carbonyl, it's likely a Grignard reaction
-                if has_mg_halide and has_carbonyl:
-                    print(f"Found Grignard reaction based on functional groups")
-                    print(f"Reaction SMILES: {rsmi}")
-                    has_grignard = True
-                    return
-            except Exception as e:
-                print(f"Error analyzing reaction components: {e}")
-
-        # Continue DFS traversal
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return has_grignard
+
+    return found_morpholine_formation

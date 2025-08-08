@@ -2,117 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function specifically detects the formation of an imidazopyridine scaffold.
-    Imidazopyridine is a bicyclic heterocycle consisting of imidazole fused to pyridine.
+    This function detects a strategy where a heterocyclic core is built and
+    then modified through multiple steps, maintaining the core structure.
     """
-    imidazopyridine_formation_detected = False
+    heterocycle_depths = []
 
-    def dfs_traverse(node):
-        nonlocal imidazopyridine_formation_detected
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Define patterns for various heterocycles
+                thiophene_pattern = Chem.MolFromSmarts("c1cscc1")
+                pyrimidine_pattern = Chem.MolFromSmarts("c1ncncn1")
 
-            # Check for imidazopyridine in product
-            # Imidazopyridine has both imidazole and pyridine rings fused together
-            product_has_imidazole = checker.check_ring("imidazole", product_smiles)
-            product_has_pyridine = checker.check_ring("pyridine", product_smiles)
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        if product_mol.HasSubstructMatch(
+                            thiophene_pattern
+                        ) or product_mol.HasSubstructMatch(pyrimidine_pattern):
+                            heterocycle_depths.append(depth)
+                            print(f"Heterocyclic core detected at depth {depth}")
+                except:
+                    print("Error processing heterocycle detection")
 
-            if product_has_imidazole and product_has_pyridine:
-                print(f"Product contains imidazole and pyridine rings: {product_smiles}")
-
-                # Check if all reactants have both rings
-                all_reactants_have_both_rings = True
-                for reactant in reactants_smiles:
-                    if not (
-                        checker.check_ring("imidazole", reactant)
-                        and checker.check_ring("pyridine", reactant)
-                    ):
-                        all_reactants_have_both_rings = False
-                        break
-
-                # If not all reactants have both rings, this reaction likely formed the scaffold
-                if not all_reactants_have_both_rings:
-                    print(f"Potential imidazopyridine formation detected in reaction: {rsmi}")
-
-                    # Check for specific reactions known to form imidazopyridines
-                    if (
-                        checker.check_reaction("benzimidazole_derivatives_aldehyde", rsmi)
-                        or checker.check_reaction(
-                            "benzimidazole_derivatives_carboxylic-acid/ester", rsmi
-                        )
-                        or checker.check_reaction("Pictet-Spengler", rsmi)
-                        or checker.check_reaction("imidazole", rsmi)
-                    ):
-                        print(f"Confirmed imidazopyridine-forming reaction type")
-                        imidazopyridine_formation_detected = True
-                    else:
-                        # Additional check: verify that at least one reactant has pyridine
-                        # This helps confirm we're fusing an imidazole to an existing pyridine
-                        reactant_has_pyridine = any(
-                            checker.check_ring("pyridine", r) for r in reactants_smiles
-                        )
-                        if reactant_has_pyridine:
-                            print(
-                                f"Generic imidazopyridine formation detected (pyridine + imidazole fusion)"
-                            )
-                            imidazopyridine_formation_detected = True
-
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-    return imidazopyridine_formation_detected
+
+    # Check if heterocyclic core is maintained through multiple steps
+    if len(heterocycle_depths) >= 3:  # Present in at least 3 steps
+        print("Heterocyclic core building strategy detected")
+        return True
+    return False

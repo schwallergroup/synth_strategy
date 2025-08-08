@@ -2,118 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects heterocyclic ring formation, particularly pyrazole formation
-    via cyclization of a hydrazine derivative.
+    This function detects a synthetic strategy involving nucleophilic aromatic substitution
+    of a chlorine with an amine.
     """
-    ring_formation_found = False
+    snAr_detected = False
 
     def dfs_traverse(node):
-        nonlocal ring_formation_found
+        nonlocal snAr_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            try:
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if this is a pyrazole formation reaction
-                if checker.check_reaction("pyrazole", rsmi):
-                    print(f"Found pyrazole formation reaction: {rsmi}")
-                    ring_formation_found = True
-                    return
+                # Check for chloro-aromatic in reactants
+                chloro_aromatic_pattern = Chem.MolFromSmarts("c[Cl]")
+                chloro_present = False
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(chloro_aromatic_pattern):
+                            chloro_present = True
+                            print("Chloro-aromatic detected in reactants")
+                    except:
+                        continue
 
-                # If not directly identified as pyrazole formation, check for hydrazine cyclization
-                reactants = reactants_str.split(".")
+                # Check for amine reactant
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                amine_present = False
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(amine_pattern):
+                            amine_present = True
+                            print("Amine detected in reactants")
+                    except:
+                        continue
 
-                # Check if any reactant contains hydrazine group
-                hydrazine_present = any(checker.check_fg("Hydrazine", r) for r in reactants)
+                # Check for C-N bond in product
+                cn_bond_pattern = Chem.MolFromSmarts("c[NH]")
+                try:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(cn_bond_pattern):
+                        if chloro_present and amine_present:
+                            snAr_detected = True
+                            print("Nucleophilic aromatic substitution detected")
+                except:
+                    pass
 
-                # Check if product contains pyrazole ring
-                pyrazole_present = checker.check_ring("pyrazole", product_str)
-
-                if hydrazine_present and pyrazole_present:
-                    print(f"Found pyrazole ring formation via hydrazine cyclization: {rsmi}")
-                    ring_formation_found = True
-                    return
-
-                # Check for other heterocyclic ring formations
-                # Check if product contains a heterocyclic ring that wasn't in any reactant
-                heterocyclic_rings = [
-                    "pyrazole",
-                    "imidazole",
-                    "oxazole",
-                    "thiazole",
-                    "triazole",
-                    "tetrazole",
-                ]
-
-                for ring in heterocyclic_rings:
-                    if checker.check_ring(ring, product_str):
-                        # Check if the ring was present in any reactant
-                        ring_in_reactants = any(checker.check_ring(ring, r) for r in reactants)
-
-                        if not ring_in_reactants:
-                            print(f"Found {ring} ring formation: {rsmi}")
-                            ring_formation_found = True
-                            return
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    return ring_formation_found
+    return snAr_detected

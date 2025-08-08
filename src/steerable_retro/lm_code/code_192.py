@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,103 +54,81 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy involving multiple ester hydrolysis steps
-    in the same synthetic route.
+    Detects if an indazole core is maintained throughout the synthesis.
+
+    This function checks if once an indazole core appears in the synthesis route,
+    it is maintained in all subsequent steps toward the final product.
     """
-    # Initialize tracking variables
-    ester_hydrolysis_steps = []
+    # Check if the target molecule contains indazole
+    if route["type"] == "mol" and "smiles" in route:
+        target_has_indazole = checker.check_ring("indazole", route["smiles"])
+        if not target_has_indazole:
+            print(f"Target molecule does not contain indazole: {route['smiles']}")
+            return False
+        print(f"Target molecule contains indazole: {route['smiles']}")
+    else:
+        print("Route does not start with a molecule node")
+        return False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal ester_hydrolysis_steps
+    # Track the synthetic pathway
+    def check_pathway(node, indazole_required=True):
+        # For molecule nodes
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            has_indazole = checker.check_ring("indazole", mol_smiles)
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+            # If this is a starting material
+            if node.get("in_stock", False):
+                # Starting materials don't need to have indazole
+                print(f"Starting material: {mol_smiles}, has indazole: {has_indazole}")
+                return True
 
-                try:
-                    # Split reaction SMILES to get reactants and products
-                    parts = rsmi.split(">")
-                    reactants = parts[0].split(".")
-                    products = parts[2].split(".")
+            # If indazole is required but not present
+            if indazole_required and not has_indazole:
+                print(f"Indazole core not maintained in: {mol_smiles}")
+                return False
 
-                    # Check for ester hydrolysis using multiple reaction checks
-                    is_ester_hydrolysis = False
+            # If no children, this is a leaf node (starting material)
+            if not node.get("children", []):
+                return True
 
-                    # Check for specific reaction types
-                    if (
-                        checker.check_reaction(
-                            "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Ester saponification (methyl deprotection)", rsmi
-                        )
-                        or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
-                        or checker.check_reaction("COOH ethyl deprotection", rsmi)
-                    ):
+            # Check all children (reactions)
+            for child in node.get("children", []):
+                if not check_pathway(child, has_indazole):
+                    return False
+            return True
 
-                        # Verify functional group transformation: ester/thioester → carboxylic acid
-                        has_ester_reactant = any(
-                            checker.check_fg("Ester", reactant) for reactant in reactants
-                        )
-                        has_thioester_reactant = any(
-                            checker.check_fg("Carbo-thioester", reactant) for reactant in reactants
-                        )
-                        has_carboxylic_product = any(
-                            checker.check_fg("Carboxylic acid", product) for product in products
-                        )
+        # For reaction nodes
+        elif node["type"] == "reaction":
+            # Get reaction SMILES if available
+            rxn_smiles = node.get("metadata", {}).get("rsmi", "")
+            print(f"Checking reaction: {rxn_smiles}")
 
-                        if (
-                            has_ester_reactant or has_thioester_reactant
-                        ) and has_carboxylic_product:
-                            is_ester_hydrolysis = True
-                            print(f"Detected ester hydrolysis at depth {depth}, reaction: {rsmi}")
-                            print(f"  - Ester in reactants: {has_ester_reactant}")
-                            print(f"  - Thioester in reactants: {has_thioester_reactant}")
-                            print(f"  - Carboxylic acid in products: {has_carboxylic_product}")
-                            ester_hydrolysis_steps.append(depth)
-                        else:
-                            print(
-                                f"Reaction matches ester hydrolysis pattern but FG check failed at depth {depth}"
-                            )
-                            print(f"  - Ester in reactants: {has_ester_reactant}")
-                            print(f"  - Thioester in reactants: {has_thioester_reactant}")
-                            print(f"  - Carboxylic acid in products: {has_carboxylic_product}")
+            # For each reactant (child molecule), at least one should maintain indazole if required
+            reactants_with_indazole = 0
+            total_reactants = 0
 
-                    # Additional check for other potential ester hydrolysis reactions
-                    elif any(
-                        "hydrolysis" in rxn_type.lower()
-                        for rxn_type in ["Hydrolysis of amides/imides/carbamates"]
-                    ):
-                        # Check if this might be an ester hydrolysis not captured by the standard reaction types
-                        has_ester_reactant = any(
-                            checker.check_fg("Ester", reactant) for reactant in reactants
-                        )
-                        has_carboxylic_product = any(
-                            checker.check_fg("Carboxylic acid", product) for product in products
-                        )
+            for child in node.get("children", []):
+                if child["type"] == "mol":
+                    total_reactants += 1
+                    if checker.check_ring("indazole", child["smiles"]):
+                        reactants_with_indazole += 1
+                        # Continue checking this branch
+                        if not check_pathway(child, True):
+                            return False
+                    else:
+                        # This reactant doesn't have indazole, but that's okay if it's not the main one
+                        if not check_pathway(child, False):
+                            return False
 
-                        if has_ester_reactant and has_carboxylic_product:
-                            is_ester_hydrolysis = True
-                            print(
-                                f"Detected alternative ester hydrolysis at depth {depth}, reaction: {rsmi}"
-                            )
-                            ester_hydrolysis_steps.append(depth)
+            # If indazole is required in this reaction, at least one reactant should have it
+            if indazole_required and reactants_with_indazole == 0 and total_reactants > 0:
+                print(f"No reactants contain indazole in reaction: {rxn_smiles}")
+                return False
 
-                except Exception as e:
-                    print(f"Error processing reaction SMILES: {e}")
+            return True
 
-        # Process children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+        return True
 
-    # Start traversal
-    dfs_traverse(route)
-
-    # Determine if the strategy is present (at least 2 ester hydrolysis steps)
-    strategy_present = len(ester_hydrolysis_steps) >= 2
-
-    print(
-        f"Detected {len(ester_hydrolysis_steps)} ester hydrolysis steps at depths: {ester_hydrolysis_steps}"
-    )
-
-    return strategy_present
+    # Start checking from the root
+    return check_pathway(route, True)

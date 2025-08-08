@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,96 +54,178 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthetic route involves late-stage sulfonamide formation.
-    Looks for sulfonamide formation in the second half of the synthesis.
+    Detects a strategy involving a nitrile intermediate formed from an amine.
     """
-    max_depth = 0
-    sulfonamide_depth = None
+    has_nitrile = False
+    has_amine_to_nitrile = False
 
-    # First pass to find max depth
-    def find_max_depth(node, current_depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, current_depth)
+    def dfs_traverse(node, depth=0):
+        nonlocal has_nitrile, has_amine_to_nitrile
 
+        if node["type"] == "mol":
+            # Check if molecule contains nitrile
+            if checker.check_fg("Nitrile", node["smiles"]):
+                has_nitrile = True
+                print(f"Found nitrile in molecule at depth {depth}: {node['smiles']}")
+
+        elif node["type"] == "reaction":
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
+
+                # Check for nitrile in product
+                product_has_nitrile = checker.check_fg("Nitrile", product_smiles)
+                if product_has_nitrile:
+                    has_nitrile = True
+                    print(f"Found nitrile in product at depth {depth}: {product_smiles}")
+
+                # Check for amine in reactants
+                reactant_has_amine = False
+                for reactant in reactants_smiles:
+                    if (
+                        checker.check_fg("Primary amine", reactant)
+                        or checker.check_fg("Secondary amine", reactant)
+                        or checker.check_fg("Tertiary amine", reactant)
+                    ):
+                        reactant_has_amine = True
+                        print(f"Found amine in reactant at depth {depth}: {reactant}")
+                        break
+
+                # Check for nitrile in reactants
+                reactant_has_nitrile = False
+                for reactant in reactants_smiles:
+                    if checker.check_fg("Nitrile", reactant):
+                        reactant_has_nitrile = True
+                        print(f"Found nitrile in reactant at depth {depth}: {reactant}")
+                        break
+
+                # Check for amide in reactants (potential nitrile precursor)
+                reactant_has_amide = False
+                for reactant in reactants_smiles:
+                    if checker.check_fg("Primary amide", reactant) or checker.check_fg(
+                        "Secondary amide", reactant
+                    ):
+                        reactant_has_amide = True
+                        print(f"Found amide in reactant at depth {depth}: {reactant}")
+                        break
+
+                # In retrosynthesis, we're looking for reactions where nitrile is in the product
+                # and amine or amide is in the reactants (which means amine/amide to nitrile in forward direction)
+                if (
+                    product_has_nitrile
+                    and (reactant_has_amine or reactant_has_amide)
+                    and not reactant_has_nitrile
+                ):
+                    print(f"Potential amine/amide to nitrile transformation at depth {depth}")
+                    has_amine_to_nitrile = True
+
+                # Check for direct amine to nitrile conversion
+                if reactant_has_amine and product_has_nitrile and not reactant_has_nitrile:
+                    print(f"Direct amine to nitrile transformation detected at depth {depth}")
+                    has_amine_to_nitrile = True
+
+                # Check for nitrile-related reactions
+                if product_has_nitrile or reactant_has_nitrile:
+                    # Check common reactions involving nitriles
+                    if any(
+                        [
+                            checker.check_reaction("Oxidation of nitrile to carboxylic acid", rsmi),
+                            checker.check_reaction("Reduction of nitrile to amine", rsmi),
+                            checker.check_reaction("Nitrile to amide", rsmi),
+                            checker.check_reaction("Grignard from nitrile to ketone", rsmi),
+                        ]
+                    ):
+                        print(f"Found nitrile-related reaction at depth {depth}")
+                        has_nitrile = True
+
+                # Check for alkene-nitrile addition reactions
+                if product_has_nitrile:
+                    for reactant in reactants_smiles:
+                        if checker.check_fg("Alkene", reactant):
+                            print(f"Potential alkene to nitrile transformation at depth {depth}")
+                            has_amine_to_nitrile = True
+                            break
+
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
+
+        # Traverse children
         for child in node.get("children", []):
-            find_max_depth(child, current_depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    # Second pass to find sulfonamide formation
-    def find_sulfonamide(node, depth=0):
-        nonlocal sulfonamide_depth
+    # Start traversal
+    dfs_traverse(route)
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_str = rsmi.split(">")[0]
-            product_str = rsmi.split(">")[-1]
+    # Check for Michael addition with nitrile acceptors
+    def check_michael_nitrile(node):
+        if node["type"] == "reaction":
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                if (
+                    checker.check_reaction("Michael addition", rsmi)
+                    or checker.check_reaction("aza-Michael addition primary", rsmi)
+                    or checker.check_reaction("aza-Michael addition secondary", rsmi)
+                    or checker.check_reaction("aza-Michael addition aromatic", rsmi)
+                    or checker.check_reaction("thia-Michael addition", rsmi)
+                    or checker.check_reaction("oxa-Michael addition", rsmi)
+                ):
 
-            print(f"Checking reaction at depth {depth}: {rsmi}")
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    for reactant in reactants_smiles:
+                        if checker.check_fg("Nitrile", reactant) and checker.check_fg(
+                            "Alkene", reactant
+                        ):
+                            print(f"Found Michael addition with nitrile acceptor: {rsmi}")
+                            return True
 
-            # Check if reactants contain sulfonyl halide
-            reactants = reactants_str.split(".")
-            has_sulfonyl_halide = any(checker.check_fg("Sulfonyl halide", r) for r in reactants)
-            print(f"  Has sulfonyl halide in reactants: {has_sulfonyl_halide}")
+                    # Also check for acrylonitrile which is a common Michael acceptor
+                    for reactant in reactants_smiles:
+                        if "C=CC#N" in reactant:
+                            print(f"Found Michael addition with acrylonitrile: {rsmi}")
+                            return True
+            except Exception as e:
+                print(f"Error checking Michael addition: {e}")
 
-            # Check if product has sulfonamide pattern
-            has_sulfonamide = checker.check_fg("Sulfonamide", product_str)
-            print(f"  Has sulfonamide in product: {has_sulfonamide}")
-
-            # Check if reactants do NOT have sulfonamide (to ensure it's being formed)
-            no_sulfonamide_in_reactants = not any(
-                checker.check_fg("Sulfonamide", r) for r in reactants
-            )
-            print(f"  No sulfonamide in reactants: {no_sulfonamide_in_reactants}")
-
-            # Check if this is a sulfonamide formation reaction
-            is_sulfonamide_reaction = (
-                checker.check_reaction(
-                    "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
-                )
-                or checker.check_reaction(
-                    "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
-                )
-                or checker.check_reaction("Schotten-Baumann to ester", rsmi)  # Sometimes mislabeled
-            )
-            print(f"  Is recognized sulfonamide reaction: {is_sulfonamide_reaction}")
-
-            # Alternative check: look for sulfonyl halide + amine reaction pattern
-            has_amine = any(
-                checker.check_fg("Primary amine", r)
-                or checker.check_fg("Secondary amine", r)
-                or checker.check_fg("Aniline", r)
-                for r in reactants
-            )
-            print(f"  Has amine in reactants: {has_amine}")
-
-            # Determine if this is a sulfonamide formation
-            is_forming_sulfonamide = (
-                has_sulfonamide
-                and has_sulfonyl_halide
-                and has_amine
-                and no_sulfonamide_in_reactants
-                and (is_sulfonamide_reaction or (has_sulfonyl_halide and has_amine))
-            )
-
-            if is_forming_sulfonamide:
-                print(f"Detected sulfonamide formation at depth {depth}")
-                # Track the earliest (lowest depth) sulfonamide formation
-                if sulfonamide_depth is None or depth < sulfonamide_depth:
-                    sulfonamide_depth = depth
-
+        # Check children
         for child in node.get("children", []):
-            find_sulfonamide(child, depth + 1)
+            if check_michael_nitrile(child):
+                return True
 
-    find_max_depth(route)
-    print(f"Maximum synthesis depth: {max_depth}")
-    find_sulfonamide(route)
+        return False
 
-    # Check if sulfonamide formation occurs in second half of synthesis
-    if sulfonamide_depth is not None:
-        is_late_stage = sulfonamide_depth <= (max_depth // 2)
-        print(f"Sulfonamide formation at depth {sulfonamide_depth} of max depth {max_depth}")
-        print(f"Is late stage: {is_late_stage}")
-        return is_late_stage
+    # Additional check for Michael addition with nitrile acceptors
+    michael_nitrile = check_michael_nitrile(route)
+
+    # Check for acrylonitrile in the route
+    def check_acrylonitrile(node):
+        if node["type"] == "mol":
+            if "C=CC#N" in node["smiles"]:
+                print(f"Found acrylonitrile: {node['smiles']}")
+                return True
+
+        # Check children
+        for child in node.get("children", []):
+            if check_acrylonitrile(child):
+                return True
+
+        return False
+
+    # If we find acrylonitrile, it's a strong indicator of nitrile intermediate strategy
+    acrylonitrile_present = check_acrylonitrile(route)
+    if acrylonitrile_present:
+        has_amine_to_nitrile = True
+
+    strategy_present = has_nitrile and (
+        has_amine_to_nitrile or michael_nitrile or acrylonitrile_present
+    )
+
+    if strategy_present:
+        print("Detected nitrile intermediate strategy")
     else:
-        print("No sulfonamide formation detected in the route")
+        if has_nitrile:
+            print("Found nitrile but no amine-to-nitrile transformation")
+        else:
+            print("No nitrile found in the route")
 
-    return False
+    return strategy_present

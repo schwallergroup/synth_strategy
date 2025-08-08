@@ -2,92 +2,89 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
-    """
-    Detects if the synthesis uses a methyl ester as a protecting group for a carboxylic acid,
-    which is later hydrolyzed.
-    """
-    # Track if we found relevant transformations
-    found_ester_hydrolysis = False
-
-    def is_methyl_ester_hydrolysis(reaction_smiles):
-        """Check if a reaction is a methyl ester hydrolysis"""
-        # Split reaction into reactants and products
-        parts = reaction_smiles.split(">")
-        if len(parts) != 3:
-            return False
-
-        reactants = parts[0].split(".")
-        product = parts[2]
-
-        # Check for methyl ester in reactants
-        has_methyl_ester = False
-        for reactant in reactants:
-            try:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[C]-[O]-[C](=[O])-[c]")):
-                    has_methyl_ester = True
-                    break
-            except:
-                continue
-
-        # Check for carboxylic acid in product
-        try:
-            prod_mol = Chem.MolFromSmiles(product)
-            has_carboxylic_acid = prod_mol and prod_mol.HasSubstructMatch(
-                Chem.MolFromSmarts("[O]-[C](=[O])-[c]")
-            )
-
-            # If reactant has methyl ester and product has carboxylic acid, likely an ester hydrolysis
-            if has_methyl_ester and has_carboxylic_acid:
-                return True
-        except:
-            pass
-
+    """Check if the final product contains a piperazine sulfonamide scaffold"""
+    if route["type"] != "mol":
         return False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_ester_hydrolysis
+    # Check if the final product contains both piperazine and sulfonamide
+    final_product_smiles = route["smiles"]
+    has_piperazine = checker.check_ring("piperazine", final_product_smiles)
 
-        if node["type"] == "reaction":
-            # Get reaction SMILES
-            if "rsmi" in node.get("metadata", {}):
-                reaction_smiles = node["metadata"]["rsmi"]
+    # Expanded check for sulfonamide-like groups
+    has_sulfonamide = (
+        checker.check_fg("Sulfonamide", final_product_smiles)
+        or checker.check_fg("Sulfonate", final_product_smiles)
+        or checker.check_fg("Sulfone", final_product_smiles)
+        or "S(=O)(=O)" in final_product_smiles
+    )
 
-                # Check if this is a methyl ester hydrolysis
-                if is_methyl_ester_hydrolysis(reaction_smiles):
-                    found_ester_hydrolysis = True
-                    print(f"Found methyl ester hydrolysis at depth {depth}")
+    # Check if there's a connection between piperazine and sulfonamide
+    # This is a simplified check - in a real implementation, you'd want to use
+    # RDKit to verify the actual connection between these groups
+    has_connection = "S(=O)(=O)N" in final_product_smiles or "NS(=O)(=O)" in final_product_smiles
 
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+    result = has_piperazine and (has_sulfonamide or has_connection)
+    print(
+        f"Final product has piperazine: {has_piperazine}, sulfonamide or related group: {has_sulfonamide or has_connection}"
+    )
 
-    # Start traversal
-    dfs_traverse(route)
+    # If we have piperazine but not detecting sulfonamide, print the SMILES for debugging
+    if has_piperazine and not (has_sulfonamide or has_connection):
+        print(f"Piperazine detected but no sulfonamide in: {final_product_smiles}")
 
-    # Check if we found methyl ester hydrolysis
-    if found_ester_hydrolysis:
-        print("Detected methyl ester protecting group strategy")
-        return True
+        # Try to find any sulfur-containing groups
+        if "S" in final_product_smiles:
+            print(f"Product contains sulfur atoms but not recognized as sulfonamide")
 
-    return False
+    return result

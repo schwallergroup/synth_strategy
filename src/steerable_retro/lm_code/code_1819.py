@@ -2,57 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear pattern (no convergent steps).
-
-    A linear synthesis has no convergent steps, meaning each reaction has at most
-    one non-stock (synthesized) reactant. In the retrosynthetic tree, this means
-    each reaction node has at most one child that is a non-stock molecule.
+    This function detects if the synthetic route follows a linear synthesis pattern
+    with a late-stage coupling of two major fragments.
     """
-    is_linear = True
+    late_coupling_found = False
 
-    def dfs_traverse(node):
-        nonlocal is_linear
+    def dfs_traverse(node, depth=0):
+        nonlocal late_coupling_found
 
-        if node["type"] == "reaction":
-            # Count non-stock molecule children
-            non_stock_children = 0
+        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    non_stock_children += 1
+            # Check if we have multiple complex reactants (indicating fragment coupling)
+            complex_reactants = 0
+            for r_smiles in reactants_smiles:
+                r = Chem.MolFromSmiles(r_smiles)
+                if r and r.GetNumAtoms() > 5:  # Consider reactants with >5 atoms as complex
+                    complex_reactants += 1
 
-            # If more than one non-stock child, it's a convergent synthesis
-            if non_stock_children > 1:
-                is_linear = False
-                print(f"Found convergent step with {non_stock_children} non-stock reactants")
+            if complex_reactants >= 2:
+                late_coupling_found = True
+                print(
+                    f"Late-stage coupling of multiple complex fragments detected at depth {depth}"
+                )
 
-        # Continue traversal if still potentially linear
-        if is_linear:
-            for child in node.get("children", []):
-                dfs_traverse(child)
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    return is_linear
+    print(f"Linear synthesis with late-stage coupling detected: {late_coupling_found}")
+    return late_coupling_found

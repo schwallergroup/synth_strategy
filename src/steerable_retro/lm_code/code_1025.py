@@ -2,109 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a three-step sequence involving:
-    1. Introduction of sulfur via nucleophilic substitution
-    2. Oxidation to sulfoxide
-    3. Further oxidation to sulfone
+    Detects nitro reduction to amine as a key functional group transformation.
     """
-    # Initialize tracking variables
-    reactions_sequence = []
+    nitro_reduction_found = False
 
-    # SMARTS patterns
-    thioether_pattern = Chem.MolFromSmarts("[#6]-[#16]-[#6]")
-    sulfoxide_pattern = Chem.MolFromSmarts("[#6]-[#16](=[#8])-[#6]")
-    sulfone_pattern = Chem.MolFromSmarts("[#6]-[#16](=[#8])(=[#8])-[#6]")
+    def dfs_traverse(node):
+        nonlocal nitro_reduction_found
 
-    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            try:
-                # Convert to RDKit molecules
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            # Check for nitro group in reactants
+            nitro_in_reactants = False
+            for r in reactants_smiles:
+                r_mol = Chem.MolFromSmiles(r)
+                if r_mol:
+                    nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
+                    if r_mol.HasSubstructMatch(nitro_pattern):
+                        nitro_in_reactants = True
+                        break
+
+            # Check for amine in product where nitro was
+            if nitro_in_reactants:
                 product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol:
+                    amine_pattern = Chem.MolFromSmarts("[#7;!$(N~[!#6]);!$(N~[#6]=[#8])]")
+                    if product_mol.HasSubstructMatch(amine_pattern):
+                        # Check that nitro is gone in product
+                        nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
+                        if not product_mol.HasSubstructMatch(nitro_pattern):
+                            nitro_reduction_found = True
+                            print(f"Found nitro reduction: {rsmi}")
 
-                # Determine reaction type
-                reaction_type = None
-
-                # Check for C-S bond formation (thioether formation)
-                if product_mol.HasSubstructMatch(thioether_pattern) and not any(
-                    mol.HasSubstructMatch(thioether_pattern) for mol in reactant_mols
-                ):
-                    reaction_type = "thioether_formation"
-
-                # Check for thioether to sulfoxide oxidation
-                elif (
-                    any(mol.HasSubstructMatch(thioether_pattern) for mol in reactant_mols)
-                    and product_mol.HasSubstructMatch(sulfoxide_pattern)
-                    and not any(mol.HasSubstructMatch(sulfoxide_pattern) for mol in reactant_mols)
-                ):
-                    reaction_type = "sulfoxide_formation"
-
-                # Check for sulfoxide to sulfone oxidation
-                elif (
-                    any(mol.HasSubstructMatch(sulfoxide_pattern) for mol in reactant_mols)
-                    and product_mol.HasSubstructMatch(sulfone_pattern)
-                    and not any(mol.HasSubstructMatch(sulfone_pattern) for mol in reactant_mols)
-                ):
-                    reaction_type = "sulfone_formation"
-
-                if reaction_type:
-                    reactions_sequence.append((depth, reaction_type))
-                    print(f"Detected {reaction_type} at depth {depth}")
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Sort reactions by depth (to get chronological order in synthesis direction)
-    reactions_sequence.sort(key=lambda x: x[0], reverse=True)
-
-    # Extract just the reaction types in sequence
-    reaction_types = [r[1] for r in reactions_sequence]
-
-    # Check if we have the complete sequence in the correct order
-    target_sequence = ["thioether_formation", "sulfoxide_formation", "sulfone_formation"]
-
-    # Check if target_sequence is a subsequence of reaction_types
-    is_subsequence = False
-    if len(reaction_types) >= len(target_sequence):
-        for i in range(len(reaction_types) - len(target_sequence) + 1):
-            if reaction_types[i : i + len(target_sequence)] == target_sequence:
-                is_subsequence = True
-                break
-
-    print(f"Three-step sulfur oxidation sequence detected: {is_subsequence}")
-    print(f"Reaction sequence: {reaction_types}")
-
-    return is_subsequence
+    return nitro_reduction_found

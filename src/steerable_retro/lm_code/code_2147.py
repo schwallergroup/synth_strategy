@@ -2,70 +2,51 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the strategy of forming an oxadiazole heterocycle.
+    Detects if the synthesis involves a biaryl ether motif as a key structural element.
     """
-    oxadiazole_formed = False
+    biaryl_ether_detected = False
 
-    def dfs_traverse(node):
-        nonlocal oxadiazole_formed
+    def dfs_traverse(node, depth=0):
+        nonlocal biaryl_ether_detected
 
-        if node["type"] == "reaction":
-            # Check if this is a reaction node with metadata
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            # Check for biaryl ether pattern
+            biaryl_ether_pattern = Chem.MolFromSmarts("[c][OX2][c]")
+            mol = Chem.MolFromSmiles(node["smiles"])
 
-                # Check for acid chloride or similar in reactants
-                acid_chloride_pattern = Chem.MolFromSmarts("[#6](=[O])[#17]")
-                has_acid_chloride = False
+            if mol and mol.HasSubstructMatch(biaryl_ether_pattern):
+                print(f"Biaryl ether motif detected at depth {depth}")
+                biaryl_ether_detected = True
 
-                for reactant in reactants:
-                    if reactant:
-                        try:
-                            mol = Chem.MolFromSmiles(reactant)
-                            if mol and mol.HasSubstructMatch(acid_chloride_pattern):
-                                has_acid_chloride = True
-                                break
-                        except:
-                            continue
-
-                # Check for oxadiazole in product
-                if has_acid_chloride:
-                    oxadiazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#7][#6][#8]1")
-                    try:
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol and product_mol.HasSubstructMatch(oxadiazole_pattern):
-                            print("Detected oxadiazole formation")
-                            oxadiazole_formed = True
-                    except:
-                        pass
-
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-    return oxadiazole_formed
+    return biaryl_ether_detected

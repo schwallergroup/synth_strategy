@@ -2,55 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving azide reduction to amine.
-    It looks for a reaction where an azide group is converted to an amine.
+    Detects a synthetic strategy involving installation of a tosylate or mesylate leaving group.
     """
-    azide_to_amine_found = False
+    leaving_group_installation_detected = False
 
     def dfs_traverse(node):
-        nonlocal azide_to_amine_found
+        nonlocal leaving_group_installation_detected
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for azide in reactants
-                azide_pattern = Chem.MolFromSmarts("[N-]=[N+]=N")
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(azide_pattern):
-                        # Check for amine in product
-                        amine_pattern = Chem.MolFromSmarts("[NH2]C")
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol and product_mol.HasSubstructMatch(amine_pattern):
-                            print("Found azide to amine conversion")
-                            azide_to_amine_found = True
+            # Check for tosylation/mesylation pattern
+            alcohol_pattern = Chem.MolFromSmarts("[OH]C")
+            tosylate_pattern = Chem.MolFromSmarts("OS(=O)(=O)C")
+
+            # Check if reactants contain alcohol and product contains tosylate
+            reactant_has_alcohol = False
+            for reactant in reactants:
+                if Chem.MolFromSmiles(reactant) and Chem.MolFromSmiles(reactant).HasSubstructMatch(
+                    alcohol_pattern
+                ):
+                    reactant_has_alcohol = True
+                    break
+
+            product_has_tosylate = False
+            if (
+                product
+                and Chem.MolFromSmiles(product)
+                and Chem.MolFromSmiles(product).HasSubstructMatch(tosylate_pattern)
+            ):
+                product_has_tosylate = True
+
+            if reactant_has_alcohol and product_has_tosylate:
+                leaving_group_installation_detected = True
+                print("Leaving group installation detected")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return azide_to_amine_found
+    return leaving_group_installation_detected

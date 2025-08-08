@@ -2,69 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects routes with multiple amide coupling reactions.
+    Detects a strategy involving sulfonyl chloride activation through
+    perfluorophenyl sulfonate to form a sulfonamide.
     """
-    amide_coupling_count = 0
+    # Track if we find each step in the sequence
+    found_sulfonyl_chloride = False
+    found_perfluorophenyl_sulfonate = False
+    found_sulfonamide = False
+
+    # SMARTS patterns
+    sulfonyl_chloride_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])[Cl]")
+    perfluorophenyl_sulfonate_pattern = Chem.MolFromSmarts(
+        "[#16](=[#8])(=[#8])[#8][c]1[c]([F])[c]([F])[c]([F])[c]([F])[c]1[F]"
+    )
+    sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])[#7]")
 
     def dfs_traverse(node):
-        nonlocal amide_coupling_count
+        nonlocal found_sulfonyl_chloride, found_perfluorophenyl_sulfonate, found_sulfonamide
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
-
-            # Check for amide coupling: look for amine in reactants and amide in product
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
-
-            amine_pattern = Chem.MolFromSmarts("[NH2]")
-            carboxylic_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
-            acyl_chloride_pattern = Chem.MolFromSmarts("[C](=O)[Cl]")
-            amide_pattern = Chem.MolFromSmarts("[C](=O)[NH]")
-
-            # Check if any reactant has amine
-            has_amine = any(
-                mol.HasSubstructMatch(amine_pattern) for mol in reactants if mol is not None
-            )
-            # Check if any reactant has carboxylic acid or acyl chloride
-            has_carboxylic = any(
-                mol.HasSubstructMatch(carboxylic_pattern) for mol in reactants if mol is not None
-            )
-            has_acyl_chloride = any(
-                mol.HasSubstructMatch(acyl_chloride_pattern) for mol in reactants if mol is not None
-            )
-            # Check if product has amide
-            has_amide_product = (
-                product.HasSubstructMatch(amide_pattern) if product is not None else False
-            )
-
-            # If reactants have amine and (carboxylic acid or acyl chloride) and product has amide, it's likely an amide coupling
-            if has_amine and (has_carboxylic or has_acyl_chloride) and has_amide_product:
-                amide_coupling_count += 1
-                print(f"Detected amide coupling at depth {node.get('depth', 'unknown')}")
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for each functional group
+                if mol.HasSubstructMatch(sulfonyl_chloride_pattern):
+                    found_sulfonyl_chloride = True
+                if mol.HasSubstructMatch(perfluorophenyl_sulfonate_pattern):
+                    found_perfluorophenyl_sulfonate = True
+                if mol.HasSubstructMatch(sulfonamide_pattern):
+                    found_sulfonamide = True
 
         # Traverse children
         for child in node.get("children", []):
@@ -73,5 +63,12 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if multiple amide couplings are detected
-    return amide_coupling_count >= 2
+    # Check if we found the complete sequence
+    result = found_sulfonyl_chloride and found_perfluorophenyl_sulfonate and found_sulfonamide
+
+    print(f"Sulfonyl activation strategy detected: {result}")
+    print(f"  - Found sulfonyl chloride: {found_sulfonyl_chloride}")
+    print(f"  - Found perfluorophenyl sulfonate: {found_perfluorophenyl_sulfonate}")
+    print(f"  - Found sulfonamide: {found_sulfonamide}")
+
+    return result

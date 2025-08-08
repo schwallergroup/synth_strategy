@@ -2,78 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route contains multiple amide bond formations at different steps.
+    This function detects if the synthetic route involves building nitrogen-rich
+    heterocyclic scaffolds (containing 3+ nitrogen atoms).
     """
-    amide_formation_depths = []
+    nitrogen_rich_detected = False
 
-    def dfs_traverse(node):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            depth = node["metadata"].get("depth", -1)
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal nitrogen_rich_detected
 
-            # Check for acyl chloride or carboxylic acid in reactants
-            acyl_pattern = Chem.MolFromSmarts("[C](=[O])[Cl,OH]")
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            # Count nitrogen atoms in the molecule
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Count nitrogen atoms
+                nitrogen_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 7)
 
-            # Check for amine in reactants
-            amine_pattern = Chem.MolFromSmarts("[N;H1,H2]")
+                # Check for heterocycles
+                ring_info = mol.GetRingInfo()
+                has_nitrogen_ring = False
 
-            # Check for amide in product
-            amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+                for ring in ring_info.AtomRings():
+                    ring_atoms = [mol.GetAtomWithIdx(idx) for idx in ring]
+                    if any(atom.GetAtomicNum() == 7 for atom in ring_atoms):
+                        has_nitrogen_ring = True
+                        break
 
-            has_acyl = False
-            has_amine = False
+                if nitrogen_count >= 3 and has_nitrogen_ring:
+                    print(f"Detected nitrogen-rich heterocycle at depth {depth}")
+                    nitrogen_rich_detected = True
 
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol:
-                    if mol.HasSubstructMatch(acyl_pattern):
-                        has_acyl = True
-                    if mol.HasSubstructMatch(amine_pattern):
-                        has_amine = True
-
-            product_mol = Chem.MolFromSmiles(product)
-
-            if (
-                has_acyl
-                and has_amine
-                and product_mol
-                and product_mol.HasSubstructMatch(amide_pattern)
-            ):
-                print(f"Found amide formation at depth {depth}")
-                amide_formation_depths.append(depth)
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have at least 2 amide formations at different depths
-    if len(amide_formation_depths) >= 2:
-        print(f"Found sequential amide formations at depths: {amide_formation_depths}")
-        return True
-    return False
+    if nitrogen_rich_detected:
+        print("Nitrogen-rich heterocycle strategy detected")
+    return nitrogen_rich_detected

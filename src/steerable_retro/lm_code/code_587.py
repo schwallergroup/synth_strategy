@@ -2,62 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy where a fluorophenyl group is introduced in the late stage of synthesis
-    via a coupling reaction.
+    This function detects if the synthesis involves heterocycle formation as a key strategy.
+    It combines the detection of heterocycle formation with the overall linear synthesis approach.
     """
-    fluorophenyl_introduction = None
+    # Track synthesis stages and chemical transformations
+    synthesis_data = {
+        "heterocycle_formation": False,
+        "heterocycle_formation_depth": float("inf"),
+        "heterocycle_type": None,
+        "max_depth": 0,
+        "linear_structure": True,
+        "oxime_reduction": False,
+        "oxime_reduction_depth": float("inf"),
+        "halide_to_alcohol": False,
+        "halide_to_alcohol_depth": float("inf"),
+        "other_fg_transformation": False,
+        "other_fg_transformation_depth": float("inf"),
+        "branching_factor": [],
+    }
 
-    def dfs_traverse(node):
-        nonlocal fluorophenyl_introduction
+    # Traverse the synthesis route to analyze its structure and transformations
+    dfs_traverse(route, 0, synthesis_data)
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                reaction_smiles = node["metadata"]["rsmi"]
-                depth = node.get("depth", 0)
+    # Check if heterocycle formation occurred in the middle of synthesis
+    has_heterocycle_formation = heterocycle_formation_mid_synthesis(synthesis_data)
 
-                # Check if this is a late stage reaction (depth close to 0)
-                if depth <= 1:  # Considering depth 0 or 1 as late stage
-                    reactants = reaction_smiles.split(">")[0].split(".")
+    # Check if synthesis follows a linear approach
+    has_linear_strategy = linear_synthesis_strategy(synthesis_data)
 
-                    # Look for fluorophenyl pattern in reactants
-                    fluorophenyl_pattern = re.compile(r"[cC]1\([F]\)[cC][cC][cC][cC][cC]1")
-                    for reactant in reactants:
-                        if "OB(O)" in reactant and "F" in reactant:
-                            # Check if it's a boronic acid with fluorine
-                            fluorophenyl_introduction = depth
-                            print(f"Found late-stage fluorophenyl introduction at depth {depth}")
-                            break
+    # Check for specific functional group transformations at appropriate stages
+    has_fg_transformation = (
+        oxime_reduction_late_stage(synthesis_data)
+        or halide_to_alcohol_early_stage(synthesis_data)
+        or other_fg_transformation_detected(synthesis_data)
+    )
 
-        for child in node.get("children", []):
-            dfs_traverse(child)
+    # The strategy is present if we have heterocycle formation in a linear synthesis with FG transformations
+    strategy_present = has_heterocycle_formation and has_linear_strategy and has_fg_transformation
 
-    # Start traversal
-    dfs_traverse(route)
+    if strategy_present:
+        print(
+            f"Detected heterocycle formation strategy ({synthesis_data['heterocycle_type']}) with functional group transformations"
+        )
+    else:
+        print(f"Missing conditions for heterocycle formation strategy:")
+        print(f"  - Heterocycle formation: {has_heterocycle_formation}")
+        print(f"  - Linear synthesis: {has_linear_strategy}")
+        print(f"  - FG transformation: {has_fg_transformation}")
 
-    # Check if we found a late-stage fluorophenyl introduction
-    if fluorophenyl_introduction is not None:
-        print("Confirmed late-stage fluorophenyl introduction strategy")
-        return True
-
-    return False
+    return strategy_present

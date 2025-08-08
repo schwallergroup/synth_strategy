@@ -2,80 +2,47 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a hydroxyl → chloro → amino
-    transformation sequence on a pyrimidine ring.
+    This function detects if the synthesis involves a morpholine-containing scaffold.
     """
-    # Track if we've seen each transformation
-    hydroxyl_to_chloro = False
-    chloro_to_amino = False
+    morpholine_found = False
 
     def dfs_traverse(node):
-        nonlocal hydroxyl_to_chloro, chloro_to_amino
+        nonlocal morpholine_found
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            # Check if molecule contains morpholine
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[N]1[C][C][O][C][C]1")):
+                print("Morpholine-containing scaffold detected")
+                morpholine_found = True
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
-
-            # Check for hydroxyl to chloro transformation on pyrimidine
-            hydroxypyrimidine = Chem.MolFromSmarts("[#8H1]-c1ncncc1")
-            chloropyrimidine = Chem.MolFromSmarts("[#17]-c1ncncc1")
-
-            reactant_has_hydroxypyrimidine = any(
-                r is not None and r.HasSubstructMatch(hydroxypyrimidine) for r in reactants
-            )
-            product_has_chloropyrimidine = product is not None and product.HasSubstructMatch(
-                chloropyrimidine
-            )
-
-            if reactant_has_hydroxypyrimidine and product_has_chloropyrimidine:
-                print("Detected hydroxyl to chloro transformation on pyrimidine")
-                hydroxyl_to_chloro = True
-
-            # Check for chloro to amino transformation on pyrimidine
-            aminopyrimidine = Chem.MolFromSmarts("[#7;!H0,!$(N-[#6]=O)]-c1ncncc1")
-
-            reactant_has_chloropyrimidine = any(
-                r is not None and r.HasSubstructMatch(chloropyrimidine) for r in reactants
-            )
-            product_has_aminopyrimidine = product is not None and product.HasSubstructMatch(
-                aminopyrimidine
-            )
-
-            if reactant_has_chloropyrimidine and product_has_aminopyrimidine:
-                print("Detected chloro to amino transformation on pyrimidine")
-                chloro_to_amino = True
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return hydroxyl_to_chloro and chloro_to_amino
+    return morpholine_found

@@ -2,76 +2,52 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects the formation of an amide bond with a cyclopropylamine.
+    Detects if the synthesis follows a linear strategy (as opposed to convergent).
     """
-    found_cyclopropyl_amide = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal found_cyclopropyl_amide
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # Patterns
-            cyclopropyl_amine_pattern = Chem.MolFromSmarts("[NH2][C]1[C][C]1")
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
-            cyclopropyl_amide_pattern = Chem.MolFromSmarts("[C](=[O])[NH][C]1[C][C]1")
+            # In a linear synthesis, we typically have 1-2 reactants per step
+            # More than 2 reactants often indicates a convergent approach
+            if len(reactants_smiles) > 2:
+                is_linear = False
+                print(f"Non-linear step detected with {len(reactants_smiles)} reactants")
 
-            # Check if reactants include cyclopropylamine and carboxylic acid
-            has_cyclopropyl_amine = False
-            has_carboxylic_acid = False
-
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(cyclopropyl_amine_pattern):
-                        has_cyclopropyl_amine = True
-                    if mol and mol.HasSubstructMatch(carboxylic_acid_pattern):
-                        has_carboxylic_acid = True
-                except:
-                    continue
-
-            # Check if product has cyclopropyl amide
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    product_mol
-                    and product_mol.HasSubstructMatch(cyclopropyl_amide_pattern)
-                    and has_cyclopropyl_amine
-                    and has_carboxylic_acid
-                ):
-                    print("Found cyclopropyl amide formation")
-                    found_cyclopropyl_amide = True
-            except:
-                pass
-
-        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return found_cyclopropyl_amide
+
+    print(f"Has linear synthesis strategy: {is_linear}")
+    return is_linear

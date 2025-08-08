@@ -2,110 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a late-stage
-    nitro reduction to form an amine.
+    This function detects late-stage N-alkylation (in the first half of the synthesis).
     """
-    # Track if nitro reduction occurs at late stage (depth ≤ 2)
-    late_stage_reduction = False
+    n_alkylation_found = False
+    max_depth = 0
+    n_alkylation_depth = None
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_reduction
+        nonlocal n_alkylation_found, max_depth, n_alkylation_depth
 
-        if node["type"] == "reaction" and depth <= 2:  # Late stage (depth 0-2)
-            # Extract reactants and product
-            try:
-                rsmi = node["metadata"].get("rsmi", "")
-                if not rsmi:
-                    return
+        # Track maximum depth
+        max_depth = max(max_depth, depth)
 
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Primary check: Use the reaction checker
-                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
-                    print(f"Found nitro reduction reaction at depth {depth}: {rsmi}")
-                    late_stage_reduction = True
-                    return
+            # Check for alkyl halide in reactants
+            alkyl_halide_pattern = Chem.MolFromSmarts("C[Br,Cl,I,F]")
 
-                # Alternative check: verify nitro group in reactant and amine in product
-                product_has_primary_amine = checker.check_fg("Primary amine", product_smiles)
-                product_has_secondary_amine = checker.check_fg("Secondary amine", product_smiles)
-                product_has_tertiary_amine = checker.check_fg("Tertiary amine", product_smiles)
-                product_has_aniline = checker.check_fg("Aniline", product_smiles)
+            # Check for secondary amine in reactants
+            sec_amine_pattern = Chem.MolFromSmarts("[NH]")
 
-                product_has_any_amine = (
-                    product_has_primary_amine
-                    or product_has_secondary_amine
-                    or product_has_tertiary_amine
-                    or product_has_aniline
-                )
+            # Check for tertiary amine in product
+            tert_amine_pattern = Chem.MolFromSmarts("[N]([C])([C])[C]")
 
-                if product_has_any_amine:
-                    # Check if any reactant has nitro group
-                    for reactant in reactants_smiles:
-                        if checker.check_fg("Nitro group", reactant):
-                            print(
-                                f"Found nitro group in reactant and amine in product at depth {depth}"
-                            )
+            # Check if reactants have alkyl halide and secondary amine, and product has tertiary amine
+            reactants_have_alkyl_halide = any(
+                Chem.MolFromSmiles(r).HasSubstructMatch(alkyl_halide_pattern)
+                for r in reactants
+                if r
+            )
+            reactants_have_sec_amine = any(
+                Chem.MolFromSmiles(r).HasSubstructMatch(sec_amine_pattern) for r in reactants if r
+            )
+            product_has_tert_amine = (
+                Chem.MolFromSmiles(product).HasSubstructMatch(tert_amine_pattern)
+                if product
+                else False
+            )
 
-                            # Additional verification: check if product doesn't have nitro group
-                            if not checker.check_fg("Nitro group", product_smiles):
-                                print(
-                                    f"Confirmed: Nitro group was reduced to amine at depth {depth}"
-                                )
-                                late_stage_reduction = True
-                                return
-            except Exception as e:
-                print(f"Error processing reaction at depth {depth}: {e}")
+            if reactants_have_alkyl_halide and reactants_have_sec_amine and product_has_tert_amine:
+                n_alkylation_found = True
+                n_alkylation_depth = depth
+                print(f"N-alkylation detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -114,5 +80,14 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Late stage nitro reduction detected: {late_stage_reduction}")
-    return late_stage_reduction
+    # Check if N-alkylation is in the first half of the synthesis (late stage)
+    is_late_stage = (
+        n_alkylation_found
+        and n_alkylation_depth is not None
+        and n_alkylation_depth <= max_depth / 2
+    )
+
+    print(
+        f"Late-stage N-alkylation detected: {is_late_stage} (depth: {n_alkylation_depth}, max depth: {max_depth})"
+    )
+    return is_late_stage

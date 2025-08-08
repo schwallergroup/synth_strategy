@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,121 +54,86 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route involves oxidation of a primary alcohol to an aldehyde.
+    This function detects a strategy involving indazole heterocycle formation.
     """
-    oxidation_found = False
+    found_indazole_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal oxidation_found
+        nonlocal found_indazole_formation
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Extract reactants and product from the forward reaction
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            print(f"Depth {depth} - Examining reaction: {rsmi}")
+                # Check if product contains indazole
+                if checker.check_ring("indazole", product):
+                    print(f"Found product with indazole ring: {product}")
 
-            # Check if this is an oxidation reaction (forward direction)
-            is_oxidation_reaction = checker.check_reaction(
-                "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones", rsmi
-            )
-
-            if is_oxidation_reaction:
-                print(f"  Found oxidation reaction: {rsmi}")
-                # In forward direction: alcohol (reactant) -> aldehyde (product)
-                has_primary_alcohol = any(
-                    checker.check_fg("Primary alcohol", r) for r in reactants_smiles
-                )
-                has_aldehyde = checker.check_fg("Aldehyde", product_smiles)
-
-                print(f"  Has primary alcohol in reactants: {has_primary_alcohol}")
-                print(f"  Has aldehyde in product: {has_aldehyde}")
-
-                if has_primary_alcohol and has_aldehyde:
-                    print(f"  ✓ Confirmed alcohol oxidation to aldehyde: {rsmi}")
-                    oxidation_found = True
-
-            # Also check for reduction reaction (forward direction)
-            # This would be an oxidation when considered in reverse
-            is_reduction_reaction = checker.check_reaction(
-                "Reduction of aldehydes and ketones to alcohols", rsmi
-            )
-
-            # Manual check for aldehyde to alcohol transformation
-            if not is_reduction_reaction:
-                for reactant in reactants_smiles:
-                    if checker.check_fg("Aldehyde", reactant) and checker.check_fg(
-                        "Primary alcohol", product_smiles
-                    ):
-                        print(f"  Detected aldehyde to alcohol transformation manually: {rsmi}")
-                        is_reduction_reaction = True
-                        break
-
-            if is_reduction_reaction:
-                print(f"  Found reduction reaction: {rsmi}")
-                # In forward direction: aldehyde (reactant) -> alcohol (product)
-                has_aldehyde_in_reactants = any(
-                    checker.check_fg("Aldehyde", r) for r in reactants_smiles
-                )
-                has_primary_alcohol_in_product = checker.check_fg("Primary alcohol", product_smiles)
-
-                print(f"  Has aldehyde in reactants: {has_aldehyde_in_reactants}")
-                print(f"  Has primary alcohol in product: {has_primary_alcohol_in_product}")
-
-                # Print which reactant has the aldehyde for debugging
-                if has_aldehyde_in_reactants:
-                    for i, r in enumerate(reactants_smiles):
-                        if checker.check_fg("Aldehyde", r):
-                            print(f"    Aldehyde found in reactant {i}: {r}")
-
-                if has_aldehyde_in_reactants and has_primary_alcohol_in_product:
-                    print(
-                        f"  ✓ Confirmed aldehyde reduction to alcohol (reverse of oxidation): {rsmi}"
+                    # Check if reactants don't have indazole
+                    has_indazole_in_reactants = any(
+                        checker.check_ring("indazole", r) for r in reactants
                     )
-                    oxidation_found = True
 
-            # Check for other potential oxidation reactions
-            if not is_oxidation_reaction and not is_reduction_reaction:
-                # Check for alcohol oxidation to carboxylic acid (might go through aldehyde)
-                is_alcohol_to_acid = checker.check_reaction(
-                    "Oxidation of alcohol to carboxylic acid", rsmi
-                )
+                    if not has_indazole_in_reactants:
+                        print(f"Reactants don't contain indazole, potential formation reaction")
+                        found_indazole_formation = True
 
-                if is_alcohol_to_acid:
-                    print(f"  Found alcohol to acid oxidation (might involve aldehyde): {rsmi}")
-                    has_primary_alcohol = any(
-                        checker.check_fg("Primary alcohol", r) for r in reactants_smiles
+                        # Additional checks for specific reaction types
+                        if checker.check_reaction(
+                            "Intramolecular amination (heterocycle formation)", rsmi
+                        ):
+                            print(
+                                f"Matched 'Intramolecular amination (heterocycle formation)' reaction"
+                            )
+                        elif checker.check_reaction("Formation of NOS Heterocycles", rsmi):
+                            print(f"Matched 'Formation of NOS Heterocycles' reaction")
+                        # If no specific reaction type matches, check for precursors
+                        elif any(checker.check_fg("Hydrazine", r) for r in reactants):
+                            print(f"Found hydrazine in reactants, likely indazole formation")
+                        elif any(checker.check_fg("Azide", r) for r in reactants):
+                            print(
+                                f"Found azide in reactants, potential indazole formation via triazole"
+                            )
+                        elif any(
+                            checker.check_fg("Primary amine", r)
+                            and (
+                                checker.check_fg("Aromatic halide", r)
+                                or checker.check_fg("Nitro group", r)
+                            )
+                            for r in reactants
+                        ):
+                            print(
+                                f"Found ortho-substituted aniline derivative, potential indazole precursor"
+                            )
+
+                # Also check for benzotriazole formation which is structurally similar
+                elif checker.check_ring("benzotriazole", product):
+                    print(f"Found product with benzotriazole ring: {product}")
+                    has_benzotriazole_in_reactants = any(
+                        checker.check_ring("benzotriazole", r) for r in reactants
                     )
-                    has_carboxylic_acid = checker.check_fg("Carboxylic acid", product_smiles)
 
-                    if has_primary_alcohol and has_carboxylic_acid:
-                        # This likely went through an aldehyde intermediate
+                    if not has_benzotriazole_in_reactants:
                         print(
-                            f"  ✓ Confirmed alcohol oxidation to carboxylic acid (via aldehyde): {rsmi}"
+                            f"Reactants don't contain benzotriazole, potential formation reaction"
                         )
-                        oxidation_found = True
+                        found_indazole_formation = True
+                        if any(checker.check_fg("Azide", r) for r in reactants) or any(
+                            checker.check_fg("Hydrazine", r) for r in reactants
+                        ):
+                            print(
+                                f"Found azide or hydrazine in reactants, likely benzotriazole formation"
+                            )
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+                pass
 
-            # Direct pattern check for C=O to CH2-OH transformation or vice versa
-            # This is a fallback in case the reaction checks miss something
-            if not oxidation_found:
-                # Look for pattern-based evidence of aldehyde-alcohol interconversion
-                for reactant in reactants_smiles:
-                    # Check for aldehyde pattern in atom-mapped SMILES
-                    if "[CH]=[O]" in reactant and "[CH2][OH]" in product_smiles:
-                        print(f"  ✓ Pattern-based detection of aldehyde reduction: {rsmi}")
-                        oxidation_found = True
-                        break
-                    elif "[CH2][OH]" in reactant and "[CH]=[O]" in product_smiles:
-                        print(f"  ✓ Pattern-based detection of alcohol oxidation: {rsmi}")
-                        oxidation_found = True
-                        break
-
-        # Traverse children (retrosynthetic direction)
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-
-    print(f"Alcohol oxidation to aldehyde strategy: {oxidation_found}")
-    return oxidation_found
+    return found_indazole_formation

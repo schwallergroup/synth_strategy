@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,100 +54,69 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects aromatic C-N coupling reactions.
+    Detects if the synthesis involves a nitro reduction in the final step.
     """
-    c_n_coupling_count = 0
+    nitro_reduction_found = False
 
-    # List of reaction types that involve aromatic C-N coupling
-    c_n_coupling_reactions = [
-        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
-        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-        "Goldberg coupling aryl amine-aryl chloride",
-        "Goldberg coupling aryl amide-aryl chloride",
-        "Goldberg coupling",
-        "Ullmann-Goldberg Substitution amine",
-        "Ullmann condensation",
-        "{N-arylation_heterocycles}",
-        "{Buchwald-Hartwig}",
-    ]
+    def dfs_traverse(node, depth=0):
+        nonlocal nitro_reduction_found
 
-    def dfs_traverse(node):
-        nonlocal c_n_coupling_count
+        # Debug information
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
 
-        if (
-            node["type"] == "reaction"
-            and "children" in node
-            and "metadata" in node
-            and "rsmi" in node["metadata"]
-        ):
-            try:
-                # Get reaction SMILES
-                rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if this is a C-N coupling reaction using the checker
-                is_c_n_coupling = False
-                detected_reaction_type = None
+            print(f"Reaction at depth {depth}: {rsmi}")
 
-                for reaction_type in c_n_coupling_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        is_c_n_coupling = True
-                        detected_reaction_type = reaction_type
-                        break
+            # Check if this is a late stage reaction (depth 0 or 1 in retrosynthetic tree)
+            if depth <= 1:
+                print(f"Checking late stage reaction at depth {depth}: {rsmi}")
 
-                # If not detected by specific reaction types, check for general patterns
-                if not is_c_n_coupling:
-                    # Extract reactants and product
-                    reactants_smiles = rsmi.split(">")[0].split(".")
-                    product_smiles = rsmi.split(">")[-1]
+                # Check for nitro groups in reactants
+                has_nitro = any(checker.check_fg("Nitro group", reactant) for reactant in reactants)
+                if has_nitro:
+                    print(f"Found nitro group in reactants at depth {depth}")
 
-                    # Convert to RDKit molecules
-                    reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-                    product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+                # Check for primary amine in product
+                has_amine = checker.check_fg("Primary amine", product)
+                if has_amine:
+                    print(f"Found primary amine in product at depth {depth}")
 
-                    if all(reactant_mols) and product_mol:
-                        # Check for aromatic C-N bonds in product that aren't in reactants
-                        # Use a more comprehensive pattern for aromatic C-N bonds
-                        aromatic_c_n_pattern = Chem.MolFromSmarts("[c]-[N]")
+                # Method 1: Check using the reaction classifier
+                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                    print(f"Found nitro reduction using reaction classifier at depth {depth}")
+                    nitro_reduction_found = True
+                    return
 
-                        # Count aromatic C-N bonds in reactants
-                        reactant_c_n_count = sum(
-                            len(mol.GetSubstructMatches(aromatic_c_n_pattern))
-                            for mol in reactant_mols
+                # Method 2: Check for nitro group in reactants and primary amine in product
+                elif has_nitro and has_amine:
+                    print(
+                        f"Found nitro group in reactant and primary amine in product at depth {depth}"
+                    )
+                    nitro_reduction_found = True
+                    return
+
+                # Method 3: Check for partial reduction patterns
+                elif has_nitro:
+                    # If we have a nitro group in reactants, check if it's being reduced
+                    if (
+                        checker.check_reaction("Reduction", rsmi)
+                        or checker.check_reaction("Hydrogenation", rsmi)
+                        or checker.check_reaction("Reduction of nitro groups to amines", rsmi)
+                    ):
+                        print(
+                            f"Found potential nitro reduction based on reaction type at depth {depth}"
                         )
+                        nitro_reduction_found = True
+                        return
 
-                        # Count aromatic C-N bonds in product
-                        product_c_n_count = len(
-                            product_mol.GetSubstructMatches(aromatic_c_n_pattern)
-                        )
-
-                        # If product has more aromatic C-N bonds than reactants combined
-                        if product_c_n_count > reactant_c_n_count:
-                            is_c_n_coupling = True
-                            detected_reaction_type = "Generic C-N coupling (bond count)"
-
-                        # Additional check for aniline formation
-                        if not is_c_n_coupling and checker.check_fg("Aniline", product_smiles):
-                            # Check if aniline was not present in reactants
-                            if not any(checker.check_fg("Aniline", r) for r in reactants_smiles):
-                                is_c_n_coupling = True
-                                detected_reaction_type = "Aniline formation"
-
-                if is_c_n_coupling:
-                    print(f"Aromatic C-N coupling detected: {detected_reaction_type}")
-                    print(f"Reaction SMILES: {rsmi}")
-                    c_n_coupling_count += 1
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Traverse children
+        # Continue DFS traversal with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Total C-N couplings found: {c_n_coupling_count}")
-
-    # Return True if at least 1 C-N coupling is found (changed from 2)
-    return c_n_coupling_count >= 1
+    return nitro_reduction_found

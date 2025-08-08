@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,122 +54,139 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route uses a linear assembly of multiple fragments.
-    Linear assembly involves sequential coupling of fragments, where most steps involve
-    combining two significant molecular fragments.
+    This function detects formylation of a heterocycle.
     """
-    fragment_counts = []
-    coupling_reactions = []
+    found_formylation = False
 
-    def is_reagent_or_catalyst(smiles):
-        """Check if a SMILES string represents a common reagent or catalyst"""
-        # Common reagents and catalysts patterns
-        reagent_patterns = [
-            r"^\[.*\]$",  # Metal catalysts like [Pd]
-            r"^[A-Z][a-z]?[+-]?$",  # Simple ions like Na+, Cl-
-            r"^O$",
-            r"^CO$",
-            r"^CCO$",
-            r"^CCOC\(C\)=O$",  # Common solvents
-            r"^CN\(C\)C=O$",
-            r"^O=C\(O\)O$",  # DMF, carboxylic acids
-            r"^ClCCl$",
-            r"^\[H\]\[H\]$",  # DCM, H2
-            r"^CCN\(C\(C\)C\)C\(C\)C$",  # DIPEA
-            r"^B$",  # Boron
-        ]
+    # List of common heterocycles to check
+    heterocycles = [
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "furan",
+        "thiophene",
+        "indole",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+    ]
 
-        # Check if the SMILES matches any reagent pattern
-        for pattern in reagent_patterns:
-            if re.match(pattern, smiles):
-                return True
-
-        # Check for small molecules (likely reagents)
-        mol = Chem.MolFromSmiles(smiles)
-        if mol and mol.GetNumAtoms() < 5:
-            return True
-
-        return False
-
-    def is_coupling_reaction(rsmi):
-        """Check if a reaction is a coupling reaction"""
-        # Common coupling reaction types
-        coupling_types = [
-            "Suzuki",
-            "Buchwald-Hartwig",
-            "N-arylation",
-            "Sonogashira",
-            "Heck",
-            "Stille",
-            "Negishi",
-            "Kumada",
-            "Ullmann",
-        ]
-
-        for rxn_type in coupling_types:
-            if checker.check_reaction(rxn_type, rsmi):
-                print(f"Detected {rxn_type} coupling reaction: {rsmi}")
-                return True
-
-        # Also check for C-C, C-N, C-O bond formation
-        reactants_part = rsmi.split(">")[0]
-        product_part = rsmi.split(">")[-1]
-
-        # If we have 2 significant reactants and they're combined in the product
-        reactants = [r for r in reactants_part.split(".") if not is_reagent_or_catalyst(r)]
-        if len(reactants) == 2:
-            # This is a simplistic check - in a real implementation, we would do more
-            # sophisticated analysis of bond formation between fragments
-            return True
-
-        return False
+    # Formylating agents and related reagents
+    formylating_agents = [
+        "CN(C)C=O",  # DMF
+        "OC=O",  # Formic acid
+        "ClC=O",  # Formyl chloride
+        "O=CH",  # Formaldehyde
+        "HC(=O)O",  # Formate
+        "C(=O)H",  # Aldehyde pattern
+        "O=CNO",  # Formamide N-oxide
+        "HCOOH",  # Formic acid
+        "HCOONa",  # Sodium formate
+        "CO",  # Carbon monoxide (for metal-catalyzed formylation)
+    ]
 
     def dfs_traverse(node):
-        if node["type"] == "reaction":
-            # Extract reactants
+        nonlocal found_formylation
+
+        if found_formylation:
+            return
+
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            all_reactants = rsmi.split(">")[0].split(".")
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Filter out reagents and catalysts
-            significant_reactants = [r for r in all_reactants if not is_reagent_or_catalyst(r)]
+            try:
+                # Check if product contains an aldehyde group
+                if checker.check_fg("Aldehyde", product):
+                    print(f"Found aldehyde in product: {product}")
 
-            # Count number of significant fragments
-            fragment_count = len(significant_reactants)
-            fragment_counts.append(fragment_count)
+                    # Check if product contains a heterocycle
+                    product_heterocycle = None
+                    for ring in heterocycles:
+                        if checker.check_ring(ring, product):
+                            product_heterocycle = ring
+                            print(f"Found heterocycle {ring} in product")
+                            break
 
-            # Check if this is a coupling reaction
-            is_coupling = is_coupling_reaction(rsmi)
-            coupling_reactions.append(is_coupling)
+                    if product_heterocycle:
+                        # Check if aldehyde was added in this reaction (not present in reactants)
+                        aldehyde_in_reactants = False
+                        for reactant in reactants:
+                            if checker.check_fg("Aldehyde", reactant):
+                                # If a reactant already has an aldehyde, it might not be formylation
+                                aldehyde_in_reactants = True
+                                print(f"Found aldehyde in reactant: {reactant}")
+                                break
 
-            print(f"Reaction with {fragment_count} significant fragments: {rsmi}")
-            print(f"Is coupling reaction: {is_coupling}")
+                        # Check for formylating agents in reactants
+                        formylating_agent_present = False
+                        for reactant in reactants:
+                            # Check for known formylating agents
+                            if any(agent in reactant for agent in formylating_agents):
+                                formylating_agent_present = True
+                                print(f"Found formylating agent in reactant: {reactant}")
+                                break
+                            # Check for POCl3 (often used with DMF in Vilsmeier-Haack reaction)
+                            elif (
+                                "POCl3" in reactant
+                                or "P(=O)(Cl)Cl" in reactant
+                                or "PCl3" in reactant
+                            ):
+                                formylating_agent_present = True
+                                print(f"Found POCl3 or similar reagent in reactant: {reactant}")
+                                break
 
-        # Traverse children
+                        # Check for specific formylation reactions
+                        is_formylation_reaction = False
+
+                        # Check if this is a known formylation reaction type
+                        if checker.check_reaction("Aromatic hydroxylation", rsmi):
+                            print(
+                                "Detected aromatic hydroxylation reaction (can be related to formylation)"
+                            )
+                            is_formylation_reaction = True
+
+                        # If we have a heterocycle with a new aldehyde and a formylating agent, it's likely formylation
+                        if not aldehyde_in_reactants and (
+                            formylating_agent_present or is_formylation_reaction
+                        ):
+                            print("Found formylation of heterocycle")
+                            found_formylation = True
+                            return
+
+                        # Special case: Check for Vilsmeier-Haack reaction pattern
+                        # (DMF + POCl3 + heterocycle → formylated heterocycle)
+                        dmf_present = any("CN(C)C=O" in reactant for reactant in reactants)
+                        pocl3_present = any(
+                            ("POCl3" in reactant or "P(=O)(Cl)Cl" in reactant)
+                            for reactant in reactants
+                        )
+
+                        if dmf_present and pocl3_present and not aldehyde_in_reactants:
+                            print("Detected Vilsmeier-Haack formylation pattern")
+                            found_formylation = True
+                            return
+
+                        # If we've reached this point, check if the reaction is simply adding an aldehyde
+                        # to a heterocycle, which is a common formylation pattern
+                        if not aldehyde_in_reactants:
+                            print("Detected addition of aldehyde to heterocycle")
+                            found_formylation = True
+                            return
+            except Exception as e:
+                print(f"Error in processing reaction: {e}")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if it's a linear assembly:
-    # 1. At least 2 coupling reactions
-    # 2. At least 60% of reactions are coupling reactions with 2 fragments
-    has_coupling_reactions = len(coupling_reactions) >= 2
-    coupling_percentage = (
-        coupling_reactions.count(True) / len(coupling_reactions) if coupling_reactions else 0
-    )
-    two_fragment_percentage = (
-        fragment_counts.count(2) / len(fragment_counts) if fragment_counts else 0
-    )
-
-    is_linear = (
-        has_coupling_reactions and coupling_percentage >= 0.6 and two_fragment_percentage >= 0.6
-    )
-
-    print(f"Fragment counts: {fragment_counts}")
-    print(f"Coupling reactions: {coupling_reactions}")
-    print(
-        f"Is linear assembly: {is_linear} (coupling: {coupling_percentage:.2f}, two-fragment: {two_fragment_percentage:.2f})"
-    )
-
-    return is_linear
+    return found_formylation

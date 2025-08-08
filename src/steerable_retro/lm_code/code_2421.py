@@ -2,62 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects formation of heterocyclic systems like benzoxazinone.
+    This function detects a linear synthesis strategy with sequential transformations
+    rather than convergent fragment coupling.
     """
-    heterocycle_formation = False
+    # Count the number of reactions and check for branching
+    reaction_count = 0
+    max_children_per_node = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal heterocycle_formation
+    def dfs_traverse(node):
+        nonlocal reaction_count, max_children_per_node
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            reaction_count += 1
+            children_count = len(node.get("children", []))
+            max_children_per_node = max(max_children_per_node, children_count)
 
-                try:
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-
-                    if all(mol is not None for mol in reactant_mols) and product_mol is not None:
-                        # Check for benzoxazinone formation
-                        benzoxazinone_pattern = Chem.MolFromSmarts("c1ccc2c(c1)OCC(=O)N2")
-
-                        has_benzoxazinone = product_mol.HasSubstructMatch(benzoxazinone_pattern)
-                        reactants_have_benzoxazinone = any(
-                            mol.HasSubstructMatch(benzoxazinone_pattern) for mol in reactant_mols
-                        )
-
-                        if has_benzoxazinone and not reactants_have_benzoxazinone:
-                            heterocycle_formation = True
-                            print(f"Heterocycle formation detected at depth {depth}")
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    return heterocycle_formation
+    # A linear synthesis typically has:
+    # 1. Multiple reactions (>3)
+    # 2. No more than 2 children per node (typically just 1, but allowing 2 for cases where a reagent is also represented)
+    is_linear = reaction_count >= 3 and max_children_per_node <= 2
+
+    if is_linear:
+        print(f"Detected linear synthesis with {reaction_count} sequential steps")
+
+    return is_linear

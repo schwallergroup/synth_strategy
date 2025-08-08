@@ -2,67 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving nitro group reduction to amines.
-    It looks for at least one reaction where a nitro group is reduced to an amine.
+    This function detects if the synthetic route uses a late-stage Sonogashira coupling
+    (at depth 0 or 1) to connect major fragments.
     """
-    nitro_to_amine_count = 0
+    has_late_stage_sonogashira = False
 
-    def dfs_traverse(node):
-        nonlocal nitro_to_amine_count
+    def dfs_traverse(node, depth=0):
+        nonlocal has_late_stage_sonogashira
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for nitro group in reactants
-            reactants_with_nitro = 0
-            for reactant in reactants_smiles:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("[#6]-[N+](=[O])-[O-]")
-                ):
-                    reactants_with_nitro += 1
+                # Check for aryl halide and alkyne in reactants
+                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[#9,#17,#35,#53]")
+                alkyne_pattern = Chem.MolFromSmarts("[C]#[C]")
 
-            # Check for amine group in product
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]-[NH2]")):
-                # If reactants had nitro and product has amine, likely a reduction
-                if reactants_with_nitro > 0:
-                    nitro_to_amine_count += 1
-                    print(f"Found nitro reduction to amine in reaction: {rsmi}")
+                has_aryl_halide = False
+                has_alkyne = False
 
-        # Traverse children
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(aryl_halide_pattern):
+                            has_aryl_halide = True
+                        if mol and mol.HasSubstructMatch(alkyne_pattern):
+                            has_alkyne = True
+                    except:
+                        continue
+
+                # Check for aryl-alkyne in product
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol and product_mol.HasSubstructMatch(alkyne_pattern):
+                        if has_aryl_halide and has_alkyne:
+                            has_late_stage_sonogashira = True
+                            print(
+                                f"Detected late-stage Sonogashira coupling at depth {depth}: {rsmi}"
+                            )
+                except:
+                    pass
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return True if at least one nitro reduction was found
-    result = nitro_to_amine_count > 0
-    print(
-        f"Nitro to amine interconversion strategy detected: {result} (count: {nitro_to_amine_count})"
-    )
-    return result
+    return has_late_stage_sonogashira

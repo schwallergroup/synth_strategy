@@ -2,66 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects borylation of aryl halide as preparation for cross-coupling.
-    Looks for conversion of aryl halide to boronate ester.
+    Detects if the synthesis involves a tosylated pyrazole fragment.
     """
-    borylation_detected = False
+    found_tosylated_pyrazole = False
 
     def dfs_traverse(node):
-        nonlocal borylation_detected
+        nonlocal found_tosylated_pyrazole
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node:
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Pattern for tosyl group
+                    tosyl_pattern = Chem.MolFromSmarts(
+                        "[#16](=[#8])(=[#8])-[#6]1:[#6]:[#6]:[#6](-[#6]):[#6]:[#6]:1"
+                    )
+                    # Pattern for pyrazole
+                    pyrazole_pattern = Chem.MolFromSmarts("[#7]1:[#6]:[#7]:[#6]:[#6]:1")
 
-                # Check for aryl halide in reactants
-                aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
-                # Check for diboron reagent in reactants
-                diboron_pattern = Chem.MolFromSmarts("[B][O][C].[B][O][C]")
-                # Check for boronate in product
-                boronate_pattern = Chem.MolFromSmarts("[c][B][O][C]")
+                    if mol.HasSubstructMatch(tosyl_pattern) and mol.HasSubstructMatch(
+                        pyrazole_pattern
+                    ):
+                        found_tosylated_pyrazole = True
+                        print("Found tosylated pyrazole fragment")
+            except:
+                pass
 
-                has_aryl_halide = False
-                has_diboron = False
-
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
-                        if mol.HasSubstructMatch(diboron_pattern):
-                            has_diboron = True
-
-                prod_mol = Chem.MolFromSmiles(product)
-                if prod_mol and has_aryl_halide and prod_mol.HasSubstructMatch(boronate_pattern):
-                    borylation_detected = True
-                    print(f"Detected borylation of aryl halide: {rsmi}")
-
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return borylation_detected
+    return found_tosylated_pyrazole

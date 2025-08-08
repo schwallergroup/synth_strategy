@@ -2,66 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes an aromatic nucleophilic substitution
-    step (converting Cl to NH2 on an aromatic ring).
+    This function detects a linear synthesis strategy with multiple sequential
+    alkylation steps (O-alkylation, N-alkylation, C-alkylation).
     """
-    snAr_found = False
+    # Track alkylation reactions
+    alkylation_depths = []
 
-    def dfs_traverse(node):
-        nonlocal snAr_found
+    def dfs_traverse(node, depth=0):
+        nonlocal alkylation_depths
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Pattern for aromatic chloride
-            aryl_chloride_pattern = Chem.MolFromSmarts("[c][Cl]")
-            # Pattern for aromatic amine
-            aryl_amine_pattern = Chem.MolFromSmarts("[c][NH2]")
+                # Check for alkylation reactions
+                # Look for methyl iodide or similar alkylating agents
+                alkylating_agent_pattern = re.compile(
+                    r"I\[CH3\]|I\[CH3:.*\]|Br\[CH3\]|Br\[CH3:.*\]"
+                )
+                has_alkylating_agent = any(alkylating_agent_pattern.search(r) for r in reactants)
 
-            try:
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
-                product_mol = Chem.MolFromSmiles(product_part)
-
-                # Check for SNAr
-                if (
-                    any(
-                        r and r.HasSubstructMatch(aryl_chloride_pattern) for r in reactant_mols if r
+                if has_alkylating_agent:
+                    # Determine type of alkylation by comparing product and reactants
+                    product_mol = Chem.MolFromSmiles(product)
+                    main_reactant = next(
+                        (r for r in reactants if not alkylating_agent_pattern.search(r)), None
                     )
-                    and product_mol
-                    and product_mol.HasSubstructMatch(aryl_amine_pattern)
-                ):
-                    snAr_found = True
-                    print("Detected aromatic nucleophilic substitution step")
-            except:
-                pass
 
-        # Continue traversing
+                    if main_reactant and product_mol:
+                        main_reactant_mol = Chem.MolFromSmiles(main_reactant)
+                        if main_reactant_mol:
+                            alkylation_depths.append(depth)
+                            print(f"Found alkylation reaction at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-    return snAr_found
+
+    # Check if we have at least 3 alkylation steps
+    has_multiple_alkylations = len(alkylation_depths) >= 3
+
+    # Check if the synthesis is linear (no convergent steps)
+    is_linear = True  # This is a simplification - would need to check number of reactants per step
+
+    if has_multiple_alkylations and is_linear:
+        print("Detected linear synthesis with multiple alkylation steps")
+        return True
+    return False

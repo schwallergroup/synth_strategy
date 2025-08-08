@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,166 +54,144 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves coupling between thiophene and pyridine rings.
+    This function detects if the synthetic route involves forming a heterocycle from acyclic precursors.
     """
-    has_thiophene_pyridine_coupling = False
+    heterocycle_from_acyclic = False
+
+    # List of heterocycles to check
+    heterocycles = [
+        "furan",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "oxolane",
+        "oxane",
+        "dioxolane",
+        "dioxolene",
+        "trioxane",
+        "dioxepane",
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "thiomorpholine",
+        "aziridine",
+        "azetidine",
+        "azepane",
+        "diazepane",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "carbazole",
+        "acridine",
+        "thiophene",
+        "thiopyran",
+        "thiirane",
+        "thietane",
+        "thiolane",
+        "thiane",
+        "dithiane",
+        "dithiolane",
+        "benzothiophene",
+        "oxathiolane",
+        "dioxathiolane",
+        "thiazolidine",
+        "oxazolidine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "pteridin",
+        "phenothiazine",
+        "phenoxazine",
+        "dibenzofuran",
+        "dibenzothiophene",
+        "xanthene",
+        "thioxanthene",
+        "pyrroline",
+        "pyrrolidone",
+        "imidazolidine",
+        "porphyrin",
+        "indazole",
+        "benzotriazole",
+    ]
+
+    def count_rings(mol):
+        """Count the number of rings in a molecule"""
+        if not mol:
+            return 0
+        return mol.GetRingInfo().NumRings()
+
+    def has_heterocycles(mol_smiles):
+        """Check if molecule contains any heterocycles"""
+        if not mol_smiles:
+            return False
+
+        for heterocycle in heterocycles:
+            if checker.check_ring(heterocycle, mol_smiles):
+                print(f"Found heterocycle: {heterocycle} in {mol_smiles}")
+                return True
+        return False
 
     def dfs_traverse(node):
-        nonlocal has_thiophene_pyridine_coupling
+        nonlocal heterocycle_from_acyclic
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
-
+        if node["type"] == "reaction":
+            # Extract reactants and product
             try:
-                # Check if reactants contain thiophene and pyridine rings
-                has_thiophene_reactant = any(
-                    checker.check_ring("thiophene", r) for r in reactants_smiles
-                )
-                has_pyridine_reactant = any(
-                    checker.check_ring("pyridine", r) for r in reactants_smiles
-                )
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check if product has both thiophene and pyridine rings
-                has_thiophene_product = checker.check_ring("thiophene", product_smiles)
-                has_pyridine_product = checker.check_ring("pyridine", product_smiles)
+                # Check if product contains a heterocycle
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-                # Check if this is a coupling reaction
-                is_coupling_reaction = (
-                    checker.check_reaction("Suzuki", rsmi)
-                    or checker.check_reaction("Stille", rsmi)
-                    or checker.check_reaction("Negishi", rsmi)
-                    or checker.check_reaction("Heck", rsmi)
-                    or checker.check_reaction("Sonogashira", rsmi)
-                    or checker.check_reaction("Ullmann condensation", rsmi)
-                    or checker.check_reaction("Ullmann-Goldberg", rsmi)
-                    or checker.check_reaction("Buchwald-Hartwig", rsmi)
-                    or checker.check_reaction("N-arylation", rsmi)
-                )
+                if product_mol and has_heterocycles(product_smiles):
+                    # Count rings in product
+                    product_ring_count = count_rings(product_mol)
 
-                # Check if thiophene and pyridine are in separate reactants
-                separate_rings = False
-                if has_thiophene_reactant and has_pyridine_reactant:
-                    thiophene_reactants = [
-                        r for r in reactants_smiles if checker.check_ring("thiophene", r)
-                    ]
-                    pyridine_reactants = [
-                        r for r in reactants_smiles if checker.check_ring("pyridine", r)
-                    ]
-
-                    # Check if there's at least one reactant with thiophene but no pyridine
-                    # and at least one with pyridine but no thiophene
-                    thiophene_only = any(
-                        not checker.check_ring("pyridine", r) for r in thiophene_reactants
-                    )
-                    pyridine_only = any(
-                        not checker.check_ring("thiophene", r) for r in pyridine_reactants
-                    )
-
-                    separate_rings = thiophene_only and pyridine_only
-
-                # Check if rings were already connected in any reactant
-                rings_already_connected = False
-                for reactant in reactants_smiles:
-                    if checker.check_ring("thiophene", reactant) and checker.check_ring(
-                        "pyridine", reactant
-                    ):
+                    # Check if reactants are acyclic or have fewer rings
+                    reactants_ring_count = 0
+                    for reactant in reactants_smiles:
                         reactant_mol = Chem.MolFromSmiles(reactant)
                         if reactant_mol:
-                            thiophene_indices = checker.get_ring_atom_indices("thiophene", reactant)
-                            pyridine_indices = checker.get_ring_atom_indices("pyridine", reactant)
+                            reactants_ring_count += count_rings(reactant_mol)
 
-                            if (
-                                thiophene_indices
-                                and pyridine_indices
-                                and len(thiophene_indices) > 0
-                                and len(pyridine_indices) > 0
-                            ):
-                                if are_rings_connected(
-                                    reactant_mol, thiophene_indices, pyridine_indices
-                                ):
-                                    rings_already_connected = True
-                                    break
-
-                # Verify that the product has both rings and they're connected
-                if (
-                    has_thiophene_product
-                    and has_pyridine_product
-                    and is_coupling_reaction
-                    and separate_rings
-                    and not rings_already_connected
-                ):
-                    # Create RDKit mol object for the product to check connectivity
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-                    if product_mol:
-                        # Get atom indices for thiophene and pyridine rings in the product
-                        thiophene_indices = checker.get_ring_atom_indices(
-                            "thiophene", product_smiles
+                    # If product has more rings than reactants and contains heterocycles
+                    if product_ring_count > reactants_ring_count:
+                        heterocycle_from_acyclic = True
+                        print(
+                            f"Heterocycle formation from acyclic precursors detected in reaction: {rsmi}"
                         )
-                        pyridine_indices = checker.get_ring_atom_indices("pyridine", product_smiles)
-
-                        if (
-                            thiophene_indices
-                            and pyridine_indices
-                            and len(thiophene_indices) > 0
-                            and len(pyridine_indices) > 0
-                        ):
-                            if are_rings_connected(
-                                product_mol, thiophene_indices, pyridine_indices
-                            ):
-                                print(f"Found thiophene-pyridine coupling in reaction: {rsmi}")
-                                has_thiophene_pyridine_coupling = True
+                        print(
+                            f"Product rings: {product_ring_count}, Reactant rings: {reactants_ring_count}"
+                        )
             except Exception as e:
-                print(f"Error processing reaction SMILES {rsmi}: {str(e)}")
+                print(f"Error processing reaction: {e}")
 
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    def are_rings_connected(mol, ring1_indices, ring2_indices):
-        """Check if two rings are connected in a molecule, either directly or through a linker."""
-        # Flatten the nested tuples to get all atom indices for each ring
-        ring1_atoms = set([atom for match in ring1_indices for tup in match for atom in tup])
-        ring2_atoms = set([atom for match in ring2_indices for tup in match for atom in tup])
-
-        # First check for direct bonds
-        for atom1 in ring1_atoms:
-            for atom2 in ring2_atoms:
-                bond = mol.GetBondBetweenAtoms(atom1, atom2)
-                if bond is not None:
-                    return True
-
-        # If no direct bonds, check for paths between rings
-        # Use BFS to find paths between any atom in ring1 and any atom in ring2
-        for start_atom in ring1_atoms:
-            visited = set([start_atom])
-            queue = deque([(start_atom, 0)])  # (atom_idx, distance)
-
-            while queue:
-                current_atom, distance = queue.popleft()
-
-                # Limit path length to avoid considering very distant connections
-                if distance > 3:  # Allow up to 3-atom linkers
-                    continue
-
-                # Get neighbors of current atom
-                atom = mol.GetAtomWithIdx(current_atom)
-                for neighbor in atom.GetNeighbors():
-                    neighbor_idx = neighbor.GetIdx()
-
-                    # Skip already visited atoms
-                    if neighbor_idx in visited:
-                        continue
-
-                    # If neighbor is in ring2, we found a path
-                    if neighbor_idx in ring2_atoms:
-                        return True
-
-                    # Otherwise, add to queue for further exploration
-                    visited.add(neighbor_idx)
-                    queue.append((neighbor_idx, distance + 1))
-
-        return False
-
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_thiophene_pyridine_coupling
+
+    return heterocycle_from_acyclic

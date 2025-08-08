@@ -2,52 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a nitrile group is preserved throughout the synthesis.
+    This function detects if stereochemistry is preserved throughout the synthesis
+    without creation of new stereocenters.
     """
-    nitrile_in_final = False
-    nitrile_in_intermediates = []
+    stereocenters_by_depth = {}
 
     def dfs_traverse(node, depth=0):
-        nonlocal nitrile_in_final, nitrile_in_intermediates
+        nonlocal stereocenters_by_depth
 
         if node["type"] == "mol":
+            # Count stereocenters in the molecule
             mol = Chem.MolFromSmiles(node["smiles"])
-            nitrile_pattern = Chem.MolFromSmarts("[#6]#[#7]")
+            if mol:
+                chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
+                stereocenters_by_depth[depth] = len(chiral_centers)
 
-            if mol and mol.HasSubstructMatch(nitrile_pattern):
-                if depth == 0:
-                    nitrile_in_final = True
-                else:
-                    nitrile_in_intermediates.append(depth)
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if nitrile is present in final product and in at least one intermediate
-    if nitrile_in_final and nitrile_in_intermediates:
-        print(f"Detected nitrile preservation throughout synthesis")
-        return True
-    return False
+    # Check if stereocenters are preserved (no new ones created)
+    if not stereocenters_by_depth:
+        return False
+
+    # Get the number of stereocenters at the final product (depth 0)
+    final_stereocenters = stereocenters_by_depth.get(0, 0)
+
+    # Check if all intermediates have the same or fewer stereocenters
+    for depth, count in stereocenters_by_depth.items():
+        if depth > 0 and count > final_stereocenters:
+            print(f"New stereocenters created at depth {depth}")
+            return False
+
+    print("Stereochemistry preserved throughout synthesis")
+    return True

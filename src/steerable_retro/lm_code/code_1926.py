@@ -2,83 +2,91 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a sequence of ester-acid interconversions in the synthesis route.
-    """
-    ester_to_acid_count = 0
-    acid_to_ester_count = 0
+    Detects if the synthesis follows a linear pattern where each step
+    builds upon a single product from the previous step.
 
-    def dfs_traverse(node):
-        nonlocal ester_to_acid_count, acid_to_ester_count
+    In a linear synthesis:
+    1. Each reaction should have exactly one product molecule
+    2. Each intermediate molecule (not a starting material) should be used in exactly one reaction
+    3. The synthesis forms a single chain without branches
+    """
+    is_linear = True
+
+    # Track visited nodes to avoid cycles
+    visited = set()
+
+    def dfs_traverse(node, depth=0):
+        nonlocal is_linear
+
+        # Skip if already visited
+        node_id = id(node)
+        if node_id in visited:
+            return
+        visited.add(node_id)
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            # For a reaction node, check if it produces exactly one product molecule
+            # In a retrosynthetic tree, we need to check the reaction SMILES
+            # to determine the number of products in the forward direction
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                products = rsmi.split(">")[-1].split(".")
+                product_count = len(products)
 
-                # Check for ester hydrolysis (ester to acid)
-                ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]")
-                acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
+                if product_count != 1:
+                    is_linear = False
+                    print(
+                        f"Non-linear pattern detected at depth {depth}: reaction has {product_count} product molecules in forward direction"
+                    )
+                    print(f"Reaction SMILES: {rsmi}")
+            except (KeyError, IndexError) as e:
+                # If we can't get the reaction SMILES, assume it's linear and continue
+                print(f"Warning at depth {depth}: Could not analyze reaction SMILES - {str(e)}")
 
-                reactant_has_ester = False
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(ester_pattern):
-                        reactant_has_ester = True
-                        break
+        elif node["type"] == "mol":
+            # Skip checking for the target molecule (depth 0) and starting materials
+            if depth > 0 and not node.get("in_stock", False):
+                # Count how many reactions this molecule participates in
+                reaction_children = [
+                    child for child in node.get("children", []) if child["type"] == "reaction"
+                ]
 
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    reactant_has_ester
-                    and product_mol
-                    and product_mol.HasSubstructMatch(acid_pattern)
-                ):
-                    ester_to_acid_count += 1
-                    print(f"Detected ester hydrolysis, count: {ester_to_acid_count}")
+                # In a linear synthesis, each intermediate molecule should be used in exactly one reaction
+                if len(reaction_children) != 1:
+                    is_linear = False
+                    print(
+                        f"Non-linear pattern detected at depth {depth}: molecule feeds into {len(reaction_children)} reactions"
+                    )
+                    print(f"Molecule SMILES: {node.get('smiles', 'Not available')}")
 
-                # Check for esterification (acid to ester)
-                reactant_has_acid = False
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(acid_pattern):
-                        reactant_has_acid = True
-                        break
-
-                if (
-                    reactant_has_acid
-                    and product_mol
-                    and product_mol.HasSubstructMatch(ester_pattern)
-                ):
-                    acid_to_ester_count += 1
-                    print(f"Detected esterification, count: {acid_to_ester_count}")
-
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
     dfs_traverse(route)
-
-    # Return True if we have at least one of each conversion type
-    return ester_to_acid_count >= 1 and acid_to_ester_count >= 1
+    return is_linear

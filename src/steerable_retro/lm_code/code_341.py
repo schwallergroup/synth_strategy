@@ -2,74 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves C-N bond formation in the late stage (depth 0-1).
+    This function detects a sequence of functional group interconversions
+    (e.g., methyl → hydroxymethyl → aldehyde).
     """
-    late_stage_cn_bond = False
+    # Track functional group transformations
+    transformations = []
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_cn_bond
+    def dfs_traverse(node):
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and depth <= 1:
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                try:
+                    # For simplicity, consider only the first reactant
+                    reactant_mol = Chem.MolFromSmiles(reactants[0])
+                    product_mol = Chem.MolFromSmiles(product)
 
-            # Convert to molecules
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            reactant_mols = [
-                Chem.MolFromSmiles(r) for r in reactants_smiles if Chem.MolFromSmiles(r)
-            ]
+                    # Define patterns for functional groups
+                    methyl_pattern = Chem.MolFromSmarts("[#6][CH3]")
+                    hydroxymethyl_pattern = Chem.MolFromSmarts("[#6][CH2][OH]")
+                    aldehyde_pattern = Chem.MolFromSmarts("[#6][CH]=O")
 
-            if product_mol and reactant_mols:
-                # Get all C-N bonds in product
-                product_bonds = set()
-                for bond in product_mol.GetBonds():
-                    if (
-                        bond.GetBeginAtom().GetAtomicNum() == 6
-                        and bond.GetEndAtom().GetAtomicNum() == 7
-                    ) or (
-                        bond.GetBeginAtom().GetAtomicNum() == 7
-                        and bond.GetEndAtom().GetAtomicNum() == 6
-                    ):
-                        begin_idx = bond.GetBeginAtom().GetIdx()
-                        end_idx = bond.GetEndAtom().GetIdx()
-                        product_bonds.add((min(begin_idx, end_idx), max(begin_idx, end_idx)))
+                    # Check for transformations
+                    if reactant_mol.HasSubstructMatch(
+                        methyl_pattern
+                    ) and product_mol.HasSubstructMatch(hydroxymethyl_pattern):
+                        transformations.append("methyl_to_hydroxymethyl")
+                        print("Detected: methyl → hydroxymethyl")
 
-                # Check if any C-N bond in product is not in reactants
-                # This is a simplified approach - in practice, you'd need atom mapping
-                # to accurately track bond formation
-                if product_bonds:
-                    late_stage_cn_bond = True
-                    print(
-                        f"Late-stage C-N bond formation detected in reaction at depth {depth}: {rsmi}"
-                    )
+                    if reactant_mol.HasSubstructMatch(
+                        hydroxymethyl_pattern
+                    ) and product_mol.HasSubstructMatch(aldehyde_pattern):
+                        transformations.append("hydroxymethyl_to_aldehyde")
+                        print("Detected: hydroxymethyl → aldehyde")
 
-        # Traverse children with increased depth
+                    if reactant_mol.HasSubstructMatch(
+                        aldehyde_pattern
+                    ) and product_mol.HasSubstructMatch(hydroxymethyl_pattern):
+                        transformations.append("aldehyde_to_hydroxymethyl")
+                        print("Detected: aldehyde → hydroxymethyl")
+                except:
+                    print("Error processing molecules for FG transformation detection")
+
+        # Continue traversing the tree
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return late_stage_cn_bond
+
+    # Check if we have a sequence of transformations
+    return len(transformations) >= 2

@@ -2,144 +2,202 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the route preserves a stereocenter from starting materials to final product.
+    This function detects a strategy involving the construction of a pyrazolopyrimidine scaffold
+    through sequential ring formations.
     """
-    # Track stereocenters by atom mapping
-    stereocenter_maps = {}
-    # Track depths where each mapped stereocenter appears
-    stereocenter_depths = {}
+    # Track if we found the key features
+    pyrazole_formation = False
+    pyrazolopyrimidine_formation = False
+    final_product_has_pyrazolopyrimidine = False
+
+    # Get the final product SMILES
+    final_product_smiles = route["smiles"]
+
+    # Check if final product has pyrazolopyrimidine
+    if checker.check_ring("pyrazole", final_product_smiles) and checker.check_ring(
+        "pyrimidine", final_product_smiles
+    ):
+        # Check if they're fused
+        final_mol = Chem.MolFromSmiles(final_product_smiles)
+        if final_mol:
+            ring_info = final_mol.GetRingInfo()
+            # Check for atoms that belong to both a 5-membered and a 6-membered ring
+            for atom_idx in range(final_mol.GetNumAtoms()):
+                ring_sizes = ring_info.AtomRingSizes(atom_idx)
+                if 5 in ring_sizes and 6 in ring_sizes:
+                    final_product_has_pyrazolopyrimidine = True
+                    print(
+                        f"Final product contains pyrazolopyrimidine scaffold: {final_product_smiles}"
+                    )
+                    break
 
     def dfs_traverse(node, depth=0):
-        # Set the depth for the current node
-        node["depth"] = depth
+        nonlocal pyrazole_formation, pyrazolopyrimidine_formation
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol_smiles = node["smiles"]
+        if node["type"] == "reaction":
             try:
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if mol:
-                    # Find stereocenters in the molecule
-                    chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
+                # Extract reactants and product
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
+                reactants = reactants_part.split(".")
 
-                    if chiral_centers:
-                        print(
-                            f"Found {len(chiral_centers)} stereocenters at depth {depth} in {mol_smiles}"
+                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+
+                # Check for pyrazole formation (any depth)
+                if not pyrazole_formation:
+                    # Check if any reactant has a pyrazole ring
+                    reactants_have_pyrazole = any(
+                        checker.check_ring("pyrazole", r) for r in reactants if r
+                    )
+
+                    # Check if product has a pyrazole ring
+                    product_has_pyrazole = checker.check_ring("pyrazole", product_part)
+
+                    # If product has pyrazole but reactants don't, a pyrazole was formed
+                    if product_has_pyrazole and not reactants_have_pyrazole:
+                        print(f"Detected pyrazole formation at depth {depth}")
+                        pyrazole_formation = True
+
+                    # Additional check for hydrazine-based pyrazole formation
+                    if not pyrazole_formation and product_has_pyrazole:
+                        # Check for hydrazine or hydrazine derivatives in reactants
+                        has_hydrazine = any(
+                            checker.check_fg("Hydrazine", r) for r in reactants if r
+                        )
+                        # Check for carbonyl compounds or nitriles in reactants
+                        has_carbonyl = any(
+                            checker.check_fg("Ketone", r)
+                            or checker.check_fg("Aldehyde", r)
+                            or checker.check_fg("Nitrile", r)
+                            for r in reactants
+                            if r
                         )
 
-                        # Get atom mapping from parent reaction if not the root node
-                        atom_maps = {}
-                        if depth > 0 and "children" in route:
-                            # Find the reaction node that produced this molecule
-                            for reaction_node in route.get("children", []):
-                                if (
-                                    reaction_node["type"] == "reaction"
-                                    and "metadata" in reaction_node
-                                ):
-                                    try:
-                                        rsmi = reaction_node["metadata"].get("rsmi", "")
-                                        if rsmi:
-                                            product = rsmi.split(">")[-1]
-                                            if Chem.MolFromSmiles(product) and Chem.MolToSmiles(
-                                                Chem.MolFromSmiles(product)
-                                            ) == Chem.MolToSmiles(mol):
-                                                # Extract atom mapping from the product
-                                                product_mol = Chem.MolFromSmiles(product)
-                                                for atom in product_mol.GetAtoms():
-                                                    if atom.GetAtomMapNum() > 0:
-                                                        atom_maps[atom.GetIdx()] = (
-                                                            atom.GetAtomMapNum()
-                                                        )
-                                    except Exception as e:
-                                        print(f"Error processing reaction SMILES: {e}")
+                        if has_hydrazine and has_carbonyl:
+                            print(
+                                f"Detected pyrazole formation via hydrazine reaction at depth {depth}"
+                            )
+                            pyrazole_formation = True
 
-                        # Record stereocenters with their atom mapping
-                        for atom_idx, stereo in chiral_centers:
-                            # If we have atom mapping, use it to track the stereocenter
-                            if atom_idx in atom_maps:
-                                map_num = atom_maps[atom_idx]
-                                if map_num not in stereocenter_maps:
-                                    stereocenter_maps[map_num] = []
-                                stereocenter_maps[map_num].append((depth, stereo))
+                # Check for pyrazolopyrimidine formation (any depth)
+                if not pyrazolopyrimidine_formation:
+                    # Check if product has both pyrazole and pyrimidine rings
+                    product_has_pyrazole = checker.check_ring("pyrazole", product_part)
+                    product_has_pyrimidine = checker.check_ring("pyrimidine", product_part)
 
-                                if map_num not in stereocenter_depths:
-                                    stereocenter_depths[map_num] = set()
-                                stereocenter_depths[map_num].add(depth)
-                            else:
-                                # For the root node or if no mapping is available
-                                if depth not in stereocenter_maps:
-                                    stereocenter_maps[depth] = []
-                                stereocenter_maps[depth].append((atom_idx, stereo))
+                    # Check if any reactant has both rings
+                    reactants_have_both = any(
+                        checker.check_ring("pyrazole", r) and checker.check_ring("pyrimidine", r)
+                        for r in reactants
+                        if r
+                    )
+
+                    # If product has both rings but reactants don't, check if they're fused
+                    if product_has_pyrazole and product_has_pyrimidine and not reactants_have_both:
+                        product_mol = Chem.MolFromSmiles(product_part)
+                        if product_mol:
+                            ring_info = product_mol.GetRingInfo()
+                            # Check for atoms that belong to both a 5-membered and a 6-membered ring
+                            for atom_idx in range(product_mol.GetNumAtoms()):
+                                ring_sizes = ring_info.AtomRingSizes(atom_idx)
+                                if 5 in ring_sizes and 6 in ring_sizes:
+                                    print(f"Detected pyrazolopyrimidine formation at depth {depth}")
+                                    pyrazolopyrimidine_formation = True
+                                    break
+
+                    # Additional check: if reactant has pyrazole and product has fused pyrazolopyrimidine
+                    if not pyrazolopyrimidine_formation and any(
+                        checker.check_ring("pyrazole", r) for r in reactants if r
+                    ):
+                        if product_has_pyrazole and product_has_pyrimidine:
+                            product_mol = Chem.MolFromSmiles(product_part)
+                            if product_mol:
+                                ring_info = product_mol.GetRingInfo()
+                                # Check for atoms that belong to both rings
+                                for atom_idx in range(product_mol.GetNumAtoms()):
+                                    ring_sizes = ring_info.AtomRingSizes(atom_idx)
+                                    if 5 in ring_sizes and 6 in ring_sizes:
+                                        print(
+                                            f"Detected pyrazolopyrimidine formation from pyrazole at depth {depth}"
+                                        )
+                                        pyrazolopyrimidine_formation = True
+                                        break
             except Exception as e:
-                print(f"Error processing molecule SMILES: {e}")
+                print(f"Error processing reaction at depth {depth}: {e}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Stereocenter maps: {stereocenter_maps}")
-    print(f"Stereocenter depths: {stereocenter_depths}")
+    # Check if the strategy is present
+    # We need both ring formations and the final product should have the scaffold
+    strategy_present = (
+        pyrazole_formation and pyrazolopyrimidine_formation and final_product_has_pyrazolopyrimidine
+    )
 
-    # Check if any stereocenter appears at both early and late stages
-    for map_num, depths in stereocenter_depths.items():
-        depths_list = list(depths)
-        if len(depths_list) >= 2 and min(depths_list) <= 1 and max(depths_list) >= 2:
-            print(
-                f"Stereocenter with map {map_num} preserved from depth {min(depths_list)} to {max(depths_list)}"
-            )
-            return True
+    print(f"Pyrazole formation: {pyrazole_formation}")
+    print(f"Pyrazolopyrimidine formation: {pyrazolopyrimidine_formation}")
+    print(f"Final product has pyrazolopyrimidine: {final_product_has_pyrazolopyrimidine}")
 
-    # Fallback to simpler check if atom mapping approach doesn't find preserved stereocenters
-    stereocenters_by_depth = {}
+    if strategy_present:
+        print("Detected pyrazolopyrimidine construction strategy")
+    else:
+        print("Did not detect pyrazolopyrimidine construction strategy")
 
-    def count_stereocenters(node):
-        if node["type"] == "mol" and "smiles" in node:
-            depth = node.get("depth", None)
-            if depth is not None:
-                smiles = node["smiles"]
-                # Check for stereochemistry markers in SMILES
-                if "@" in smiles:
-                    if depth not in stereocenters_by_depth:
-                        stereocenters_by_depth[depth] = 0
-                    stereocenters_by_depth[depth] += smiles.count("@")
-                    print(f"Counted {smiles.count('@')} stereocenters at depth {depth}")
-
-        for child in node.get("children", []):
-            count_stereocenters(child)
-
-    count_stereocenters(route)
-
-    print(f"Stereocenters by depth (fallback): {stereocenters_by_depth}")
-
-    # If we have stereocenters at both early and late stages
-    depths = list(stereocenters_by_depth.keys())
-    if len(depths) >= 2 and min(depths) <= 1 and max(depths) >= 2:
-        print(
-            f"Found stereocenters at both early (depth {max(depths)}) and late (depth {min(depths)}) stages"
-        )
-        return True
-
-    return False
+    return strategy_present

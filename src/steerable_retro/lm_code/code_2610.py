@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,140 +54,209 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves the transformation of a thione (C=S)
-    to a thioether (C-S-C) in a heterocyclic system.
+    Detects if the synthesis route involves reduction of a nitro group followed by cyclization.
     """
-    thione_to_thioether = False
+    nitro_reduction = False
 
-    # List of heterocyclic rings to check
-    heterocyclic_rings = [
-        "thiazole",
-        "benzothiazole",
-        "thiadiazole",
-        "thiophene",
-        "benzothiophene",
-        "oxathiolane",
-        "thiazolidine",
-        "isothiazole",
-        "imidazole",
-        "benzimidazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-    ]
+    def dfs_traverse(node, depth=0):
+        nonlocal nitro_reduction
 
-    def dfs_traverse(node):
-        nonlocal thione_to_thioether
+        if (
+            node["type"] == "reaction" and depth <= 3
+        ):  # Expanded to depth 3 to catch more potential patterns
+            try:
+                # Get reactants and product
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-            print(f"Analyzing reaction: {rsmi}")
-
-            # Check if this is a thioether formation reaction
-            is_thioether_reaction = checker.check_reaction("thioether_nucl_sub", rsmi)
-            print(f"Is thioether nucleophilic substitution: {is_thioether_reaction}")
-
-            # Check for thione in reactants
-            thione_reactant = None
-            for reactant in reactants:
-                if checker.check_fg("Thiocarbonyl", reactant):
-                    print(f"Found thiocarbonyl in reactant: {reactant}")
-                    thione_reactant = reactant
-                    break
-
-            # Check for thioether in product
-            thioether_in_product = checker.check_fg("Monosulfide", product)
-            if thioether_in_product:
-                print(f"Found monosulfide in product: {product}")
-
-            # If we have both thione in reactant and thioether in product
-            if thione_reactant and thioether_in_product:
-                # Check if they are in heterocyclic systems
-                reactant_heterocycle = False
-                product_heterocycle = False
-
-                for ring in heterocyclic_rings:
-                    if checker.check_ring(ring, thione_reactant):
-                        print(f"Thiocarbonyl is in a {ring} ring in reactant")
-                        reactant_heterocycle = True
-
-                    if checker.check_ring(ring, product):
-                        print(f"Monosulfide is in a {ring} ring in product")
-                        product_heterocycle = True
-
-                if reactant_heterocycle and product_heterocycle:
-                    print("Confirmed thione to thioether transformation in heterocyclic system")
-                    thione_to_thioether = True
-
-            # Check for S-alkylation reactions
-            if not thione_to_thioether:
-                s_alkylation = any(
-                    checker.check_reaction(rxn, rsmi)
-                    for rxn in [
-                        "S-alkylation of thiols",
-                        "S-alkylation of thiols (ethyl)",
-                        "S-alkylation of thiols with alcohols",
-                        "S-alkylation of thiols with alcohols (ethyl)",
-                    ]
+                # Check for nitro reduction reaction
+                is_nitro_reduction = checker.check_reaction(
+                    "Reduction of nitro groups to amines", rsmi
                 )
 
-                if s_alkylation:
-                    print(f"Found S-alkylation reaction: {rsmi}")
+                # Check for heterocycle formation reactions
+                is_heterocycle_formation = checker.check_reaction(
+                    "Formation of NOS Heterocycles", rsmi
+                )
+                is_indole_formation = checker.check_reaction("Fischer indole", rsmi)
+                is_benzimidazole_formation = checker.check_reaction(
+                    "benzimidazole_derivatives_aldehyde", rsmi
+                ) or checker.check_reaction("benzimidazole_derivatives_carboxylic-acid/ester", rsmi)
 
-                    # Check for thione in reactants and thioether in product
-                    thione_in_reactants = any(
-                        checker.check_fg("Thiocarbonyl", r) for r in reactants
+                # Convert to RDKit molecules
+                reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
+                product_mol = Chem.MolFromSmiles(product_smiles)
+
+                if product_mol and all(reactant_mols):
+                    # Check for nitro group in reactants
+                    has_nitro = any(
+                        [
+                            checker.check_fg("Nitro group", Chem.MolToSmiles(mol))
+                            for mol in reactant_mols
+                        ]
                     )
-                    thioether_in_product = checker.check_fg("Monosulfide", product)
 
-                    if thione_in_reactants and thioether_in_product:
-                        # Check for heterocyclic systems
-                        reactant_heterocycle = any(
-                            any(checker.check_ring(ring, r) for ring in heterocyclic_rings)
-                            for r in reactants
+                    # Check for amine in product
+                    has_amine = (
+                        checker.check_fg("Primary amine", product_smiles)
+                        or checker.check_fg("Secondary amine", product_smiles)
+                        or checker.check_fg("Tertiary amine", product_smiles)
+                        or checker.check_fg("Aniline", product_smiles)
+                    )
+
+                    # Check for nitro group absence in product
+                    nitro_gone = not checker.check_fg("Nitro group", product_smiles)
+
+                    # Check for specific heterocyclic rings in reactants and product
+                    heterocycles = [
+                        "indole",
+                        "benzimidazole",
+                        "benzoxazole",
+                        "benzothiazole",
+                        "quinoline",
+                        "isoquinoline",
+                        "pyrrole",
+                        "imidazole",
+                        "oxazole",
+                        "thiazole",
+                    ]
+
+                    reactant_rings = set()
+                    for mol in reactant_mols:
+                        mol_smiles = Chem.MolToSmiles(mol)
+                        for ring_name in heterocycles:
+                            if checker.check_ring(ring_name, mol_smiles):
+                                reactant_rings.add(ring_name)
+
+                    product_rings = set()
+                    for ring_name in heterocycles:
+                        if checker.check_ring(ring_name, product_smiles):
+                            product_rings.add(ring_name)
+
+                    new_heterocycle_formed = len(product_rings - reactant_rings) > 0
+
+                    # Also check general ring count
+                    reactant_ring_count = sum(
+                        [mol.GetRingInfo().NumRings() for mol in reactant_mols]
+                    )
+                    product_ring_count = product_mol.GetRingInfo().NumRings()
+                    ring_count_increased = product_ring_count > reactant_ring_count
+
+                    ring_formed = ring_count_increased or new_heterocycle_formed
+
+                    print(
+                        f"Nitro in reactants: {has_nitro}, Amine in product: {has_amine}, Nitro gone: {nitro_gone}"
+                    )
+                    print(f"Ring formed: {ring_formed}, New heterocycle: {new_heterocycle_formed}")
+                    print(f"Reactant rings: {reactant_rings}, Product rings: {product_rings}")
+
+                    # Case 1: Direct nitro reduction with cyclization
+                    if is_nitro_reduction and has_nitro and has_amine and ring_formed:
+                        nitro_reduction = True
+                        print(f"Detected nitro reduction and cyclization at depth {depth}")
+
+                    # Case 2: Heterocycle formation that might involve nitro reduction
+                    if (
+                        (
+                            is_heterocycle_formation
+                            or is_indole_formation
+                            or is_benzimidazole_formation
                         )
-                        product_heterocycle = any(
-                            checker.check_ring(ring, product) for ring in heterocyclic_rings
-                        )
-
-                        if reactant_heterocycle and product_heterocycle:
-                            thione_to_thioether = True
-                            print(
-                                "Confirmed thione to thioether transformation in heterocyclic system via S-alkylation"
-                            )
-
-            # Additional check for direct C=S to C-S-C transformation
-            if not thione_to_thioether and thione_reactant and thioether_in_product:
-                # Check if the reaction involves a thione being converted to a thioether
-                # This is a more general check that doesn't rely on specific reaction types
-                print("Checking for direct thione to thioether transformation")
-
-                # Check if the sulfur atom from the thione is preserved in the product
-                # This is a heuristic check based on the reaction SMILES
-                if "=[S:" in rsmi and "[S:" in product and not "=[S:" in product:
-                    print("Found potential direct thione to thioether transformation")
-
-                    # Verify it's in a heterocyclic system
-                    reactant_heterocycle = any(
-                        checker.check_ring(ring, thione_reactant) for ring in heterocyclic_rings
-                    )
-                    product_heterocycle = any(
-                        checker.check_ring(ring, product) for ring in heterocyclic_rings
-                    )
-
-                    if reactant_heterocycle and product_heterocycle:
-                        thione_to_thioether = True
+                        and has_nitro
+                        and nitro_gone
+                    ):
+                        nitro_reduction = True
                         print(
-                            "Confirmed direct thione to thioether transformation in heterocyclic system"
+                            f"Detected heterocycle formation involving nitro group at depth {depth}"
                         )
 
+                    # Case 3: Any reaction that reduces nitro and forms rings
+                    if has_nitro and nitro_gone and ring_formed:
+                        nitro_reduction = True
+                        print(
+                            f"Detected potential nitro reduction and cyclization in a single step at depth {depth}"
+                        )
+
+                # Case 4: Two-step process - cyclization following nitro reduction
+                if depth <= 2:  # Only check for two-step process in late stages
+                    # Check if this is a cyclization step
+                    if product_mol and all(reactant_mols):
+                        # Check for amine in reactants (potential result of previous nitro reduction)
+                        has_amine_reactant = any(
+                            [
+                                checker.check_fg("Primary amine", Chem.MolToSmiles(mol))
+                                or checker.check_fg("Secondary amine", Chem.MolToSmiles(mol))
+                                or checker.check_fg("Tertiary amine", Chem.MolToSmiles(mol))
+                                or checker.check_fg("Aniline", Chem.MolToSmiles(mol))
+                                for mol in reactant_mols
+                            ]
+                        )
+
+                        # Check for ring formation
+                        reactant_ring_count = sum(
+                            [mol.GetRingInfo().NumRings() for mol in reactant_mols]
+                        )
+                        product_ring_count = product_mol.GetRingInfo().NumRings()
+                        ring_formed = product_ring_count > reactant_ring_count
+
+                        print(
+                            f"Cyclization check at depth {depth}: Amine in reactants: {has_amine_reactant}, Ring formed: {ring_formed}"
+                        )
+
+                        if has_amine_reactant and ring_formed:
+                            # Check all children for nitro reduction
+                            for child in node.get("children", []):
+                                if child["type"] == "reaction":
+                                    try:
+                                        child_rsmi = child["metadata"]["rsmi"]
+                                        print(
+                                            f"Checking previous step at depth {depth+1}: {child_rsmi}"
+                                        )
+
+                                        # Check for explicit nitro reduction
+                                        if checker.check_reaction(
+                                            "Reduction of nitro groups to amines", child_rsmi
+                                        ):
+                                            nitro_reduction = True
+                                            print(
+                                                f"Found nitro reduction in previous step: {child_rsmi}"
+                                            )
+                                            break
+
+                                        # Also check for implicit nitro reduction
+                                        child_reactants = child_rsmi.split(">")[0].split(".")
+                                        child_product = child_rsmi.split(">")[-1]
+
+                                        has_nitro_child = any(
+                                            [
+                                                checker.check_fg("Nitro group", r)
+                                                for r in child_reactants
+                                            ]
+                                        )
+                                        has_amine_child_product = (
+                                            checker.check_fg("Primary amine", child_product)
+                                            or checker.check_fg("Secondary amine", child_product)
+                                            or checker.check_fg("Tertiary amine", child_product)
+                                            or checker.check_fg("Aniline", child_product)
+                                        )
+
+                                        if has_nitro_child and has_amine_child_product:
+                                            nitro_reduction = True
+                                            print(
+                                                f"Found implicit nitro reduction in previous step: {child_rsmi}"
+                                            )
+                                            break
+                                    except Exception as e:
+                                        print(f"Error checking child reaction: {e}")
+            except Exception as e:
+                print(f"Error processing node at depth {depth}: {e}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-
-    print(f"Thione to thioether transformation detected: {thione_to_thioether}")
-    return thione_to_thioether
+    return nitro_reduction

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,189 +54,134 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a linear synthetic strategy for constructing heterocycles
-    with no convergent steps and a final cyclization.
+    This function detects a synthetic strategy involving aromatic sulfonation
+    followed by sulfonamide formation.
+
+    In forward synthesis: Aromatic sulfonation → Sulfonamide formation
+    In retrosynthesis: Sulfonamide → Sulfonyl chloride (higher depth = earlier stage)
     """
-    # Initialize tracking variables
-    reaction_count = 0
-    has_final_cyclization = False
-    max_reactants_per_step = 0
-    heterocycle_formed = False
-    final_product_smiles = ""
+    # Track reactions and their depths
+    reactions_sequence = []
 
-    # List of common heterocycles to check
-    heterocycle_types = [
-        "furan",
-        "pyran",
-        "dioxane",
-        "tetrahydrofuran",
-        "tetrahydropyran",
-        "oxirane",
-        "oxetane",
-        "oxolane",
-        "oxane",
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "pyrrolidine",
-        "piperidine",
-        "piperazine",
-        "morpholine",
-        "thiomorpholine",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
-        "thiophene",
-        "isoxazole",
-        "isothiazole",
-        "oxadiazole",
-        "thiadiazole",
-    ]
+    def dfs_traverse(node, current_depth=0):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-    # List of cyclization reaction types
-    cyclization_reactions = [
-        "Formation of NOS Heterocycles",
-        "Paal-Knorr pyrrole synthesis",
-        "benzimidazole_derivatives_carboxylic-acid/ester",
-        "benzimidazole_derivatives_aldehyde",
-        "benzothiazole",
-        "benzoxazole_arom-aldehyde",
-        "benzoxazole_carboxylic-acid",
-        "thiazole",
-        "Niementowski_quinazoline",
-        "tetrazole_terminal",
-        "tetrazole_connect_regioisomere_1",
-        "tetrazole_connect_regioisomere_2",
-        "1,2,4-triazole_acetohydrazide",
-        "1,2,4-triazole_carboxylic-acid/ester",
-        "3-nitrile-pyridine",
-        "pyrazole",
-        "Fischer indole",
-        "Friedlaender chinoline",
-        "benzofuran",
-        "benzothiophene",
-        "indole",
-        "oxadiazole",
-        "imidazole",
-        "Intramolecular amination (heterocycle formation)",
-        "Intramolecular amination of azidobiphenyls (heterocycle formation)",
-        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-        "Huisgen 1,3 dipolar cycloaddition",
-        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-        "Pyrazole formation",
-    ]
+            # Get depth from metadata if available
+            depth = current_depth
+            if "ID" in node["metadata"] and "Depth:" in node["metadata"]["ID"]:
+                try:
+                    depth = int(node["metadata"]["ID"].split("Depth:")[1].split()[0])
+                except:
+                    pass
 
-    # Get the final product SMILES from the root node
-    if route["type"] == "mol":
-        final_product_smiles = route["smiles"]
-        print(f"Final product: {final_product_smiles}")
-
-    def dfs_traverse(node, depth=0):
-        nonlocal reaction_count, has_final_cyclization, max_reactants_per_step, heterocycle_formed
-
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-
-            if not rsmi:
-                print(f"No reaction SMILES found at depth {depth}")
-                return
-
-            parts = rsmi.split(">")
-            if len(parts) < 3:
-                print(f"Invalid reaction SMILES format at depth {depth}: {rsmi}")
-                return
-
-            reactants_smiles = [r for r in parts[0].split(".") if r]
-            product_smiles = parts[2]
-
-            print(f"Processing reaction at depth {depth}: {rsmi}")
-
-            # Count this reaction
-            reaction_count += 1
-
-            # Track maximum number of reactants in any step
-            max_reactants_per_step = max(max_reactants_per_step, len(reactants_smiles))
-            print(f"Reactants in this step: {len(reactants_smiles)}")
-
-            try:
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
-
-                if not product_mol or not all(reactant_mols):
-                    print("Invalid molecules detected, skipping reaction")
-                    return
-
-                # Check for ring formation in final step (depth 1 in retrosynthetic tree)
-                if depth == 1:
-                    print(f"Analyzing final synthetic step at depth {depth}")
-
-                    # Check if this is a known cyclization reaction
-                    for rxn_type in cyclization_reactions:
-                        if checker.check_reaction(rxn_type, rsmi):
-                            print(f"Detected cyclization reaction: {rxn_type}")
-                            has_final_cyclization = True
-                            break
-
-                    # Count rings in product and reactants
-                    product_ring_count = len(Chem.GetSSSR(product_mol))
-                    reactant_ring_counts = [len(Chem.GetSSSR(r)) for r in reactant_mols]
-                    max_reactant_ring_count = max(reactant_ring_counts, default=0)
-
-                    print(
-                        f"Final step - Product rings: {product_ring_count}, Max reactant rings: {max_reactant_ring_count}"
-                    )
-
-                    # Check if a new ring was formed
-                    if product_ring_count > max_reactant_ring_count:
-                        print("New ring formed in final step")
-
-                        # Check if the product contains a heterocycle
-                        for heterocycle in heterocycle_types:
-                            if checker.check_ring(heterocycle, product_smiles):
-                                # Check if this heterocycle wasn't in any reactant
-                                heterocycle_in_reactants = any(
-                                    checker.check_ring(heterocycle, r) for r in reactants_smiles
+            # Check for aromatic sulfonyl chloride formation
+            is_sulfonyl_chloride_formation = False
+            if checker.check_reaction("Aromatic sulfonyl chlorination", rsmi):
+                is_sulfonyl_chloride_formation = True
+                print(f"Found aromatic sulfonyl chlorination at depth {depth}")
+            else:
+                # Check if product contains sulfonyl chloride attached to aromatic ring
+                if checker.check_fg("Sulfonyl halide", product):
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        # Check if sulfonyl chloride is attached to aromatic ring
+                        for atom in product_mol.GetAtoms():
+                            if atom.GetSymbol() == "S" and atom.GetDegree() >= 3:
+                                # Check if this sulfur is part of sulfonyl chloride
+                                neighbors = [n for n in atom.GetNeighbors()]
+                                has_chlorine = any(n.GetSymbol() == "Cl" for n in neighbors)
+                                has_double_bonded_oxygen = (
+                                    sum(
+                                        1
+                                        for n in neighbors
+                                        if n.GetSymbol() == "O"
+                                        and product_mol.GetBondBetweenAtoms(
+                                            atom.GetIdx(), n.GetIdx()
+                                        ).GetBondType()
+                                        == Chem.BondType.DOUBLE
+                                    )
+                                    >= 1
                                 )
 
-                                if not heterocycle_in_reactants:
-                                    print(f"Heterocycle {heterocycle} formed in final step")
-                                    has_final_cyclization = True
-                                    heterocycle_formed = True
-                                    break
+                                if has_chlorine and has_double_bonded_oxygen:
+                                    # Check if attached to aromatic ring
+                                    aromatic_neighbors = [n for n in neighbors if n.GetIsAromatic()]
+                                    if aromatic_neighbors:
+                                        is_sulfonyl_chloride_formation = True
+                                        print(
+                                            f"Found aromatic sulfonyl chloride formation at depth {depth}"
+                                        )
+                                        break
 
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+            # Check for sulfonamide formation
+            is_sulfonamide_formation = False
+            if checker.check_reaction(
+                "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+            ) or checker.check_reaction(
+                "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
+            ):
+                is_sulfonamide_formation = True
+                print(f"Found sulfonamide formation at depth {depth}")
+            elif checker.check_fg("Sulfonamide", product):
+                # Check if any reactant has sulfonyl chloride
+                for reactant in reactants:
+                    if checker.check_fg("Sulfonyl halide", reactant):
+                        is_sulfonamide_formation = True
+                        print(f"Found sulfonamide formation from sulfonyl halide at depth {depth}")
+                        break
 
-        # Process children with incremented depth
+            # Record reactions with their depths
+            if is_sulfonyl_chloride_formation:
+                reactions_sequence.append(("sulfonyl_chloride", depth))
+            if is_sulfonamide_formation:
+                reactions_sequence.append(("sulfonamide", depth))
+
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, current_depth + 1)
 
-    # Start traversal from the root node
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Strategy is present if we have multiple steps, final cyclization, and no convergent steps
-    # (max 2 reactants per step indicates linear synthesis)
-    strategy_present = (
-        reaction_count >= 3
-        and has_final_cyclization
-        and max_reactants_per_step <= 2
-        and heterocycle_formed
-    )
+    # Check if both reactions are found
+    sulfonyl_chloride_entries = [
+        (reaction, depth)
+        for reaction, depth in reactions_sequence
+        if reaction == "sulfonyl_chloride"
+    ]
+    sulfonamide_entries = [
+        (reaction, depth) for reaction, depth in reactions_sequence if reaction == "sulfonamide"
+    ]
 
-    print(f"Linear heterocycle construction strategy detected: {strategy_present}")
-    print(f"Reaction count: {reaction_count}, Max reactants per step: {max_reactants_per_step}")
-    print(f"Final cyclization: {has_final_cyclization}, Heterocycle formed: {heterocycle_formed}")
+    if sulfonyl_chloride_entries and sulfonamide_entries:
+        print(f"Sulfonyl chloride entries: {sulfonyl_chloride_entries}")
+        print(f"Sulfonamide entries: {sulfonamide_entries}")
 
-    return strategy_present
+        # Find the earliest occurrence of each reaction type
+        sulfonyl_chloride_depth = min(
+            sulfonyl_chloride_entries, key=lambda x: reactions_sequence.index(x)
+        )[1]
+        sulfonamide_depth = min(sulfonamide_entries, key=lambda x: reactions_sequence.index(x))[1]
+
+        print(f"Earliest sulfonyl chloride depth: {sulfonyl_chloride_depth}")
+        print(f"Earliest sulfonamide depth: {sulfonamide_depth}")
+
+        # In retrosynthesis, higher depth means earlier stage in forward synthesis
+        # So sulfonyl chloride formation should have higher depth than sulfonamide formation
+        if sulfonyl_chloride_depth != -1 and sulfonamide_depth != -1:
+            return sulfonyl_chloride_depth > sulfonamide_depth
+
+        # If depths are not reliable, use the order in which they were discovered
+        sulfonyl_chloride_index = reactions_sequence.index(sulfonyl_chloride_entries[0])
+        sulfonamide_index = reactions_sequence.index(sulfonamide_entries[0])
+
+        print(
+            f"Sulfonyl chloride index: {sulfonyl_chloride_index}, Sulfonamide index: {sulfonamide_index}"
+        )
+        # In DFS traversal of retrosynthesis, reactions discovered later are earlier in forward synthesis
+        return sulfonyl_chloride_index > sulfonamide_index
+
+    return False

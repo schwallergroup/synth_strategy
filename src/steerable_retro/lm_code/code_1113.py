@@ -2,37 +2,37 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a late-stage ether formation
-    (in the final or penultimate step).
+    This function detects pyrazole ring formation from hydrazine and carbonyl compounds.
     """
-    ether_formation_depth = None
-    max_depth = 0
+    pyrazole_formation_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal ether_formation_depth, max_depth
-
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal pyrazole_formation_detected
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
@@ -40,29 +40,26 @@ def main(route):
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for ether formation
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    ether_patt = Chem.MolFromSmarts("[#6]-[#8]-[#6]")
-                    if product_mol.HasSubstructMatch(ether_patt):
-                        # Check if reactants don't have the ether pattern
-                        ether_in_reactants = False
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(ether_patt):
-                                ether_in_reactants = True
+                # Check if hydrazine is in reactants
+                hydrazine_pattern = Chem.MolFromSmarts("[NH2][NH2]")
+                carbonyl_pattern = Chem.MolFromSmarts("[#6][#6](=[O])[#6,#1]")
+                pyrazole_pattern = Chem.MolFromSmarts("[#7]1[#7][#6][#6][#6]1")
 
-                        if not ether_in_reactants:
-                            ether_formation_depth = depth
-                            print(f"Detected ether formation at depth {depth}")
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
+
+                if product_mol and any(
+                    r and r.HasSubstructMatch(hydrazine_pattern) for r in reactant_mols
+                ):
+                    if any(r and r.HasSubstructMatch(carbonyl_pattern) for r in reactant_mols):
+                        if product_mol.HasSubstructMatch(pyrazole_pattern):
+                            print(
+                                "Detected pyrazole formation from hydrazine and carbonyl compounds"
+                            )
+                            pyrazole_formation_detected = True
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Check if ether formation is in the final or penultimate step (depth 0 or 1)
-    if ether_formation_depth is not None and ether_formation_depth <= 1:
-        print(f"Confirmed late-stage ether formation at depth {ether_formation_depth}")
-        return True
-    return False
+    return pyrazole_formation_detected

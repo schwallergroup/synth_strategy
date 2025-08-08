@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,159 +54,73 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a linear synthesis strategy involving a series of
-    functional group interconversions without convergent steps.
+    Detects if the synthesis uses Boc protection of an amine group.
     """
-    # Track the number of functional group transformations
-    fg_transformations = 0
-    convergent_steps = 0
+    found_boc_protection = False
 
-    # List of functional groups to check for transformations
-    fg_types = [
-        "Acyl halide",
-        "Aldehyde",
-        "Ketone",
-        "Carboxylic acid",
-        "Ester",
-        "Primary alcohol",
-        "Secondary alcohol",
-        "Tertiary alcohol",
-        "Primary amine",
-        "Secondary amine",
-        "Tertiary amine",
-        "Primary amide",
-        "Secondary amide",
-        "Tertiary amide",
-        "Nitrile",
-        "Nitro group",
-        "Azide",
-        "Alkyne",
-        "Alkene",
-        "Primary halide",
-        "Secondary halide",
-        "Tertiary halide",
-        "Aromatic halide",
-        "Phenol",
-        "Ether",
-        "Thiol",
-        "Sulfide",
-        "Mesylate",
-        "Tosylate",
-        "Triflate",
-        "Phosphate ester",
-    ]
+    def dfs_traverse(node):
+        nonlocal found_boc_protection
 
-    # Common reagents and solvents to ignore
-    common_reagents = [
-        "ccoc",
-        "cs(=o)",
-        "b",
-        "na",
-        "ccn(cc)cc",
-        "clccl",
-        "o=p(cl)(cl)cl",
-        "o=s(=o)(o)o",
-        "cs(=o)(=o)o",
-        "cl",
-        "o",
-    ]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-    def is_fg_transformation(reactant_smiles, product_smiles):
-        """Check if the reaction involves a functional group transformation"""
-        # Check which functional groups are in reactants and product
-        reactant_fgs = set()
-        product_fgs = set()
+            # Check if this is a Boc protection or deprotection reaction
+            if (
+                checker.check_reaction("Boc amine protection", rsmi)
+                or checker.check_reaction("Boc amine protection explicit", rsmi)
+                or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
+                or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
+                or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
+                or checker.check_reaction("Boc amine protection of primary amine", rsmi)
+                or checker.check_reaction("Boc amine deprotection", rsmi)
+                or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
+                or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
+            ):
+                print(f"Found Boc protection/deprotection reaction: {rsmi}")
+                found_boc_protection = True
 
-        # Clean SMILES strings to handle atom mapping
-        clean_product = Chem.MolToSmiles(Chem.MolFromSmiles(product_smiles))
+            # Alternative check: look for carbamic ester (Boc group) in reactants or products
+            else:
+                # Check for carbamic ester (Boc group)
+                carbamic_ester_in_reactants = any(
+                    checker.check_fg("Carbamic ester", reactant) for reactant in reactants
+                )
+                carbamic_ester_in_product = checker.check_fg("Carbamic ester", product)
 
-        for fg in fg_types:
-            # Check reactants
-            for r in reactant_smiles:
-                try:
-                    clean_r = Chem.MolToSmiles(Chem.MolFromSmiles(r))
-                    if checker.check_fg(fg, clean_r):
-                        reactant_fgs.add(fg)
-                except:
-                    continue
+                # Check for amine groups
+                amine_in_reactants = any(
+                    checker.check_fg("Primary amine", reactant)
+                    or checker.check_fg("Secondary amine", reactant)
+                    for reactant in reactants
+                )
 
-            # Check product
-            if checker.check_fg(fg, clean_product):
-                product_fgs.add(fg)
+                amine_in_product = checker.check_fg("Primary amine", product) or checker.check_fg(
+                    "Secondary amine", product
+                )
 
-        # If there's a difference in functional groups, it's a transformation
-        return reactant_fgs != product_fgs
+                # If carbamic ester appears in product but not in reactants, and there's an amine in reactants
+                if (
+                    carbamic_ester_in_product
+                    and not carbamic_ester_in_reactants
+                    and amine_in_reactants
+                ):
+                    print(f"Found Boc protection (FG analysis): {rsmi}")
+                    found_boc_protection = True
 
-    def is_significant_reactant(smiles):
-        """Determine if a reactant is significant (not a small reagent)"""
-        try:
-            # Check if it's a common reagent by SMILES pattern
-            if any(reagent in smiles.lower() for reagent in common_reagents):
-                return False
+                # If carbamic ester disappears from reactants to product, and there's an amine in product
+                elif (
+                    carbamic_ester_in_reactants
+                    and not carbamic_ester_in_product
+                    and amine_in_product
+                ):
+                    print(f"Found Boc deprotection (FG analysis): {rsmi}")
+                    found_boc_protection = True
 
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                return False
-
-            # Count heavy atoms (non-hydrogen)
-            heavy_atom_count = mol.GetNumHeavyAtoms()
-
-            # Check for common reagent functional groups
-            is_reagent = any(
-                checker.check_fg(reagent, smiles)
-                for reagent in [
-                    "Phosphate ester",
-                    "Sulfonamide",
-                    "Triflate",
-                    "Mesylate",
-                    "Tosylate",
-                ]
-            )
-
-            # Molecules with more than 4 heavy atoms that aren't reagents are considered significant
-            return heavy_atom_count > 4 and not is_reagent
-        except:
-            return False
-
-    def dfs_traverse(node, depth=0):
-        nonlocal fg_transformations, convergent_steps
-
-        if node["type"] == "reaction":
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
-
-                reactants = reactants_part.split(".")
-
-                # Count number of significant reactants (excluding small reagents)
-                significant_reactants = [r for r in reactants if is_significant_reactant(r)]
-
-                print(f"Reaction at depth {depth}: {rsmi}")
-                print(f"Significant reactants: {significant_reactants}")
-
-                # If more than one significant reactant, it's a convergent step
-                if len(significant_reactants) > 1:
-                    print(f"Convergent step detected at depth {depth}: {rsmi}")
-                    convergent_steps += 1
-
-                # Check if this is a functional group transformation
-                if is_fg_transformation(reactants, product_part):
-                    print(f"FG transformation detected at depth {depth}: {rsmi}")
-                    fg_transformations += 1
-            except Exception as e:
-                print(f"Error processing reaction at depth {depth}: {e}")
-
-        # Continue traversing the tree
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    # Return True if we have multiple FG transformations and no convergent steps
-    strategy_detected = fg_transformations >= 3 and convergent_steps == 0
-    print(f"Linear functional group interconversion strategy detected: {strategy_detected}")
-    print(f"FG transformations: {fg_transformations}, Convergent steps: {convergent_steps}")
-    return strategy_detected
+    return found_boc_protection

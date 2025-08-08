@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,75 +54,91 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves nitration of an aromatic ring.
+    This function detects if Boc protection is maintained throughout the synthesis
+    until the final product.
+
+    In retrosynthetic analysis:
+    - Depth 0 is the final product (root of the tree)
+    - Higher depths are precursors/starting materials
+
+    We need to check if there's at least one continuous path where Boc protection
+    is maintained from its introduction until the final product.
     """
-    # Track if we found aromatic nitration
-    found_aromatic_nitration = False
+    # Track paths where Boc is continuously present
+    continuous_boc_paths = []
 
-    def dfs_traverse(node):
-        nonlocal found_aromatic_nitration
+    # Track current path during traversal
+    current_path = []
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+    def dfs_traverse(node, depth=0, path_has_boc=False):
+        nonlocal current_path
 
-            # First check if this is a known aromatic nitration reaction
-            if (
-                checker.check_reaction("Aromatic nitration with HNO3", rsmi)
-                or checker.check_reaction("Aromatic nitration with NO3 salt", rsmi)
-                or checker.check_reaction("Aromatic nitration with NO2 salt", rsmi)
-                or checker.check_reaction("Aromatic nitration with alkyl NO2", rsmi)
-            ):
-                print(f"Found aromatic nitration reaction: {rsmi}")
-                found_aromatic_nitration = True
+        # Add current node to path
+        current_path.append((node, depth, path_has_boc))
 
-            # If not identified by reaction type, check by analyzing reactants and products
-            else:
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
 
-                # Check if product contains nitro group
-                if checker.check_fg("Nitro group", product_part):
-                    product_mol = Chem.MolFromSmiles(product_part)
+            # Check if molecule has Boc group
+            has_boc = checker.check_fg("Boc", mol_smiles)
 
-                    # Check if the nitro group is on an aromatic ring
-                    if product_mol:
-                        nitro_aromatic_pattern = Chem.MolFromSmarts("c-[N+](=[O])[O-]")
-                        if product_mol.HasSubstructMatch(nitro_aromatic_pattern):
-                            # Check reactants for nitrating agents and aromatic rings
-                            reactants = reactants_part.split(".")
-                            has_nitrating_agent = False
-                            has_aromatic_without_nitro = False
+            if has_boc:
+                print(f"Boc group detected at depth {depth}, SMILES: {mol_smiles[:30]}...")
+                path_has_boc = True
 
-                            for reactant in reactants:
-                                # Check for nitrating agents
-                                if (
-                                    "HNO3" in reactant
-                                    or "NO3" in reactant
-                                    or "NO2" in reactant
-                                    or checker.check_fg("Nitro group", reactant)
-                                ):
-                                    has_nitrating_agent = True
+            # If this is a leaf node (starting material) and path has Boc
+            if not node.get("children") and path_has_boc:
+                # Save this path as it maintains Boc protection
+                continuous_boc_paths.append(list(current_path))
 
-                                # Check for aromatic rings without nitro groups
-                                r_mol = Chem.MolFromSmiles(reactant)
-                                if r_mol and r_mol.GetNumAtoms() > 0:
-                                    has_aromatic = any(
-                                        atom.GetIsAromatic() for atom in r_mol.GetAtoms()
-                                    )
-                                    has_nitro = checker.check_fg("Nitro group", reactant)
+        elif node["type"] == "reaction":
+            # For reaction nodes, check if it's a Boc protection or deprotection
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rxn_smiles = node["metadata"]["rsmi"]
 
-                                    if has_aromatic and not has_nitro:
-                                        has_aromatic_without_nitro = True
+                # Check if this is a Boc deprotection reaction
+                is_boc_deprotection = checker.check_reaction("Boc amine deprotection", rxn_smiles)
 
-                            if has_nitrating_agent and has_aromatic_without_nitro:
-                                print(f"Found aromatic nitration by analysis: {rsmi}")
-                                found_aromatic_nitration = True
+                if is_boc_deprotection:
+                    print(f"Boc deprotection reaction detected at depth {depth}")
+                    # If we encounter Boc deprotection, this path doesn't maintain Boc protection
+                    path_has_boc = False
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1, path_has_boc)
 
-    # Start traversal from the root
+        # Remove current node from path when backtracking
+        current_path.pop()
+
+    # Start traversal
     dfs_traverse(route)
 
-    return found_aromatic_nitration
+    # Check if the final product (depth 0) has Boc
+    final_product_has_boc = False
+    if route["type"] == "mol" and checker.check_fg("Boc", route["smiles"]):
+        final_product_has_boc = True
+        print("Final product has Boc group")
+
+    # Check if there's at least one continuous path with Boc protection
+    # that reaches the final product
+    for path in continuous_boc_paths:
+        # Check if this path starts from the final product
+        if path[0][1] == 0:  # depth 0
+            print(
+                "Found a continuous path with Boc protection from final product to a starting material"
+            )
+            return True
+
+    # If final product doesn't have Boc, that's expected and OK
+    if not final_product_has_boc:
+        print("Final product doesn't have Boc group (expected if Boc was removed)")
+
+        # Check if Boc was present in the synthesis and properly removed
+        boc_present_in_synthesis = any(path_has_boc for _, _, path_has_boc in current_path)
+        if boc_present_in_synthesis:
+            print("Boc was present in synthesis and properly removed")
+            return True
+
+    print("Boc protection was not maintained throughout synthesis")
+    return False

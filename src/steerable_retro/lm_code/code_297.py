@@ -2,63 +2,110 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects installation of difluoromethoxy (OCF2H) group in the synthesis.
+    This function detects a synthetic strategy involving a late-stage reductive amination
+    to introduce a nitrogen-containing moiety.
     """
-    found_difluoromethoxy_installation = False
+    has_reductive_amination = False
 
-    def dfs_traverse(node):
-        nonlocal found_difluoromethoxy_installation
+    def dfs_traverse(node, depth=0):
+        nonlocal has_reductive_amination
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        # Check if this is a reaction node
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Check if this is a late-stage reaction (depth 0 or 1)
+            if depth <= 1:
+                rsmi = node["metadata"]["rsmi"]
 
-            try:
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product = Chem.MolFromSmiles(product_smiles)
+                # Check if this is a reductive amination reaction
+                if checker.check_reaction(
+                    "Reductive amination with aldehyde", rsmi
+                ) or checker.check_reaction("Reductive amination with ketone", rsmi):
+                    print(f"Detected reductive amination at depth {depth}")
+                    has_reductive_amination = True
+                else:
+                    # As a fallback, check for the reaction pattern manually
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
 
-                if product:
-                    # Check for difluoromethoxy pattern in product
-                    difluoromethoxy_pattern = Chem.MolFromSmarts("[#8][#6]([#9])[#9]")
-                    if product.HasSubstructMatch(difluoromethoxy_pattern):
-                        # Check if any reactant has a phenol or similar group
-                        phenol_pattern = Chem.MolFromSmarts("c[OH]")
-                        has_phenol = any(
-                            mol.HasSubstructMatch(phenol_pattern) for mol in reactants if mol
-                        )
+                    # Check for carbonyl compounds (aldehyde or ketone) in reactants
+                    has_carbonyl = any(
+                        checker.check_fg("Aldehyde", r) or checker.check_fg("Ketone", r)
+                        for r in reactants_smiles
+                    )
 
-                        if has_phenol:
-                            print("Found difluoromethoxy installation")
-                            found_difluoromethoxy_installation = True
-            except:
-                print("Error processing reaction SMILES for difluoromethoxy detection")
+                    # Check for primary or secondary amine in reactants
+                    has_amine = any(
+                        checker.check_fg("Primary amine", r)
+                        or checker.check_fg("Secondary amine", r)
+                        for r in reactants_smiles
+                    )
 
-        # Process children
+                    # Check for secondary or tertiary amine in product
+                    has_product_amine = checker.check_fg(
+                        "Secondary amine", product_smiles
+                    ) or checker.check_fg("Tertiary amine", product_smiles)
+
+                    if has_carbonyl and has_amine and has_product_amine:
+                        print(f"Detected potential reductive amination pattern at depth {depth}")
+                        has_reductive_amination = True
+
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return found_difluoromethoxy_installation
+
+    return has_reductive_amination

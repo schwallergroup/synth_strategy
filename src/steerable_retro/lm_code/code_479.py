@@ -2,80 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the use of Suzuki coupling (aryl halide + boronic acid)
-    to form C-C bonds between aromatic rings.
+    Detects if the synthesis follows a late-stage convergent approach where
+    two major fragments are combined in the final step.
     """
-    # Track if we found a Suzuki coupling
-    found_suzuki_coupling = False
-
-    # Define SMARTS patterns
-    aryl_halide_pattern = Chem.MolFromSmarts("c[Br,I,Cl]")
-    boronic_acid_pattern = Chem.MolFromSmarts("cB(O)O")
-    biaryl_pattern = Chem.MolFromSmarts("c:c")
+    final_coupling_detected = False
 
     def dfs_traverse(node):
-        nonlocal found_suzuki_coupling
+        nonlocal final_coupling_detected
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Check if this is the final reaction (depth 0)
+            if node.get("depth", 0) == 0:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            try:
-                # Convert to RDKit molecules
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+                # If we have multiple reactants at the final step, it's convergent
+                if len(reactants) >= 2:
+                    # Check if reactants are substantial fragments (not just small reagents)
+                    substantial_fragments = 0
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.GetNumAtoms() > 10:  # Arbitrary threshold for "substantial"
+                            substantial_fragments += 1
 
-                # Check if reactants include aryl halide and boronic acid
-                has_aryl_halide = any(
-                    mol is not None and mol.HasSubstructMatch(aryl_halide_pattern)
-                    for mol in reactant_mols
-                )
-                has_boronic_acid = any(
-                    mol is not None and mol.HasSubstructMatch(boronic_acid_pattern)
-                    for mol in reactant_mols
-                )
+                    if substantial_fragments >= 2:
+                        print(
+                            "Late-stage convergent synthesis detected: multiple substantial fragments combined in final step"
+                        )
+                        final_coupling_detected = True
 
-                # Check if product has a biaryl bond
-                has_biaryl = product_mol is not None and product_mol.HasSubstructMatch(
-                    biaryl_pattern
-                )
-
-                # If we have both required reactants and the biaryl product
-                if has_aryl_halide and has_boronic_acid and has_biaryl:
-                    found_suzuki_coupling = True
-                    print("Found Suzuki coupling reaction")
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    return found_suzuki_coupling
+    return final_coupling_detected

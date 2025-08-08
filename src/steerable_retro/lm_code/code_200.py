@@ -2,64 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy (each step has only one non-starting material reactant).
-
-    In a linear synthesis, each reaction step should have at most one reactant that is not a starting material.
-    Multiple non-starting material reactants indicate a convergent synthesis.
-
-    Args:
-        route: A dictionary representing the synthesis route
-
-    Returns:
-        bool: True if the synthesis is linear, False otherwise
+    This function detects if the synthesis route starts with a hydrazine condensation.
     """
-    is_linear = True
+    result = False
 
-    def dfs_traverse(node):
-        nonlocal is_linear
+    def dfs_traverse(node, depth=0):
+        nonlocal result
 
-        if node["type"] == "reaction":
-            # Get all molecule children (reactants in retrosynthetic direction)
-            mol_children = [child for child in node.get("children", []) if child["type"] == "mol"]
+        if node["type"] == "reaction" and depth >= 2:  # Early stage (high depth)
+            # Check if this is a hydrazine condensation
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
 
-            # Count non-starting material reactants
-            non_starting_reactants = [
-                child for child in mol_children if not child.get("in_stock", False)
-            ]
+                try:
+                    # Check for hydrazine pattern in reactants
+                    for reactant in reactants_part.split("."):
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            hydrazine_pattern = Chem.MolFromSmarts("[N]-[N]")
+                            if mol.HasSubstructMatch(hydrazine_pattern):
+                                # Check if product has C=N-N pattern (hydrazone)
+                                product_mol = Chem.MolFromSmiles(product_part)
+                                if product_mol:
+                                    hydrazone_pattern = Chem.MolFromSmarts("[C]=[N]-[N]")
+                                    if product_mol.HasSubstructMatch(hydrazone_pattern):
+                                        result = True
+                                        print(
+                                            f"Found early hydrazine condensation at depth {depth}"
+                                        )
+                except:
+                    pass
 
-            # If more than one non-starting material reactant, it's a convergent synthesis
-            if len(non_starting_reactants) > 1:
-                is_linear = False
-
-                # Get reaction SMILES for debugging
-                reaction_smiles = node.get("metadata", {}).get("rsmi", "No SMILES available")
-                print(f"Found non-linear step (convergent synthesis): {reaction_smiles}")
-                print(f"Number of non-starting material reactants: {len(non_starting_reactants)}")
-
-        # Continue traversing the tree
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return is_linear
+    return result

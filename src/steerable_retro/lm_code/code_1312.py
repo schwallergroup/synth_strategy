@@ -2,53 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a linear synthesis strategy (as opposed to convergent) by checking if most reactions
-    have only 1-2 reactants.
+    Detects if the synthetic route involves a late-stage carbamoylation (depth 0-1).
     """
-    reaction_count = 0
-    linear_reaction_count = 0
+    late_carbamoylation_found = False
 
-    def dfs_traverse(node):
-        nonlocal reaction_count, linear_reaction_count
+    def dfs_traverse(node, depth=0):
+        nonlocal late_carbamoylation_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+        if node["type"] == "reaction" and depth <= 1:  # Only check at depths 0-1 (late stage)
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reaction_count += 1
-            if len(reactants) <= 2:
-                linear_reaction_count += 1
+                # Check for secondary amine in reactants
+                secondary_amine_in_reactants = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        secondary_amine = Chem.MolFromSmarts("[#7;H1]")
+                        if reactant_mol.HasSubstructMatch(secondary_amine):
+                            secondary_amine_in_reactants = True
 
+                # Check for carbamate in product
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and secondary_amine_in_reactants:
+                    carbamate = Chem.MolFromSmarts("[#7]C(=[#8])[#8]C")
+                    if product_mol.HasSubstructMatch(carbamate):
+                        late_carbamoylation_found = True
+
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
 
-    # If at least 80% of reactions are linear (1-2 reactants), consider it a linear strategy
-    if reaction_count > 0 and (linear_reaction_count / reaction_count) >= 0.8:
-        print(
-            f"Linear synthesis strategy detected: {linear_reaction_count}/{reaction_count} reactions are linear"
-        )
-        return True
-    return False
+    print(f"Late-stage carbamoylation detected: {late_carbamoylation_found}")
+    return late_carbamoylation_found

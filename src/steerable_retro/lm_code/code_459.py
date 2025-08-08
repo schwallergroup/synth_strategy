@@ -2,73 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis uses N-alkylation with benzyl halides.
+    Detects a convergent synthesis strategy where a cyano-containing fragment
+    is combined with another fragment through amide bond formation.
     """
-    has_benzyl_alkylation = False
+    found_convergent_step = False
+    found_cyano_fragment = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_benzyl_alkylation
+        nonlocal found_convergent_step, found_cyano_fragment
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-                # Check for benzyl halide pattern in reactants
-                benzyl_halide_pattern = Chem.MolFromSmarts("c1ccccc1C[Br,Cl,I,F]")
-                amine_pattern = Chem.MolFromSmarts("[NH]")
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                has_benzyl_halide = False
-                has_amine = False
+            # Check if this is a convergent step (multiple reactants)
+            if len(reactants_smiles) > 1:
+                # Convert to RDKit molecules
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
 
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            if mol.HasSubstructMatch(benzyl_halide_pattern):
-                                has_benzyl_halide = True
-                            if mol.HasSubstructMatch(amine_pattern):
-                                has_amine = True
-                    except:
-                        continue
+                # Check for cyano group in reactants
+                cyano_pattern = Chem.MolFromSmarts("[C]#[N]")
+                has_cyano = any(r and r.HasSubstructMatch(cyano_pattern) for r in reactants if r)
 
-                # Check if product has new C-N bond with benzyl group
-                if has_benzyl_halide and has_amine:
-                    try:
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol:
-                            benzyl_amine_pattern = Chem.MolFromSmarts("c1ccccc1C[N]")
-                            if product_mol.HasSubstructMatch(benzyl_amine_pattern):
-                                has_benzyl_alkylation = True
-                                print(f"Found benzyl alkylation at depth {depth}")
-                    except:
-                        pass
+                # Check for amide formation
+                product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+                amide_pattern = Chem.MolFromSmarts("[C](=[O])[NH][c]")
+                has_amide = product and product.HasSubstructMatch(amide_pattern)
+
+                if has_cyano and has_amide:
+                    found_convergent_step = True
+                    found_cyano_fragment = True
+                    print("Found convergent synthesis with cyano fragment")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return has_benzyl_alkylation
+
+    return found_convergent_step and found_cyano_fragment

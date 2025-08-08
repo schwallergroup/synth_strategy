@@ -2,95 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the final product contains multiple heterocycles
-    (including indole, indazole, tetrazole, oxadiazole, and others).
+    Detects if the synthesis follows a linear strategy without convergent steps.
     """
-    # First, find the final product (root node)
-    final_product = route["smiles"] if route["type"] == "mol" else None
+    is_linear = True
 
-    if not final_product:
-        return False
+    def dfs_traverse(node, depth=0):
+        nonlocal is_linear
 
-    try:
-        # Define heterocycles to check
-        heterocycles = [
-            "indole",
-            "indazole",
-            "tetrazole",
-            "oxadiazole",
-            "benzimidazole",
-            "benzoxazole",
-            "benzothiazole",
-            "triazole",
-            "pyrazole",
-            "imidazole",
-            "thiazole",
-            "oxazole",
-            "isoxazole",
-            "pyridine",
-            "pyrimidine",
-            "pyrazine",
-            "pyridazine",
-        ]
+        if node["type"] == "reaction":
+            # Extract reactants
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-        # Count the number of different heterocycles
-        heterocycle_count = 0
-        for heterocycle in heterocycles:
-            if checker.check_ring(heterocycle, final_product):
-                heterocycle_count += 1
-                print(f"Final product contains {heterocycle}")
+            # If more than 2 reactants, it's potentially a convergent step
+            if len(reactants_smiles) > 2:
+                # Check if they are actual distinct fragments (not just reagents)
+                significant_fragments = 0
+                for reactant in reactants_smiles:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if (
+                        mol and mol.GetNumHeavyAtoms() > 3
+                    ):  # Arbitrary threshold to exclude small reagents
+                        significant_fragments += 1
 
-        # Return True if at least 2 different heterocycles are found
-        return heterocycle_count >= 2
-    except Exception as e:
-        print(f"Error in heterocycle_rich_product_strategy: {e}")
-        return False
+                if significant_fragments > 2:
+                    print(
+                        f"Convergent step detected at depth {depth} with {significant_fragments} significant fragments"
+                    )
+                    is_linear = False
+
+        # Continue traversal
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
+
+    # Start traversal from root
+    dfs_traverse(route)
+    return is_linear

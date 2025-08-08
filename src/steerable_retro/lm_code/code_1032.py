@@ -2,59 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes an ester hydrolysis step.
+    This function detects if the synthesis involves introduction of a halogen (Br, Cl, I, F)
+    in the late stage (first 2 steps).
     """
-    found_ester_hydrolysis = False
+    late_halogenation_found = False
 
-    def dfs_traverse(node):
-        nonlocal found_ester_hydrolysis
+    def dfs_traverse(node, depth=0):
+        nonlocal late_halogenation_found
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if (
+            node["type"] == "reaction" and depth <= 1
+        ):  # Focus on very late-stage reactions (depth 0 or 1)
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-            # Check for ester hydrolysis
-            ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]")
-            acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
+                if reactants_mol and product_mol:
+                    # Check for halogen introduction
+                    halogen_smarts = "[#6]-[#9,#17,#35,#53]"  # C-F, C-Cl, C-Br, C-I
 
-            if any(
-                r.HasSubstructMatch(ester_pattern) for r in reactants
-            ) and product.HasSubstructMatch(acid_pattern):
-                found_ester_hydrolysis = True
-                print("Found ester hydrolysis")
+                    reactants_has_halogen = reactants_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts(halogen_smarts)
+                    )
+                    product_has_halogen = product_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts(halogen_smarts)
+                    )
 
-        # Traverse children
+                    if not reactants_has_halogen and product_has_halogen:
+                        late_halogenation_found = True
+                        print(f"Detected late-stage halogenation at depth {depth}")
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return found_ester_hydrolysis
+    return late_halogenation_found

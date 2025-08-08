@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,91 +54,121 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthetic route contains a sulfone to thioether transformation.
-
-    In retrosynthetic analysis, we're looking for reactions where:
-    - The product (target) contains a sulfone group
-    - At least one reactant contains a thioether group but not a sulfone group
-    - This represents the reverse of the forward reaction (thioether → sulfone)
+    This function detects a strategy where one hydroxyl of a diol is selectively
+    functionalized (typically with a tosylate) while preserving the other hydroxyl.
     """
-    transformation_found = False
+    # Initialize flags
+    has_diol = False
+    has_selective_functionalization = False
+
+    def count_alcohols(smiles):
+        """Helper function to count alcohol groups in a molecule"""
+        count = 0
+        if checker.check_fg("Primary alcohol", smiles):
+            count += len(checker.get_fg_atom_indices("Primary alcohol", smiles))
+        if checker.check_fg("Secondary alcohol", smiles):
+            count += len(checker.get_fg_atom_indices("Secondary alcohol", smiles))
+        if checker.check_fg("Tertiary alcohol", smiles):
+            count += len(checker.get_fg_atom_indices("Tertiary alcohol", smiles))
+        if checker.check_fg("Aromatic alcohol", smiles):
+            count += len(checker.get_fg_atom_indices("Aromatic alcohol", smiles))
+        return count
 
     def dfs_traverse(node, depth=0):
-        nonlocal transformation_found
+        nonlocal has_diol, has_selective_functionalization
 
-        if transformation_found:
-            return
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # In retrosynthetic analysis, the product is the target molecule
-            product_mol = Chem.MolFromSmiles(product)
-
-            # Check if product has a sulfone group
-            if product_mol and checker.check_fg("Sulfone", product):
-                print(f"Found product with sulfone at depth {depth}: {product}")
-
-                # Check if any reactant has a thioether but not a sulfone
+                # Check for diol in reactants
                 for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if (
-                        reactant_mol
-                        and checker.check_fg("Monosulfide", reactant)
-                        and not checker.check_fg("Sulfone", reactant)
-                    ):
+                    if not reactant.strip():
+                        continue
 
-                        print(
-                            f"Found reactant with thioether but no sulfone at depth {depth}: {reactant}"
-                        )
+                    try:
+                        # Count alcohol groups in reactant
+                        alcohol_count_reactant = count_alcohols(reactant)
 
-                        # Check specifically for sulfone formation reactions
-                        if (
-                            checker.check_reaction("Sulfanyl to sulfinyl", rsmi)
-                            or checker.check_reaction("Sulfanyl to sulfinyl_peroxide", rsmi)
-                            or checker.check_reaction("Sulfanyl to sulfinyl_H2O2", rsmi)
-                            or checker.check_reaction("Sulfanyl to sulfinyl_H2O", rsmi)
-                            or checker.check_reaction("Sulfanyl to sulfinyl_SO3-", rsmi)
-                            or checker.check_reaction("Sulfanyl to sulfinyl_sulfonyl", rsmi)
-                            or checker.check_reaction("Sulfanyl to sulfinyl_MeOH", rsmi)
-                            or checker.check_reaction("Sulfanyl to sulfinyl_COO", rsmi)
-                        ):
+                        if alcohol_count_reactant >= 2:
+                            has_diol = True
+                            print(f"Detected diol at depth {depth}: {reactant}")
 
-                            print(f"Confirmed sulfone formation reaction at depth {depth}: {rsmi}")
-                            transformation_found = True
-                            return
+                            # Count alcohol groups in product
+                            alcohol_count_product = count_alcohols(product)
 
-                        # If specific reaction check fails, try a more general approach
-                        # by checking if the atom mapping shows the same sulfur atom
-                        try:
-                            # Get atom indices for sulfone in product
-                            product_sulfone_indices = checker.get_fg_atom_indices(
-                                "Sulfone", product
-                            )
-                            if product_sulfone_indices:
-                                # Get atom indices for thioether in reactant
-                                reactant_thioether_indices = checker.get_fg_atom_indices(
-                                    "Monosulfide", reactant
-                                )
-                                if reactant_thioether_indices:
-                                    # Check if the sulfur atom has the same mapping in both molecules
-                                    # This is a simplification - in reality we'd need to check the exact atom mappings
-                                    # but for demonstration, we'll assume the transformation is valid if both FGs are present
+                            # Check if exactly one alcohol was functionalized
+                            if alcohol_count_product == alcohol_count_reactant - 1:
+                                # Check for various functionalization reactions
+                                functionalization_reactions = [
+                                    "Formation of Sulfonic Esters",
+                                    "Formation of Sulfonic Esters on TMS protected alcohol",
+                                    "Alcohol to chloride_sulfonyl chloride",
+                                    "Alcohol to chloride_SOCl2",
+                                    "Alcohol to chloride_HCl",
+                                    "Alcohol to chloride_Other",
+                                    "Alcohol to triflate conversion",
+                                    "Alcohol to bromide",
+                                    "Alkyl iodides from alcohols",
+                                    "Alkyl chlorides from alcohols",
+                                    "Alkyl bromides from alcohols",
+                                    "PBr3 and alcohol to alkyl bromide",
+                                    "Appel reaction",
+                                ]
+
+                                for reaction_type in functionalization_reactions:
+                                    if checker.check_reaction(reaction_type, rsmi):
+                                        print(f"Detected reaction: {reaction_type}")
+                                        has_selective_functionalization = True
+                                        break
+
+                                # If no specific reaction was detected, check for new leaving groups in product
+                                if not has_selective_functionalization:
+                                    leaving_groups = [
+                                        "Tosylate",
+                                        "Mesylate",
+                                        "Triflate",
+                                        "Primary halide",
+                                        "Secondary halide",
+                                        "Tertiary halide",
+                                        "Aromatic halide",
+                                    ]
+
+                                    for lg in leaving_groups:
+                                        if checker.check_fg(lg, product) and not checker.check_fg(
+                                            lg, reactant
+                                        ):
+                                            print(f"Detected new leaving group: {lg}")
+                                            has_selective_functionalization = True
+                                            break
+
+                                if has_selective_functionalization:
+                                    print(f"Detected selective functionalization at depth {depth}")
+                                    print(f"Reactant: {reactant}")
+                                    print(f"Product: {product}")
                                     print(
-                                        f"Found matching sulfur atoms in product and reactant at depth {depth}"
+                                        f"Alcohols before: {alcohol_count_reactant}, after: {alcohol_count_product}"
                                     )
-                                    transformation_found = True
-                                    return
-                        except Exception as e:
-                            print(f"Error checking atom indices: {e}")
+                    except Exception as e:
+                        print(f"Error processing molecule: {e}")
 
-        # Traverse children (in retrosynthetic direction)
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    return transformation_found
+    # Strategy is present if both conditions are met
+    strategy_present = has_diol and has_selective_functionalization
+
+    if strategy_present:
+        print("Detected selective diol functionalization strategy")
+    else:
+        print("Did not detect selective diol functionalization strategy")
+        print(f"Has diol: {has_diol}")
+        print(f"Has selective functionalization: {has_selective_functionalization}")
+
+    return strategy_present

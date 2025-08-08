@@ -2,66 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving heterocycle (isoxazole) formation
-    in the synthetic route.
+    Detects if the synthetic route follows a convergent synthesis strategy
+    by checking for multiple fragment couplings at different stages.
     """
-    has_heterocycle_formation = False
-
-    # Define SMARTS pattern for isoxazole
-    isoxazole_pattern = Chem.MolFromSmarts("c1conc1")
+    early_coupling = False
+    late_coupling = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_heterocycle_formation
+        nonlocal early_coupling, late_coupling
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            try:
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+                # If there are multiple reactants, it's a coupling reaction
+                if len(reactants) > 1:
+                    if depth <= 1:  # Late stage (depth 0-1)
+                        late_coupling = True
+                        print(f"Found late-stage coupling at depth {depth}: {rsmi}")
+                    elif depth >= 3:  # Early stage (depth 3+)
+                        early_coupling = True
+                        print(f"Found early-stage coupling at depth {depth}: {rsmi}")
 
-                # Check if isoxazole is present in product but not in reactants
-                if product_mol and product_mol.HasSubstructMatch(isoxazole_pattern):
-                    isoxazole_in_reactants = any(
-                        r and r.HasSubstructMatch(isoxazole_pattern) for r in reactant_mols
-                    )
-
-                    if not isoxazole_in_reactants:
-                        has_heterocycle_formation = True
-                        print(f"Detected isoxazole formation at depth {depth}")
-
-            except Exception as e:
-                print(f"Error processing reaction at depth {depth}: {e}")
-
-        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return has_heterocycle_formation
+    print(f"Early coupling: {early_coupling}, Late coupling: {late_coupling}")
+    return early_coupling and late_coupling

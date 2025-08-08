@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,109 +54,130 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects N-demethylation in the synthetic route.
-    N-demethylation involves removing a methyl group from a nitrogen atom,
-    converting R-N-CH₃ to R-NH.
+    This function detects a synthesis route where a heterocycle (particularly imidazole)
+    is formed in the late stages of the synthesis.
     """
-    has_n_demethylation = False
+    heterocycle_formation_depth = None
+    max_depth = 0
+
+    # List of heterocycles to check
+    heterocycles = [
+        "imidazole",
+        "triazole",
+        "tetrazole",
+        "oxazole",
+        "thiazole",
+        "pyrazole",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "pyrrole",
+        "furan",
+        "thiophene",
+        "pyridine",
+        "pyrimidine",
+        "pyrazine",
+        "indole",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+    ]
+
+    # List of heterocycle formation reactions to check
+    heterocycle_reactions = [
+        "{imidazole}",
+        "{triaryl-imidazole}",
+        "{benzimidazole_derivatives_carboxylic-acid/ester}",
+        "{benzimidazole_derivatives_aldehyde}",
+        "{benzothiazole}",
+        "{benzoxazole_arom-aldehyde}",
+        "{benzoxazole_carboxylic-acid}",
+        "{thiazole}",
+        "{tetrazole_terminal}",
+        "{tetrazole_connect_regioisomere_1}",
+        "{tetrazole_connect_regioisomere_2}",
+        "{1,2,4-triazole_acetohydrazide}",
+        "{1,2,4-triazole_carboxylic-acid/ester}",
+        "{pyrazole}",
+        "{oxadiazole}",
+        "{benzofuran}",
+        "{benzothiophene}",
+        "{indole}",
+        "Paal-Knorr pyrrole synthesis",
+        "Paal-Knorr pyrrole",
+        "{Paal-Knorr pyrrole}",
+        "Fischer indole",
+        "{Fischer indole}",
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_n_demethylation
+        nonlocal heterocycle_formation_depth, max_depth
+
+        max_depth = max(max_depth, depth)
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_str = rsmi.split(">")[0]
+            product_str = rsmi.split(">")[-1]
 
-            print(f"Analyzing reaction at depth {depth}: {rsmi}")
+            # Check if this is a heterocycle formation reaction
+            is_heterocycle_formation = False
 
-            # Define methylation reactions list at the beginning
-            methylation_reactions = [
-                "N-methylation",
-                "Eschweiler-Clarke Secondary Amine Methylation",
-                "Eschweiler-Clarke Primary Amine Methylation",
-                "Reductive methylation of primary amine with formaldehyde",
-                "Methylation with MeI_secondary",
-                "Methylation with MeI_primary",
-                "DMS Amine methylation",
-                "Methylation",
-                "Methylation with DMS",
-            ]
+            # Method 1: Check using reaction types
+            for reaction in heterocycle_reactions:
+                if checker.check_reaction(reaction, rsmi):
+                    print(f"Heterocycle formation reaction detected: {reaction}")
+                    is_heterocycle_formation = True
+                    break
 
-            # In retrosynthesis, product is the starting material and reactants are the target compounds
-            # For N-demethylation, we need to check if a tertiary amine becomes a secondary amine
-            if checker.check_fg("Tertiary amine", product):
-                print(f"Found tertiary amine in product: {product}")
+            # Method 2: Check if product has heterocycle but reactants don't
+            if not is_heterocycle_formation:
+                product_has_heterocycle = False
+                product_heterocycles = []
 
-                for reactant in reactants:
-                    if checker.check_fg("Secondary amine", reactant):
-                        print(f"Found secondary amine in reactant: {reactant}")
+                for heterocycle in heterocycles:
+                    if checker.check_ring(heterocycle, product_str):
+                        product_has_heterocycle = True
+                        product_heterocycles.append(heterocycle)
+                        print(f"Product contains heterocycle: {heterocycle}")
 
-                        # Check for N-methylation reactions (which are N-demethylation in retrosynthesis)
-                        if any(checker.check_reaction(rxn, rsmi) for rxn in methylation_reactions):
-                            print(
-                                f"Confirmed N-demethylation (via known methylation reaction): {rsmi}"
-                            )
-                            has_n_demethylation = True
-                        else:
-                            # Check if there's a methyl group attached to nitrogen in product but not in reactant
-                            # This is a more general pattern check
-                            print(f"Checking for general N-demethylation pattern")
+                if product_has_heterocycle:
+                    reactants = reactants_str.split(".")
+                    reactant_heterocycles = set()
 
-                            # Look for patterns like [n:X][CH3:Y] in product but [nH:X] in reactant
-                            # This indicates a methyl group was removed from the nitrogen
-                            import re
-
-                            n_methyl_pattern = re.compile(r"\[n[H]?:(\d+)\]\[CH3:(\d+)\]")
-                            nh_pattern = re.compile(r"\[nH:(\d+)\]")
-
-                            n_methyl_matches = n_methyl_pattern.findall(product)
-
-                            for n_idx, _ in n_methyl_matches:
-                                # Check if this nitrogen is a secondary amine (NH) in any reactant
-                                for r in reactants:
-                                    nh_matches = nh_pattern.findall(r)
-                                    if n_idx in nh_matches:
-                                        print(
-                                            f"Found N-demethylation pattern: N-CH3 in product, NH in reactant with same atom mapping"
-                                        )
-                                        has_n_demethylation = True
-
-                            # If we've reached here and still haven't confirmed, check if this is a general pattern
-                            if not has_n_demethylation:
-                                print(f"Confirmed N-demethylation (general pattern): {rsmi}")
-                                has_n_demethylation = True
-
-            # Also check for the reverse case - primary amine to secondary amine
-            if checker.check_fg("Secondary amine", product) and not has_n_demethylation:
-                print(f"Found secondary amine in product: {product}")
-
-                for reactant in reactants:
-                    if checker.check_fg("Primary amine", reactant):
-                        print(f"Found primary amine in reactant: {reactant}")
-
-                        # Check for methylation reactions
-                        if any(checker.check_reaction(rxn, rsmi) for rxn in methylation_reactions):
-                            print(f"Confirmed N-demethylation (primary to secondary): {rsmi}")
-                            has_n_demethylation = True
-
-            # Special case check for the reaction at depth 3 in the test case
-            if "[nH:" in rsmi and "[n:" in rsmi and "[CH3:" in rsmi:
-                print(f"Detected potential N-demethylation pattern in SMILES: {rsmi}")
-
-                # Check if this is a reaction where a methyl group is added to NH
-                if any(reactant for reactant in reactants if "[CH3:" in reactant):
                     for reactant in reactants:
-                        if "[nH:" in reactant and any(
-                            r for r in product.split(".") if "[n:" in r and "[CH3:" in r
-                        ):
-                            print(f"Confirmed N-demethylation (NH to N-CH3 pattern): {rsmi}")
-                            has_n_demethylation = True
+                        for heterocycle in heterocycles:
+                            if checker.check_ring(heterocycle, reactant):
+                                reactant_heterocycles.add(heterocycle)
+                                print(f"Reactant contains heterocycle: {heterocycle}")
 
-        # Traverse children
+                    # Check if any heterocycle in product is not in reactants
+                    new_heterocycles = [
+                        h for h in product_heterocycles if h not in reactant_heterocycles
+                    ]
+                    if new_heterocycles:
+                        is_heterocycle_formation = True
+                        print(f"New heterocycles formed: {new_heterocycles}")
+
+            if is_heterocycle_formation and heterocycle_formation_depth is None:
+                heterocycle_formation_depth = depth
+                print(f"Heterocycle formation detected at depth {depth}")
+
+        # Recursively traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"N-demethylation detected: {has_n_demethylation}")
-    return has_n_demethylation
+
+    # Check if heterocycle formation occurs in the late stage (first half of synthesis)
+    if heterocycle_formation_depth is not None and max_depth > 0:
+        # Lower depth values correspond to later stages in synthesis
+        is_late_stage = heterocycle_formation_depth <= (max_depth / 2)
+        print(
+            f"Heterocycle formation at depth {heterocycle_formation_depth}, max depth {max_depth}, is late stage: {is_late_stage}"
+        )
+        return is_late_stage
+
+    return False

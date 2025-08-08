@@ -2,74 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving an early Claisen condensation
-    to form a 1,3-diketone.
+    This function detects a linear synthesis strategy that preserves specific functional groups
+    (thioether and aryl chloride) throughout the synthesis.
     """
-    early_claisen_found = False
+    # Track if we've found the functional groups in the final product
+    found_thioether = False
+    found_aryl_chloride = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal early_claisen_found
+    # Track if synthesis is linear (no convergent steps)
+    is_linear = True
 
-        if node["type"] == "reaction" and depth >= 3:  # Early stage = high depth in retrosynthesis
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+    def dfs_traverse(node):
+        nonlocal found_thioether, found_aryl_chloride, is_linear
 
-                # Check if product is a 1,3-diketone
-                product_mol = Chem.MolFromSmiles(product)
-                diketone_pattern = Chem.MolFromSmarts("[#6]-[#6](=[O])-[#6]-[#6](=[O])-[#6]")
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            # Check final product for functional groups
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                thioether_pattern = Chem.MolFromSmarts("[#6]-[#16]-[#6]")
+                aryl_chloride_pattern = Chem.MolFromSmarts("c-[Cl]")
 
-                if (
-                    product_mol
-                    and diketone_pattern
-                    and product_mol.HasSubstructMatch(diketone_pattern)
-                ):
-                    # Check if reactants contain ester and ketone
-                    ester_pattern = Chem.MolFromSmarts("[#6]-[#6](=[O])-[#8]-[#6]")
-                    ketone_pattern = Chem.MolFromSmarts("[#6]-[#6](=[O])-[#6]")
+                if mol.HasSubstructMatch(thioether_pattern):
+                    found_thioether = True
 
-                    has_ester = False
-                    has_ketone = False
+                if mol.HasSubstructMatch(aryl_chloride_pattern):
+                    found_aryl_chloride = True
 
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if ester_pattern and reactant_mol.HasSubstructMatch(ester_pattern):
-                                has_ester = True
-                            if ketone_pattern and reactant_mol.HasSubstructMatch(ketone_pattern):
-                                has_ketone = True
-
-                    if has_ester and has_ketone:
-                        print("Found early Claisen condensation to form 1,3-diketone")
-                        early_claisen_found = True
+        elif node["type"] == "reaction":
+            # Check if reaction is convergent (more than 2 reactants)
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            if len(reactants) > 2:
+                is_linear = False
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    return early_claisen_found
+    # Return True if synthesis is linear and preserves both functional groups
+    return is_linear and found_thioether and found_aryl_chloride

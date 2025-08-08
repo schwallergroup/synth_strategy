@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,77 +54,81 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route includes a late-stage ester hydrolysis
-    (conversion of ester to carboxylic acid in the final step)
+    Checks if the route contains Sonogashira couplings that build a diarylacetylene scaffold.
     """
-    ester_hydrolysis_found = False
+    # Track if we've found a diarylacetylene scaffold built by Sonogashira
+    found_diarylacetylene = False
+    diarylacetylene_product = None
 
-    def dfs_traverse(node, depth=0):
-        nonlocal ester_hydrolysis_found
+    def dfs(node, depth=0):
+        nonlocal found_diarylacetylene, diarylacetylene_product
 
-        # Set depth for the current node
-        node["depth"] = depth
-
+        # For reaction nodes, check if it's a Sonogashira coupling
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            rxn_smiles = node["metadata"]["rsmi"]
 
-            # Check if this is a late-stage reaction (depth 0 or 1)
-            if depth <= 1:
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+            # Check if this is a Sonogashira coupling
+            is_sonogashira = (
+                checker.check_reaction("Sonogashira acetylene_aryl halide", rxn_smiles)
+                or checker.check_reaction("Sonogashira alkyne_aryl halide", rxn_smiles)
+                or checker.check_reaction("Sonogashira acetylene_aryl OTf", rxn_smiles)
+                or checker.check_reaction("Sonogashira alkyne_aryl OTf", rxn_smiles)
+            )
 
-                # Check for various ester hydrolysis reaction types
-                is_hydrolysis = checker.check_reaction(
-                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-                )
-                is_saponification_methyl = checker.check_reaction(
-                    "Ester saponification (methyl deprotection)", rsmi
-                )
-                is_saponification_alkyl = checker.check_reaction(
-                    "Ester saponification (alkyl deprotection)", rsmi
-                )
+            if is_sonogashira:
+                print(f"Found Sonogashira coupling at depth {depth}: {rxn_smiles}")
 
-                if is_hydrolysis or is_saponification_methyl or is_saponification_alkyl:
-                    reaction_type = "hydrolysis" if is_hydrolysis else "saponification"
-                    print(f"Found {reaction_type} reaction: {rsmi}")
+                # Check if the product contains a diarylacetylene scaffold
+                try:
+                    product = rxn_smiles.split(">")[-1]
 
-                    # Verify ester in reactants and carboxylic acid in product
-                    ester_in_reactants = False
-                    for reactant in reactants:
-                        if checker.check_fg("Ester", reactant):
-                            ester_in_reactants = True
-                            print(f"Found ester in reactant: {reactant}")
-                            break
+                    # Check for alkyne group
+                    has_alkyne = checker.check_fg("Alkyne", product)
 
-                    acid_in_product = checker.check_fg("Carboxylic acid", product)
-                    if acid_in_product:
-                        print(f"Found carboxylic acid in product: {product}")
+                    # Check if the alkyne connects two aromatic rings
+                    mol = Chem.MolFromSmiles(product)
+                    if mol and has_alkyne:
+                        # Find alkyne bonds
+                        alkyne_bonds = [
+                            bond.GetIdx()
+                            for bond in mol.GetBonds()
+                            if bond.GetBondType() == Chem.BondType.TRIPLE
+                        ]
 
-                    if ester_in_reactants and acid_in_product:
-                        print("Confirmed late-stage ester hydrolysis")
-                        ester_hydrolysis_found = True
-                else:
-                    # Manual check for ester to acid conversion if reaction type check failed
-                    print("Standard reaction checks failed, performing manual verification")
-                    ester_in_reactants = any(
-                        checker.check_fg("Ester", reactant) for reactant in reactants
-                    )
-                    acid_in_product = checker.check_fg("Carboxylic acid", product)
+                        for bond_idx in alkyne_bonds:
+                            bond = mol.GetBondWithIdx(bond_idx)
+                            begin_atom = bond.GetBeginAtomIdx()
+                            end_atom = bond.GetEndAtomIdx()
 
-                    # Additional check: look for sodium or other bases in reagents
-                    reagents = rsmi.split(">")[1].split(".")
-                    has_base = any("[Na+]" in reagent for reagent in reagents)
-                    has_water = any(reagent.strip() == "O" for reagent in reagents)
+                            # Check if both atoms connected to the alkyne are part of aromatic rings
+                            begin_aromatic = False
+                            end_aromatic = False
 
-                    if ester_in_reactants and acid_in_product and (has_base or has_water):
-                        print("Manually confirmed ester hydrolysis with base/water present")
-                        ester_hydrolysis_found = True
+                            for ring in mol.GetSSSR():
+                                ring_atoms = set(ring)
+                                if (
+                                    begin_atom in ring_atoms
+                                    and mol.GetAtomWithIdx(begin_atom).GetIsAromatic()
+                                ):
+                                    begin_aromatic = True
+                                if (
+                                    end_atom in ring_atoms
+                                    and mol.GetAtomWithIdx(end_atom).GetIsAromatic()
+                                ):
+                                    end_aromatic = True
 
-        # Continue traversing
+                            if begin_aromatic and end_aromatic:
+                                found_diarylacetylene = True
+                                diarylacetylene_product = product
+                                print(f"Confirmed diarylacetylene scaffold in product: {product}")
+                                break
+                except Exception as e:
+                    print(f"Error analyzing Sonogashira product: {e}")
+
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs(child, depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
-    return ester_hydrolysis_found
+    # Start DFS traversal from the root
+    dfs(route)
+    return found_diarylacetylene, diarylacetylene_product

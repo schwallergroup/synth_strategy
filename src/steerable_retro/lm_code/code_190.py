@@ -2,77 +2,98 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving multiple amide bond formations.
+    Detects if the synthesis includes an amine to nitro transformation.
+    In retrosynthetic direction, this means detecting nitro reduction to amine.
     """
-    amide_formation_count = 0
+    transformation_found = False
 
-    def dfs_traverse(node):
-        nonlocal amide_formation_count
+    def dfs_traverse(node, depth=0):
+        nonlocal transformation_found
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for amide formation patterns
-                product_mol = Chem.MolFromSmiles(product)
+            # In retrosynthesis, we're looking for nitro reduction to amine
+            # So check for nitro in reactants and amine in product
 
-                if product_mol:
-                    # Look for new amide bond in product
-                    amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+            # First check if this is a nitro reduction reaction
+            if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                print(f"Found nitro reduction reaction at depth {depth}: {rsmi}")
+                transformation_found = True
+                return
 
-                    if product_mol.HasSubstructMatch(amide_pattern):
-                        # Check if reactants include acid/acid derivative and amine
-                        has_acid = False
-                        has_amine = False
+            # If specific reaction check fails, check for the functional groups
+            nitro_in_reactants = False
+            for r_smi in reactants_smiles:
+                if checker.check_fg("Nitro group", r_smi):
+                    nitro_in_reactants = True
+                    break
 
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                # Check for acid/acid chloride/ester
-                                if reactant_mol.HasSubstructMatch(
-                                    Chem.MolFromSmarts("[C](=[O])[O,Cl]")
-                                ):
-                                    has_acid = True
-                                # Check for amine
-                                if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[N]")):
-                                    has_amine = True
+            amine_in_product = checker.check_fg("Primary amine", product_smiles)
 
-                        if has_acid and has_amine:
-                            amide_formation_count += 1
-                            print(f"Detected amide formation: {rsmi}")
+            if nitro_in_reactants and amine_in_product:
+                # Additional verification could be done here with atom mapping
+                # to ensure the nitro group is converted to the amine
+                print(f"Found potential nitro to amine transformation at depth {depth}")
+                transformation_found = True
 
-        # Traverse children
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if there are multiple amide formations
-    if amide_formation_count >= 2:
-        print(f"Detected multiple amide formation strategy with {amide_formation_count} instances")
-        return True
-    return False
+    return transformation_found

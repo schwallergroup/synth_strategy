@@ -2,104 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving tosylate formation
-    followed by ether formation via tosylate displacement.
+    This function detects late-stage coupling of a piperazine moiety.
     """
-    # Track if we found the required reactions
-    found_tosylate_formation = False
-    found_ether_formation = False
+    late_stage_piperazine = False
 
-    def dfs_traverse(node):
-        nonlocal found_tosylate_formation, found_ether_formation
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_piperazine
 
-        if node["type"] == "reaction":
-            # Extract reactants and product from reaction SMILES
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
-
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for tosylate formation (alcohol + sulfonyl chloride)
-            if not found_tosylate_formation:
-                alcohol_pattern = Chem.MolFromSmarts("[OH]")
-                sulfonyl_chloride_pattern = Chem.MolFromSmarts("ClS(=O)(=O)c")
-                tosylate_pattern = Chem.MolFromSmarts("OS(=O)(=O)c")
+            # Check if this is a late stage reaction (depth 0 or 1)
+            if depth <= 1:
+                # Check for piperazine in reactants
+                piperazine_pattern = Chem.MolFromSmarts("[N]1CCN([C,H])CC1")
 
-                has_alcohol = any(
-                    Chem.MolFromSmiles(r)
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(alcohol_pattern)
-                    for r in reactants
-                    if r
-                )
-                has_sulfonyl_chloride = any(
-                    Chem.MolFromSmiles(r)
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(sulfonyl_chloride_pattern)
-                    for r in reactants
-                    if r
-                )
-                product_mol = Chem.MolFromSmiles(product) if product else None
-                has_tosylate_product = product_mol and product_mol.HasSubstructMatch(
-                    tosylate_pattern
-                )
+                for reactant in reactants:
+                    try:
+                        r_mol = Chem.MolFromSmiles(reactant)
+                        if r_mol and r_mol.HasSubstructMatch(piperazine_pattern):
+                            # Check if product has piperazine connected to aromatic
+                            p_mol = Chem.MolFromSmiles(product)
+                            if p_mol:
+                                piperazine_aromatic_pattern = Chem.MolFromSmarts(
+                                    "[n,c]~[N]1CCN([C,H])CC1"
+                                )
+                                if p_mol.HasSubstructMatch(piperazine_aromatic_pattern):
+                                    print("Found late-stage piperazine coupling")
+                                    late_stage_piperazine = True
+                    except:
+                        continue
 
-                if has_alcohol and has_sulfonyl_chloride and has_tosylate_product:
-                    found_tosylate_formation = True
-                    print("Found tosylate formation reaction")
-
-            # Check for ether formation via tosylate displacement
-            if not found_ether_formation:
-                phenol_pattern = Chem.MolFromSmarts("c[OH]")
-                tosylate_pattern = Chem.MolFromSmarts("OS(=O)(=O)c")
-                ether_pattern = Chem.MolFromSmarts("cO[#6]")
-
-                has_phenol = any(
-                    Chem.MolFromSmiles(r)
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(phenol_pattern)
-                    for r in reactants
-                    if r
-                )
-                has_tosylate = any(
-                    Chem.MolFromSmiles(r)
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(tosylate_pattern)
-                    for r in reactants
-                    if r
-                )
-                product_mol = Chem.MolFromSmiles(product) if product else None
-                has_ether_product = product_mol and product_mol.HasSubstructMatch(ether_pattern)
-
-                if has_phenol and has_tosylate and has_ether_product:
-                    found_ether_formation = True
-                    print("Found ether formation via tosylate displacement")
-
-        # Continue traversing the tree
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    # Return True if both reactions were found
-    return found_tosylate_formation and found_ether_formation
+    return late_stage_piperazine

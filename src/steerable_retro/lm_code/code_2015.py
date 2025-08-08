@@ -2,125 +2,91 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if reductive amination is used to introduce amine functionality.
-    It looks for aldehyde/ketone + amine -> amine transformation.
+    Detects if the synthesis route uses a late-stage SNAr coupling (depth 0-1)
+    between an amine nucleophile and a halogen-substituted aromatic/heteroaromatic.
     """
-    reductive_amination_found = False
+    snar_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal reductive_amination_found
+        nonlocal snar_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if this is a reductive amination reaction directly
-            if checker.check_reaction("reductive amination with aldehyde", rsmi):
-                print(f"Found reductive amination with aldehyde at depth {depth}")
-                reductive_amination_found = True
-                return
+                # Check for amine nucleophile
+                amine_pattern = Chem.MolFromSmarts("[NH1,NH2]")
+                # Check for halogen-substituted aromatic/heteroaromatic
+                halo_aromatic_pattern = Chem.MolFromSmarts("c[Cl,F,Br]")
+                halo_hetero_pattern = Chem.MolFromSmarts("n[Cl,F,Br]")
 
-            if checker.check_reaction("reductive amination with ketone", rsmi):
-                print(f"Found reductive amination with ketone at depth {depth}")
-                reductive_amination_found = True
-                return
+                # Check reactants for patterns
+                amine_present = False
+                halo_present = False
 
-            if checker.check_reaction("reductive amination with alcohol", rsmi):
-                print(f"Found reductive amination with alcohol at depth {depth}")
-                reductive_amination_found = True
-                return
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(amine_pattern):
+                            amine_present = True
+                        if mol.HasSubstructMatch(halo_aromatic_pattern) or mol.HasSubstructMatch(
+                            halo_hetero_pattern
+                        ):
+                            halo_present = True
 
-            # If direct reaction check fails, check for the pattern manually
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                # Check if product has new C-N bond
+                if amine_present and halo_present:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol:
+                        # If both patterns were in reactants and product has fewer halogens,
+                        # likely an SNAr reaction occurred
+                        reactant_halo_count = sum(
+                            len(
+                                Chem.MolFromSmiles(r).GetSubstructMatches(
+                                    Chem.MolFromSmarts("[Cl,F,Br]")
+                                )
+                            )
+                            for r in reactants
+                            if Chem.MolFromSmiles(r)
+                        )
+                        product_halo_count = len(
+                            prod_mol.GetSubstructMatches(Chem.MolFromSmarts("[Cl,F,Br]"))
+                        )
 
-            has_aldehyde = False
-            has_ketone = False
-            has_amine = False
-
-            # Check reactants for required functional groups
-            for reactant in reactants:
-                if checker.check_fg("Aldehyde", reactant):
-                    print(f"Found aldehyde in reactant: {reactant}")
-                    has_aldehyde = True
-                if checker.check_fg("Ketone", reactant):
-                    print(f"Found ketone in reactant: {reactant}")
-                    has_ketone = True
-                if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                    "Secondary amine", reactant
-                ):
-                    print(f"Found amine in reactant: {reactant}")
-                    has_amine = True
-
-            # Check if product has amine but no carbonyl
-            if (has_aldehyde or has_ketone) and has_amine:
-                if (
-                    checker.check_fg("Primary amine", product)
-                    or checker.check_fg("Secondary amine", product)
-                    or checker.check_fg("Tertiary amine", product)
-                ):
-                    # Check that product doesn't have the original carbonyl
-                    if not (
-                        checker.check_fg("Aldehyde", product) or checker.check_fg("Ketone", product)
-                    ):
-                        print(f"Found pattern consistent with reductive amination at depth {depth}")
-                        print(f"Reactants: {reactants}")
-                        print(f"Product: {product}")
-                        reductive_amination_found = True
+                        if product_halo_count < reactant_halo_count:
+                            print(f"SNAr coupling detected at depth {depth}")
+                            snar_detected = True
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return reductive_amination_found
+    return snar_detected

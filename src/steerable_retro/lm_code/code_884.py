@@ -2,73 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route employs an early-stage benzylation strategy,
-    where a benzyl group is attached to a thiophene core.
+    This function detects if the synthetic route follows a linear strategy without
+    convergent steps.
     """
-    benzylation_detected = False
+    is_linear = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal benzylation_detected
+    def count_reactants(reaction_node):
+        if "rsmi" in reaction_node.get("metadata", {}):
+            rsmi = reaction_node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            return len(reactants)
+        return 0
 
-        if node["type"] == "reaction" and depth >= 3:  # Focus on early-stage reactions
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+    def dfs_traverse(node):
+        nonlocal is_linear
 
-                # Check for thiophene in reactants
-                thiophene_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#16][#6]1")
-                # Check for benzyl bromide in reactants
-                benzyl_bromide_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6][#6][#6]1[C][Br]")
-                # Check for benzylated thiophene in product
-                benzylated_thiophene_pattern = Chem.MolFromSmarts(
-                    "[#6]1[#6][#6][#16][#6]1[C][#6]2[#6][#6][#6][#6][#6]2"
-                )
+        if node["type"] == "reaction":
+            # If a reaction has more than 2 reactants, it might be convergent
+            reactant_count = count_reactants(node)
+            if reactant_count > 2:
+                is_linear = False
+                print(f"Found potential convergent step with {reactant_count} reactants")
 
-                thiophene_present = False
-                benzyl_bromide_present = False
-
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(thiophene_pattern):
-                            thiophene_present = True
-                        if mol.HasSubstructMatch(benzyl_bromide_pattern):
-                            benzyl_bromide_present = True
-
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    thiophene_present
-                    and benzyl_bromide_present
-                    and product_mol
-                    and product_mol.HasSubstructMatch(benzylated_thiophene_pattern)
-                ):
-                    print(f"Early-stage benzylation detected at depth {depth}")
-                    benzylation_detected = True
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return benzylation_detected
+    return is_linear

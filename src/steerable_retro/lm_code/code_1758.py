@@ -2,133 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the transformation of a ketone to an oxime.
+    Detects if the synthesis uses a convergent approach where two complex fragments
+    are prepared separately and then connected in a late-stage coupling reaction.
     """
-    oxime_formation_found = False
+    # Initialize tracking variables
+    fragment_count = 0
+    late_stage_coupling = False
 
-    def dfs_traverse(node):
-        nonlocal oxime_formation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal fragment_count, late_stage_coupling
 
         if node["type"] == "reaction":
-            try:
-                if "rsmi" in node.get("metadata", {}):
-                    rsmi = node["metadata"]["rsmi"]
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                    print(f"Analyzing reaction: {rsmi}")
-
-                    # Check if this is a ketone to oxime transformation reaction
-                    # First check if any reactant contains a ketone
-                    ketone_in_reactants = False
-                    for r in reactants:
-                        try:
-                            if checker.check_fg("Ketone", r):
-                                ketone_in_reactants = True
-                                print(f"Found ketone in reactant: {r}")
-                                break
-                        except Exception as e:
-                            print(f"Error checking ketone in reactant {r}: {e}")
-
-                    # Check if product contains an oxime
-                    oxime_in_product = False
+            # Check for late-stage coupling (depth 0 or 1)
+            if depth <= 1:
+                # Count complex reactants (those with more than 10 atoms)
+                complex_reactants = 0
+                for reactant in reactants:
                     try:
-                        if checker.check_fg("Oxime", product):
-                            oxime_in_product = True
-                            print(f"Found oxime in product: {product}")
-                        else:
-                            print(f"No oxime found in product: {product}")
-                    except Exception as e:
-                        print(f"Error checking oxime in product {product}: {e}")
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.GetNumAtoms() > 10:
+                            complex_reactants += 1
+                    except:
+                        continue
 
-                    # Check if this is a ketone to oxime transformation
-                    if ketone_in_reactants and oxime_in_product:
-                        # Check for hydroxylamine or its derivatives in reactants
-                        hydroxylamine_present = False
-                        for r in reactants:
-                            try:
-                                # More comprehensive check for hydroxylamine
-                                if "[NH2][OH]" in r or "NH2OH" in r or r.upper() == "NH2OH":
-                                    hydroxylamine_present = True
-                                    print(f"Found hydroxylamine reagent: {r}")
-                                    break
-                                # Check for hydroxylamine pattern in atom-mapped SMILES
-                                elif "[NH2:15][OH:16]" in r or "[NH2:15]O[H:16]" in r:
-                                    hydroxylamine_present = True
-                                    print(f"Found atom-mapped hydroxylamine reagent: {r}")
-                                    break
-                            except Exception as e:
-                                print(f"Error checking hydroxylamine in reactant {r}: {e}")
+                # If we have at least 2 complex reactants, it's likely a convergent coupling
+                if complex_reactants >= 2:
+                    fragment_count = complex_reactants
+                    late_stage_coupling = True
+                    print(
+                        f"Detected late-stage coupling with {complex_reactants} complex fragments at depth {depth}"
+                    )
 
-                        # If we found hydroxylamine or the reaction involves ketone to oxime transformation
-                        if hydroxylamine_present:
-                            oxime_formation_found = True
-                            print("Confirmed ketone to oxime transformation with hydroxylamine")
-                        else:
-                            # Check if any reactant contains NH2OH pattern
-                            for r in reactants:
-                                if "NH2" in r and "OH" in r:
-                                    print(f"Found potential hydroxylamine pattern in: {r}")
-                                    oxime_formation_found = True
-                                    print(
-                                        "Confirmed ketone to oxime transformation with potential hydroxylamine"
-                                    )
-                                    break
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from root
     dfs_traverse(route)
-    print(f"Final result: oxime_formation_found = {oxime_formation_found}")
-    return oxime_formation_found
+
+    # Return True if we have a late-stage coupling with at least 2 fragments
+    strategy_present = late_stage_coupling and fragment_count >= 2
+    print(f"Convergent synthesis strategy detected: {strategy_present}")
+    return strategy_present

@@ -2,111 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves nitrile chemistry,
-    particularly the introduction of a nitrile group or transformations of nitriles.
+    Detects if the synthesis follows a linear pattern (no convergent steps).
+
+    A linear synthesis has no convergent steps, meaning each reaction has at most
+    one non-stock (synthesized) reactant. In the retrosynthetic tree, this means
+    each reaction node has at most one child that is a non-stock molecule.
     """
-    nitrile_chemistry_detected = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal nitrile_chemistry_detected
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Count non-stock molecule children
+            non_stock_children = 0
 
-            # Check for nitrile introduction
-            product_has_nitrile = checker.check_fg("Nitrile", product)
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    non_stock_children += 1
 
-            if product_has_nitrile:
-                # Check if nitrile is introduced (not present in all reactants)
-                all_reactants_have_nitrile = all(checker.check_fg("Nitrile", r) for r in reactants)
+            # If more than one non-stock child, it's a convergent synthesis
+            if non_stock_children > 1:
+                is_linear = False
+                print(f"Found convergent step with {non_stock_children} non-stock reactants")
 
-                if not all_reactants_have_nitrile:
-                    print(f"Nitrile introduction detected in reaction: {rsmi}")
-                    nitrile_chemistry_detected = True
+        # Continue traversal if still potentially linear
+        if is_linear:
+            for child in node.get("children", []):
+                dfs_traverse(child)
 
-            # Check for nitrile transformations
-            reactants_have_nitrile = any(checker.check_fg("Nitrile", r) for r in reactants)
-
-            if reactants_have_nitrile:
-                # Check for common nitrile transformations
-                if checker.check_reaction("Nitrile to amide", rsmi):
-                    print(f"Nitrile to amide transformation detected: {rsmi}")
-                    nitrile_chemistry_detected = True
-                elif checker.check_reaction("Oxidation of nitrile to carboxylic acid", rsmi):
-                    print(f"Nitrile to carboxylic acid transformation detected: {rsmi}")
-                    nitrile_chemistry_detected = True
-                elif checker.check_reaction("Reduction of nitrile to amine", rsmi):
-                    print(f"Nitrile to amine reduction detected: {rsmi}")
-                    nitrile_chemistry_detected = True
-                elif checker.check_reaction("Grignard from nitrile to ketone", rsmi):
-                    print(f"Nitrile to ketone via Grignard detected: {rsmi}")
-                    nitrile_chemistry_detected = True
-
-                # Check if nitrile is being used in heterocycle formation
-                if not product_has_nitrile and (
-                    checker.check_reaction("Azide-nitrile click cycloaddition to tetrazole", rsmi)
-                    or checker.check_reaction("Azide-nitrile click cycloaddition to triazole", rsmi)
-                    or checker.check_reaction("tetrazole_terminal", rsmi)
-                ):
-                    print(f"Nitrile used in heterocycle formation: {rsmi}")
-                    nitrile_chemistry_detected = True
-
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child)
-
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return nitrile_chemistry_detected
+    return is_linear

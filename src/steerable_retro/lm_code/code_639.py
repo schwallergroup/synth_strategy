@@ -2,75 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving late-stage incorporation
-    of heterocycles, particularly thiadiazole in the final step.
+    Detects synthesis involving a thioether linker connecting heterocyclic systems.
     """
-    depth_of_heterocycle_addition = None
-    max_depth = -1
+    has_thioether_linker = False
+    has_connected_heterocycles = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal depth_of_heterocycle_addition, max_depth
+        nonlocal has_thioether_linker, has_connected_heterocycles
 
-        max_depth = max(max_depth, depth)
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for thioether linker
+                thioether_linker = Chem.MolFromSmarts("[#6][#16][#6][#6][#7]")
+                if mol.HasSubstructMatch(thioether_linker):
+                    has_thioether_linker = True
+                    print("Detected thioether linker")
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Check for connected heterocycles
+                thiophene = Chem.MolFromSmarts("c1cccs1")
+                pyridine = Chem.MolFromSmarts("c1ccncc1")
+                pyrimidinone = Chem.MolFromSmarts("c1nc(=O)[nH]cc1")
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+                if mol.HasSubstructMatch(thiophene) and (
+                    mol.HasSubstructMatch(pyridine) or mol.HasSubstructMatch(pyrimidinone)
+                ):
+                    has_connected_heterocycles = True
+                    print("Detected connected heterocycles")
 
-            if product and all(r for r in reactants):
-                # Check for thiadiazole pattern
-                thiadiazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#6][#7][#16]1")
-
-                # Check if thiadiazole is in reactants but not in product (addition)
-                has_thiadiazole_reactant = any(
-                    r.HasSubstructMatch(thiadiazole_pattern) for r in reactants if r
-                )
-                has_thiadiazole_product = product.HasSubstructMatch(thiadiazole_pattern)
-
-                if has_thiadiazole_reactant and has_thiadiazole_product:
-                    if (
-                        depth_of_heterocycle_addition is None
-                        or depth < depth_of_heterocycle_addition
-                    ):
-                        depth_of_heterocycle_addition = depth
-                        print(f"Detected heterocycle incorporation at depth {depth}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Consider it late-stage if it happens in the first half of the synthesis
-    # (remember depth 0 is the final product)
-    return (
-        depth_of_heterocycle_addition is not None and depth_of_heterocycle_addition <= max_depth / 2
-    )
+    result = has_thioether_linker and has_connected_heterocycles
+    print(f"Heterocycle containing thioether linker: {result}")
+    return result

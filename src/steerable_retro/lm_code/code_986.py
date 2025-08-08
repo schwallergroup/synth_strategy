@@ -2,67 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes multiple amide bond formation steps.
+    This function detects if the synthesis involves a beta-lactam core structure
+    that is preserved throughout the synthesis.
     """
-    amide_formation_count = 0
+    # Beta-lactam is a 4-membered ring with N and C=O
+    # Define the beta-lactam pattern correctly
+    beta_lactam_pattern = Chem.MolFromSmarts("[#6]1[#6](=[O])[#7][#6]1")
 
-    def dfs_traverse(node):
-        nonlocal amide_formation_count
+    # Track if we've found a beta-lactam that's preserved
+    beta_lactam_preserved = [False]
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+    def check_beta_lactam(smiles):
+        """Helper function to check if a molecule contains a beta-lactam"""
+        mol = Chem.MolFromSmiles(smiles)
+        if mol and mol.HasSubstructMatch(beta_lactam_pattern):
+            return True
+        return False
+
+    def dfs_traverse(node, depth=0):
+        # Check molecule nodes for beta-lactam
+        if node["type"] == "mol" and "smiles" in node:
+            if check_beta_lactam(node["smiles"]):
+                print(f"Beta-lactam found in molecule at depth {depth}: {node['smiles']}")
+
+                # If this is the final product (depth 0), mark as preserved initially
+                if depth == 0:
+                    beta_lactam_preserved[0] = True
+
+        # Check reaction nodes to see if beta-lactam is preserved
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            try:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for carboxylic acid in reactants
-                acid_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#8;H1,-]")
-                amine_pattern = Chem.MolFromSmarts("[#7;!$(NC=O);!$(N=*);!$([#7]-[#7])]")
-                amide_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#7]")
+                product_has_beta_lactam = check_beta_lactam(product)
+                reactant_has_beta_lactam = any(check_beta_lactam(r) for r in reactants)
 
-                # Check if reactants contain acid and amine, and product contains amide
-                reactants_have_acid = any(
-                    Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(acid_pattern)
-                    for r in reactants
-                    if Chem.MolFromSmiles(r)
-                )
-                reactants_have_amine = any(
-                    Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(amine_pattern)
-                    for r in reactants
-                    if Chem.MolFromSmiles(r)
-                )
-                product_has_amide = Chem.MolFromSmiles(product) and Chem.MolFromSmiles(
-                    product
-                ).HasSubstructMatch(amide_pattern)
+                # If the product has a beta-lactam but no reactant does, it's formed in this step
+                # If a reactant has a beta-lactam but the product doesn't, it's destroyed
+                if product_has_beta_lactam and not reactant_has_beta_lactam:
+                    print(f"Beta-lactam formed in reaction at depth {depth}: {rsmi}")
+                    beta_lactam_preserved[0] = False
+                elif not product_has_beta_lactam and reactant_has_beta_lactam:
+                    print(f"Beta-lactam destroyed in reaction at depth {depth}: {rsmi}")
+                    beta_lactam_preserved[0] = False
+            except Exception as e:
+                print(f"Error analyzing reaction at depth {depth}: {e}")
 
-                if reactants_have_acid and reactants_have_amine and product_has_amide:
-                    amide_formation_count += 1
-                    print(f"Detected amide bond formation. Total count: {amide_formation_count}")
-
+        # Continue traversing children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return amide_formation_count >= 2  # Return True if at least 2 amide formations are detected
+    return beta_lactam_preserved[0]

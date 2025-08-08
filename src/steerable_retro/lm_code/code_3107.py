@@ -2,75 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects amide formation from acid chloride and amine.
+    Detects if the synthesis follows a linear pattern without convergent branches
     """
-    has_amide_formation = False
+    # Track the maximum branching factor
+    max_branching = 0
 
-    def dfs_traverse(node):
-        nonlocal has_amide_formation
+    def dfs_traverse(node, depth=0):
+        nonlocal max_branching
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
-
+            # Count the number of reactants
+            rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            branching = len(reactants)
+            max_branching = max(max_branching, branching)
 
-            # Check for acid chloride and amine patterns in reactants
-            has_acid_chloride = False
-            has_amine = False
-
-            for reactant in reactants:
-                r_mol = Chem.MolFromSmiles(reactant)
-                if not r_mol:
-                    continue
-
-                acid_chloride_patt = Chem.MolFromSmarts("[C](=O)[Cl]")
-                if r_mol.HasSubstructMatch(acid_chloride_patt):
-                    has_acid_chloride = True
-
-                amine_patt = Chem.MolFromSmarts("[NH2]")
-                if r_mol.HasSubstructMatch(amine_patt):
-                    has_amine = True
-
-            # Check for amide pattern in product
-            p_mol = Chem.MolFromSmiles(product)
-            has_amide = False
-            if p_mol:
-                amide_patt = Chem.MolFromSmarts("[C](=O)[NH]")
-                if p_mol.HasSubstructMatch(amide_patt):
-                    has_amide = True
-
-            if has_acid_chloride and has_amine and has_amide:
-                has_amide_formation = True
-                print("Detected amide formation from acid chloride and amine")
-
-        # Continue traversing
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    return has_amide_formation
+
+    # If max_branching is consistently 2 or less, it's likely a linear synthesis
+    # (one main reactant plus one reagent/functional group)
+    is_linear = max_branching <= 2
+    print(f"Maximum branching factor: {max_branching}, Linear synthesis: {is_linear}")
+
+    return is_linear

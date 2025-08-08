@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,161 +54,143 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthesis strategy involving alcohol protection with silyl groups.
-    It checks for both protection and deprotection steps and verifies that the protected
-    intermediate is used in at least one reaction before deprotection.
+    Detects a synthetic strategy involving late-stage N-alkylation with halogenated intermediates,
+    connecting complex heterocyclic fragments.
     """
-    # Track protected molecules and their deprotection
-    protected_molecules = {}  # product SMILES -> depth
-    deprotected_molecules = {}  # product SMILES -> depth
-    protection_reactions = []
-    deprotection_reactions = []
+    n_alkylation_found = False
+    ketone_to_alcohol_found = False
+
+    # List of heterocyclic rings to check
+    heterocyclic_rings = [
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+        "furan",
+        "thiophene",
+    ]
+
+    def has_heterocycle(smiles):
+        """Check if a molecule contains heterocyclic rings"""
+        for ring in heterocyclic_rings:
+            if checker.check_ring(ring, smiles):
+                print(f"Found heterocycle {ring} in {smiles}")
+                return True
+        return False
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        nonlocal n_alkylation_found, ketone_to_alcohol_found
 
-            # Check for alcohol protection with silyl group
-            is_protection = checker.check_reaction("Alcohol protection with silyl ethers", rsmi)
-            print(f"Checking protection at depth {depth}: {rsmi}, is_protection={is_protection}")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            if is_protection:
-                # Verify reactant has alcohol group
-                for reactant in reactants:
-                    has_alcohol = (
-                        checker.check_fg("Primary alcohol", reactant)
-                        or checker.check_fg("Secondary alcohol", reactant)
-                        or checker.check_fg("Tertiary alcohol", reactant)
-                        or checker.check_fg("Aromatic alcohol", reactant)
+                print(f"Checking reaction at depth {depth}: {rsmi}")
+
+                # Check for N-alkylation at late stage (depth 0-1)
+                if depth <= 1:
+                    # Check for N-alkylation reaction
+                    is_n_alkylation = checker.check_reaction(
+                        "N-alkylation of primary amines with alkyl halides", rsmi
+                    ) or checker.check_reaction(
+                        "N-alkylation of secondary amines with alkyl halides", rsmi
                     )
 
-                    # Verify product has silyl group
-                    has_silyl = checker.check_fg(
-                        "Silyl protective group", product
-                    ) or checker.check_fg("TMS ether protective group", product)
+                    # Fallback to checking functional groups if reaction check fails
+                    if not is_n_alkylation:
+                        # Check for halides and amines in reactants
+                        has_halide = any(
+                            checker.check_fg("Primary halide", r)
+                            or checker.check_fg("Secondary halide", r)
+                            or checker.check_fg("Tertiary halide", r)
+                            for r in reactants_smiles
+                        )
 
-                    print(f"  Reactant {reactant[:30]}... has_alcohol={has_alcohol}")
-                    print(f"  Product {product[:30]}... has_silyl={has_silyl}")
+                        has_amine = any(
+                            checker.check_fg("Primary amine", r)
+                            or checker.check_fg("Secondary amine", r)
+                            for r in reactants_smiles
+                        )
 
-                    if has_alcohol and has_silyl:
-                        protected_molecules[product] = depth
-                        protection_reactions.append(rsmi)
-                        print(f"Found alcohol protection with silyl group at depth {depth}")
+                        # Check if product has a tertiary amine (result of N-alkylation)
+                        has_tertiary_amine_product = checker.check_fg(
+                            "Tertiary amine", product_smiles
+                        )
 
-            # Check for alcohol deprotection from silyl ethers
-            is_deprotection = (
-                checker.check_reaction("Alcohol deprotection from silyl ethers", rsmi)
-                or checker.check_reaction("Alcohol deprotection from silyl ethers (double)", rsmi)
-                or checker.check_reaction("Alcohol deprotection from silyl ethers (diol)", rsmi)
-            )
+                        is_n_alkylation = has_halide and has_amine and has_tertiary_amine_product
 
-            print(
-                f"Checking deprotection at depth {depth}: {rsmi}, is_deprotection={is_deprotection}"
-            )
+                    # Verify that heterocyclic fragments are being connected
+                    if is_n_alkylation:
+                        # Check if reactants contain heterocycles
+                        heterocycles_in_reactants = sum(
+                            has_heterocycle(r) for r in reactants_smiles
+                        )
 
-            if is_deprotection:
-                # Verify reactant has silyl group
-                for reactant in reactants:
-                    has_silyl = checker.check_fg(
-                        "Silyl protective group", reactant
-                    ) or checker.check_fg("TMS ether protective group", reactant)
+                        # Check if product contains heterocycles
+                        heterocycles_in_product = has_heterocycle(product_smiles)
 
-                    # Verify product has alcohol group
-                    has_alcohol = (
-                        checker.check_fg("Primary alcohol", product)
-                        or checker.check_fg("Secondary alcohol", product)
-                        or checker.check_fg("Tertiary alcohol", product)
-                        or checker.check_fg("Aromatic alcohol", product)
+                        # N-alkylation should connect heterocyclic fragments
+                        if heterocycles_in_reactants >= 1 and heterocycles_in_product:
+                            n_alkylation_found = True
+                            print(
+                                f"Found late-stage N-alkylation connecting heterocycles at depth {depth}: {rsmi}"
+                            )
+
+                # Check for ketone to alcohol reduction at early-mid stage (depth 2-3)
+                if 2 <= depth <= 3:
+                    # Check for reduction reaction
+                    is_reduction = checker.check_reaction(
+                        "Reduction of aldehydes and ketones to alcohols", rsmi
                     )
 
-                    print(f"  Reactant {reactant[:30]}... has_silyl={has_silyl}")
-                    print(f"  Product {product[:30]}... has_alcohol={has_alcohol}")
+                    # Fallback to checking functional groups if reaction check fails
+                    if not is_reduction:
+                        # Check for ketone in reactants and alcohol in product
+                        has_ketone = any(checker.check_fg("Ketone", r) for r in reactants_smiles)
 
-                    if has_silyl and has_alcohol:
-                        deprotected_molecules[product] = depth
-                        deprotection_reactions.append(rsmi)
-                        print(f"Found alcohol deprotection from silyl ethers at depth {depth}")
+                        has_alcohol = (
+                            checker.check_fg("Primary alcohol", product_smiles)
+                            or checker.check_fg("Secondary alcohol", product_smiles)
+                            or checker.check_fg("Tertiary alcohol", product_smiles)
+                        )
 
-            # Fallback: Check for pattern-based protection/deprotection if reaction check failed
-            if not is_protection and not is_deprotection:
-                # Check if this might be a protection reaction not properly classified
-                for reactant in reactants:
-                    if (
-                        checker.check_fg("Primary alcohol", reactant)
-                        or checker.check_fg("Secondary alcohol", reactant)
-                        or checker.check_fg("Tertiary alcohol", reactant)
-                        or checker.check_fg("Aromatic alcohol", reactant)
-                    ):
+                        is_reduction = has_ketone and has_alcohol
 
-                        # Look for silyl reagents in other reactants
-                        silyl_reagent_present = any("Si" in r for r in reactants if r != reactant)
-
-                        if silyl_reagent_present and (
-                            checker.check_fg("Silyl protective group", product)
-                            or checker.check_fg("TMS ether protective group", product)
+                    # Verify that the reduction is relevant to a heterocyclic system
+                    if is_reduction:
+                        # Check if reactants or product contain heterocycles
+                        if any(has_heterocycle(r) for r in reactants_smiles) or has_heterocycle(
+                            product_smiles
                         ):
+                            ketone_to_alcohol_found = True
                             print(
-                                f"Found potential silyl protection via pattern matching at depth {depth}"
+                                f"Found ketone to alcohol reduction related to heterocycles at depth {depth}: {rsmi}"
                             )
-                            protected_molecules[product] = depth
-                            protection_reactions.append(rsmi)
 
-                # Check if this might be a deprotection reaction not properly classified
-                for reactant in reactants:
-                    if checker.check_fg("Silyl protective group", reactant) or checker.check_fg(
-                        "TMS ether protective group", reactant
-                    ):
-
-                        if (
-                            checker.check_fg("Primary alcohol", product)
-                            or checker.check_fg("Secondary alcohol", product)
-                            or checker.check_fg("Tertiary alcohol", product)
-                            or checker.check_fg("Aromatic alcohol", product)
-                        ):
-                            print(
-                                f"Found potential silyl deprotection via pattern matching at depth {depth}"
-                            )
-                            deprotected_molecules[product] = depth
-                            deprotection_reactions.append(rsmi)
-
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Protected molecules: {len(protected_molecules)}")
-    print(f"Deprotected molecules: {len(deprotected_molecules)}")
-    print(f"Protection reactions: {len(protection_reactions)}")
-    print(f"Deprotection reactions: {len(deprotection_reactions)}")
-
-    # Check if we have both protection and deprotection steps
-    if protection_reactions and deprotection_reactions:
-        # Check if any protected molecule was used in intermediate steps
-        # In retrosynthesis, protection (earlier) should have higher depth than deprotection (later)
-        for prot_depth in protected_molecules.values():
-            for deprot_depth in deprotected_molecules.values():
-                print(f"Comparing depths: protection={prot_depth}, deprotection={deprot_depth}")
-                if (
-                    prot_depth > deprot_depth
-                ):  # Protection happened before deprotection in retrosynthesis
-                    print(
-                        "Found complete alcohol protection-deprotection strategy with silyl ethers"
-                    )
-                    return True
-
-    # If we have at least one protection step, consider it a partial strategy
-    if protection_reactions:
-        print(
-            "Found alcohol protection with silyl ethers, but no clear protection-deprotection strategy"
-        )
-        return True
-
-    # If we have at least one deprotection step, it's still a silyl strategy
-    if deprotection_reactions:
-        print("Found alcohol deprotection from silyl ethers, but no clear protection step")
-        return True
-
-    print("No alcohol protection/deprotection with silyl ethers found")
-    return False
+    # Strategy is present if both key transformations are found
+    print(
+        f"N-alkylation found: {n_alkylation_found}, Ketone to alcohol found: {ketone_to_alcohol_found}"
+    )
+    return n_alkylation_found and ketone_to_alcohol_found

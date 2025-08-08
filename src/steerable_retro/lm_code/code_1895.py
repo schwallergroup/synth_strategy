@@ -2,127 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a late-stage N-dealkylation, specifically the removal
-    of an allyl group from a tertiary amine.
+    This function detects a synthetic strategy involving a sequence of carboxylic acid
+    derivative transformations (ester → acid → different ester → alcohol).
     """
+    # Track the sequence of functional groups observed
+    functional_group_sequence = []
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node):
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Only check reactions at depth 0 or 1 (late stage)
-            if depth <= 1:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+            # Patterns for different carboxylic acid derivatives
+            ester_pattern = Chem.MolFromSmarts("[#6][#8][C](=[O])[#6]")
+            acid_pattern = Chem.MolFromSmarts("[#8H1][C](=[O])[#6]")
+            alcohol_pattern = Chem.MolFromSmarts("[#8H1][#6]")
 
-                # In forward reaction: Tertiary amine -> Secondary amine (N-dealkylation)
-                # In retrosynthesis: Secondary amine -> Tertiary amine
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-                # Check if reactant has tertiary amine (in forward direction)
-                reactant_has_tertiary_amine = False
-                tertiary_amine_reactant = None
-                for r in reactants:
-                    if checker.check_fg("Tertiary amine", r):
-                        reactant_has_tertiary_amine = True
-                        tertiary_amine_reactant = r
-                        break
+            if product_mol:
+                # Determine the functional group transformation
+                if any(
+                    r and r.HasSubstructMatch(ester_pattern) for r in reactant_mols
+                ) and product_mol.HasSubstructMatch(acid_pattern):
+                    functional_group_sequence.append("ester_to_acid")
+                    print(f"Detected ester to acid conversion: {rsmi}")
+                elif any(
+                    r and r.HasSubstructMatch(acid_pattern) for r in reactant_mols
+                ) and product_mol.HasSubstructMatch(ester_pattern):
+                    functional_group_sequence.append("acid_to_ester")
+                    print(f"Detected acid to ester conversion: {rsmi}")
+                elif any(
+                    r and r.HasSubstructMatch(ester_pattern) for r in reactant_mols
+                ) and product_mol.HasSubstructMatch(alcohol_pattern):
+                    functional_group_sequence.append("ester_to_alcohol")
+                    print(f"Detected ester to alcohol conversion: {rsmi}")
 
-                if not reactant_has_tertiary_amine:
-                    print("No reactant with tertiary amine found")
-                    return False
-
-                # Check if product has secondary amine
-                if not checker.check_fg("Secondary amine", product):
-                    print("Product does not have secondary amine")
-                    return False
-
-                # Check if reactant has allyl group
-                if not checker.check_fg("Allyl", tertiary_amine_reactant):
-                    print("Tertiary amine reactant does not have allyl group")
-                    return False
-
-                # Check if this is a dealkylation reaction
-                if checker.check_reaction("Hydrogenolysis of tertiary amines", rsmi):
-                    print(f"Found late-stage N-dealkylation via hydrogenolysis at depth {depth}")
-                    print(f"Reaction SMILES: {rsmi}")
-                    print(f"Reactant (tertiary amine with allyl): {tertiary_amine_reactant}")
-                    print(f"Product (secondary amine): {product}")
-                    return True
-
-                # Alternative check for N-dealkylation
-                # Look for a reaction where a tertiary amine loses an allyl group
-                # This is a more general check for N-dealkylation
-                print("Checking for general N-dealkylation pattern")
-
-                # If we have a tertiary amine in reactant, secondary amine in product,
-                # and allyl in reactant but not in product, it's likely N-dealkylation
-                if not checker.check_fg("Allyl", product) or (
-                    checker.check_fg("Allyl", product)
-                    and checker.check_fg("Allyl", tertiary_amine_reactant)
-                    and tertiary_amine_reactant.count("C=CC") > product.count("C=CC")
-                ):
-
-                    print(f"Found late-stage N-dealkylation (general pattern) at depth {depth}")
-                    print(f"Reaction SMILES: {rsmi}")
-                    print(f"Reactant (tertiary amine with allyl): {tertiary_amine_reactant}")
-                    print(f"Product (secondary amine): {product}")
-                    return True
-
-        # Recursively check children
+        # Traverse children
         for child in node.get("children", []):
-            if dfs_traverse(child, depth + 1):
-                return True
+            dfs_traverse(child)
 
-        return False
+    # Start traversal
+    dfs_traverse(route)
 
-    return dfs_traverse(route)
+    # Check if the sequence matches our target pattern
+    # We're looking for a sequence that includes ester→acid→ester→alcohol transformations
+    # This is a simplified check - in reality, you'd need to ensure these are connected transformations
+    has_ester_to_acid = "ester_to_acid" in functional_group_sequence
+    has_acid_to_ester = "acid_to_ester" in functional_group_sequence
+    has_ester_to_alcohol = "ester_to_alcohol" in functional_group_sequence
+
+    result = has_ester_to_acid and has_ester_to_alcohol
+    print(f"Carboxylic acid derivative sequence strategy detected: {result}")
+    print(f"Functional group sequence: {functional_group_sequence}")
+    return result

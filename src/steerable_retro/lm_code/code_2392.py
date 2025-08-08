@@ -2,76 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a protection-deprotection sequence using trifluoroacetyl group.
-    It looks for protection of an amine with trifluoroacetyl group and subsequent deprotection.
+    Detects a strategy involving cyclization of a terminal alkene to form a ring.
     """
-    protection_found = False
-    deprotection_found = False
+    found_cyclization = False
 
     def dfs_traverse(node):
-        nonlocal protection_found, deprotection_found
+        nonlocal found_cyclization
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0]
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for trifluoroacetyl protection (amine to trifluoroacetamide)
-            if not protection_found:
-                amine_pattern = Chem.MolFromSmarts("[NH2][c]")
-                trifluoroacetamide_pattern = Chem.MolFromSmarts("[NH]C(=O)C(F)(F)(F)")
+            # Check for terminal alkene in reactants
+            try:
+                reactant = Chem.MolFromSmiles(reactants_smiles)
+                product = Chem.MolFromSmiles(product_smiles)
 
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol and product_mol.HasSubstructMatch(trifluoroacetamide_pattern):
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(amine_pattern):
-                                protection_found = True
-                                print("Trifluoroacetyl protection detected")
-                                break
-                except:
-                    pass
+                if reactant and product:
+                    # Check for terminal alkene
+                    terminal_alkene_pattern = Chem.MolFromSmarts("C=C[#1,C]")
+                    has_terminal_alkene = reactant.HasSubstructMatch(terminal_alkene_pattern)
 
-            # Check for trifluoroacetyl deprotection (trifluoroacetamide to amine)
-            if not deprotection_found:
-                trifluoroacetamide_pattern = Chem.MolFromSmarts("[NH]C(=O)C(F)(F)(F)")
-                amine_pattern = Chem.MolFromSmarts("[NH2][c]")
+                    # Count rings in reactants and product
+                    reactant_rings = len(Chem.GetSSSR(reactant))
+                    product_rings = len(Chem.GetSSSR(product))
 
-                try:
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(
-                            trifluoroacetamide_pattern
-                        ):
-                            product_mol = Chem.MolFromSmiles(product)
-                            if product_mol and product_mol.HasSubstructMatch(amine_pattern):
-                                deprotection_found = True
-                                print("Trifluoroacetyl deprotection detected")
-                                break
-                except:
-                    pass
+                    if has_terminal_alkene and product_rings > reactant_rings:
+                        print("Found terminal alkene cyclization")
+                        found_cyclization = True
+            except:
+                pass
 
         # Traverse children
         for child in node.get("children", []):
@@ -80,5 +66,4 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if both protection and deprotection were found
-    return protection_found and deprotection_found
+    return found_cyclization

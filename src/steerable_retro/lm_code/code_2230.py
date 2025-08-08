@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,115 +54,139 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthesis route with multiple C-N bond formations.
+    Detects if the synthesis route uses a triflate as a leaving group
+    for nucleophilic substitution.
     """
-    cn_bond_formation_count = 0
+    # Track reaction nodes with depth information
+    triflate_formation_reactions = []
+    triflate_displacement_reactions = []
 
-    def dfs_traverse(node):
-        nonlocal cn_bond_formation_count
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for C-N bond formation reactions
-                cn_bond_formation_reactions = [
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                    "Acylation of primary amines",
-                    "Acylation of secondary amines",
-                    "Acyl chloride with ammonia to amide",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acyl chloride with secondary amine to amide",
-                    "Carboxylic acid with primary amine to amide",
-                    "Ester with ammonia to amide",
-                    "Ester with primary amine to amide",
-                    "Ester with secondary amine to amide",
-                    "Schotten-Baumann_amide",
-                    "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-                    "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
-                    "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-                    "N-arylation_heterocycles",
-                    "Buchwald-Hartwig",
-                    "Reductive amination with aldehyde",
-                    "Reductive amination with ketone",
-                    "Reductive amination with alcohol",
-                    "reductive amination",
-                    "Alkylation of amines",
-                    "N-alkylation of primary amines with alkyl halides",
-                    "N-alkylation of secondary amines with alkyl halides",
-                    "Urea synthesis via isocyanate and primary amine",
-                    "Urea synthesis via isocyanate and secondary amine",
-                    "urea",
-                    "Goldberg coupling aryl amine-aryl chloride",
-                    "Goldberg coupling aryl amide-aryl chloride",
-                    "Goldberg coupling",
-                    "Ullmann-Goldberg Substitution amine",
-                    "Aminolysis of esters",
-                    "aza-Michael addition aromatic",
-                    "aza-Michael addition secondary",
-                    "aza-Michael addition primary",
-                    "Ring opening of epoxide with amine",
-                ]
+                # Check for triflate formation
+                if checker.check_reaction("Alcohol to triflate conversion", rsmi):
+                    print(f"Detected triflate formation reaction at depth {depth}: {rsmi}")
+                    triflate_formation_reactions.append((depth, rsmi))
+                elif any(
+                    checker.check_fg("Primary alcohol", r)
+                    or checker.check_fg("Secondary alcohol", r)
+                    or checker.check_fg("Tertiary alcohol", r)
+                    or checker.check_fg("Phenol", r)
+                    for r in reactants
+                ) and checker.check_fg("Triflate", product):
+                    print(f"Detected triflate formation at depth {depth}: {rsmi}")
+                    triflate_formation_reactions.append((depth, rsmi))
 
-                for reaction_type in cn_bond_formation_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        cn_bond_formation_count += 1
-                        print(f"Found C-N bond formation ({reaction_type}): {rsmi}")
-                        break  # Count each reaction only once
-
-                # Additional check for reactions not in the predefined list
-                if not any(
-                    checker.check_reaction(reaction_type, rsmi)
-                    for reaction_type in cn_bond_formation_reactions
+                # Check for triflate displacement
+                if any(checker.check_fg("Triflate", r) for r in reactants) and not checker.check_fg(
+                    "Triflate", product
                 ):
-                    # Check for reactants with nitrogen-containing groups
-                    reactants_part = rsmi.split(">")[0]
-                    product_part = rsmi.split(">")[-1]
+                    # Check for common nucleophilic substitution reactions
+                    if (
+                        checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
+                        or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
+                        or checker.check_reaction("Sonogashira alkyne_aryl OTf", rsmi)
+                        or checker.check_reaction("Sonogashira acetylene_aryl OTf", rsmi)
+                        or checker.check_reaction("Sonogashira alkyne_alkenyl OTf", rsmi)
+                        or checker.check_reaction("Sonogashira acetylene_alkenyl OTf", rsmi)
+                        or checker.check_reaction("Stille reaction_vinyl OTf", rsmi)
+                        or checker.check_reaction("Stille reaction_aryl OTf", rsmi)
+                        or checker.check_reaction("Stille reaction_benzyl OTf", rsmi)
+                        or checker.check_reaction("Stille reaction_allyl OTf", rsmi)
+                        or checker.check_reaction("Stille reaction_other OTf", rsmi)
+                        or checker.check_reaction(
+                            "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
+                        )
+                    ):
+                        print(
+                            f"Detected triflate displacement via coupling reaction at depth {depth}: {rsmi}"
+                        )
+                        triflate_displacement_reactions.append((depth, rsmi))
+                    # Check for nucleophilic substitution with amines
+                    elif any(
+                        checker.check_fg("Primary amine", r)
+                        or checker.check_fg("Secondary amine", r)
+                        or checker.check_fg("Tertiary amine", r)
+                        for r in reactants
+                    ) and (
+                        checker.check_fg("Primary amine", product)
+                        or checker.check_fg("Secondary amine", product)
+                        or checker.check_fg("Tertiary amine", product)
+                    ):
+                        print(f"Detected triflate displacement by amine at depth {depth}: {rsmi}")
+                        triflate_displacement_reactions.append((depth, rsmi))
+                    # Check for other nucleophilic substitutions
+                    elif any(
+                        checker.check_fg("Phenol", r)
+                        or checker.check_fg("Primary alcohol", r)
+                        or checker.check_fg("Secondary alcohol", r)
+                        or checker.check_fg("Tertiary alcohol", r)
+                        for r in reactants
+                    ):
+                        print(f"Detected triflate displacement by alcohol at depth {depth}: {rsmi}")
+                        triflate_displacement_reactions.append((depth, rsmi))
 
-                    # Check if reactants contain nitrogen groups
-                    reactant_mols = reactants_part.split(".")
-                    product_mol = product_part
-
-                    n_groups_in_reactants = False
-                    for reactant in reactant_mols:
-                        if (
-                            checker.check_fg("Primary amine", reactant)
-                            or checker.check_fg("Secondary amine", reactant)
-                            or checker.check_fg("Tertiary amine", reactant)
-                            or checker.check_fg("Aniline", reactant)
-                            or checker.check_fg("Azide", reactant)
-                            or checker.check_fg("Hydrazine", reactant)
-                        ):
-                            n_groups_in_reactants = True
-                            break
-
-                    # Check if product has new C-N bonds not present in reactants
-                    if n_groups_in_reactants:
-                        # Check for amide formation
-                        if (
-                            checker.check_fg("Primary amide", product_mol)
-                            or checker.check_fg("Secondary amide", product_mol)
-                            or checker.check_fg("Tertiary amide", product_mol)
-                        ):
-                            cn_bond_formation_count += 1
-                            print(f"Found C-N bond formation (amide formation): {rsmi}")
-                        # Check for other C-N bond formations
-                        elif checker.check_fg("Substituted imine", product_mol) or checker.check_fg(
-                            "Unsubstituted imine", product_mol
-                        ):
-                            cn_bond_formation_count += 1
-                            print(f"Found C-N bond formation (imine formation): {rsmi}")
-
-        # Traverse children
+        # Traverse children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Return True if at least 2 C-N bond formations are detected
-    strategy_present = cn_bond_formation_count >= 2
-    print(f"Found {cn_bond_formation_count} C-N bond formations")
-    print(f"Strategy detection result: {strategy_present}")
-    return strategy_present
+    # Check if we have both formation and displacement
+    has_triflate_formation = len(triflate_formation_reactions) > 0
+    has_triflate_displacement = len(triflate_displacement_reactions) > 0
+
+    # Check if triflate is used as a starting material
+    def check_starting_triflate():
+        def check_mol_node(node):
+            if node["type"] == "mol" and node.get("in_stock", False):
+                if checker.check_fg("Triflate", node["smiles"]):
+                    return True
+            for child in node.get("children", []):
+                if check_mol_node(child):
+                    return True
+            return False
+
+        return check_mol_node(route)
+
+    has_starting_triflate = check_starting_triflate()
+
+    # In retrosynthetic direction, formation should have higher depth than displacement
+    # In forward synthesis, we form triflate first, then displace it
+    def check_sequence():
+        if not triflate_formation_reactions or not triflate_displacement_reactions:
+            return False
+
+        # Get minimum depth for each type of reaction
+        # Lower depth = later stage in synthesis (closer to target)
+        min_formation_depth = min([depth for depth, _ in triflate_formation_reactions])
+        min_displacement_depth = min([depth for depth, _ in triflate_displacement_reactions])
+
+        # In retrosynthesis, formation should be at a lower depth (later stage)
+        # than displacement (earlier stage)
+        print(
+            f"Min formation depth: {min_formation_depth}, Min displacement depth: {min_displacement_depth}"
+        )
+        return min_formation_depth <= min_displacement_depth
+
+    sequence_correct = check_sequence()
+
+    # If we have a starting triflate, we don't need formation
+    result = (has_triflate_formation or has_starting_triflate) and has_triflate_displacement
+
+    # If we have both formation and displacement, check sequence
+    if has_triflate_formation and has_triflate_displacement:
+        result = result and sequence_correct
+
+    print(
+        f"Triflate formation: {has_triflate_formation}, Triflate displacement: {has_triflate_displacement}"
+    )
+    print(f"Starting triflate: {has_starting_triflate}, Sequence correct: {sequence_correct}")
+    print(f"Final result: {result}")
+    return result

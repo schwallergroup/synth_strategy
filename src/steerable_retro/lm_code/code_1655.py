@@ -2,64 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy with sequential
-    fragment couplings rather than a convergent approach.
+    This function detects a strategy involving modification of nitrogen-containing heterocycles.
     """
-    is_linear = True
-    reaction_count = 0
+    heterocycle_modifications = 0
 
-    def dfs_traverse(node):
-        nonlocal is_linear, reaction_count
+    def dfs_traverse(node, depth=0):
+        nonlocal heterocycle_modifications
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            reaction_count += 1
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # If there are more than 2 reactants, it might be a convergent step
-            if len(reactants) > 2:
-                # Check if the extra reactants are small molecules (potential reagents, not fragments)
-                large_fragments = 0
-                for reactant in reactants:
-                    if len(reactant) > 10:  # Simple heuristic for "large" fragments
-                        large_fragments += 1
+            try:
+                # Check for heterocycle modification
+                product_mol = Chem.MolFromSmiles(product_part)
 
-                if large_fragments > 2:
-                    print(
-                        f"Potential convergent step detected with {large_fragments} large fragments: {rsmi}"
-                    )
-                    is_linear = False
+                # Look for nitrogen heterocycles in product
+                n_heterocycle_pattern = Chem.MolFromSmarts(
+                    "[n]1[c,n][c,n][c,n][c,n][c,n]1"
+                )  # 6-membered N-heterocycle
 
-        # Continue traversing
+                if product_mol and product_mol.HasSubstructMatch(n_heterocycle_pattern):
+                    # Check if any reactant also has this pattern
+                    reactants = reactants_part.split(".")
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(n_heterocycle_pattern):
+                            # The heterocycle exists in both reactant and product, suggesting modification
+                            heterocycle_modifications += 1
+                            print(f"Found heterocycle modification at depth {depth}")
+                            break
+            except:
+                print(f"Error processing reaction at depth {depth}")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Only consider routes with at least 3 reactions
-    if reaction_count >= 3:
-        return is_linear
-    else:
-        return False  # Not enough reactions to determine strategy
+    # Return True if at least one heterocycle modification was found
+    return heterocycle_modifications > 0

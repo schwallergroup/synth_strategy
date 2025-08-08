@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,199 +54,38 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy where heterocyclic ring formation is followed by
-    sequential functional group modifications
+    This function detects a linear synthesis strategy that culminates in an amide bond formation.
     """
-    # Track ring formation and subsequent functional group modifications
-    ring_formation_found = False
-    ring_formation_depth = -1
-    fg_modifications = []
+    # Initialize tracking variables
+    is_linear = True
+    has_final_amide_formation = False
+    min_depth_reaction = float("inf")
+    final_reaction_rsmi = None
 
     def dfs_traverse(node, depth=0):
-        nonlocal ring_formation_found, ring_formation_depth
+        nonlocal is_linear, has_final_amide_formation, min_depth_reaction, final_reaction_rsmi
 
         if node["type"] == "reaction":
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                if product_mol is None or any(mol is None for mol in reactant_mols):
-                    print(f"Warning: Could not parse some molecules in reaction: {rsmi}")
-                    return
-
-                # Count rings in reactants and product
-                reactant_ring_count = sum(
-                    mol.GetRingInfo().NumRings() for mol in reactant_mols if mol is not None
-                )
-                product_ring_count = (
-                    product_mol.GetRingInfo().NumRings() if product_mol is not None else 0
-                )
-
+            # Check if linear (no more than 2 reactants)
+            if len(reactants_smiles) > 2:
+                is_linear = False
                 print(
-                    f"Depth: {depth}, Reactant rings: {reactant_ring_count}, Product rings: {product_ring_count}"
+                    f"Non-linear step detected at depth {depth} with {len(reactants_smiles)} reactants"
                 )
 
-                # Check for ring formation
-                if product_ring_count > reactant_ring_count:
-                    # Check if it's a heterocyclic ring formation
-                    heterocyclic_formed = False
-
-                    # Check for common heterocyclic rings
-                    heterocyclic_rings = [
-                        "furan",
-                        "pyran",
-                        "dioxane",
-                        "tetrahydrofuran",
-                        "pyrrole",
-                        "pyridine",
-                        "pyrazole",
-                        "imidazole",
-                        "oxazole",
-                        "thiazole",
-                        "pyrimidine",
-                        "triazole",
-                        "tetrazole",
-                        "morpholine",
-                        "thiomorpholine",
-                        "indole",
-                        "quinoline",
-                        "isoquinoline",
-                        "thiophene",
-                        "isoxazole",
-                        "isothiazole",
-                        "oxadiazole",
-                        "thiadiazole",
-                        "benzoxazole",
-                        "benzothiazole",
-                        "benzimidazole",
-                    ]
-
-                    for ring_name in heterocyclic_rings:
-                        if checker.check_ring(ring_name, product_smiles) and not any(
-                            checker.check_ring(ring_name, r) for r in reactants_smiles
-                        ):
-                            print(
-                                f"Heterocyclic ring formation detected: {ring_name} at depth {depth}"
-                            )
-                            heterocyclic_formed = True
-                            break
-
-                    # If no specific ring matched, check for general heterocyclic formation
-                    if not heterocyclic_formed:
-                        for ring in product_mol.GetSSSR():
-                            ring_atoms = set(
-                                product_mol.GetAtomWithIdx(idx).GetAtomicNum() for idx in ring
-                            )
-                            # Check for N, O, S atoms (atomic numbers 7, 8, 16)
-                            if 7 in ring_atoms or 8 in ring_atoms or 16 in ring_atoms:
-                                print(
-                                    f"Generic heterocyclic ring formation detected at depth {depth}"
-                                )
-                                heterocyclic_formed = True
-                                break
-
-                    if heterocyclic_formed:
-                        ring_formation_found = True
-                        ring_formation_depth = depth
-
-                # Check for functional group modifications using checker functions
-                fg_mod_detected = False
-
-                # Check for esterification
-                if checker.check_reaction("Esterification of Carboxylic Acids", rsmi):
-                    fg_modifications.append(("esterification", depth))
-                    fg_mod_detected = True
-                    print(f"Esterification detected at depth {depth}")
-
-                # Check for reduction to alcohol
-                if (
-                    checker.check_reaction("Reduction of ester to primary alcohol", rsmi)
-                    or checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi)
-                    or checker.check_reaction(
-                        "Reduction of carboxylic acid to primary alcohol", rsmi
-                    )
-                ):
-                    fg_modifications.append(("reduction", depth))
-                    fg_mod_detected = True
-                    print(f"Reduction detected at depth {depth}")
-
-                # Check for mesylation
-                if checker.check_fg("Mesylate", product_smiles) and not any(
-                    checker.check_fg("Mesylate", r) for r in reactants_smiles
-                ):
-                    fg_modifications.append(("mesylation", depth))
-                    fg_mod_detected = True
-                    print(f"Mesylation detected at depth {depth}")
-
-                # Check for other common functional group modifications
-                if checker.check_reaction(
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    rsmi,
-                ):
-                    fg_modifications.append(("acylation", depth))
-                    fg_mod_detected = True
-                    print(f"Acylation detected at depth {depth}")
-
-                if checker.check_reaction(
-                    "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones", rsmi
-                ):
-                    fg_modifications.append(("oxidation", depth))
-                    fg_mod_detected = True
-                    print(f"Oxidation detected at depth {depth}")
-
-                if checker.check_reaction("Williamson Ether Synthesis", rsmi):
-                    fg_modifications.append(("etherification", depth))
-                    fg_mod_detected = True
-                    print(f"Etherification detected at depth {depth}")
-
-                if checker.check_reaction("Alkylation of amines", rsmi):
-                    fg_modifications.append(("alkylation", depth))
-                    fg_mod_detected = True
-                    print(f"Alkylation detected at depth {depth}")
-
-                # Check for protection/deprotection reactions
-                if "protection" in rsmi.lower() or "deprotection" in rsmi.lower():
-                    fg_modifications.append(("protection/deprotection", depth))
-                    fg_mod_detected = True
-                    print(f"Protection/deprotection detected at depth {depth}")
-
-                # If no specific reaction matched but functional groups changed
-                if not fg_mod_detected:
-                    # Check for appearance/disappearance of common functional groups
-                    common_fgs = [
-                        "Primary alcohol",
-                        "Secondary alcohol",
-                        "Tertiary alcohol",
-                        "Primary amine",
-                        "Secondary amine",
-                        "Tertiary amine",
-                        "Carboxylic acid",
-                        "Ester",
-                        "Amide",
-                        "Nitrile",
-                        "Aldehyde",
-                        "Ketone",
-                    ]
-
-                    for fg in common_fgs:
-                        if (
-                            checker.check_fg(fg, product_smiles)
-                            and not any(checker.check_fg(fg, r) for r in reactants_smiles)
-                        ) or (
-                            any(checker.check_fg(fg, r) for r in reactants_smiles)
-                            and not checker.check_fg(fg, product_smiles)
-                        ):
-                            fg_modifications.append((f"{fg} modification", depth))
-                            print(f"{fg} modification detected at depth {depth}")
-                            break
-
-            except Exception as e:
-                print(f"Error processing reaction at depth {depth}: {e}")
+            # Track the final reaction (minimum depth)
+            if depth < min_depth_reaction:
+                min_depth_reaction = depth
+                final_reaction_rsmi = rsmi
+                print(f"New final reaction at depth {depth}: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -252,36 +94,59 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Filter out FG modifications that occur at the same depth as ring formation
-    # or at a higher depth (earlier stage in retrosynthesis)
-    valid_fg_mods = [(mod, d) for mod, d in fg_modifications if d < ring_formation_depth]
+    # Check if the final reaction is an amide formation
+    if final_reaction_rsmi:
+        # Check for common amide formation reactions
+        amide_formation_reactions = [
+            "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+            "Carboxylic acid with primary amine to amide",
+            "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+            "Acyl chloride with secondary amine to amide",
+            "Ester with primary amine to amide",
+            "Ester with secondary amine to amide",
+            "Schotten-Baumann_amide",
+        ]
 
-    # Sort by depth to check if they're sequential (lower depth = later stage in retrosynthesis)
-    valid_fg_mods.sort(key=lambda x: x[1])
-
-    print(f"Valid FG modifications (after ring formation): {valid_fg_mods}")
-
-    # Check if we have ring formation followed by at least 2 functional group modifications
-    strategy_detected = ring_formation_found and len(valid_fg_mods) >= 2
-
-    # Check if the modifications are sequential (consecutive depths or close)
-    if strategy_detected and len(valid_fg_mods) >= 2:
-        # Check if the modifications are reasonably sequential
-        depths = [d for _, d in valid_fg_mods]
-        is_sequential = True
-
-        # Check if there are at least 2 modifications with depths less than ring_formation_depth
-        # and these modifications are reasonably close to each other
-        for i in range(len(depths) - 1):
-            if depths[i + 1] - depths[i] > 3:  # Allow some flexibility in "sequential" definition
-                is_sequential = False
+        for reaction_type in amide_formation_reactions:
+            if checker.check_reaction(reaction_type, final_reaction_rsmi):
+                has_final_amide_formation = True
+                print(f"Detected amide formation in final step: {reaction_type}")
                 break
 
-        strategy_detected = is_sequential
+        # If no specific reaction type matched, check for amide formation by examining product
+        if not has_final_amide_formation:
+            product_smiles = final_reaction_rsmi.split(">")[-1]
+            reactants_smiles = final_reaction_rsmi.split(">")[0].split(".")
 
-    print(f"Heterocyclic ring formation followed by FG modifications: {strategy_detected}")
-    print(f"Ring formation depth: {ring_formation_depth if ring_formation_found else 'Not found'}")
-    print(f"FG modifications: {fg_modifications}")
-    print(f"Valid sequential FG modifications: {valid_fg_mods}")
+            # Check if product has amide but reactants don't
+            product_has_amide = (
+                checker.check_fg("Secondary amide", product_smiles)
+                or checker.check_fg("Primary amide", product_smiles)
+                or checker.check_fg("Tertiary amide", product_smiles)
+            )
 
-    return strategy_detected
+            reactants_have_amide = False
+            for reactant in reactants_smiles:
+                if (
+                    checker.check_fg("Secondary amide", reactant)
+                    or checker.check_fg("Primary amide", reactant)
+                    or checker.check_fg("Tertiary amide", reactant)
+                ):
+                    reactants_have_amide = True
+                    break
+
+            if product_has_amide and not reactants_have_amide:
+                has_final_amide_formation = True
+                print("Detected amide formation in final step (by functional group analysis)")
+
+    # Check if the strategy is present
+    strategy_present = is_linear and has_final_amide_formation
+    if strategy_present:
+        print("Detected linear synthesis with final amide formation")
+    else:
+        if not is_linear:
+            print("Synthesis is not linear")
+        if not has_final_amide_formation:
+            print("Final step does not form an amide bond")
+
+    return strategy_present

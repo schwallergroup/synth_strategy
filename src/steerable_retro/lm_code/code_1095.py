@@ -2,64 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a Suzuki coupling reaction in the synthetic route.
+    This function detects if the route contains at least 3 distinct functional group interconversions.
     """
-    found_suzuki = False
+    transformations = set()
 
-    # SMARTS patterns for Suzuki coupling components
-    boronic_pattern = Chem.MolFromSmarts("[#6]~[#5](~[#8])~[#8]")  # Boronic acid/ester
-    aryl_halide_pattern = Chem.MolFromSmarts("[#6]~[#53,#35,#17,#9]")  # Aryl halide
+    def dfs_traverse(node):
+        nonlocal transformations
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_suzuki
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+            # Define patterns for functional groups
+            patterns = {
+                "nitrile": "[#6]C#N",
+                "amine": "[#6][NH2]",
+                "alcohol": "[#6][OH]",
+                "ester": "[#6]C(=O)O[#6]",
+                "aldehyde": "[#6][CH]=O",
+                "carboxylic_acid": "[#6]C(=O)[OH]",
+                "amide": "[#6]C(=O)N[#6]",
+                "phthalimide": "[#6]N1C(=O)c2ccccc2C1=O",
+            }
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
-                product = Chem.MolFromSmiles(product_str) if product_str else None
+            # Check reactants and products for functional groups
+            reactant_groups = set()
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol:
+                    for group_name, pattern in patterns.items():
+                        if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts(pattern)):
+                            reactant_groups.add(group_name)
 
-                if product and len(reactants) >= 2:
-                    # Check for boronic acid/ester and aryl halide in reactants
-                    has_boronic = any(r and r.HasSubstructMatch(boronic_pattern) for r in reactants)
-                    has_aryl_halide = any(
-                        r and r.HasSubstructMatch(aryl_halide_pattern) for r in reactants
-                    )
+            product_mol = Chem.MolFromSmiles(product)
+            product_groups = set()
+            if product_mol:
+                for group_name, pattern in patterns.items():
+                    if product_mol.HasSubstructMatch(Chem.MolFromSmarts(pattern)):
+                        product_groups.add(group_name)
 
-                    if has_boronic and has_aryl_halide:
-                        found_suzuki = True
-                        print(f"Found Suzuki coupling at depth {depth}")
+            # Identify transformations
+            for r_group in reactant_groups:
+                for p_group in product_groups:
+                    if r_group != p_group:
+                        transformation = f"{r_group}_to_{p_group}"
+                        transformations.add(transformation)
+                        print(f"Detected transformation: {transformation}")
 
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Suzuki coupling strategy detected: {found_suzuki}")
-    return found_suzuki
+    # Return True if at least 3 distinct transformations were found
+    return len(transformations) >= 3

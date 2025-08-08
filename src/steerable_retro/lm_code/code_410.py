@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,111 +54,42 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy involving heterocyclic systems,
-    particularly focusing on morpholine fused to pyridine.
+    Detects a strategy involving reduction of nitro group to amine
     """
-    # List of nitrogen heterocycles to check
-    n_heterocycles = [
-        "pyridine",
-        "pyrrole",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "piperidine",
-        "piperazine",
-        "morpholine",
-    ]
-
-    # List of oxygen heterocycles to check
-    o_heterocycles = [
-        "furan",
-        "pyran",
-        "dioxane",
-        "tetrahydrofuran",
-        "tetrahydropyran",
-        "oxirane",
-        "oxetane",
-        "morpholine",
-    ]
-
-    has_heterocycle = False
-    has_morpholine_pyridine = False
+    found_nitro_reduction = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_heterocycle, has_morpholine_pyridine
+        nonlocal found_nitro_reduction
 
-        if node["type"] == "mol":
-            smiles = node.get("smiles", "")
-            if not smiles:
-                return
-
+        if node["type"] == "reaction":
             try:
-                # Check for morpholine and pyridine in the same molecule
-                has_morpholine = checker.check_ring("morpholine", smiles)
-                has_pyridine = checker.check_ring("pyridine", smiles)
+                # Extract reaction SMILES
+                rsmi = node["metadata"]["rsmi"]
 
-                if has_morpholine and has_pyridine:
-                    print(f"Detected molecule with both morpholine and pyridine rings: {smiles}")
-                    has_morpholine_pyridine = True
-                    has_heterocycle = True
-
-                # Check for any nitrogen heterocycle
-                for ring in n_heterocycles:
-                    if checker.check_ring(ring, smiles):
-                        print(f"Detected nitrogen heterocycle ({ring}): {smiles}")
-                        has_heterocycle = True
-                        break
-
-                # Check for any oxygen heterocycle if we haven't found a nitrogen one
-                if not has_heterocycle:
-                    for ring in o_heterocycles:
-                        if checker.check_ring(ring, smiles):
-                            print(f"Detected oxygen heterocycle ({ring}): {smiles}")
-                            has_heterocycle = True
-                            break
-            except Exception as e:
-                print(f"Error checking molecule {smiles}: {str(e)}")
-
-        elif node["type"] == "reaction":
-            try:
-                # Check if this reaction forms a heterocycle
-                if "metadata" in node and "rsmi" in node["metadata"]:
-                    rsmi = node["metadata"]["rsmi"]
+                # Check if this is a nitro reduction reaction
+                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                    found_nitro_reduction = True
+                    print(f"Found nitro reduction at depth {depth}: {rsmi}")
+                else:
+                    # Fallback check in case the reaction type is not directly recognized
                     reactants = rsmi.split(">")[0].split(".")
                     product = rsmi.split(">")[-1]
 
-                    # Check if product contains heterocycles not present in reactants
-                    product_has_heterocycle = False
-                    for ring in n_heterocycles + o_heterocycles:
-                        if checker.check_ring(ring, product):
-                            product_has_heterocycle = True
-
-                            # Check if any reactant has this heterocycle
-                            reactant_has_heterocycle = False
-                            for reactant in reactants:
-                                if checker.check_ring(ring, reactant):
-                                    reactant_has_heterocycle = True
-                                    break
-
-                            if not reactant_has_heterocycle:
-                                print(f"Detected heterocycle formation reaction: {rsmi}")
-                                print(f"Formed heterocycle: {ring}")
-                                has_heterocycle = True
-                                break
+                    for reactant in reactants:
+                        # Check if reactant has nitro group and product has primary amine
+                        if checker.check_fg("Nitro group", reactant) and checker.check_fg(
+                            "Primary amine", product
+                        ):
+                            found_nitro_reduction = True
+                            print(f"Found nitro reduction (by FG check) at depth {depth}: {rsmi}")
+                            break
             except Exception as e:
-                print(f"Error checking reaction: {str(e)}")
+                print(f"Error processing reaction node: {e}")
 
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    return has_heterocycle or has_morpholine_pyridine
+    return found_nitro_reduction

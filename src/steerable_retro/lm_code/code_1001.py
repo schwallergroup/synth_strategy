@@ -2,106 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis is centered around a heterocyclic structure
-    that persists throughout the synthesis.
+    Detects if the synthetic route uses N-alkylation strategy with chloro-containing intermediates.
     """
-    # Common heterocycles to check
-    heterocycles = [
-        "pyrimidine",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "triazole",
-        "tetrazole",
-        "furan",
-        "thiophene",
-        "pyrrole",
-        "indole",
-        "benzimidazole",
-        "benzoxazole",
-        "benzothiazole",
-    ]
+    n_alkylation_with_chloro = False
+    secondary_amine_pattern = Chem.MolFromSmarts("[NH]")
+    tertiary_amine_pattern = Chem.MolFromSmarts("[#7](-[#6])(-[#6])-[#6]")
+    chloro_pattern = Chem.MolFromSmarts("[#6]-[Cl]")
 
-    # Track depths and molecules where heterocycles are found
-    heterocycle_info = {}  # {heterocycle_type: {depth: smiles}}
+    def dfs_traverse(node):
+        nonlocal n_alkylation_with_chloro
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol" and "smiles" in node:
-            mol_smiles = node["smiles"]
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0]
+            products_smiles = rsmi.split(">")[-1]
+
             try:
-                # Check for each heterocycle type
-                for heterocycle in heterocycles:
-                    if checker.check_ring(heterocycle, mol_smiles):
-                        if heterocycle not in heterocycle_info:
-                            heterocycle_info[heterocycle] = {}
-                        heterocycle_info[heterocycle][depth] = mol_smiles
-                        print(f"{heterocycle} detected at depth {depth} in molecule: {mol_smiles}")
-            except Exception as e:
-                print(f"Error checking heterocycle: {e}")
+                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+                products_mol = Chem.MolFromSmiles(products_smiles)
+
+                if reactants_mol and products_mol:
+                    # Check for secondary amine in reactants, tertiary amine in products, and chloro group in reactants
+                    if (
+                        reactants_mol.HasSubstructMatch(secondary_amine_pattern)
+                        and products_mol.HasSubstructMatch(tertiary_amine_pattern)
+                        and reactants_mol.HasSubstructMatch(chloro_pattern)
+                    ):
+                        n_alkylation_with_chloro = True
+                        print(f"Found N-alkylation with chloro intermediate: {rsmi}")
+            except:
+                print(f"Error processing reaction SMILES: {rsmi}")
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Check if any heterocycle persists through multiple depths
-    for heterocycle, depths_dict in heterocycle_info.items():
-        if len(depths_dict) >= 2:
-            print(
-                f"Heterocycle-based synthesis strategy detected: {heterocycle} persists through {len(depths_dict)} depths"
-            )
-            return True
-
-    print("No heterocycle-based synthesis strategy detected")
-    return False
+    print(f"N-alkylation strategy with chloro intermediates detected: {n_alkylation_with_chloro}")
+    return n_alkylation_with_chloro

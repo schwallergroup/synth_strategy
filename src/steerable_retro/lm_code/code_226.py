@@ -2,115 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving heterocycle formation (imidazole and pyrazole)
-    combined with nitro group chemistry (introduction and reduction).
+    This function detects a strategy involving late-stage halogenation
+    (introduction of a halogen atom in the final steps).
     """
-    # Track if we found the key elements of the strategy
-    has_nitro_introduction = False
-    has_nitro_reduction = False
-    has_imidazole_formation = False
-    has_pyrazole_formation = False
+    # Initialize tracking variable
+    has_late_halogenation = False
 
-    def dfs_traverse(node):
-        nonlocal has_nitro_introduction, has_nitro_reduction, has_imidazole_formation, has_pyrazole_formation
+    # SMARTS pattern for halomethyl group
+    halomethyl_pattern = "[#6]-[#6]-[#35,#17,#9,#53]"
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal has_late_halogenation
 
-                try:
-                    # Convert to RDKit molecules
-                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    product = Chem.MolFromSmiles(product_smiles)
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (low depth)
+            # Extract product
+            rsmi = node["metadata"]["rsmi"]
+            product = rsmi.split(">")[-1]
 
-                    if product and all(r for r in reactants):
-                        # Check for nitro introduction
-                        nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
-                        reactant_nitro_count = sum(
-                            len(r.GetSubstructMatches(nitro_pattern)) for r in reactants if r
-                        )
-                        product_nitro_count = len(product.GetSubstructMatches(nitro_pattern))
+            # Check for halomethyl group in product
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol and product_mol.HasSubstructMatch(
+                Chem.MolFromSmarts(halomethyl_pattern)
+            ):
+                has_late_halogenation = True
+                print(f"Detected late-stage halogenation at depth {depth}")
 
-                        if product_nitro_count > reactant_nitro_count:
-                            has_nitro_introduction = True
-                            print("Detected nitro group introduction")
-
-                        # Check for nitro reduction
-                        amine_pattern = Chem.MolFromSmarts("[NH2]")
-                        reactant_amine_count = sum(
-                            len(r.GetSubstructMatches(amine_pattern)) for r in reactants if r
-                        )
-                        product_amine_count = len(product.GetSubstructMatches(amine_pattern))
-
-                        if product_amine_count > reactant_amine_count and any(
-                            len(r.GetSubstructMatches(nitro_pattern)) > 0 for r in reactants if r
-                        ):
-                            has_nitro_reduction = True
-                            print("Detected nitro reduction to amine")
-
-                        # Check for imidazole formation
-                        imidazole_pattern = Chem.MolFromSmarts("[nH]1cncc1")
-                        reactant_imidazole_count = sum(
-                            len(r.GetSubstructMatches(imidazole_pattern)) for r in reactants if r
-                        )
-                        product_imidazole_count = len(
-                            product.GetSubstructMatches(imidazole_pattern)
-                        )
-
-                        if product_imidazole_count > reactant_imidazole_count:
-                            has_imidazole_formation = True
-                            print("Detected imidazole formation")
-
-                        # Check for pyrazole formation
-                        pyrazole_pattern = Chem.MolFromSmarts("[nH]1ncc[c]1")
-                        reactant_pyrazole_count = sum(
-                            len(r.GetSubstructMatches(pyrazole_pattern)) for r in reactants if r
-                        )
-                        product_pyrazole_count = len(product.GetSubstructMatches(pyrazole_pattern))
-
-                        if product_pyrazole_count > reactant_pyrazole_count:
-                            has_pyrazole_formation = True
-                            print("Detected pyrazole formation")
-
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # The strategy is present if we have heterocycle formation and nitro chemistry
-    strategy_present = (has_imidazole_formation or has_pyrazole_formation) and (
-        has_nitro_introduction or has_nitro_reduction
-    )
+    if has_late_halogenation:
+        print("Detected late-stage halogenation strategy")
+    else:
+        print("Late-stage halogenation strategy not detected")
 
-    if strategy_present:
-        print("Detected heterocycle formation with nitro chemistry strategy")
-
-    return strategy_present
+    return has_late_halogenation

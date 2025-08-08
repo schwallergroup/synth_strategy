@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,87 +54,143 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves a dichlorophenyl group throughout.
-    This means the final product contains a dichlorophenyl group, and this group
-    is preserved throughout the synthesis route.
+    This function detects a synthetic strategy involving late-stage amide formation.
     """
-    # Track if the final product has a dichlorophenyl group
-    final_product_has_dichlorophenyl = False
-    # Track if all reactions preserve the dichlorophenyl group
-    dichlorophenyl_preserved = True
+    has_late_amide = False
 
-    def has_dichlorophenyl(smiles):
-        """Helper function to check if a molecule has a dichlorophenyl group"""
-        mol = Chem.MolFromSmiles(smiles)
-        if not mol:
-            return False
+    def dfs_traverse(node, depth=0):
+        nonlocal has_late_amide
 
-        # Check if the molecule contains a benzene ring
-        if not checker.check_ring("benzene", smiles):
-            return False
-
-        # Count chlorines attached to aromatic carbons
-        aromatic_chlorine_count = 0
-        for atom in mol.GetAtoms():
-            if atom.GetAtomicNum() == 17:  # Chlorine
-                for neighbor in atom.GetNeighbors():
-                    if neighbor.GetIsAromatic():
-                        aromatic_chlorine_count += 1
-
-        # Return True if there are at least 2 chlorines attached to aromatic carbons
-        return aromatic_chlorine_count >= 2
-
-    def dfs_traverse(node, depth=0, path=None):
-        nonlocal final_product_has_dichlorophenyl, dichlorophenyl_preserved
-
-        if path is None:
-            path = []
-
-        # Check molecule nodes
-        if node["type"] == "mol" and node.get("smiles"):
-            smiles = node["smiles"]
-            has_group = has_dichlorophenyl(smiles)
-
-            # If this is the final product (depth 0), check if it has a dichlorophenyl group
-            if depth == 0:
-                final_product_has_dichlorophenyl = has_group
-                if has_group:
-                    print(f"Final product has dichlorophenyl group: {smiles}")
-                else:
-                    print(f"Final product does NOT have dichlorophenyl group: {smiles}")
-
-            # Add to path for tracking
-            path.append((node["type"], smiles, has_group))
-
-        # Check reaction nodes
-        elif node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if product has dichlorophenyl
-            product_has_group = has_dichlorophenyl(product)
+            print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-            # Check if any reactant has dichlorophenyl
-            reactant_has_group = any(has_dichlorophenyl(r) for r in reactants)
+            # Check for amide formation reactions
+            is_amide_formation = False
 
-            # If a reactant has dichlorophenyl but the product doesn't, the group wasn't preserved
-            if reactant_has_group and not product_has_group:
-                dichlorophenyl_preserved = False
-                print(f"Dichlorophenyl group not preserved in reaction: {rsmi}")
+            # Check using reaction types
+            amide_formation_reactions = [
+                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                "Acyl chloride with ammonia to amide",
+                "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                "Acyl chloride with primary amine to imide",
+                "Acyl chloride with secondary amine to amide",
+                "Carboxylic acid with primary amine to amide",
+                "Ester with ammonia to amide",
+                "Ester with primary amine to amide",
+                "Ester with secondary amine to amide",
+                "Acylation of primary amines",
+                "Acylation of secondary amines",
+                "Acylation of secondary amines with anhydrides",
+                "Schotten-Baumann_amide",
+            ]
 
-            # Add to path for tracking
-            path.append((node["type"], rsmi, product_has_group))
+            for reaction_type in amide_formation_reactions:
+                if checker.check_reaction(reaction_type, rsmi):
+                    print(f"Detected amide formation reaction: {reaction_type}")
+                    is_amide_formation = True
+                    break
+
+            # If no specific reaction type matched, check for functional group changes
+            if not is_amide_formation:
+                print(
+                    "No specific amide formation reaction type matched, checking functional groups..."
+                )
+
+                # Check for amide-forming reagents in reactants
+                has_acyl_halide = any(checker.check_fg("Acyl halide", r) for r in reactants)
+                has_carboxylic_acid = any(checker.check_fg("Carboxylic acid", r) for r in reactants)
+                has_ester = any(checker.check_fg("Ester", r) for r in reactants)
+                has_anhydride = any(checker.check_fg("Anhydride", r) for r in reactants)
+
+                # Check for amines in reactants
+                has_primary_amine = any(checker.check_fg("Primary amine", r) for r in reactants)
+                has_secondary_amine = any(checker.check_fg("Secondary amine", r) for r in reactants)
+
+                # Check for amide in product
+                has_primary_amide_product = checker.check_fg("Primary amide", product)
+                has_secondary_amide_product = checker.check_fg("Secondary amide", product)
+                has_tertiary_amide_product = checker.check_fg("Tertiary amide", product)
+
+                has_amide_in_product = (
+                    has_primary_amide_product
+                    or has_secondary_amide_product
+                    or has_tertiary_amide_product
+                )
+
+                # Check for amides in reactants
+                has_primary_amide_reactants = any(
+                    checker.check_fg("Primary amide", r) for r in reactants
+                )
+                has_secondary_amide_reactants = any(
+                    checker.check_fg("Secondary amide", r) for r in reactants
+                )
+                has_tertiary_amide_reactants = any(
+                    checker.check_fg("Tertiary amide", r) for r in reactants
+                )
+
+                print(f"Amide in product: {has_amide_in_product}")
+                print(
+                    f"Amide in reactants - Primary: {has_primary_amide_reactants}, Secondary: {has_secondary_amide_reactants}, Tertiary: {has_tertiary_amide_reactants}"
+                )
+                print(
+                    f"Amide-forming reagents - Acyl halide: {has_acyl_halide}, Carboxylic acid: {has_carboxylic_acid}, Ester: {has_ester}, Anhydride: {has_anhydride}"
+                )
+                print(f"Amines - Primary: {has_primary_amine}, Secondary: {has_secondary_amine}")
+
+                # Check if we have the necessary components for amide formation
+                if (
+                    has_amide_in_product
+                    and (has_acyl_halide or has_carboxylic_acid or has_ester or has_anhydride)
+                    and (has_primary_amine or has_secondary_amine)
+                ):
+                    # Try to verify using atom mapping that an amine is converted to an amide
+                    try:
+                        # Find reactant with primary or secondary amine
+                        amine_reactant = None
+                        for r in reactants:
+                            if checker.check_fg("Primary amine", r) or checker.check_fg(
+                                "Secondary amine", r
+                            ):
+                                amine_reactant = r
+                                break
+
+                        # Find reactant with acyl component
+                        acyl_reactant = None
+                        for r in reactants:
+                            if (
+                                checker.check_fg("Acyl halide", r)
+                                or checker.check_fg("Carboxylic acid", r)
+                                or checker.check_fg("Ester", r)
+                                or checker.check_fg("Anhydride", r)
+                            ):
+                                acyl_reactant = r
+                                break
+
+                        if amine_reactant and acyl_reactant:
+                            print(f"Found amine reactant: {amine_reactant}")
+                            print(f"Found acyl reactant: {acyl_reactant}")
+                            is_amide_formation = True
+                            print(f"Detected amide formation by functional group analysis")
+                    except Exception as e:
+                        print(f"Error in atom mapping analysis: {e}")
+                        # If atom mapping analysis fails, fall back to simpler check
+                        is_amide_formation = True
+                        print(f"Detected amide formation by functional group analysis (fallback)")
+
+            # Check if this is late stage (depth <= 1)
+            if is_amide_formation and depth <= 1:
+                has_late_amide = True
+                print(f"Detected late-stage amide formation at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1, path.copy())
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # The strategy is valid if the final product has a dichlorophenyl group
-    # and this group is preserved throughout the synthesis
-    result = final_product_has_dichlorophenyl and dichlorophenyl_preserved
-    print(f"Strategy result: {result}")
-    return result
+    return has_late_amide

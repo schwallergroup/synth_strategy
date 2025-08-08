@@ -2,52 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves installation of a long alkyl chain (C6 or longer)
-    as a linker between functional groups.
+    This function detects a synthetic strategy involving alkene formation
+    in the synthesis route.
     """
-    has_long_alkyl_linker = False
+    alkene_formation_found = False
 
-    def dfs_traverse(node):
-        nonlocal has_long_alkyl_linker
+    def dfs_traverse(node, depth=0):
+        nonlocal alkene_formation_found
 
-        if node["type"] == "mol":
-            smiles = node["smiles"]
-            mol = Chem.MolFromSmiles(smiles)
-            if mol:
-                # Look for long alkyl chains (6 or more carbons in a row)
-                if mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]~[#6]~[#6]~[#6]~[#6]~[#6]")):
-                    # Check if the chain connects functional groups
-                    if mol.HasSubstructMatch(
-                        Chem.MolFromSmarts("[#6]~[#6]~[#6]~[#6]~[#6]~[#6][O,N,S]")
-                    ) and mol.HasSubstructMatch(
-                        Chem.MolFromSmarts("[O,N,S][#6]~[#6]~[#6]~[#6]~[#6]~[#6]")
-                    ):
-                        has_long_alkyl_linker = True
-                        print("Detected long alkyl chain as linker")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
+                # Check for absence of alkene in reactants but presence in product
+                for reactant in reactants:
+                    if Chem.MolFromSmiles(reactant) is not None:
+                        alkene_pattern = Chem.MolFromSmarts("[CX3]=[CX3]")
+                        reactant_has_alkene = Chem.MolFromSmiles(reactant).HasSubstructMatch(
+                            alkene_pattern
+                        )
+
+                        if not reactant_has_alkene:
+                            if Chem.MolFromSmiles(product) is not None:
+                                if Chem.MolFromSmiles(product).HasSubstructMatch(alkene_pattern):
+                                    print("Found alkene formation")
+                                    alkene_formation_found = True
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_long_alkyl_linker
+
+    return alkene_formation_found

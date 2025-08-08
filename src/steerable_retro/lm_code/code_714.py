@@ -2,62 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage coupling of a piperazine moiety.
+    Detects if the synthetic route employs a convergent synthesis approach
+    where two complex fragments are joined via biaryl formation.
     """
-    late_stage_piperazine = False
+    # Track if we found a convergent biaryl synthesis
+    found_convergent_biaryl = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_piperazine
+        nonlocal found_convergent_biaryl
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if this is a late stage reaction (depth 0 or 1)
-            if depth <= 1:
-                # Check for piperazine in reactants
-                piperazine_pattern = Chem.MolFromSmarts("[N]1CCN([C,H])CC1")
+                # Need at least 2 reactants for convergent synthesis
+                if len(reactants) >= 2:
+                    # Check if both reactants are complex (have more than 15 atoms)
+                    complex_reactants = 0
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.GetNumAtoms() > 15:
+                                complex_reactants += 1
+                        except:
+                            continue
 
-                for reactant in reactants:
+                    # Check if product has a biaryl bond
                     try:
-                        r_mol = Chem.MolFromSmiles(reactant)
-                        if r_mol and r_mol.HasSubstructMatch(piperazine_pattern):
-                            # Check if product has piperazine connected to aromatic
-                            p_mol = Chem.MolFromSmiles(product)
-                            if p_mol:
-                                piperazine_aromatic_pattern = Chem.MolFromSmarts(
-                                    "[n,c]~[N]1CCN([C,H])CC1"
-                                )
-                                if p_mol.HasSubstructMatch(piperazine_aromatic_pattern):
-                                    print("Found late-stage piperazine coupling")
-                                    late_stage_piperazine = True
+                        prod_mol = Chem.MolFromSmiles(product)
+                        if prod_mol:
+                            biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
+                            if prod_mol.HasSubstructMatch(biaryl_pattern):
+                                # If we have at least 2 complex reactants and a biaryl in product
+                                if complex_reactants >= 2:
+                                    found_convergent_biaryl = True
+                                    print(f"Found convergent biaryl synthesis at depth {depth}")
                     except:
-                        continue
+                        pass
 
+        # Continue traversing the tree
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return late_stage_piperazine
+
+    return found_convergent_biaryl

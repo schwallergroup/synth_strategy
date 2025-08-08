@@ -2,58 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy without convergent steps.
-    Linear synthesis means each reaction has only one non-starting material reactant.
+    This function detects if the final step in the synthesis is an amide coupling.
     """
-    is_linear = True
+    # Track if we found late-stage amide coupling
+    found_late_amide = False
+
+    # SMARTS patterns
+    amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+    carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[O;H1]")
+    amine_pattern = Chem.MolFromSmarts("[N;H1,H2]")
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        nonlocal found_late_amide
 
-        if node["type"] == "reaction":
-            # Check if this is a linear step (only one non-starting material reactant)
+        if node["type"] == "reaction" and node.get("depth", 0) == 0:  # Check if it's the final step
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                reactants = reactants_part.split(".")
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Count non-starting material reactants
-                non_starting_material_count = 0
-                for child in node.get("children", []):
-                    if child["type"] == "mol" and not child.get("in_stock", False):
-                        non_starting_material_count += 1
+                # Check for amide formation
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-                if non_starting_material_count > 1:
-                    is_linear = False
-                    print(
-                        f"Found non-linear step with {non_starting_material_count} non-starting material reactants"
-                    )
+                has_acid = any(
+                    mol and mol.HasSubstructMatch(carboxylic_acid_pattern) for mol in reactant_mols
+                )
+                has_amine = any(
+                    mol and mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols
+                )
+                has_amide = product_mol and product_mol.HasSubstructMatch(amide_pattern)
 
-        # Continue traversal
+                if has_acid and has_amine and has_amide:
+                    found_late_amide = True
+                    print("Found late-stage amide coupling")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Synthesis is {'linear' if is_linear else 'convergent'}")
-    return is_linear
+
+    return found_late_amide

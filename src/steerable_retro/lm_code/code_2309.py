@@ -2,59 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Checks if the synthetic route is predominantly linear.
-    A linear synthesis typically has a single branch at each step.
+    This function detects a synthetic strategy involving nitro group reduction to amine.
     """
-    # Count total reactions and branching points
-    total_reactions = 0
-    branching_points = 0
+    nitro_reduction_detected = False
 
-    def dfs_traverse(node):
-        nonlocal total_reactions, branching_points
+    def dfs_traverse(node, depth=0):
+        nonlocal nitro_reduction_detected
 
         if node["type"] == "reaction":
-            total_reactions += 1
-            # Count reactants (children) for this reaction
-            reactant_count = sum(1 for child in node.get("children", []) if child["type"] == "mol")
-            if reactant_count > 1:
-                branching_points += 1
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        # Recursively traverse children
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
+
+            # Check for nitro reduction pattern
+            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
+            amine_pattern = Chem.MolFromSmarts("[NH2]")
+
+            reactants_with_nitro = any(r and r.HasSubstructMatch(nitro_pattern) for r in reactants)
+
+            if (
+                reactants_with_nitro
+                and product
+                and product.HasSubstructMatch(amine_pattern)
+                and not product.HasSubstructMatch(nitro_pattern)
+            ):
+                print(f"Detected nitro reduction at depth {depth}")
+                nitro_reduction_detected = True
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    # Calculate branching ratio - lower is more linear
-    if total_reactions > 0:
-        branching_ratio = branching_points / total_reactions
-        is_linear = branching_ratio <= 0.6  # Allow up to 60% branching
-        print(
-            f"Linearity check: {branching_points} branching points out of {total_reactions} reactions (ratio: {branching_ratio:.2f})"
-        )
-        return is_linear
-    else:
-        print("No reactions found in route")
-        return False
+    print(f"Nitro reduction to amine detected: {nitro_reduction_detected}")
+    return nitro_reduction_detected

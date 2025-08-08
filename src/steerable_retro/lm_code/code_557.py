@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,49 +54,77 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a strategy involving ketone reduction to alcohol.
+    This function detects a synthetic strategy that uses hydrazine derivatives
+    to form nitrogen heterocycles.
     """
-    has_ketone_reduction = False
+    hydrazine_reactions = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_ketone_reduction
-
         if node["type"] == "reaction":
+            # Extract reactants and product from reaction
             try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                products_part = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check if this is a ketone reduction reaction
-                if checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi):
-                    print(f"Detected ketone reduction reaction at depth {depth}")
-                    has_ketone_reduction = True
-                else:
-                    # Alternative check using functional groups
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
-                    product_mol = Chem.MolFromSmiles(products_part)
+                # Check for hydrazine derivatives in reactants
+                has_hydrazine_derivative = any(
+                    checker.check_fg("Hydrazine", smi)
+                    or checker.check_fg("Hydrazone", smi)
+                    or checker.check_fg("Acylhydrazine", smi)
+                    or checker.check_fg("Hydrazone amide", smi)
+                    for smi in reactants_smiles
+                    if smi
+                )
 
-                    if all(reactant_mols) and product_mol:
-                        # Check for ketone in reactants
-                        has_ketone_in_reactants = any(
-                            checker.check_fg("Ketone", Chem.MolToSmiles(mol))
-                            for mol in reactant_mols
-                        )
+                # If hydrazine derivative found, check for heterocycle formation
+                if has_hydrazine_derivative and product_smiles:
+                    # Count rings in reactants and product
+                    reactants_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
+                    product_mol = Chem.MolFromSmiles(product_smiles)
 
-                        # Check for alcohol in product
-                        has_alcohol_in_product = checker.check_fg(
-                            "Secondary alcohol", products_part
-                        )
+                    reactants_ring_count = sum(
+                        len(mol.GetRingInfo().AtomRings()) if mol else 0 for mol in reactants_mols
+                    )
 
-                        if has_ketone_in_reactants and has_alcohol_in_product:
-                            # Additional check to ensure it's not a false positive
-                            # This is a reduction reaction converting ketone to alcohol
+                    product_ring_count = (
+                        len(product_mol.GetRingInfo().AtomRings()) if product_mol else 0
+                    )
+
+                    # Check if product has more rings than reactants combined
+                    if product_ring_count > reactants_ring_count:
+                        # Verify that the product contains a nitrogen heterocycle
+                        n_heterocycles = [
+                            ring_name
+                            for ring_name in [
+                                "pyrazole",
+                                "triazole",
+                                "tetrazole",
+                                "pyridazine",
+                                "imidazole",
+                                "indazole",
+                                "benzotriazole",
+                                "piperazine",
+                                "pyrimidine",
+                                "pyrazine",
+                                "diazepane",
+                                "aziridine",
+                                "azetidine",
+                                "pyrrolidine",
+                                "piperidine",
+                                "azepane",
+                            ]
+                            if checker.check_ring(ring_name, product_smiles)
+                        ]
+
+                        if n_heterocycles:
                             print(
-                                f"Detected ketone reduction via functional group analysis at depth {depth}"
+                                f"Hydrazine-based heterocycle formation detected at depth {depth}"
                             )
-                            has_ketone_reduction = True
+                            print(f"Formed heterocycles: {', '.join(n_heterocycles)}")
+                            hydrazine_reactions.append(depth)
             except Exception as e:
-                print(f"Error analyzing ketone reduction: {e}")
+                print(f"Error processing reaction node: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -102,5 +133,9 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Ketone reduction strategy detected: {has_ketone_reduction}")
-    return has_ketone_reduction
+    # Check if we have at least one hydrazine-based heterocycle formation
+    if len(hydrazine_reactions) >= 1:
+        print("Hydrazine-based heterocycle strategy detected")
+        return True
+
+    return False

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,160 +54,205 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the final step in the synthesis involves
-    a deprotection reaction.
+    This function detects a linear synthetic strategy with sequential heterocycle formations.
     """
-    # In retrosynthesis, the root node is the final product
-    # The first reaction node is the final step
+    # Track heterocycle formations and their sequence
+    heterocycle_formations = []
+    linear_synthesis = True
 
-    # If the route is a molecule node (final product), check its children
-    if route["type"] == "mol":
-        # Look for the first reaction node (final step)
-        for child in route.get("children", []):
-            if child["type"] == "reaction" and "metadata" in child and "rsmi" in child["metadata"]:
-                rsmi = child["metadata"]["rsmi"]
+    def is_heterocycle(smiles):
+        """Check if a molecule contains a heterocycle"""
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return False
+
+        # Check for common heterocycles
+        heterocycle_types = [
+            "furan",
+            "pyran",
+            "dioxane",
+            "tetrahydrofuran",
+            "tetrahydropyran",
+            "oxirane",
+            "oxetane",
+            "oxolane",
+            "oxane",
+            "pyrrole",
+            "pyridine",
+            "pyrazole",
+            "imidazole",
+            "oxazole",
+            "thiazole",
+            "pyrimidine",
+            "pyrazine",
+            "pyridazine",
+            "triazole",
+            "tetrazole",
+            "pyrrolidine",
+            "piperidine",
+            "piperazine",
+            "morpholine",
+            "thiomorpholine",
+            "indole",
+            "quinoline",
+            "isoquinoline",
+            "thiophene",
+            "thiopyran",
+        ]
+
+        for ring_type in heterocycle_types:
+            if checker.check_ring(ring_type, smiles):
+                return True
+
+        return False
+
+    def count_heterocycles(smiles):
+        """Count the number of heterocycles in a molecule"""
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return 0
+
+        count = 0
+        # Check for common heterocycles
+        heterocycle_types = [
+            "furan",
+            "pyran",
+            "dioxane",
+            "tetrahydrofuran",
+            "tetrahydropyran",
+            "oxirane",
+            "oxetane",
+            "oxolane",
+            "oxane",
+            "pyrrole",
+            "pyridine",
+            "pyrazole",
+            "imidazole",
+            "oxazole",
+            "thiazole",
+            "pyrimidine",
+            "pyrazine",
+            "pyridazine",
+            "triazole",
+            "tetrazole",
+            "pyrrolidine",
+            "piperidine",
+            "piperazine",
+            "morpholine",
+            "thiomorpholine",
+            "indole",
+            "quinoline",
+            "isoquinoline",
+            "thiophene",
+            "thiopyran",
+        ]
+
+        for ring_type in heterocycle_types:
+            if checker.check_ring(ring_type, smiles):
+                count += 1
+
+        return count
+
+    def is_complex_molecule(smiles):
+        """Determine if a molecule is complex based on multiple criteria"""
+        mol = Chem.MolFromSmiles(smiles)
+        if not mol:
+            return False
+
+        # Consider a molecule complex if it has:
+        # 1. More than 10 heavy atoms
+        # 2. At least one ring
+        # 3. At least one functional group
+        heavy_atom_count = mol.GetNumHeavyAtoms()
+        ring_count = len(Chem.GetSSSR(mol))
+
+        # Check for some common functional groups
+        has_functional_group = False
+        functional_groups = [
+            "Carboxylic acid",
+            "Ester",
+            "Amide",
+            "Amine",
+            "Alcohol",
+            "Ketone",
+            "Aldehyde",
+        ]
+        for fg in functional_groups:
+            if checker.check_fg(fg, smiles):
+                has_functional_group = True
+                break
+
+        return heavy_atom_count > 10 and (ring_count > 0 or has_functional_group)
+
+    def dfs_traverse(node, depth=0):
+        nonlocal heterocycle_formations, linear_synthesis
+
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                print(f"Checking final step reaction: {rsmi}")
-
-                # Check for various deprotection reactions
-                if checker.check_reaction("Boc amine deprotection", rsmi):
-                    print("Found late-stage deprotection: Boc deprotection")
-                    return True
-
-                if checker.check_reaction("Alcohol deprotection from silyl ethers", rsmi):
-                    print("Found late-stage deprotection: Silyl ether deprotection")
-                    return True
-
-                if checker.check_reaction("Ester saponification (methyl deprotection)", rsmi):
-                    print("Found late-stage deprotection: Ester saponification")
-                    return True
-
-                if checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi):
-                    print("Found late-stage deprotection: Ester saponification")
-                    return True
-
-                if checker.check_reaction("COOH ethyl deprotection", rsmi):
-                    print("Found late-stage deprotection: Carboxylic acid deprotection")
-                    return True
-
-                if checker.check_reaction("Hydroxyl benzyl deprotection", rsmi):
-                    print("Found late-stage deprotection: Benzyl deprotection")
-                    return True
-
-                if checker.check_reaction("Carboxyl benzyl deprotection", rsmi):
-                    print("Found late-stage deprotection: Benzyl deprotection")
-                    return True
-
-                if checker.check_reaction("Cleavage of methoxy ethers to alcohols", rsmi):
-                    print("Found late-stage deprotection: Methoxy ether cleavage")
-                    return True
-
-                if checker.check_reaction("Cleavage of alkoxy ethers to alcohols", rsmi):
-                    print("Found late-stage deprotection: Alkoxy ether cleavage")
-                    return True
-
-                if checker.check_reaction("TMS deprotection from alkyne", rsmi):
-                    print("Found late-stage deprotection: TMS alkyne deprotection")
-                    return True
-
-                if checker.check_reaction("Tert-butyl deprotection of amine", rsmi):
-                    print("Found late-stage deprotection: Tert-butyl amine deprotection")
-                    return True
-
-                if checker.check_reaction("Phthalimide deprotection", rsmi):
-                    print("Found late-stage deprotection: Phthalimide deprotection")
-                    return True
-
-                if checker.check_reaction("N-glutarimide deprotection", rsmi):
-                    print("Found late-stage deprotection: N-glutarimide deprotection")
-                    return True
-
-                if checker.check_reaction("Acetal hydrolysis to aldehyde", rsmi):
-                    print("Found late-stage deprotection: Acetal hydrolysis")
-                    return True
-
-                if checker.check_reaction("Ketal hydrolysis to ketone", rsmi):
-                    print("Found late-stage deprotection: Ketal hydrolysis")
-                    return True
-
-                # Check for methoxy to carbonyl conversion by examining atom mapping
-                product_mol = Chem.MolFromSmiles(product)
+                # Count heterocycles in reactants and product
+                product_heterocycles = count_heterocycles(product)
+                max_reactant_heterocycles = 0
                 for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and product_mol:
-                        # Look for specific atom-mapped patterns
-                        for atom_idx in range(1, 100):  # Check reasonable range of atom indices
-                            methoxy_pattern = f"[O:{atom_idx}]"
-                            carbonyl_pattern = f"=[O:{atom_idx}]"
-                            if methoxy_pattern in reactant and carbonyl_pattern in product:
-                                print(
-                                    f"Found late-stage deprotection: Methoxy to carbonyl conversion (atom-mapped at position {atom_idx})"
-                                )
-                                return True
-
-                # Check for methoxy to carbonyl conversion (common deprotection)
-                for reactant in reactants:
-                    # Check for methoxy group in reactant
-                    if checker.check_fg("Ether", reactant):
-                        # Check for carbonyl in product that wasn't in reactant
-                        if (
-                            checker.check_fg("Ketone", product)
-                            and not checker.check_fg("Ketone", reactant)
-                        ) or (
-                            checker.check_fg("Aldehyde", product)
-                            and not checker.check_fg("Aldehyde", reactant)
-                        ):
-                            print("Found late-stage deprotection: Methoxy to carbonyl conversion")
-                            return True
-
-                # Check for ester to amide conversion (not strictly a deprotection)
-                for reactant in reactants:
-                    if (
-                        checker.check_fg("Ester", reactant)
-                        and not checker.check_fg("Ester", product)
-                        and checker.check_fg("Primary amide", product)
-                    ):
-                        print("Found late-stage deprotection: Ester to amide conversion")
-                        return True
-
-                # Check for protective group removal
-                for reactant in reactants:
-                    # Check for silyl protective group removal
-                    if checker.check_fg(
-                        "Silyl protective group", reactant
-                    ) and not checker.check_fg("Silyl protective group", product):
-                        print("Found late-stage deprotection: Silyl protective group removal")
-                        return True
-
-                    # Check for TMS ether protective group removal
-                    if checker.check_fg(
-                        "TMS ether protective group", reactant
-                    ) and not checker.check_fg("TMS ether protective group", product):
-                        print("Found late-stage deprotection: TMS ether protective group removal")
-                        return True
-
-                    # Check for Boc removal
-                    if checker.check_fg("Boc", reactant) and not checker.check_fg("Boc", product):
-                        print("Found late-stage deprotection: Boc removal")
-                        return True
-
-                    # Check for acetal/ketal deprotection
-                    if checker.check_fg("Acetal/Ketal", reactant) and not checker.check_fg(
-                        "Acetal/Ketal", product
-                    ):
-                        print("Found late-stage deprotection: Acetal/Ketal deprotection")
-                        return True
-
-                # Check for general deprotection patterns
-                if any(
-                    term in rsmi.lower()
-                    for term in ["deprotection", "deprotect", "hydrolysis", "cleavage"]
-                ):
-                    print(
-                        "Found late-stage deprotection: Deprotection mentioned in reaction SMILES"
+                    reactant_heterocycles = count_heterocycles(reactant)
+                    max_reactant_heterocycles = max(
+                        max_reactant_heterocycles, reactant_heterocycles
                     )
-                    return True
+
+                # If product has more heterocycles than any reactant, a heterocycle was formed
+                if product_heterocycles > max_reactant_heterocycles:
+                    print(
+                        f"Heterocycle formation detected at depth {depth}. Product heterocycles: {product_heterocycles}, Max reactant heterocycles: {max_reactant_heterocycles}"
+                    )
+                    heterocycle_formations.append(depth)
+
+                # Check if this is a convergent step (more than one complex reactant)
+                complex_reactants = 0
+                for reactant in reactants:
+                    if is_complex_molecule(reactant):
+                        complex_reactants += 1
+
+                if complex_reactants > 1:
+                    linear_synthesis = False
+                    print(f"Convergent synthesis step detected at depth {depth}")
+
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
+
+    # Start traversal
+    dfs_traverse(route)
+
+    # Check if heterocycle formations are sequential
+    sequential_formations = False
+    if len(heterocycle_formations) >= 2:
+        # Sort by depth to check sequence
+        heterocycle_formations.sort()
+
+        # Check if there are at least two formations with consecutive depths
+        # or with only reasonable gaps between them
+        for i in range(len(heterocycle_formations) - 1):
+            if (
+                heterocycle_formations[i + 1] - heterocycle_formations[i] <= 5
+            ):  # Allow larger gaps in linear synthesis
+                sequential_formations = True
+                break
+
+    print(f"Heterocycle formations: {heterocycle_formations}")
+    print(f"Linear synthesis: {linear_synthesis}")
+    print(f"Sequential formations: {sequential_formations}")
+
+    # Return True if we have multiple sequential heterocycle formations in a linear synthesis
+    # Also consider the overall distribution of formations
+    if len(heterocycle_formations) >= 2 and linear_synthesis:
+        # Either they're sequential by our definition, or they're reasonably distributed
+        if sequential_formations or (
+            max(heterocycle_formations) - min(heterocycle_formations)
+            <= len(heterocycle_formations) * 3
+        ):
+            return True
 
     return False

@@ -2,82 +2,52 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a late-stage Suzuki coupling strategy where an aryl bromide
-    and boronic acid form a biaryl system in the second half of the synthesis.
+    Detects if the synthesis follows a linear strategy (no convergent steps).
     """
-    suzuki_found = False
-    suzuki_depth = -1
-    max_depth = -1
+    is_linear = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal suzuki_found, suzuki_depth, max_depth
-
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal is_linear
 
         if node["type"] == "reaction":
-            # Check if this is a Suzuki coupling
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Count number of molecule children (reactants)
+            mol_children = [child for child in node.get("children", []) if child["type"] == "mol"]
 
-                # Look for aryl bromide and boronic acid in reactants
-                has_aryl_bromide = False
-                has_boronic_acid = False
+            # If more than 2 reactants, it's likely a convergent step
+            if len(mol_children) > 2:
+                is_linear = False
+                print(f"Found convergent step with {len(mol_children)} reactants")
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        # Check for aryl bromide
-                        if mol.HasSubstructMatch(Chem.MolFromSmarts("[c][Br]")):
-                            has_aryl_bromide = True
-                        # Check for boronic acid
-                        if mol.HasSubstructMatch(Chem.MolFromSmarts("[c][B]([O])[O]")):
-                            has_boronic_acid = True
-
-                # Check if product has biaryl
-                prod_mol = Chem.MolFromSmiles(product)
-                has_biaryl = False
-                if prod_mol and prod_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]!@[c]")):
-                    has_biaryl = True
-
-                if has_aryl_bromide and has_boronic_acid and has_biaryl:
-                    suzuki_found = True
-                    suzuki_depth = depth
-                    print(f"Found Suzuki coupling at depth {depth}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Consider it late-stage if it occurs in the first half of the synthesis (lower depth)
-    is_late_stage = suzuki_found and suzuki_depth <= max_depth / 2
-
-    if is_late_stage:
-        print(
-            f"Detected late-stage Suzuki coupling strategy at depth {suzuki_depth} (max depth: {max_depth})"
-        )
-
-    return is_late_stage
+    return is_linear

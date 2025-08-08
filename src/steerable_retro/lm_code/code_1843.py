@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,67 +54,151 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis maintains a tetrahydronaphthalene core throughout.
+    This function detects if morpholine is introduced in the late stage of synthesis (depth 0-1)
+    via nucleophilic substitution on an alkyl chain.
     """
-    # Track if we've found at least one molecule with the core
-    found_core = False
-    # Track if any molecule in the main synthetic path lacks the core
-    all_have_core = True
+    morpholine_introduced = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_core, all_have_core
+    def dfs_traverse(node, current_depth=0):
+        nonlocal morpholine_introduced
 
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Use current_depth from DFS traversal instead of trying to parse from ID
+            if current_depth <= 1:  # Late stage (depth 0 or 1)
+                try:
+                    rsmi = node["metadata"]["rsmi"]
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-            # Check if this molecule has the tetrahydronaphthalene core
-            # Looking for patterns that indicate a tetrahydronaphthalene-like structure
-            # The molecules in the errors have a structure with "CCC2" and aromatic carbons
-            has_naphthalene = checker.check_ring("naphthalene", mol_smiles)
+                    print(f"Analyzing reaction at depth {current_depth}: {rsmi}")
 
-            # Check for tetrahydronaphthalene-like structure
-            # This pattern looks for a fused ring system with one aromatic ring and one saturated ring
-            mol = Chem.MolFromSmiles(mol_smiles)
-            has_tetrahydro = False
+                    # Check if morpholine is in the product
+                    product_has_morpholine = checker.check_ring("morpholine", product)
+                    if product_has_morpholine:
+                        print(f"Product contains morpholine: {product}")
 
-            if mol:
-                # Check for a structure with a benzene ring fused to a cyclohexane ring
-                # This covers 1,2,3,4-tetrahydronaphthalene and similar structures
-                ring_info = mol.GetRingInfo()
-                if ring_info.NumRings() >= 2:
-                    # Look for the pattern in the SMILES that indicates tetrahydronaphthalene
-                    # All error examples have "c1" and "c2" (aromatic carbons) and "CCC2" (saturated carbons)
-                    if (
-                        "c1" in mol_smiles
-                        and "c2" in mol_smiles
-                        and ("CCC2" in mol_smiles or "CC2" in mol_smiles)
-                    ):
-                        has_tetrahydro = True
+                    # Find which reactant is morpholine
+                    morpholine_reactant = None
+                    other_reactants = []
 
-            has_core = has_naphthalene or has_tetrahydro
+                    for reactant in reactants:
+                        if checker.check_ring("morpholine", reactant):
+                            morpholine_reactant = reactant
+                            print(f"Found morpholine in reactant: {reactant}")
+                        else:
+                            other_reactants.append(reactant)
 
-            # If it's not a starting material, it should have the core
-            if not node.get("in_stock", False):
-                if has_core:
-                    found_core = True
-                    print(f"Found molecule with tetrahydronaphthalene-like core: {mol_smiles}")
-                else:
-                    print(
-                        f"Intermediate or product without tetrahydronaphthalene core: {mol_smiles}"
+                    # Check if this is a nucleophilic substitution reaction
+                    is_nucleophilic_sub = any(
+                        [
+                            checker.check_reaction(
+                                "N-alkylation of secondary amines with alkyl halides", rsmi
+                            ),
+                            checker.check_reaction(
+                                "N-alkylation of primary amines with alkyl halides", rsmi
+                            ),
+                            checker.check_reaction("Williamson Ether Synthesis", rsmi),
+                            checker.check_reaction("Mitsunobu aryl ether", rsmi),
+                            checker.check_reaction("S-alkylation of thiols", rsmi),
+                            checker.check_reaction("S-alkylation of thiols with alcohols", rsmi),
+                        ]
                     )
-                    all_have_core = False
-            # For starting materials, we just note if any have the core
-            elif has_core:
-                found_core = True
-                print(f"Starting material with tetrahydronaphthalene core: {mol_smiles}")
 
-        # Traverse children
+                    # If not identified by reaction type but morpholine appears in both reactant and product,
+                    # it's likely a nucleophilic substitution
+                    if not is_nucleophilic_sub and morpholine_reactant and product_has_morpholine:
+                        print(
+                            "Reaction not identified by type but morpholine appears in both reactant and product"
+                        )
+                        is_nucleophilic_sub = True
+
+                    if is_nucleophilic_sub:
+                        print(f"Found nucleophilic substitution reaction: {rsmi}")
+
+                        # If morpholine is a reactant and product contains morpholine
+                        if morpholine_reactant and product_has_morpholine:
+                            # Check if the other reactant has a leaving group
+                            for other_reactant in other_reactants:
+                                has_leaving_group = any(
+                                    [
+                                        checker.check_fg("Primary halide", other_reactant),
+                                        checker.check_fg("Secondary halide", other_reactant),
+                                        checker.check_fg("Tertiary halide", other_reactant),
+                                        checker.check_fg("Tosylate", other_reactant),
+                                        checker.check_fg("Mesylate", other_reactant),
+                                        checker.check_fg("Triflate", other_reactant),
+                                        "Cl" in other_reactant,  # Check for chlorine atom
+                                        "Br" in other_reactant,  # Check for bromine atom
+                                        "I" in other_reactant,  # Check for iodine atom
+                                    ]
+                                )
+
+                                if has_leaving_group:
+                                    print(
+                                        f"Found late-stage morpholine introduction at depth {current_depth}"
+                                    )
+                                    print(f"Reaction SMILES: {rsmi}")
+                                    print(f"Morpholine reactant: {morpholine_reactant}")
+                                    print(f"Other reactant with leaving group: {other_reactant}")
+                                    morpholine_introduced = True
+                                    break
+                                else:
+                                    print(
+                                        f"No suitable leaving group found in reactant: {other_reactant}"
+                                    )
+                        elif morpholine_reactant:
+                            print(f"Morpholine found in reactant but not in product: {product}")
+                        elif product_has_morpholine:
+                            print(f"Morpholine found in product but not in reactants")
+
+                            # Check if morpholine is formed in the reaction (e.g., ring closure)
+                            # This is a different mechanism than nucleophilic substitution
+                            for reactant in reactants:
+                                # Check if reactant contains components that could form morpholine
+                                if checker.check_fg("Primary amine", reactant) and checker.check_fg(
+                                    "Primary alcohol", reactant
+                                ):
+                                    print(
+                                        f"Possible morpholine formation from components in reactant: {reactant}"
+                                    )
+                                    morpholine_introduced = True
+                                    break
+                    else:
+                        # Even if not classified as nucleophilic substitution, check for direct evidence
+                        # of morpholine introduction
+                        if morpholine_reactant and product_has_morpholine:
+                            for other_reactant in other_reactants:
+                                # Check for any leaving group or halogen
+                                has_leaving_group = any(
+                                    [
+                                        checker.check_fg("Primary halide", other_reactant),
+                                        checker.check_fg("Secondary halide", other_reactant),
+                                        checker.check_fg("Tertiary halide", other_reactant),
+                                        checker.check_fg("Tosylate", other_reactant),
+                                        checker.check_fg("Mesylate", other_reactant),
+                                        checker.check_fg("Triflate", other_reactant),
+                                        "Cl" in other_reactant,
+                                        "Br" in other_reactant,
+                                        "I" in other_reactant,
+                                    ]
+                                )
+
+                                if has_leaving_group:
+                                    print(
+                                        f"Found evidence of morpholine introduction despite reaction type"
+                                    )
+                                    print(f"Reaction SMILES: {rsmi}")
+                                    morpholine_introduced = True
+                                    break
+
+                        print(f"Not a nucleophilic substitution reaction at depth {current_depth}")
+                except Exception as e:
+                    print(f"Error processing reaction: {e}")
+
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, current_depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-
-    # The strategy is valid if we found at least one molecule with the core
-    # and all non-starting materials maintain the core
-    return found_core and all_have_core
+    return morpholine_introduced

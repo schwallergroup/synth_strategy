@@ -2,163 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Checks if the synthetic route contains a protection-deprotection sequence.
+    This function detects a strategy where a phenol group is preserved throughout most of the synthesis.
     """
-    # Track protection and deprotection reactions
-    protection_reactions = []
-    deprotection_reactions = []
+    steps_with_phenol = 0
+    total_steps = 0
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
+    def dfs_traverse(node):
+        nonlocal steps_with_phenol, total_steps
 
-            # Check for protection reactions
-            if (
-                checker.check_reaction("Alcohol protection with silyl ethers", rxn_smiles)
-                or checker.check_reaction("Boc amine protection", rxn_smiles)
-                or checker.check_reaction("Boc amine protection explicit", rxn_smiles)
-                or checker.check_reaction("Boc amine protection with Boc anhydride", rxn_smiles)
-                or checker.check_reaction("Boc amine protection (ethyl Boc)", rxn_smiles)
-                or checker.check_reaction("Boc amine protection of secondary amine", rxn_smiles)
-                or checker.check_reaction("Boc amine protection of primary amine", rxn_smiles)
-                or checker.check_reaction("Protection of carboxylic acid", rxn_smiles)
-                or checker.check_reaction("TMS ether protective group", rxn_smiles)
-                or checker.check_reaction("Silyl protective group", rxn_smiles)
-            ):
-                protection_reactions.append((depth, rxn_smiles))
-                print(f"Protection reaction found at depth {depth}: {rxn_smiles[:50]}...")
+        if node["type"] == "reaction":
+            total_steps += 1
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0]
 
-            # Check for deprotection reactions
-            if (
-                checker.check_reaction("Alcohol deprotection from silyl ethers", rxn_smiles)
-                or checker.check_reaction(
-                    "Alcohol deprotection from silyl ethers (double)", rxn_smiles
-                )
-                or checker.check_reaction(
-                    "Alcohol deprotection from silyl ethers (diol)", rxn_smiles
-                )
-                or checker.check_reaction("Boc amine deprotection", rxn_smiles)
-                or checker.check_reaction("Boc amine deprotection of guanidine", rxn_smiles)
-                or checker.check_reaction("Boc amine deprotection to NH-NH2", rxn_smiles)
-                or checker.check_reaction("Deprotection of carboxylic acid", rxn_smiles)
-                or checker.check_reaction("TMS deprotection from alkyne", rxn_smiles)
-                or checker.check_reaction("Tert-butyl deprotection of amine", rxn_smiles)
-                or checker.check_reaction("Hydroxyl benzyl deprotection", rxn_smiles)
-                or checker.check_reaction("Carboxyl benzyl deprotection", rxn_smiles)
-                or checker.check_reaction("Cleavage of methoxy ethers to alcohols", rxn_smiles)
-                or checker.check_reaction("Cleavage of alkoxy ethers to alcohols", rxn_smiles)
-                or checker.check_reaction("Ether cleavage to primary alcohol", rxn_smiles)
-                or checker.check_reaction("N-glutarimide deprotection", rxn_smiles)
-                or checker.check_reaction("Phthalimide deprotection", rxn_smiles)
-            ):
-                deprotection_reactions.append((depth, rxn_smiles))
-                print(f"Deprotection reaction found at depth {depth}: {rxn_smiles[:50]}...")
+                reactant_mol = Chem.MolFromSmiles(reactants)
 
-            # Also check for functional group changes that might indicate protection/deprotection
-            reactants = rxn_smiles.split(">")[0].split(".")
-            product = rxn_smiles.split(">")[-1]
+                if reactant_mol:
+                    # Phenol pattern
+                    phenol_pattern = Chem.MolFromSmarts("[OH]-[c]")
 
-            # Check for protection patterns
-            if any(checker.check_fg("Primary alcohol", r) for r in reactants) and checker.check_fg(
-                "Ether", product
-            ):
-                protection_reactions.append((depth, rxn_smiles))
-                print(f"Alcohol protection pattern found at depth {depth}")
+                    if reactant_mol.HasSubstructMatch(phenol_pattern):
+                        steps_with_phenol += 1
+                        print(f"Found phenol in step: {rsmi}")
 
-            if any(checker.check_fg("Primary amine", r) for r in reactants) and checker.check_fg(
-                "Secondary amide", product
-            ):
-                protection_reactions.append((depth, rxn_smiles))
-                print(f"Amine protection pattern found at depth {depth}")
-
-            # Check for deprotection patterns
-            if checker.check_fg("Ether", reactants[0]) and checker.check_fg(
-                "Primary alcohol", product
-            ):
-                deprotection_reactions.append((depth, rxn_smiles))
-                print(f"Alcohol deprotection pattern found at depth {depth}")
-
-            if checker.check_fg("Secondary amide", reactants[0]) and checker.check_fg(
-                "Primary amine", product
-            ):
-                deprotection_reactions.append((depth, rxn_smiles))
-                print(f"Amine deprotection pattern found at depth {depth}")
-
-        # Recursively traverse children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have both protection and deprotection reactions
-    if protection_reactions and deprotection_reactions:
-        # Check if any protection happens before any deprotection
-        valid_sequence = any(
-            p_depth < d_depth
-            for p_depth, _ in protection_reactions
-            for d_depth, _ in deprotection_reactions
-        )
+    # Check if phenol is preserved in most steps (>= 75% of steps)
+    phenol_preservation_ratio = steps_with_phenol / total_steps if total_steps > 0 else 0
+    is_phenol_preserved = phenol_preservation_ratio >= 0.75
 
-        if valid_sequence:
-            print(
-                f"Protection-deprotection sequence detected: {len(protection_reactions)} protection reactions, {len(deprotection_reactions)} deprotection reactions"
-            )
-            return True
-        else:
-            print(f"Protection-deprotection sequence not in correct order")
-    else:
-        print(
-            f"Protection-deprotection sequence not found. Protection reactions: {len(protection_reactions)}, Deprotection reactions: {len(deprotection_reactions)}"
-        )
+    print(f"Steps with phenol: {steps_with_phenol}/{total_steps} ({phenol_preservation_ratio:.2f})")
+    print(f"Phenol preservation strategy: {is_phenol_preserved}")
 
-    return False
+    return is_phenol_preserved

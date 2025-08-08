@@ -2,69 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthesis involving phenol alkylation with a haloalkyl chain.
+    This function detects if the synthesis includes an ester hydrolysis to carboxylic acid.
     """
-    has_phenol_alkylation = False
+    ester_hydrolysis_found = False
 
-    def dfs_traverse(node):
-        nonlocal has_phenol_alkylation
+    def dfs_traverse(node, depth=0):
+        nonlocal ester_hydrolysis_found
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for phenol and haloalkyl patterns in reactants
-            phenol_present = False
-            haloalkyl_present = False
+                # Check if this is an ester hydrolysis reaction
+                ester_pattern = Chem.MolFromSmarts("C(=O)O[C]")
+                acid_pattern = Chem.MolFromSmarts("C(=O)[OH]")
 
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol:
-                    phenol_pattern = Chem.MolFromSmarts("[OH][c]")
-                    if mol.HasSubstructMatch(phenol_pattern):
-                        phenol_present = True
+                # Check if ester in reactant and acid in product
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    product_mol = Chem.MolFromSmiles(product)
 
-                    haloalkyl_pattern = Chem.MolFromSmarts("[Br,Cl][CH2][CH2][CH2][Cl,Br]")
-                    if mol.HasSubstructMatch(haloalkyl_pattern):
-                        haloalkyl_present = True
+                    if (
+                        reactant_mol
+                        and product_mol
+                        and reactant_mol.HasSubstructMatch(ester_pattern)
+                        and product_mol.HasSubstructMatch(acid_pattern)
+                        and not product_mol.HasSubstructMatch(ester_pattern)
+                    ):
+                        ester_hydrolysis_found = True
+                        print(f"Ester hydrolysis found at depth {depth}")
+                        break
 
-            # Check for alkylated phenol in product
-            if phenol_present and haloalkyl_present:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    alkylated_phenol_pattern = Chem.MolFromSmarts("[c][O][CH2][CH2][CH2][Cl,Br]")
-                    if product_mol.HasSubstructMatch(alkylated_phenol_pattern):
-                        has_phenol_alkylation = True
-                        print(f"Found phenol alkylation in reaction: {rsmi}")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-
-    print(f"Phenol alkylation strategy detected: {has_phenol_alkylation}")
-    return has_phenol_alkylation
+    return ester_hydrolysis_found

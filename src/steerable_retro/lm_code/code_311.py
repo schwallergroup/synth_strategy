@@ -2,80 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects aromatic C-N bond formation via SNAr or coupling reactions.
+    This function detects a late-stage epoxide opening reaction that forms a secondary alcohol.
+    Late stage is defined as occurring at depth 0 or 1 in the synthesis tree.
     """
-    aromatic_c_n_formation_detected = False
+    epoxide_opening_detected = False
 
-    def dfs_traverse(node):
-        nonlocal aromatic_c_n_formation_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal epoxide_opening_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            try:
-                reactants = reactants_part.split(".")
-                product_mol = Chem.MolFromSmiles(product_part)
+                # Check for epoxide in reactants
+                epoxide_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6]")
+                # Check for alcohol in product
+                alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8H]")
 
-                # Aromatic C-N bond pattern
-                aromatic_c_n_pattern = Chem.MolFromSmarts("[c][N]")
+                epoxide_in_reactants = False
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(epoxide_pattern):
+                            epoxide_in_reactants = True
+                            break
+                    except:
+                        continue
 
-                # Aromatic halide pattern (for SNAr or coupling precursor)
-                aromatic_halide_pattern = Chem.MolFromSmarts("[c][Br,Cl,I,F]")
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    alcohol_in_product = product_mol and product_mol.HasSubstructMatch(
+                        alcohol_pattern
+                    )
+                except:
+                    alcohol_in_product = False
 
-                # Amine pattern
-                amine_pattern = Chem.MolFromSmarts("[N;H1,H2]")
+                if epoxide_in_reactants and alcohol_in_product:
+                    print(f"Detected epoxide opening at depth {depth}")
+                    epoxide_opening_detected = True
 
-                # Check if product has aromatic C-N bond
-                if product_mol and product_mol.HasSubstructMatch(aromatic_c_n_pattern):
-                    # Check if reactants have aromatic halide and amine
-                    has_aromatic_halide = False
-                    has_amine = False
-
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if not reactant_mol:
-                            continue
-
-                        if reactant_mol.HasSubstructMatch(aromatic_halide_pattern):
-                            has_aromatic_halide = True
-
-                        if reactant_mol.HasSubstructMatch(amine_pattern):
-                            has_amine = True
-
-                    if has_aromatic_halide and has_amine:
-                        aromatic_c_n_formation_detected = True
-                        print("Detected aromatic C-N bond formation")
-            except:
-                pass
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-
-    return aromatic_c_n_formation_detected
+    return epoxide_opening_detected

@@ -2,70 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves functionalization of heterocycles like imidazole or pyrazole.
+    This function detects if heterocyclic scaffolds (pyridine, isoxazole) are maintained throughout synthesis.
     """
-    heterocycle_functionalization_detected = False
+    pyridine_present = False
+    isoxazole_present = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal heterocycle_functionalization_detected
+    def dfs_traverse(node):
+        nonlocal pyridine_present, isoxazole_present
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
-
+        if node["type"] == "mol" and "smiles" in node:
             try:
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Check for pyridine
+                    pyridine_pattern = Chem.MolFromSmarts("c1ccncc1")
+                    # Check for isoxazole
+                    isoxazole_pattern = Chem.MolFromSmarts("c1conc1")
 
-                if product_mol and all(r for r in reactant_mols):
-                    # Check for imidazole or pyrazole patterns
-                    imidazole_pattern = Chem.MolFromSmarts("[n]1[c][n][c][c]1")
-                    pyrazole_pattern = Chem.MolFromSmarts("[n]1[n][c][c][c]1")
-
-                    # Check if heterocycle exists in both reactants and products
-                    heterocycle_in_reactants = False
-                    for r_mol in reactant_mols:
-                        if r_mol.HasSubstructMatch(imidazole_pattern) or r_mol.HasSubstructMatch(
-                            pyrazole_pattern
-                        ):
-                            heterocycle_in_reactants = True
-                            break
-
-                    heterocycle_in_product = product_mol.HasSubstructMatch(
-                        imidazole_pattern
-                    ) or product_mol.HasSubstructMatch(pyrazole_pattern)
-
-                    if heterocycle_in_reactants and heterocycle_in_product:
-                        # Check if the heterocycle is being modified (different substitution pattern)
-                        heterocycle_functionalization_detected = True
-                        print(f"Heterocycle functionalization detected at depth {depth}")
+                    if mol.HasSubstructMatch(pyridine_pattern):
+                        pyridine_present = True
+                    if mol.HasSubstructMatch(isoxazole_pattern):
+                        isoxazole_present = True
             except:
-                print(f"Error processing reaction at depth {depth}")
+                pass
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from root
     dfs_traverse(route)
-    return heterocycle_functionalization_detected
+
+    # Check if both heterocycles are present
+    if pyridine_present and isoxazole_present:
+        print("Detected maintenance of heterocyclic scaffolds (pyridine and isoxazole)")
+        return True
+    return False

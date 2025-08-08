@@ -2,72 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy that involves multiple amide bond
-    formations or disconnections.
+    Detects if the synthesis follows a linear strategy without convergent steps.
     """
-    amide_reactions_count = 0
+    # Initialize tracking variables
+    is_linear = True
+    max_reactants_per_step = 0
 
-    def dfs_traverse(node):
-        nonlocal amide_reactions_count
+    def dfs_traverse(node, depth):
+        nonlocal is_linear, max_reactants_per_step
 
-        if node["type"] == "reaction":
-            # Get reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+            # Count number of reactants
+            num_reactants = len(reactants)
+            max_reactants_per_step = max(max_reactants_per_step, num_reactants)
 
-            # Amide pattern
-            amide_pattern = Chem.MolFromSmarts("[#6]-[#7]-[#6](=[#8])-[#6]")
+            # If more than 2 complex reactants, it might be convergent
+            complex_reactants = 0
+            for reactant in reactants:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol and mol.GetNumAtoms() > 6:  # Arbitrary threshold for "complex"
+                    complex_reactants += 1
 
-            # Check for amide formation: product has amide but reactants don't
-            if product_mol and product_mol.HasSubstructMatch(amide_pattern):
-                reactants_with_amide = any(
-                    mol and mol.HasSubstructMatch(amide_pattern) for mol in reactant_mols
+            if complex_reactants > 2:
+                print(
+                    f"Potentially convergent step detected at depth {depth} with {complex_reactants} complex reactants"
                 )
-                if not reactants_with_amide:
-                    print("Found amide formation")
-                    amide_reactions_count += 1
-
-            # Check for amide disconnection: reactants have amide but product doesn't
-            reactants_with_amide = any(
-                mol and mol.HasSubstructMatch(amide_pattern) for mol in reactant_mols
-            )
-            if reactants_with_amide and (
-                not product_mol or not product_mol.HasSubstructMatch(amide_pattern)
-            ):
-                print("Found amide disconnection")
-                amide_reactions_count += 1
+                is_linear = False
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
+    # Start traversal from root
+    dfs_traverse(route, 0)
 
-    # Return True if at least 2 amide reactions are found
-    return amide_reactions_count >= 2
+    print(f"Linear synthesis strategy detected: {is_linear}")
+    return is_linear

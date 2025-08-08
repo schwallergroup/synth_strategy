@@ -2,56 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route preserves a trifluoromethyl group throughout the synthesis.
+    This function detects if the synthetic route follows a linear synthesis strategy
+    (no convergent steps with multiple fragments combining).
     """
-    final_product_has_cf3 = False
-    starting_material_has_cf3 = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal final_product_has_cf3, starting_material_has_cf3
+        nonlocal is_linear
 
-        if node["type"] == "mol":
-            cf3_pattern = Chem.MolFromSmarts("[C]([F])([F])[F]")
-            mol = Chem.MolFromSmiles(node["smiles"])
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            if mol and mol.HasSubstructMatch(cf3_pattern):
-                # Check if this is the final product
-                if "depth" in node and node["depth"] == 0:
-                    final_product_has_cf3 = True
-                    print("Final product contains trifluoromethyl group")
+                # If there are multiple reactants (excluding reagents), it's potentially convergent
+                if len(reactants) > 1:
+                    # Check if these are actual fragments or just reagents
+                    significant_reactants = 0
+                    for reactant in reactants:
+                        # Simple heuristic: reactants with more than 10 atoms are considered significant
+                        # This could be refined based on your specific needs
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.GetNumAtoms() > 10:
+                                significant_reactants += 1
+                        except:
+                            print(f"Error processing reactant SMILES: {reactant}")
 
-                # Check if this is a starting material
-                elif node.get("in_stock", False):
-                    starting_material_has_cf3 = True
-                    print("Starting material contains trifluoromethyl group")
+                    if significant_reactants > 1:
+                        print(f"Found convergent step with multiple significant reactants: {rsmi}")
+                        is_linear = False
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return True if trifluoromethyl group is found in both starting materials and final product
-    return final_product_has_cf3 and starting_material_has_cf3
+    return is_linear

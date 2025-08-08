@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,126 +54,75 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy (each step builds upon a single precursor)
-    rather than a convergent strategy (combining multiple complex fragments).
-
-    A linear strategy typically has:
-    1. Most reactions with only one complex reactant
-    2. Any convergent steps are early in the synthesis (high depth)
-    3. Common coupling reactions may have two complex reactants but are still part of linear strategies
-
-    Returns True if the synthesis is predominantly linear, False if convergent.
+    This function detects a strategy where a thiomethyl group is converted to a thione.
+    In retrosynthetic analysis, we look for reactions where a thione is converted to a thiomethyl.
     """
-    is_linear = True
-    convergent_steps = []
+    # Track if we found the key feature
+    found_thione_formation = False
 
-    # Common reagents that shouldn't count toward convergence
-    common_reagents = [
-        "Boronic acid",
-        "Boronic ester",
-        "Triflate",
-        "Magnesium halide",
-        "Zinc halide",
-        "Tin",
-        "Alkyl lithium",
-        "Aryl lithium",
-        "Tosylate",
-        "Mesylate",
-        "Primary halide",
-        "Secondary halide",
-        "Tertiary halide",
-        "Aromatic halide",
-        "Acyl halide",
-        "Sulfonyl halide",
-    ]
+    def dfs_traverse(node):
+        nonlocal found_thione_formation
 
-    # Coupling reactions that are common in linear synthesis
-    linear_friendly_reactions = [
-        "Suzuki coupling",
-        "Negishi coupling",
-        "Stille reaction",
-        "Sonogashira",
-        "Buchwald-Hartwig",
-        "Heck",
-        "Chan-Lam",
-        "Hiyama-Denmark Coupling",
-        "Kumada cross-coupling",
-    ]
+        if node["type"] == "reaction" and not found_thione_formation:
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-    def dfs_traverse(node, depth=0):
-        nonlocal is_linear, convergent_steps
+                print(f"Analyzing reaction: {rsmi}")
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check if this is a common coupling reaction
-            is_coupling_reaction = False
-            for reaction_type in linear_friendly_reactions:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Detected {reaction_type} at depth {depth}")
-                    is_coupling_reaction = True
-                    break
-
-            # Count non-trivial reactants (more than 7 heavy atoms)
-            complex_reactants = []
-            for r in reactants:
-                if not r:
-                    continue
-
-                mol = Chem.MolFromSmiles(r)
-                if not mol:
-                    continue
-
-                # Skip if this is a common reagent
-                is_common_reagent = False
-                for reagent_type in common_reagents:
-                    try:
-                        if checker.check_fg(reagent_type, r):
-                            print(f"Detected common reagent ({reagent_type}) at depth {depth}")
-                            is_common_reagent = True
-                            break
-                    except Exception as e:
-                        print(f"Error checking for {reagent_type}: {e}")
-
-                if is_common_reagent:
-                    continue
-
-                if mol.GetNumHeavyAtoms() > 7:  # Better threshold for "complex"
-                    complex_reactants.append(r)
-
-            # If more than one complex reactant and not a coupling reaction, it's likely a convergent step
-            if len(complex_reactants) > 1 and not is_coupling_reaction:
-                convergent_steps.append((depth, len(complex_reactants)))
-                print(
-                    f"Convergent synthesis step detected at depth {depth} with {len(complex_reactants)} complex reactants"
+                # In retrosynthesis, we're looking for thione in reactants and thiomethyl in products
+                # Check for thiocarbonyl (C=S) in reactants
+                has_thiocarbonyl_in_reactants = any(
+                    checker.check_fg("Thiocarbonyl", r) for r in reactants_smiles
                 )
+                print(f"Has thiocarbonyl in reactants: {has_thiocarbonyl_in_reactants}")
 
+                # Check for thioamide in reactants
+                has_thioamide_in_reactants = any(
+                    checker.check_fg("Thioamide", r) for r in reactants_smiles
+                )
+                print(f"Has thioamide in reactants: {has_thioamide_in_reactants}")
+
+                # Check for thiourea in reactants
+                has_thiourea_in_reactants = any(
+                    checker.check_fg("Thiourea", r) for r in reactants_smiles
+                )
+                print(f"Has thiourea in reactants: {has_thiourea_in_reactants}")
+
+                # Check for thiomethyl group in product
+                # Specifically looking for S-CH3, which is a specific type of monosulfide
+                has_monosulfide_in_product = checker.check_fg("Monosulfide", product_smiles)
+                print(f"Has monosulfide in product: {has_monosulfide_in_product}")
+
+                # Check for relevant reactions that might convert thione to thiomethyl
+                relevant_reactions = ["Methylation", "Methylation with MeI_SH", "S-methylation"]
+
+                is_relevant_reaction = any(
+                    checker.check_reaction(rxn, rsmi) for rxn in relevant_reactions
+                )
+                print(f"Is relevant reaction: {is_relevant_reaction}")
+
+                # Consider the strategy found if:
+                # 1. Reactants have thiocarbonyl or specific thione-containing groups
+                # 2. Product has monosulfide (which could include thiomethyl)
+                # 3. The reaction is of a relevant type or we have strong evidence of the conversion
+                if (
+                    has_thiocarbonyl_in_reactants
+                    or has_thioamide_in_reactants
+                    or has_thiourea_in_reactants
+                ) and has_monosulfide_in_product:
+                    print(f"Found thione to thiomethyl conversion in reaction: {rsmi}")
+                    found_thione_formation = True
+
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Analyze convergent steps - weigh late-stage convergence more heavily
-    if convergent_steps:
-        # Sort by depth (ascending - lower depth means later stage)
-        convergent_steps.sort()
-
-        # If there's late-stage convergence (depth < 4), mark as convergent
-        if convergent_steps and convergent_steps[0][0] < 4:
-            is_linear = False
-            print(f"Late-stage convergence detected at depth {convergent_steps[0][0]}")
-        # If there are multiple convergent steps, likely convergent strategy
-        elif (
-            len(convergent_steps) > 2
-        ):  # Allow for a couple of convergent steps in linear synthesis
-            is_linear = False
-            print(f"Multiple convergent steps detected: {len(convergent_steps)}")
-
-    if is_linear:
-        print("Linear synthesis strategy detected")
-    else:
-        print("Convergent synthesis strategy detected")
-
-    return is_linear
+    return found_thione_formation

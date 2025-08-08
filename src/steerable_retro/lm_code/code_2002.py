@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,142 +54,119 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a sequence of functional group interconversions leading to a key bond formation.
-    Specifically looks for alcohol→halide→amine→amide transformation sequence.
+    This function detects heterocycle formation in the second half of the synthesis.
+    Focuses on common heterocycles like furan, pyrrole, thiophene, etc.
     """
-    # Track transformations with their depths
-    transformations = {"alcohol_to_halide": None, "halide_to_amine": None, "amine_to_amide": None}
+    heterocycle_formation_detected = False
 
-    print("Starting to analyze the synthesis route for functional group interconversion sequence")
+    # List of heterocycles to check
+    heterocycles = [
+        "furan",
+        "pyrrole",
+        "thiophene",
+        "oxazole",
+        "thiazole",
+        "imidazole",
+        "pyridine",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+    ]
+
+    # List of heterocycle-forming reactions to check
+    heterocycle_reactions = [
+        "Formation of NOS Heterocycles",
+        "Paal-Knorr pyrrole synthesis",
+        "benzimidazole_derivatives_carboxylic-acid/ester",
+        "benzimidazole_derivatives_aldehyde",
+        "benzothiazole",
+        "benzoxazole_arom-aldehyde",
+        "benzoxazole_carboxylic-acid",
+        "thiazole",
+        "tetrazole_terminal",
+        "pyrazole",
+        "Fischer indole",
+        "indole",
+        "oxadiazole",
+    ]
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
+        nonlocal heterocycle_formation_detected
+
+        if node["type"] == "reaction" and depth <= 3:  # Late stage of synthesis (lower depth)
             try:
-                # Extract reactants and product
+                # Get reactants and product
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
 
                 print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                # Check for alcohol to halide transformation
-                alcohol_in_reactants = any(
-                    checker.check_fg("Primary alcohol", r)
-                    or checker.check_fg("Secondary alcohol", r)
-                    or checker.check_fg("Tertiary alcohol", r)
-                    for r in reactants_smiles
-                )
+                # Check if this is a heterocycle-forming reaction
+                for reaction_type in heterocycle_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(f"Heterocycle-forming reaction detected: {reaction_type}")
+                        heterocycle_formation_detected = True
+                        return
 
-                halide_in_product = (
-                    checker.check_fg("Primary halide", product_smiles)
-                    or checker.check_fg("Secondary halide", product_smiles)
-                    or checker.check_fg("Tertiary halide", product_smiles)
-                )
+                # If no specific reaction type matched, check for heterocycle formation by structure
+                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
+                product_mol = Chem.MolFromSmiles(product_part)
 
-                if alcohol_in_reactants and halide_in_product:
-                    if (
-                        checker.check_reaction("Alcohol to chloride_SOCl2", rsmi)
-                        or checker.check_reaction("Alcohol to chloride_PCl5_ortho", rsmi)
-                        or checker.check_reaction("Alcohol to chloride_POCl3", rsmi)
-                        or checker.check_reaction("Alcohol to chloride_HCl", rsmi)
-                        or checker.check_reaction("Alcohol to chloride_Salt", rsmi)
-                        or checker.check_reaction("Alcohol to chloride_Other", rsmi)
-                        or checker.check_reaction("Alkyl bromides from alcohols", rsmi)
-                        or checker.check_reaction("Alkyl iodides from alcohols", rsmi)
-                        or checker.check_reaction("Appel reaction", rsmi)
-                        or checker.check_reaction("Alcohol to chloride_sulfonyl chloride", rsmi)
-                        or checker.check_reaction("PBr3 and alcohol to alkyl bromide", rsmi)
-                    ):
-                        transformations["alcohol_to_halide"] = depth
-                        print(f"Found alcohol to halide transformation at depth {depth}")
-                    else:
-                        # Fallback detection if no specific reaction type matches
-                        transformations["alcohol_to_halide"] = depth
-                        print(
-                            f"Found alcohol to halide transformation at depth {depth} (fallback detection)"
+                if product_mol and all(r for r in reactants_mols):
+                    # Check for heterocycle formation
+                    for heterocycle in heterocycles:
+                        product_has_heterocycle = checker.check_ring(heterocycle, product_part)
+                        reactants_have_heterocycle = any(
+                            checker.check_ring(heterocycle, r) for r in reactants_part.split(".")
                         )
 
-                # Check for halide to amine transformation
-                halide_in_reactants = any(
-                    checker.check_fg("Primary halide", r)
-                    or checker.check_fg("Secondary halide", r)
-                    or checker.check_fg("Tertiary halide", r)
-                    for r in reactants_smiles
-                )
+                        if product_has_heterocycle and not reactants_have_heterocycle:
+                            # Verify ring count change
+                            reactants_ring_count = sum(
+                                [r.GetRingInfo().NumRings() for r in reactants_mols]
+                            )
+                            product_ring_count = product_mol.GetRingInfo().NumRings()
+                            print(
+                                f"Ring count: Reactants={reactants_ring_count}, Product={product_ring_count}"
+                            )
 
-                amine_in_product = (
-                    checker.check_fg("Primary amine", product_smiles)
-                    or checker.check_fg("Secondary amine", product_smiles)
-                    or checker.check_fg("Tertiary amine", product_smiles)
-                )
+                            # Check if there's a ring transformation (not necessarily just an increase)
+                            if product_ring_count != reactants_ring_count:
+                                print(
+                                    f"Heterocycle ({heterocycle}) formation detected at depth {depth}"
+                                )
+                                heterocycle_formation_detected = True
+                                return
 
-                if halide_in_reactants and amine_in_product:
-                    if (
-                        checker.check_reaction(
-                            "N-alkylation of primary amines with alkyl halides", rsmi
-                        )
-                        or checker.check_reaction(
-                            "N-alkylation of secondary amines with alkyl halides", rsmi
-                        )
-                        or checker.check_reaction("Alkylation of amines", rsmi)
-                        or checker.check_reaction("N-methylation", rsmi)
-                    ):
-                        transformations["halide_to_amine"] = depth
-                        print(f"Found halide to amine transformation at depth {depth}")
-                    else:
-                        # Fallback detection if no specific reaction type matches
-                        transformations["halide_to_amine"] = depth
-                        print(
-                            f"Found halide to amine transformation at depth {depth} (fallback detection)"
-                        )
+                            # Even if ring count doesn't change, check if we have a ring transformation
+                            # This handles cases where one ring type is converted to another
+                            reactant_rings = set()
+                            for r_mol in reactants_mols:
+                                for ring in heterocycles:
+                                    if checker.check_ring(ring, Chem.MolToSmiles(r_mol)):
+                                        reactant_rings.add(ring)
 
-                # Check for amine to amide transformation
-                amine_in_reactants = any(
-                    checker.check_fg("Primary amine", r)
-                    or checker.check_fg("Secondary amine", r)
-                    or checker.check_fg("Tertiary amine", r)
-                    for r in reactants_smiles
-                )
+                            product_rings = set()
+                            for ring in heterocycles:
+                                if checker.check_ring(ring, Chem.MolToSmiles(product_mol)):
+                                    product_rings.add(ring)
 
-                amide_in_product = (
-                    checker.check_fg("Primary amide", product_smiles)
-                    or checker.check_fg("Secondary amide", product_smiles)
-                    or checker.check_fg("Tertiary amide", product_smiles)
-                )
-
-                if amine_in_reactants and amide_in_product:
-                    if (
-                        checker.check_reaction(
-                            "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                            rsmi,
-                        )
-                        or checker.check_reaction("Acylation of primary amines", rsmi)
-                        or checker.check_reaction("Acylation of secondary amines", rsmi)
-                        or checker.check_reaction(
-                            "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Acyl chloride with secondary amine to amide", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Carboxylic acid with primary amine to amide", rsmi
-                        )
-                        or checker.check_reaction("Schotten-Baumann_amide", rsmi)
-                        or checker.check_reaction(
-                            "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
-                        )
-                    ):
-                        transformations["amine_to_amide"] = depth
-                        print(f"Found amine to amide transformation at depth {depth}")
-                    else:
-                        # Fallback detection if no specific reaction type matches
-                        transformations["amine_to_amide"] = depth
-                        print(
-                            f"Found amine to amide transformation at depth {depth} (fallback detection)"
-                        )
-
+                            new_rings = product_rings - reactant_rings
+                            if new_rings:
+                                print(f"New heterocycle(s) formed: {new_rings}")
+                                heterocycle_formation_detected = True
+                                return
             except Exception as e:
-                print(f"Error processing reaction: {e}")
+                print(f"Error analyzing reaction at depth {depth}: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -194,29 +174,4 @@ def main(route):
 
     # Start traversal
     dfs_traverse(route)
-
-    print(f"Transformation depths: {transformations}")
-
-    # Check if we observed the complete sequence in the correct order
-    if all(v is not None for v in transformations.values()):
-        # In retrosynthetic direction, higher depth means earlier in synthesis
-        # So alcohol→halide→amine→amide means:
-        # depth(alcohol_to_halide) > depth(halide_to_amine) > depth(amine_to_amide)
-        if (
-            transformations["alcohol_to_halide"]
-            > transformations["halide_to_amine"]
-            > transformations["amine_to_amide"]
-        ):
-            print("Detected alcohol→halide→amine→amide transformation sequence in correct order")
-            return True
-        else:
-            print("All transformations found but not in the correct sequence order")
-            print(
-                f"Expected: alcohol_to_halide ({transformations['alcohol_to_halide']}) > "
-                f"halide_to_amine ({transformations['halide_to_amine']}) > "
-                f"amine_to_amide ({transformations['amine_to_amide']})"
-            )
-    else:
-        print("Not all required transformations were found in the synthesis route")
-
-    return False
+    return heterocycle_formation_detected

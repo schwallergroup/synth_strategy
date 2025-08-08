@@ -2,151 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving THP protection of an alcohol
-    followed by deprotection later in the synthesis.
+    Detects a strategy involving SNAr reaction (nucleophilic aromatic substitution)
     """
-    protection_found = False
-    deprotection_found = False
+    found_snar = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal protection_found, deprotection_found
+        nonlocal found_snar
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # In retrosynthetic traversal:
-                # - For protection: product has alcohol, reactants have THP-protected alcohol
-                # - For deprotection: product has THP-protected alcohol, reactants have alcohol
+            # Check for SNAr pattern: halogen leaving group on aromatic + amine nucleophile
+            halogen_aromatic_patt = Chem.MolFromSmarts("[F,Cl,Br,I][c]")
+            amine_patt = Chem.MolFromSmarts("[#7H,#7H2]")
+            c_n_aromatic_patt = Chem.MolFromSmarts("[c][#7H]")
 
-                # Check for THP protection (in retrosynthesis: alcohol ← protected alcohol)
-                if not protection_found:
-                    # Check if product has alcohol
-                    product_has_alcohol = any(
-                        checker.check_fg("Primary alcohol", p)
-                        or checker.check_fg("Secondary alcohol", p)
-                        or checker.check_fg("Tertiary alcohol", p)
-                        for p in product.split(".")
-                        if p
-                    )
+            # Check if reactants have the required patterns
+            has_halogen_aromatic = False
+            has_amine = False
 
-                    # Check if reactants have THP-protected structure
-                    reactants_have_thp_protected = False
-                    for r in reactants:
-                        if r and checker.check_ring("tetrahydropyran", r):
-                            # Check if this THP is connected to an oxygen (ether)
-                            mol = Chem.MolFromSmiles(r)
-                            if mol:
-                                for atom in mol.GetAtoms():
-                                    if atom.GetSymbol() == "O" and atom.GetDegree() == 2:
-                                        # Check if one neighbor is in THP ring and other is carbon
-                                        neighbors = [
-                                            mol.GetAtomWithIdx(n.GetIdx())
-                                            for n in atom.GetNeighbors()
-                                        ]
-                                        if any(n.IsInRing() for n in neighbors) and any(
-                                            n.GetSymbol() == "C" and not n.IsInRing()
-                                            for n in neighbors
-                                        ):
-                                            reactants_have_thp_protected = True
-                                            break
+            for reactant in reactants:
+                react_mol = Chem.MolFromSmiles(reactant)
+                if react_mol:
+                    if react_mol.HasSubstructMatch(halogen_aromatic_patt):
+                        has_halogen_aromatic = True
+                    if react_mol.HasSubstructMatch(amine_patt):
+                        has_amine = True
 
-                    if product_has_alcohol and reactants_have_thp_protected:
-                        protection_found = True
-                        print(f"THP protection detected at depth {depth}")
+            # Check if product has C-N bond in aromatic system
+            prod_mol = Chem.MolFromSmiles(product)
+            has_c_n_aromatic = prod_mol and prod_mol.HasSubstructMatch(c_n_aromatic_patt)
 
-                # Check for THP deprotection (in retrosynthesis: protected alcohol ← alcohol)
-                if not deprotection_found:
-                    # Check if product has THP-protected structure
-                    product_has_thp_protected = False
-                    if checker.check_ring("tetrahydropyran", product):
-                        mol = Chem.MolFromSmiles(product)
-                        if mol:
-                            for atom in mol.GetAtoms():
-                                if atom.GetSymbol() == "O" and atom.GetDegree() == 2:
-                                    # Check if one neighbor is in THP ring and other is carbon
-                                    neighbors = [
-                                        mol.GetAtomWithIdx(n.GetIdx()) for n in atom.GetNeighbors()
-                                    ]
-                                    if any(n.IsInRing() for n in neighbors) and any(
-                                        n.GetSymbol() == "C" and not n.IsInRing() for n in neighbors
-                                    ):
-                                        product_has_thp_protected = True
-                                        break
-
-                    # Check if reactants have alcohol
-                    reactants_have_alcohol = any(
-                        checker.check_fg("Primary alcohol", r)
-                        or checker.check_fg("Secondary alcohol", r)
-                        or checker.check_fg("Tertiary alcohol", r)
-                        for r in reactants
-                        if r
-                    )
-
-                    if product_has_thp_protected and reactants_have_alcohol:
-                        deprotection_found = True
-                        print(f"THP deprotection detected at depth {depth}")
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+            if has_halogen_aromatic and has_amine and has_c_n_aromatic:
+                found_snar = True
+                print(f"Found SNAr reaction at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Return True if both protection and deprotection were found
-    return protection_found and deprotection_found
+    return found_snar

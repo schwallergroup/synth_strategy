@@ -2,169 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves multiple SNAr reactions (aromatic halide with amine).
+    Detects if the synthesis route uses TMS protection/deprotection
+    sequence for an alkyne.
     """
-    snar_count = 0
+    tms_protection = False
+    tms_deprotection = False
 
     def dfs_traverse(node):
-        nonlocal snar_count
+        nonlocal tms_protection, tms_deprotection
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product = rsmi.split(">")[-1]
-            reactants = reactants_part.split(".")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            print(f"Analyzing reaction: {rsmi}")
+                # Check for TMS protection (terminal alkyne to TMS-alkyne)
+                terminal_alkyne_pattern = Chem.MolFromSmarts("[C]#[CH]")
+                tms_alkyne_pattern = Chem.MolFromSmarts("[C]#[C][Si]([C])([C])[C]")
 
-            # Check if this is a nucleophilic aromatic substitution reaction
-            is_snar = False
-
-            # First check if the reaction matches known SNAr patterns
-            snar_reaction_types = [
-                "Ullmann-Goldberg Substitution amine",
-                "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-                "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-                "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
-                "heteroaromatic_nuc_sub",
-                "nucl_sub_aromatic_ortho_nitro",
-                "nucl_sub_aromatic_para_nitro",
-                "Goldberg coupling",
-                "Goldberg coupling aryl amine-aryl chloride",
-                "Goldberg coupling aryl amide-aryl chloride",
-                "Ullmann condensation",
-                "N-arylation_heterocycles",
-                "Buchwald-Hartwig",
-            ]
-
-            for reaction_type in snar_reaction_types:
-                if checker.check_reaction(reaction_type, rsmi):
-                    is_snar = True
-                    print(f"Detected SNAr reaction via reaction pattern: {reaction_type}")
-                    break
-
-            # If not identified by reaction pattern, check for functional group transformations
-            if not is_snar:
-                # Check for direct evidence of SNAr by looking for aromatic C-N bond formation
-                has_aromatic_halide = False
-                has_amine = False
-                has_activating_group = False
-
-                for reactant in reactants:
-                    if checker.check_fg("Aromatic halide", reactant):
-                        has_aromatic_halide = True
-                        print(f"Found aromatic halide in reactant: {reactant}")
-
-                        # Check for activating groups that facilitate SNAr
-                        if (
-                            checker.check_fg("Nitro group", reactant)
-                            or checker.check_fg("Nitrile", reactant)
-                            or checker.check_fg("Trifluoro group", reactant)
-                        ):
-                            has_activating_group = True
-                            print(f"Found activating group in reactant: {reactant}")
-
-                    if (
-                        checker.check_fg("Primary amine", reactant)
-                        or checker.check_fg("Secondary amine", reactant)
-                        or checker.check_fg("Tertiary amine", reactant)
-                        or checker.check_fg("Aniline", reactant)
-                    ):
-                        has_amine = True
-                        print(f"Found amine in reactant: {reactant}")
-
-                # Check if product has N-aryl bond that wasn't in reactants
-                has_n_aryl_product = False
-                if (
-                    checker.check_fg("Aniline", product)
-                    or checker.check_fg("Tertiary amine", product)
-                    or checker.check_fg("Secondary amine", product)
-                    or checker.check_ring("pyrrole", product)
-                    or checker.check_ring("indole", product)
-                    or checker.check_ring("pyrazole", product)
-                    or checker.check_ring("imidazole", product)
-                    or checker.check_ring("triazole", product)
+                # Check for TMS deprotection (TMS-alkyne to terminal alkyne)
+                if any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(terminal_alkyne_pattern)
+                    for r in reactants
+                    if Chem.MolFromSmiles(r)
                 ):
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(tms_alkyne_pattern):
+                        print("TMS protection detected")
+                        tms_protection = True
 
-                    # Check if this N-aryl bond is new (not present in reactants)
-                    n_aryl_in_reactants = False
-                    for reactant in reactants:
-                        if (
-                            checker.check_fg("Aniline", reactant)
-                            or checker.check_fg("Tertiary amine", reactant)
-                            and checker.check_ring("benzene", reactant)
-                        ):
-                            n_aryl_in_reactants = True
+                if any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(tms_alkyne_pattern)
+                    for r in reactants
+                    if Chem.MolFromSmiles(r)
+                ):
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(terminal_alkyne_pattern):
+                        print("TMS deprotection detected")
+                        tms_deprotection = True
 
-                    if not n_aryl_in_reactants:
-                        has_n_aryl_product = True
-                        print(f"Found new N-aryl bond in product: {product}")
-
-                # Determine if this is an SNAr reaction based on functional group analysis
-                if has_aromatic_halide and has_amine and has_n_aryl_product:
-                    is_snar = True
-                    print(f"Detected SNAr reaction via functional group analysis")
-                    # If we have an activating group, it's even more likely to be SNAr
-                    if has_activating_group:
-                        print(f"Confirmed SNAr by presence of activating group")
-
-            if is_snar:
-                snar_count += 1
-                print(f"SNAr reaction count: {snar_count}")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    print(f"Total SNAr reactions found: {snar_count}")
-
-    return snar_count >= 2
+    return tms_protection and tms_deprotection  # Both protection and deprotection must be detected

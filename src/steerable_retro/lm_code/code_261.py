@@ -2,66 +2,111 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects phenol alkylation with a haloalkane to form an aryl ether.
+    Detects Friedel-Crafts acylation (aromatic C-H to C-C(=O)R) in the synthesis route.
     """
-    phenol_alkylation_detected = False
+    acylation_found = False
 
     def dfs_traverse(node):
-        nonlocal phenol_alkylation_detected
+        nonlocal acylation_found
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
 
-            # Check for phenol and haloalkane in reactants
-            phenol_pattern = Chem.MolFromSmarts("[OH]c")
-            haloalkane_pattern = Chem.MolFromSmarts("[C][Cl,Br,I]")
-            aryl_ether_pattern = Chem.MolFromSmarts("cO[C]")
+            # First, check if this is a Friedel-Crafts acylation reaction using the checker
+            if checker.check_reaction("Friedel-Crafts acylation", rsmi):
+                print(f"Friedel-Crafts acylation detected via reaction checker: {rsmi}")
+                acylation_found = True
+            else:
+                # If the direct check fails, perform a more detailed analysis
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check if product has a ketone group
+                if checker.check_fg("Ketone", product):
+                    print(f"Product contains ketone: {product}")
 
-            if product_mol and aryl_ether_pattern:
-                has_phenol = any(
-                    r and r.HasSubstructMatch(phenol_pattern) for r in reactants_mols if r
-                )
-                has_haloalkane = any(
-                    r and r.HasSubstructMatch(haloalkane_pattern) for r in reactants_mols if r
-                )
-                product_has_aryl_ether = product_mol.HasSubstructMatch(aryl_ether_pattern)
+                    # Check if any reactant is aromatic
+                    has_aromatic_reactant = False
+                    for reactant in reactants:
+                        try:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol:
+                                for atom in mol.GetAtoms():
+                                    if atom.GetIsAromatic():
+                                        has_aromatic_reactant = True
+                                        print(f"Found aromatic reactant: {reactant}")
+                                        break
+                        except:
+                            continue
 
-                if has_phenol and has_haloalkane and product_has_aryl_ether:
-                    phenol_alkylation_detected = True
-                    print("Phenol alkylation with haloalkane detected")
+                    # Check if any reactant already has a ketone
+                    ketone_in_reactants = False
+                    for reactant in reactants:
+                        if checker.check_fg("Ketone", reactant):
+                            ketone_in_reactants = True
+                            print(f"Ketone found in reactant: {reactant}")
+                            break
 
-        # Traverse children
+                    # If we have an aromatic reactant, a ketone in the product, but no ketone in reactants,
+                    # this is likely a Friedel-Crafts acylation
+                    if has_aromatic_reactant and not ketone_in_reactants:
+                        print(f"Friedel-Crafts acylation detected via pattern analysis: {rsmi}")
+                        acylation_found = True
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return phenol_alkylation_detected
+    return acylation_found

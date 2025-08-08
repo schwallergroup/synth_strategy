@@ -2,66 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves fragment coupling via amide bond formation.
+    This function detects if the synthesis route involves a late-stage N-alkylation
+    with a fluorobenzyl group.
     """
-    amide_formation_found = False
+    result = False
 
-    def dfs_traverse(node):
-        nonlocal amide_formation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal result
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (low depth)
+            # Check if this is an N-alkylation reaction
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for amide formation pattern
-            if len(reactants) >= 2:  # At least two reactants for fragment coupling
-                # Look for acid chloride and amine patterns in reactants
-                acid_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
-                amide_pattern = Chem.MolFromSmarts("C(=O)N")
+                # Check for fluorobenzyl pattern in reactants
+                fluorobenzyl_pattern = Chem.MolFromSmarts("[#6]-[#6]1[#6][#6][#6]([#9])[#6][#6]1")
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(fluorobenzyl_pattern):
+                            # Check if the other reactant has an NH group
+                            for other_reactant in reactants:
+                                if other_reactant != reactant:
+                                    other_mol = Chem.MolFromSmiles(other_reactant)
+                                    nh_pattern = Chem.MolFromSmarts("[N;H]")
+                                    if other_mol and other_mol.HasSubstructMatch(nh_pattern):
+                                        # Check if product has the fluorobenzyl attached to N
+                                        prod_mol = Chem.MolFromSmiles(product)
+                                        if prod_mol:
+                                            result = True
+                                            print(
+                                                f"Found late-stage N-alkylation with fluorobenzyl at depth {depth}"
+                                            )
+                    except:
+                        continue
 
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
-                product_mol = Chem.MolFromSmiles(product)
-
-                if product_mol and product_mol.HasSubstructMatch(amide_pattern):
-                    has_acid_chloride = any(
-                        mol and mol.HasSubstructMatch(acid_chloride_pattern)
-                        for mol in reactant_mols
-                    )
-                    has_amine = any(
-                        mol and mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols
-                    )
-
-                    if has_acid_chloride and has_amine:
-                        amide_formation_found = True
-                        print(
-                            f"Found amide bond formation at depth {node.get('metadata', {}).get('ID', '')}"
-                        )
-
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return amide_formation_found
+    return result

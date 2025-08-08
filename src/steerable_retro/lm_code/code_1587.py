@@ -2,94 +2,105 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves modifications to
-    multiple different ring systems (e.g., both benzene and pyrazole).
+    This function detects if the synthesis includes anhydride chemistry.
     """
-    # Track modifications to different ring systems
-    benzene_modified = False
-    pyrazole_modified = False
-    other_ring_modified = False
+    has_anhydride = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal benzene_modified, pyrazole_modified, other_ring_modified
+    def dfs_traverse(node):
+        nonlocal has_anhydride
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        # Check molecule nodes for anhydride functional group
+        if node["type"] == "mol" and node.get("smiles"):
+            mol_smiles = node["smiles"]
+            if checker.check_fg("Anhydride", mol_smiles):
+                print(f"Anhydride functional group detected in molecule: {mol_smiles}")
+                has_anhydride = True
 
-                # Define patterns for different ring systems
-                benzene_pattern = Chem.MolFromSmarts("c1ccccc1")
-                pyrazole_pattern = Chem.MolFromSmarts("c1nn(C)cc1")  # Simplified N-methyl pyrazole
+        # Check reaction nodes for anhydride chemistry
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                product_mol = Chem.MolFromSmiles(product)
-                if not product_mol:
-                    return
+            # Check for anhydride pattern in reactants
+            for reactant in reactants:
+                if reactant and checker.check_fg("Anhydride", reactant):
+                    print(f"Anhydride functional group detected in reactant: {reactant}")
+                    has_anhydride = True
 
-                # Check for modifications by comparing with reactants
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
+            # Check for anhydride pattern in product
+            if product and checker.check_fg("Anhydride", product):
+                print(f"Anhydride functional group detected in product: {product}")
+                has_anhydride = True
 
-                    # Check benzene modifications
-                    if reactant_mol.HasSubstructMatch(
-                        benzene_pattern
-                    ) and product_mol.HasSubstructMatch(benzene_pattern):
-                        # Compare benzene rings in reactant and product
-                        if not Chem.MolToSmiles(reactant_mol) == Chem.MolToSmiles(product_mol):
-                            benzene_modified = True
-                            print(f"Benzene ring modified at depth {depth}")
+            # Check for specific anhydride-related reactions
+            if any(
+                checker.check_reaction(rxn_name, rsmi)
+                for rxn_name in [
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
+                    "Acylation of secondary amines with anhydrides",
+                ]
+            ):
+                print(f"Anhydride-related reaction detected")
+                has_anhydride = True
 
-                    # Check pyrazole modifications
-                    if reactant_mol.HasSubstructMatch(
-                        pyrazole_pattern
-                    ) and product_mol.HasSubstructMatch(pyrazole_pattern):
-                        # Compare pyrazole rings in reactant and product
-                        if not Chem.MolToSmiles(reactant_mol) == Chem.MolToSmiles(product_mol):
-                            pyrazole_modified = True
-                            print(f"Pyrazole ring modified at depth {depth}")
-
-                    # Check other ring modifications
-                    # This is a simplified approach - in practice, you'd need more sophisticated
-                    # ring detection and comparison
-                    if "1" in reactant and "1" in product:  # Simple check for ring notation
-                        if not (benzene_modified or pyrazole_modified):
-                            other_ring_modified = True
-                            print(f"Other ring system modified at depth {depth}")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-
-    # Return True if at least two different ring systems were modified
-    return (
-        (benzene_modified and pyrazole_modified)
-        or (benzene_modified and other_ring_modified)
-        or (pyrazole_modified and other_ring_modified)
-    )
+    return has_anhydride

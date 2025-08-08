@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,105 +54,69 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves late-stage amide coupling.
+    Detects if a fluorinated aromatic group is introduced in a late stage of the synthesis.
+    Late stage is defined as the first half of the synthesis (lower depth in retrosynthesis).
     """
-    late_stage_amide_coupling_detected = False
+    max_depth = 0
+    fluorinated_introduction_depth = None
+
+    def has_fluorinated_aromatic(smiles):
+        """Check if molecule contains a fluorinated aromatic group"""
+        # Check for aromatic halide (which includes fluorine) or trifluoro group
+        return checker.check_fg("Aromatic halide", smiles) or checker.check_fg(
+            "Trifluoro group", smiles
+        )
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_amide_coupling_detected
+        nonlocal max_depth, fluorinated_introduction_depth
 
-        # Check if this is a reaction node at a late stage (depth <= 1)
-        if node["type"] == "reaction" and depth <= 1:
+        max_depth = max(max_depth, depth)
+
+        if node["type"] == "reaction":
             try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                if "rsmi" in node["metadata"]:
+                    rsmi = node["metadata"]["rsmi"]
+                    reactants = rsmi.split(">")[0]
+                    product = rsmi.split(">")[2]  # Get the product part
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+                    print(f"Analyzing reaction at depth {depth}")
+                    print(f"Reactants: {reactants}")
+                    print(f"Product: {product}")
 
-                # Check if this is an amide coupling reaction
-                is_amide_coupling = any(
-                    [
-                        checker.check_reaction(
-                            "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
-                        ),
-                        checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi),
-                        checker.check_reaction(
-                            "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
-                        ),
-                        checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi),
-                        checker.check_reaction("Ester with primary amine to amide", rsmi),
-                        checker.check_reaction("Ester with secondary amine to amide", rsmi),
-                        checker.check_reaction("Acylation of primary amines", rsmi),
-                        checker.check_reaction("Acylation of secondary amines", rsmi),
-                        checker.check_reaction("Schotten-Baumann_amide", rsmi),
-                        checker.check_reaction("Acyl chloride with ammonia to amide", rsmi),
-                    ]
-                )
-
-                # Check for acid in reactants
-                has_acid = False
-                has_amine = False
-                has_acyl_chloride = False
-                has_ester = False
-
-                for reactant_smiles in reactants_smiles:
-                    if checker.check_fg("Carboxylic acid", reactant_smiles):
-                        has_acid = True
-                        print(f"Found carboxylic acid in reactant: {reactant_smiles}")
-                    if checker.check_fg("Primary amine", reactant_smiles) or checker.check_fg(
-                        "Secondary amine", reactant_smiles
-                    ):
-                        has_amine = True
-                        print(f"Found amine in reactant: {reactant_smiles}")
-                    if checker.check_fg("Acyl halide", reactant_smiles):
-                        has_acyl_chloride = True
-                        print(f"Found acyl halide in reactant: {reactant_smiles}")
-                    if checker.check_fg("Ester", reactant_smiles):
-                        has_ester = True
-                        print(f"Found ester in reactant: {reactant_smiles}")
-
-                # Check for amide in product
-                has_amide = any(
-                    [
-                        checker.check_fg("Primary amide", product_smiles),
-                        checker.check_fg("Secondary amide", product_smiles),
-                        checker.check_fg("Tertiary amide", product_smiles),
-                    ]
-                )
-
-                if has_amide:
-                    print(f"Found amide in product: {product_smiles}")
-
-                # Determine if this is a late-stage amide coupling
-                if is_amide_coupling:
-                    print(
-                        f"Late-stage amide coupling detected (reaction type match) at depth {depth}: {rsmi}"
-                    )
-                    late_stage_amide_coupling_detected = True
-                elif (has_acid or has_acyl_chloride or has_ester) and has_amine and has_amide:
-                    print(
-                        f"Late-stage amide coupling detected (functional group match) at depth {depth}: {rsmi}"
-                    )
-                    late_stage_amide_coupling_detected = True
-                else:
-                    print(
-                        f"Not an amide coupling: acid={has_acid}, acyl={has_acyl_chloride}, ester={has_ester}, amine={has_amine}, amide={has_amide}"
+                    # Check if fluorinated group is in product but not in all reactants
+                    product_has_fluorine = has_fluorinated_aromatic(product)
+                    reactant_mols = reactants.split(".")
+                    all_reactants_have_fluorine = all(
+                        has_fluorinated_aromatic(r) for r in reactant_mols
                     )
 
+                    print(f"Product has fluorinated group: {product_has_fluorine}")
+                    print(f"All reactants have fluorinated group: {all_reactants_have_fluorine}")
+
+                    if product_has_fluorine and not all_reactants_have_fluorine:
+                        # This reaction introduces a fluorinated group
+                        if (
+                            fluorinated_introduction_depth is None
+                            or depth < fluorinated_introduction_depth
+                        ):
+                            fluorinated_introduction_depth = depth
+                            print(f"Found fluorinated group introduction at depth {depth}")
             except Exception as e:
-                print(f"Error in late-stage amide coupling detection: {e}")
+                print(f"Error processing reaction: {e}")
 
-        # If this is the final product (molecule at depth 0), check its parent reaction
-        elif node["type"] == "mol" and depth == 0 and "children" in node and node["children"]:
-            # The final product's parent reactions are its children in retrosynthetic tree
-            for child in node["children"]:
-                if child["type"] == "reaction":
-                    dfs_traverse(child, 0)  # Check this reaction as a late-stage reaction
-
-        # Continue DFS traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return late_stage_amide_coupling_detected
+
+    # Check if fluorinated group is introduced in the first half of the synthesis
+    if fluorinated_introduction_depth is not None:
+        is_late_stage = fluorinated_introduction_depth <= max_depth / 2
+        print(f"Max depth: {max_depth}")
+        print(f"Fluorinated introduction depth: {fluorinated_introduction_depth}")
+        print(f"Fluorinated group introduction is late stage: {is_late_stage}")
+        return is_late_stage
+    else:
+        print("No fluorinated group introduction found")
+
+    return False

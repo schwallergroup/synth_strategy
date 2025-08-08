@@ -2,73 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route includes conversion of an alkyl chloride to an alkene.
+    This function detects a strategy where a sulfonamide group is involved in both
+    ring opening and subsequent ring formation steps.
     """
-    # Track if we found the conversion
-    found_conversion = False
+    # Track reactions and their properties
+    reactions_with_sulfonamide = []
+
+    # SMARTS patterns
+    sulfonamide_pattern = "[#7][#16](=[#8])(=[#8])[#6]"
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_conversion
-
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for alkyl chloride to alkene conversion
-                alkyl_chloride_pattern = Chem.MolFromSmarts("[#6]-[#17]")
-                alkene_pattern = Chem.MolFromSmarts("[#6]=[#6]")
+            # Check if sulfonamide is involved
+            if has_substructure(product, sulfonamide_pattern) or any(
+                has_substructure(r, sulfonamide_pattern) for r in reactants
+            ):
 
-                # Check reactant for alkyl chloride
-                has_alkyl_chloride = False
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(alkyl_chloride_pattern):
-                            has_alkyl_chloride = True
-                    except:
-                        continue
+                # Count rings before and after
+                reactant_rings = sum(count_rings(r) for r in reactants)
+                product_rings = count_rings(product)
+                ring_change = product_rings - reactant_rings
 
-                # Check product for alkene
-                has_alkene = False
-                try:
-                    prod_mol = Chem.MolFromSmiles(product)
-                    if prod_mol and prod_mol.HasSubstructMatch(alkene_pattern):
-                        has_alkene = True
-                except:
-                    pass
+                reactions_with_sulfonamide.append(
+                    {"depth": depth, "ring_change": ring_change, "rsmi": rsmi}
+                )
+                print(f"Found sulfonamide reaction at depth {depth} with ring change {ring_change}")
 
-                if has_alkyl_chloride and has_alkene:
-                    found_conversion = True
-                    print("Found alkyl chloride to alkene conversion")
-
-        # Process children
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    def has_substructure(smiles, pattern):
+        mol = Chem.MolFromSmiles(smiles)
+        if mol:
+            patt = Chem.MolFromSmarts(pattern)
+            return mol.HasSubstructMatch(patt)
+        return False
+
+    def count_rings(smiles):
+        mol = Chem.MolFromSmiles(smiles)
+        if mol:
+            return len(Chem.GetSSSR(mol))
+        return 0
+
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return found_conversion
+    # Check if we have both ring opening and formation with sulfonamide involvement
+    has_ring_opening = any(r["ring_change"] < 0 for r in reactions_with_sulfonamide)
+    has_ring_formation = any(r["ring_change"] > 0 for r in reactions_with_sulfonamide)
+
+    return has_ring_opening and has_ring_formation

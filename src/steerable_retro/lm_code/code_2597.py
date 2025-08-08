@@ -2,71 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a heterocyclic ring formation occurs in the late stage
-    (final 2 steps) of the synthesis.
+    Detects a strategy involving fluoropyridine as a key intermediate for SNAr reactions.
     """
-    late_stage_ring_formation = False
+    has_fluoropyridine_intermediate = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_ring_formation
+    def dfs_traverse(node):
+        nonlocal has_fluoropyridine_intermediate
 
-        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
-            # Extract reactants and product
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            # Check for fluoropyridine in reactants
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+            fluoropyridine_pattern = Chem.MolFromSmarts("[c]1[n][c]([F])[c][c][c]1")
 
-            if all(mol is not None for mol in reactant_mols) and product_mol is not None:
-                # Count rings in reactants and product
-                reactant_ring_count = sum(
-                    rdMolDescriptors.CalcNumRings(mol) for mol in reactant_mols
-                )
-                product_ring_count = rdMolDescriptors.CalcNumRings(product_mol)
-
-                # Check if product has more rings than reactants
-                if product_ring_count > reactant_ring_count:
-                    # Check if any new ring contains a heteroatom
-                    n_pattern = Chem.MolFromSmarts("[#7]")  # Nitrogen
-                    o_pattern = Chem.MolFromSmarts("[#8]")  # Oxygen
-                    s_pattern = Chem.MolFromSmarts("[#16]")  # Sulfur
-
-                    has_n = product_mol.HasSubstructMatch(n_pattern)
-                    has_o = product_mol.HasSubstructMatch(o_pattern)
-                    has_s = product_mol.HasSubstructMatch(s_pattern)
-
-                    if has_n or has_o or has_s:
-                        print(f"Detected heterocyclic ring formation at depth {depth}")
-                        late_stage_ring_formation = True
+            if any(
+                mol is not None and mol.HasSubstructMatch(fluoropyridine_pattern)
+                for mol in reactant_mols
+            ):
+                has_fluoropyridine_intermediate = True
+                print(f"Found fluoropyridine intermediate in reaction: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return late_stage_ring_formation
+
+    print(f"Fluoropyridine intermediate strategy detected: {has_fluoropyridine_intermediate}")
+    return has_fluoropyridine_intermediate

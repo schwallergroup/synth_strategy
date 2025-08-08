@@ -2,76 +2,51 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy (no convergent steps).
-
-    A linear synthesis has each reaction step with only one non-in-stock reactant.
-    A convergent synthesis has at least one step with multiple non-in-stock reactants coming together.
-
-    Args:
-        route: A synthesis route following the SynthesisRoute JSON schema
-
-    Returns:
-        bool: True if the synthesis is linear, False if it's convergent
+    This function detects if complex heterocyclic cores (pyrimidopyridazine) are preserved throughout the synthesis.
     """
-    # Track the maximum branching factor of non-in-stock reactants
-    max_non_stock_children = 0
+    all_nodes_have_core = True
 
-    def dfs_traverse(node):
-        nonlocal max_non_stock_children
+    def dfs_traverse(node, depth=0):
+        nonlocal all_nodes_have_core
 
-        if node["type"] == "reaction":
-            # Count number of non-in-stock reactant children
-            non_stock_reactants = sum(
-                1
-                for child in node.get("children", [])
-                if child["type"] == "mol" and not child.get("in_stock", False)
-            )
-
-            max_non_stock_children = max(max_non_stock_children, non_stock_reactants)
-
-            print(
-                f"Reaction node with {len(node.get('children', []))} total children and {non_stock_reactants} non-in-stock reactants"
-            )
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            # Check for pyrimidopyridazine core
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Simplified pattern for pyrimidopyridazine core
+                core_pattern = Chem.MolFromSmarts("[n]1[c][c][n]2[c](=O)[c][c][n][c]12")
+                if not mol.HasSubstructMatch(core_pattern):
+                    all_nodes_have_core = False
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-
-    # If max_non_stock_children is 1 or 0, it's a linear synthesis
-    # If max_non_stock_children > 1, there's at least one convergent step
-    is_linear = max_non_stock_children <= 1
-
-    # Debug information
-    print(f"Maximum non-in-stock reactants in any step: {max_non_stock_children}")
-    if is_linear:
-        print("Detected linear synthesis strategy (no convergent steps)")
-    else:
-        print(
-            f"Detected convergent synthesis with maximum {max_non_stock_children} non-in-stock reactants in a step"
-        )
-
-    return is_linear
+    return all_nodes_have_core

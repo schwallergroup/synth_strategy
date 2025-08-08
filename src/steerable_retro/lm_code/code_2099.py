@@ -2,64 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves a Suzuki coupling (aryl-aryl C-C bond formation
-    between an aryl bromide/iodide and a boronate ester).
+    Detects amide formation between a carboxylic acid and an amine.
     """
-    suzuki_detected = False
+    found_amide_formation = False
 
-    def dfs_traverse(node):
-        nonlocal suzuki_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal found_amide_formation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if one reactant contains boronate and another contains Br/I on aromatic
-            has_boronate = False
-            has_aryl_halide = False
+            # Patterns for carboxylic acid, amine, and amide
+            carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
+            amine_pattern = Chem.MolFromSmarts("[NH2]")
+            amide_pattern = Chem.MolFromSmarts("[C](=[O])[NH]")
 
-            for reactant in reactants:
-                if reactant:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        # Check for boronate
-                        if mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[B]")):
-                            has_boronate = True
-                        # Check for aryl bromide/iodide
-                        if mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[Br,I]")):
-                            has_aryl_halide = True
+            # Check for amide formation
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+            product_mol = Chem.MolFromSmiles(product)
 
-            # Check if product has biaryl bond that wasn't in reactants
-            if has_boronate and has_aryl_halide:
-                prod_mol = Chem.MolFromSmiles(product)
-                if prod_mol and prod_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[c]")):
-                    print("Suzuki coupling detected")
-                    suzuki_detected = True
+            if (
+                any(mol and mol.HasSubstructMatch(carboxylic_acid_pattern) for mol in reactant_mols)
+                and any(mol and mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols)
+                and product_mol
+                and product_mol.HasSubstructMatch(amide_pattern)
+            ):
+                found_amide_formation = True
+                print("Found amide formation")
 
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return suzuki_detected
+
+    print(f"Amide formation strategy detected: {found_amide_formation}")
+    return found_amide_formation

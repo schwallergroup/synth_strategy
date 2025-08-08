@@ -2,113 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a reductive amination pattern (C=O → C-NR).
+    Detects a synthetic strategy involving protection/deprotection sequences.
+    Focuses on N-acetylation and tetrahydropyran protecting groups.
     """
-    reductive_amination_found = False
+    acetyl_protection = False
+    thp_protection = False
 
-    def dfs_traverse(node):
-        nonlocal reductive_amination_found
+    def dfs_traverse(node, depth=0):
+        nonlocal acetyl_protection, thp_protection
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0]
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if the reaction is a reductive amination using the checker function
-            if (
-                checker.check_reaction("reductive amination with aldehyde", rsmi)
-                or checker.check_reaction("reductive amination with ketone", rsmi)
-                or checker.check_reaction("reductive amination with alcohol", rsmi)
-            ):
-                print(f"Reductive amination reaction detected: {rsmi}")
-                reductive_amination_found = True
-                return
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".") if r]
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            # If direct reaction check fails, try to infer from functional group changes
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            if product and all(r for r in reactants):
+                # Check for N-acetylation
+                acetyl_pattern = Chem.MolFromSmarts("[N]-[C](=[O])-[CH3]")
 
-            # Check for carbonyl groups (aldehyde or ketone) in reactants
-            reactant_has_aldehyde = any(checker.check_fg("Aldehyde", r) for r in reactants)
-            reactant_has_ketone = any(checker.check_fg("Ketone", r) for r in reactants)
-            reactant_has_carbonyl = reactant_has_aldehyde or reactant_has_ketone
+                product_has_acetyl = product.HasSubstructMatch(acetyl_pattern)
+                reactants_have_acetyl = any(r.HasSubstructMatch(acetyl_pattern) for r in reactants)
 
-            # Check for amines in reactants (primary or secondary)
-            reactant_has_primary_amine = any(
-                checker.check_fg("Primary amine", r) for r in reactants
-            )
-            reactant_has_secondary_amine = any(
-                checker.check_fg("Secondary amine", r) for r in reactants
-            )
-            reactant_has_amine = reactant_has_primary_amine or reactant_has_secondary_amine
+                if (product_has_acetyl and not reactants_have_acetyl) or (
+                    not product_has_acetyl and reactants_have_acetyl
+                ):
+                    acetyl_protection = True
+                    print(f"N-acetyl protection/deprotection detected at depth {depth}")
 
-            # Check for amine in product (could be secondary or tertiary depending on starting amine)
-            product_has_secondary_amine = checker.check_fg("Secondary amine", product)
-            product_has_tertiary_amine = checker.check_fg("Tertiary amine", product)
-            product_has_amine = product_has_secondary_amine or product_has_tertiary_amine
+                # Check for tetrahydropyran protection
+                thp_pattern = Chem.MolFromSmarts("[CH2]1[CH2][CH2][CH2][CH2]O1")
 
-            if reactant_has_carbonyl and reactant_has_amine and product_has_amine:
-                print(f"Inferred reductive amination pattern from functional groups: {rsmi}")
-                print(f"Reactant has aldehyde: {reactant_has_aldehyde}")
-                print(f"Reactant has ketone: {reactant_has_ketone}")
-                print(f"Reactant has primary amine: {reactant_has_primary_amine}")
-                print(f"Reactant has secondary amine: {reactant_has_secondary_amine}")
-                print(f"Product has secondary amine: {product_has_secondary_amine}")
-                print(f"Product has tertiary amine: {product_has_tertiary_amine}")
-                reductive_amination_found = True
+                product_has_thp = product.HasSubstructMatch(thp_pattern)
+                reactants_have_thp = any(r.HasSubstructMatch(thp_pattern) for r in reactants)
 
-        # Recursively process children
+                if (product_has_thp and not reactants_have_thp) or (
+                    not product_has_thp and reactants_have_thp
+                ):
+                    thp_protection = True
+                    print(f"Tetrahydropyran protection/deprotection detected at depth {depth}")
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    return reductive_amination_found
+    result = acetyl_protection or thp_protection
+    print(f"Protection/deprotection sequence: {result}")
+    return result

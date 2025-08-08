@@ -2,109 +2,116 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving sequential oxidation of sulfur:
-    thioether → sulfoxide → sulfone, following introduction of sulfur via mesylate activation.
+    This function detects cyanation reactions (introduction of C≡N group).
     """
-    # Initialize tracking variables
-    has_alcohol_to_mesylate = False
-    has_mesylate_to_thioether = False
-    has_thioether_to_sulfoxide = False
-    has_sulfoxide_to_sulfone = False
-
-    # SMARTS patterns for functional groups
-    alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
-    mesylate_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#16](=[#8])(=[#8])-[#6]")
-    thioether_pattern = Chem.MolFromSmarts("[#6]-[#16]-[#6]")
-    sulfoxide_pattern = Chem.MolFromSmarts("[#6]-[#16](=[#8])-[#6]")
-    sulfone_pattern = Chem.MolFromSmarts("[#6]-[#16](=[#8])(=[#8])-[#6]")
+    cyanation_found = False
 
     def dfs_traverse(node):
-        nonlocal has_alcohol_to_mesylate, has_mesylate_to_thioether
-        nonlocal has_thioether_to_sulfoxide, has_sulfoxide_to_sulfone
+        nonlocal cyanation_found
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            try:
-                # Convert to RDKit molecules
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check if product has nitrile group
+            has_nitrile_in_product = checker.check_fg("Nitrile", product_smiles)
 
-                # Check for alcohol to mesylate transformation
-                if any(
-                    mol.HasSubstructMatch(alcohol_pattern) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(mesylate_pattern):
-                    print("Detected alcohol to mesylate transformation")
-                    has_alcohol_to_mesylate = True
+            if has_nitrile_in_product:
+                # Count reactants with nitrile
+                reactants_with_nitrile = sum(
+                    1 for r_smiles in reactants_smiles if checker.check_fg("Nitrile", r_smiles)
+                )
 
-                # Check for mesylate to thioether transformation
-                if (
-                    any(mol.HasSubstructMatch(mesylate_pattern) for mol in reactant_mols)
-                    and product_mol.HasSubstructMatch(thioether_pattern)
-                    and not product_mol.HasSubstructMatch(mesylate_pattern)
-                ):
-                    print("Detected mesylate to thioether transformation")
-                    has_mesylate_to_thioether = True
+                # Check for common cyanation reagents
+                cyanation_reagent_present = False
+                for r_smiles in reactants_smiles:
+                    # Common cyanation reagents
+                    if any(
+                        reagent in r_smiles.upper()
+                        for reagent in ["CN", "KCN", "NACN", "CUCN", "TMSCN", "ZN(CN)2"]
+                    ):
+                        cyanation_reagent_present = True
+                        break
 
-                # Check for thioether to sulfoxide transformation
-                if (
-                    any(mol.HasSubstructMatch(thioether_pattern) for mol in reactant_mols)
-                    and not any(mol.HasSubstructMatch(sulfoxide_pattern) for mol in reactant_mols)
-                    and product_mol.HasSubstructMatch(sulfoxide_pattern)
-                ):
-                    print("Detected thioether to sulfoxide transformation")
-                    has_thioether_to_sulfoxide = True
+                # Check if this is a cyanation reaction
+                if cyanation_reagent_present and reactants_with_nitrile < len(reactants_smiles):
+                    print(f"Cyanation detected with cyanation reagent: {rsmi}")
+                    cyanation_found = True
+                    return
 
-                # Check for sulfoxide to sulfone transformation
-                if (
-                    any(mol.HasSubstructMatch(sulfoxide_pattern) for mol in reactant_mols)
-                    and not any(mol.HasSubstructMatch(sulfone_pattern) for mol in reactant_mols)
-                    and product_mol.HasSubstructMatch(sulfone_pattern)
-                ):
-                    print("Detected sulfoxide to sulfone transformation")
-                    has_sulfoxide_to_sulfone = True
+                # Check if any reactant has a halide that could be replaced by CN
+                for r_smiles in reactants_smiles:
+                    if (
+                        checker.check_fg("Primary halide", r_smiles)
+                        or checker.check_fg("Secondary halide", r_smiles)
+                        or checker.check_fg("Tertiary halide", r_smiles)
+                        or checker.check_fg("Aromatic halide", r_smiles)
+                    ):
 
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                        # If reactant has halide and product has nitrile where reactant didn't
+                        if not checker.check_fg("Nitrile", r_smiles):
+                            print(f"Cyanation detected with halide replacement: {rsmi}")
+                            cyanation_found = True
+                            return
 
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-
-    # Check if the complete strategy is present
-    strategy_present = (
-        has_alcohol_to_mesylate
-        and has_mesylate_to_thioether
-        and has_thioether_to_sulfoxide
-        and has_sulfoxide_to_sulfone
-    )
-
-    print(f"Sequential sulfur oxidation strategy detected: {strategy_present}")
-    return strategy_present
+    return cyanation_found

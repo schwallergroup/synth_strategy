@@ -2,60 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects pyrazole ring formation from hydrazine and carbonyl compounds.
+    This function detects a synthesis that maintains Boc protection throughout
+    while building a complex structure.
     """
-    pyrazole_formation_detected = False
+    boc_maintained = False
+    steps_with_boc = 0
+    total_steps = 0
 
-    def dfs_traverse(node):
-        nonlocal pyrazole_formation_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal steps_with_boc, total_steps
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            total_steps += 1
 
-                # Check if hydrazine is in reactants
-                hydrazine_pattern = Chem.MolFromSmarts("[NH2][NH2]")
-                carbonyl_pattern = Chem.MolFromSmarts("[#6][#6](=[O])[#6,#1]")
-                pyrazole_pattern = Chem.MolFromSmarts("[#7]1[#7][#6][#6][#6]1")
+            # Extract product
+            rsmi = node["metadata"]["rsmi"]
+            product_smiles = rsmi.split(">")[-1]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                product_mol = Chem.MolFromSmiles(product) if product else None
+            # Check for Boc group
+            boc_pattern = Chem.MolFromSmarts("[#6]([#6])([#6])([#6])[#8][#6](=[#8])[#7]")
+            if product_mol.HasSubstructMatch(boc_pattern):
+                steps_with_boc += 1
+                print(f"Detected Boc protection at depth {depth}")
 
-                if product_mol and any(
-                    r and r.HasSubstructMatch(hydrazine_pattern) for r in reactant_mols
-                ):
-                    if any(r and r.HasSubstructMatch(carbonyl_pattern) for r in reactant_mols):
-                        if product_mol.HasSubstructMatch(pyrazole_pattern):
-                            print(
-                                "Detected pyrazole formation from hydrazine and carbonyl compounds"
-                            )
-                            pyrazole_formation_detected = True
-
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return pyrazole_formation_detected
+
+    # Return True if Boc is maintained throughout most of the synthesis
+    boc_maintained = (steps_with_boc > 0) and (steps_with_boc / total_steps >= 0.75)
+    print(f"Strategy detection result: {boc_maintained}")
+    print(f"Steps with Boc: {steps_with_boc}/{total_steps}")
+
+    return boc_maintained

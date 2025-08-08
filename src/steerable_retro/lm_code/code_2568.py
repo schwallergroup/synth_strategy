@@ -2,81 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects reductive amination strategy (aldehyde/ketone + amine → secondary/tertiary amine).
+    Detects a synthetic strategy involving multiple protection steps of a phenol.
     """
-    # Track if we found the pattern
-    found_pattern = False
+    protection_types = set()
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
-
         if node["type"] == "reaction":
-            # Check if this is a reaction node
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for reductive amination patterns
-                aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
-                amine_pattern = Chem.MolFromSmarts("[NH1,NH2]")
-                sec_amine_pattern = Chem.MolFromSmarts("[NH1][CH2]")
+            # Convert to RDKit molecules
+            product_mol = Chem.MolFromSmiles(product)
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
 
-                # Check reactants for aldehyde and amine
-                has_aldehyde = False
-                has_amine = False
+            # Check for phenol in reactants
+            phenol_pattern = Chem.MolFromSmarts("[OH][c]")
+            phenol_reactants = any(r and r.HasSubstructMatch(phenol_pattern) for r in reactant_mols)
 
-                for r in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(r)
-                        if mol:
-                            if mol.HasSubstructMatch(aldehyde_pattern):
-                                has_aldehyde = True
-                            if mol.HasSubstructMatch(amine_pattern):
-                                has_amine = True
-                    except:
-                        continue
+            # Check for protected phenol patterns in product
+            benzyl_pattern = Chem.MolFromSmarts("[c][CH2][O][c]")
+            benzoyl_pattern = Chem.MolFromSmarts("[O][C](=[O])[c]")
 
-                # Check product for secondary amine
-                try:
-                    prod_mol = Chem.MolFromSmiles(product)
-                    has_sec_amine = prod_mol and prod_mol.HasSubstructMatch(sec_amine_pattern)
-                except:
-                    has_sec_amine = False
+            if phenol_reactants and product_mol:
+                if product_mol.HasSubstructMatch(benzyl_pattern):
+                    protection_types.add("benzyl")
+                    print(f"Detected benzyl protection at depth {depth}")
+                elif product_mol.HasSubstructMatch(benzoyl_pattern):
+                    protection_types.add("benzoyl")
+                    print(f"Detected benzoyl protection at depth {depth}")
 
-                # If we have aldehyde, amine, and secondary amine in product, it's likely reductive amination
-                if has_aldehyde and has_amine and has_sec_amine:
-                    found_pattern = True
-                    print(f"Found reductive amination at depth {depth}")
-
-        # Traverse children
-        if "children" in node:
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1)
+        # Process children
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Reductive amination strategy: {found_pattern}")
-    return found_pattern
+    # Check if we have multiple protection types
+    multiple_protections = len(protection_types) >= 2
+
+    if multiple_protections:
+        print(f"Multiple phenol protection strategy detected: {protection_types}")
+
+    return multiple_protections

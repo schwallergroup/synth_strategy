@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,157 +54,119 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis uses a late-stage cyanation strategy,
-    where a nitrile group is introduced in the final or penultimate step.
+    This function detects a synthetic strategy involving late-stage formation of a tertiary alcohol
+    via addition of a heterocyclic reagent to a ketone.
     """
-    final_product_has_nitrile = False
-    cyanation_at_depth = None
-    final_product_smiles = None
+    # Track if we found the tertiary alcohol formation
+    found_tertiary_alcohol_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal final_product_has_nitrile, cyanation_at_depth, final_product_smiles
+        nonlocal found_tertiary_alcohol_formation
 
-        if node["type"] == "mol" and depth == 0:  # Final product
-            final_product_smiles = node["smiles"]
-            if checker.check_fg("Nitrile", final_product_smiles):
-                final_product_has_nitrile = True
-                print(f"Final product contains nitrile group: {final_product_smiles}")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Extract reaction information
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-        elif node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            reactants = reactants_part.split(".")
+            product = product_part
 
-                # Check if this reaction introduces a nitrile
-                product_has_nitrile = checker.check_fg("Nitrile", product)
+            # Check if this is a late-stage reaction (depth 0 or 1)
+            if depth <= 1:
+                print(f"Examining reaction at depth {depth}: {rsmi}")
 
-                # Check if any reactant has a nitrile
-                reactants_with_nitrile = [r for r in reactants if checker.check_fg("Nitrile", r)]
+                # Check for tertiary alcohol in product
+                has_tertiary_alcohol_in_product = checker.check_fg("Tertiary alcohol", product)
+                print(f"Has tertiary alcohol in product: {has_tertiary_alcohol_in_product}")
 
-                # Get nitrile atom indices in product and reactants
-                product_nitrile_indices = checker.get_fg_atom_indices("Nitrile", product)
+                # Check for ketone in reactants
+                has_ketone_in_reactants = False
+                ketone_reactant = None
+                for reactant in reactants:
+                    if checker.check_fg("Ketone", reactant):
+                        has_ketone_in_reactants = True
+                        ketone_reactant = reactant
+                        print(f"Found ketone in reactant: {reactant}")
+                        break
 
-                # If product has nitrile but no reactant has nitrile, it's definitely a cyanation
-                if product_has_nitrile and not reactants_with_nitrile:
-                    print(
-                        f"Clear cyanation detected at depth {depth}: Product has nitrile but no reactants do"
-                    )
-                    if cyanation_at_depth is None or depth < cyanation_at_depth:
-                        cyanation_at_depth = depth
-
-                # If both product and some reactants have nitriles, check if new nitriles were introduced
-                elif product_has_nitrile and reactants_with_nitrile:
-                    # Count nitrile groups in product and reactants
-                    product_nitrile_count = len(product_nitrile_indices)
-                    reactants_nitrile_count = sum(
-                        len(checker.get_fg_atom_indices("Nitrile", r)) for r in reactants
-                    )
-
-                    if product_nitrile_count > reactants_nitrile_count:
-                        print(
-                            f"Nitrile introduction detected at depth {depth}: {product_nitrile_count} nitriles in product, {reactants_nitrile_count} in reactants"
-                        )
-                        if cyanation_at_depth is None or depth < cyanation_at_depth:
-                            cyanation_at_depth = depth
-
-                # Check for cyanide reagents in reactants
-                cyanide_reagents = [
-                    "CN",
-                    "KCN",
-                    "NaCN",
-                    "CuCN",
-                    "Zn(CN)2",
-                    "HCN",
-                    "TMSCN",
-                    "Et4NCN",
-                    "Bu4NCN",
-                ]
-                if any(reagent in r for reagent in cyanide_reagents for r in reactants):
-                    print(f"Cyanide reagent found in reaction at depth {depth}")
-                    if cyanation_at_depth is None or depth < cyanation_at_depth:
-                        cyanation_at_depth = depth
-
-                # Check for specific reactions that might involve cyanation
-                cyanation_reactions = [
-                    "Aromatic substitution of bromine by chlorine",
-                    "Aromatic dehalogenation",
-                    "Aromatic chlorination",
-                    "Aromatic bromination",
-                    "Aromatic iodination",
-                    "Aromatic fluorination",
-                    "Nucleophilic substitution",
-                    "Rosenmund-von Braun reaction",
-                    "Kolbe nitrile synthesis",
-                    "Strecker synthesis",
+                # Check for heterocyclic structure in reactants
+                has_heterocycle = False
+                heterocycle_reactant = None
+                heterocycle_rings = [
+                    "pyridine",
+                    "furan",
+                    "thiophene",
+                    "pyrrole",
+                    "imidazole",
+                    "oxazole",
+                    "thiazole",
+                    "pyrimidine",
+                    "pyrazine",
+                    "pyridazine",
+                    "triazole",
+                    "tetrazole",
+                    "indole",
+                    "benzimidazole",
+                    "quinoline",
+                    "isoquinoline",
+                    "benzoxazole",
+                    "benzothiazole",
                 ]
 
-                if product_has_nitrile and any(
-                    checker.check_reaction(rxn_type, rsmi) for rxn_type in cyanation_reactions
+                for reactant in reactants:
+                    for ring in heterocycle_rings:
+                        if checker.check_ring(ring, reactant):
+                            has_heterocycle = True
+                            heterocycle_reactant = reactant
+                            print(f"Found heterocycle ({ring}) in reactant: {reactant}")
+                            break
+                    if has_heterocycle:
+                        break
+
+                # Check if this is a Grignard or organolithium addition
+                is_grignard_reaction = checker.check_reaction(
+                    "Grignard from ketone to alcohol", rsmi
+                )
+
+                # Check for organolithium reaction - look for Li in any reactant
+                is_organolithium_reaction = False
+                for reactant in reactants:
+                    if "Li" in reactant and has_ketone_in_reactants:
+                        is_organolithium_reaction = True
+                        print(f"Found organolithium reagent: {reactant}")
+                        break
+
+                # Check for general addition to ketone forming tertiary alcohol
+                is_addition_to_ketone = False
+                if has_tertiary_alcohol_in_product and has_ketone_in_reactants:
+                    # Check that tertiary alcohol wasn't already in reactants
+                    tertiary_alcohol_in_reactants = False
+                    for reactant in reactants:
+                        if checker.check_fg("Tertiary alcohol", reactant):
+                            tertiary_alcohol_in_reactants = True
+                            break
+
+                    if not tertiary_alcohol_in_reactants:
+                        is_addition_to_ketone = True
+                        print("Confirmed tertiary alcohol formation from ketone")
+
+                # If all conditions are met, we found the pattern
+                if (
+                    is_addition_to_ketone
+                    and has_heterocycle
+                    and (is_grignard_reaction or is_organolithium_reaction or "Li" in rsmi)
                 ):
-                    print(f"Potential cyanation via known reaction at depth {depth}")
-                    if cyanation_at_depth is None or depth < cyanation_at_depth:
-                        cyanation_at_depth = depth
+                    print(f"Found late-stage tertiary alcohol formation via addition to ketone")
+                    print(f"Ketone reactant: {ketone_reactant}")
+                    print(f"Heterocyclic reactant: {heterocycle_reactant}")
+                    print(f"Product with tertiary alcohol: {product}")
+                    found_tertiary_alcohol_formation = True
 
-                # Check for reactions involving halides (common precursors for cyanation)
-                if product_has_nitrile:
-                    halide_fgs = [
-                        "Primary halide",
-                        "Secondary halide",
-                        "Tertiary halide",
-                        "Aromatic halide",
-                        "Alkenyl halide",
-                    ]
-                    if any(any(checker.check_fg(fg, r) for fg in halide_fgs) for r in reactants):
-                        print(f"Potential cyanation via halide substitution at depth {depth}")
-                        if cyanation_at_depth is None or depth < cyanation_at_depth:
-                            cyanation_at_depth = depth
-
-                # Check for reactions involving carbonyl compounds (another route to nitriles)
-                if product_has_nitrile:
-                    carbonyl_fgs = ["Aldehyde", "Ketone", "Carboxylic acid", "Ester", "Amide"]
-                    if any(any(checker.check_fg(fg, r) for fg in carbonyl_fgs) for r in reactants):
-                        print(f"Potential cyanation via carbonyl transformation at depth {depth}")
-                        if cyanation_at_depth is None or depth < cyanation_at_depth:
-                            cyanation_at_depth = depth
-
-                # If we're at depth 0 or 1 and the product has nitrile, consider it a late-stage cyanation
-                # This is a fallback for cases where we can't detect the specific mechanism
-                if (depth <= 1) and product_has_nitrile and final_product_has_nitrile:
-                    print(
-                        f"Assuming late-stage cyanation at depth {depth} based on product containing nitrile"
-                    )
-                    if cyanation_at_depth is None or depth < cyanation_at_depth:
-                        cyanation_at_depth = depth
-
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-
-    # Late stage is defined as depth 0 or 1
-    is_late_stage = cyanation_at_depth is not None and cyanation_at_depth <= 1
-
-    if is_late_stage:
-        print(f"Late-stage cyanation strategy detected at depth {cyanation_at_depth}")
-    else:
-        if cyanation_at_depth is not None:
-            print(f"Cyanation detected but not at late stage (depth {cyanation_at_depth})")
-        elif final_product_has_nitrile:
-            print("Final product has nitrile but no cyanation reaction detected")
-        else:
-            print("No nitrile in final product and no cyanation reaction detected")
-
-    # The function should return True if:
-    # 1. The final product has a nitrile group AND
-    # 2. There is a cyanation reaction at a late stage (depth 0 or 1)
-
-    # For the test case, we need to handle the situation where the final product has nitrile
-    # but we couldn't detect a specific cyanation reaction
-    if final_product_has_nitrile and (cyanation_at_depth is None):
-        # If the final product has nitrile but we couldn't detect when it was introduced,
-        # we'll assume it was a late-stage cyanation
-        print("Assuming late-stage cyanation since final product has nitrile")
-        return True
-
-    return final_product_has_nitrile and is_late_stage
+    return found_tertiary_alcohol_formation

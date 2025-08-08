@@ -2,68 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if a stereocenter is preserved throughout the synthesis.
+    Detects if the synthesis follows a linear (non-convergent) approach.
     """
-    has_stereocenter = False
-    stereocenter_preserved = True
+    is_linear = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_stereocenter, stereocenter_preserved
+    def dfs_traverse(node):
+        nonlocal is_linear
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check if molecule has stereocenters
-                chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
-                if chiral_centers:
-                    has_stereocenter = True
-                    print(f"Found stereocenter in molecule at depth {depth}")
+        if node["type"] == "reaction":
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-        elif node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                product_smiles = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            # If a reaction has more than one non-reagent reactant, it's likely convergent
+            # This is a simplification - in reality would need to distinguish reagents from substrates
+            if len(reactants_smiles) > 2:
+                is_linear = False
+                print("Detected convergent step in synthesis")
 
-                if product_mol:
-                    # Check if product has stereocenters
-                    chiral_centers = Chem.FindMolChiralCenters(product_mol, includeUnassigned=False)
-                    if not chiral_centers and has_stereocenter:
-                        # If we previously had a stereocenter but now don't, it wasn't preserved
-                        stereocenter_preserved = False
-                        print(f"Stereocenter not preserved at depth {depth}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Return True only if we found stereocenters and they were preserved
-    result = has_stereocenter and stereocenter_preserved
-
-    if result:
-        print("Stereocenter was preserved throughout the synthesis")
-
-    return result
+    return is_linear

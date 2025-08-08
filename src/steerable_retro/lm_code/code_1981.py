@@ -2,43 +2,54 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
-def main(route, threshold=3):
+def main(route):
     """
-    Detects if the final product in the synthesis route has multiple methoxy groups
+    Detects the use of silyl protection strategy for amines.
     """
-    methoxy_count = 0
+    silyl_protection_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal methoxy_count
+    def dfs_traverse(node):
+        nonlocal silyl_protection_detected
 
-        if node["type"] == "mol" and depth == 0:  # Final product
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                methoxy_patt = Chem.MolFromSmarts("[O][CH3]")
-                methoxy_count = len(mol.GetSubstructMatches(methoxy_patt))
-                print(f"Found {methoxy_count} methoxy groups in final product")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+
+            # Check for silyl-protected amine pattern
+            silyl_amine_pattern = Chem.MolFromSmarts("[#7]-[Si]")
+
+            for reactant in reactants:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol and mol.HasSubstructMatch(silyl_amine_pattern):
+                    print("Silyl protection strategy detected for amine")
+                    silyl_protection_detected = True
+                    break
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return methoxy_count >= threshold
+    return silyl_protection_detected

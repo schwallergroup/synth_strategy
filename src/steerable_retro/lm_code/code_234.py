@@ -2,83 +2,165 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if multiple SNAr reactions (nucleophilic aromatic substitution)
-    are used in the synthesis, identified by Cl leaving group and N nucleophile.
+    This function detects if a stereocenter is preserved throughout the synthesis.
+    It checks if stereocenters in the final product are maintained from starting materials
+    through all intermediate steps.
     """
-    snar_count = 0
+    # First check if the final product has stereocenters
+    final_product = route["smiles"]
+    final_mol = Chem.MolFromSmiles(final_product)
+    if not final_mol:
+        print(f"Could not parse final product: {final_product}")
+        return False
 
-    def dfs_traverse(node):
-        nonlocal snar_count
+    final_stereocenters = Chem.FindMolChiralCenters(final_mol, includeUnassigned=False)
+    if not final_stereocenters:
+        print(f"Final product has no stereocenters: {final_product}")
+        return False
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+    print(f"Final product has {len(final_stereocenters)} stereocenters: {final_product}")
 
-            # Look for patterns indicating SNAr:
-            # 1. Aromatic chloride in one reactant
-            # 2. Amine nucleophile in another reactant
-            # 3. C-N bond formation in product
+    # Track stereocenters through the synthesis
+    preserved = True
 
-            chloro_aromatic_pattern = Chem.MolFromSmarts("c[Cl]")
-            amine_pattern = Chem.MolFromSmarts("[N;!$(N=*);!$(N#*);!$(N[N,O,S])]")
+    def dfs_traverse(node, depth=0):
+        nonlocal preserved
 
-            has_chloro_aromatic = False
-            has_amine = False
+        if not preserved:  # Early termination if preservation is already broken
+            return
 
-            for reactant_smiles in reactants_smiles:
-                reactant_mol = Chem.MolFromSmiles(reactant_smiles)
-                if not reactant_mol:
-                    continue
+        if node["type"] == "mol":
+            smiles = node["smiles"]
+            mol = Chem.MolFromSmiles(smiles)
 
-                if reactant_mol.HasSubstructMatch(chloro_aromatic_pattern):
-                    has_chloro_aromatic = True
+            if mol:
+                stereocenters = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
+                print(f"Molecule at depth {depth}: {smiles}")
+                print(f"  Stereocenters: {stereocenters}")
 
-                if reactant_mol.HasSubstructMatch(amine_pattern):
-                    has_amine = True
+                # Store depth for reference
+                node["depth"] = depth
 
-            # If both patterns are found in reactants, check if product has new C-N bond
-            if has_chloro_aromatic and has_amine:
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if product_mol:
-                    # This is a simplification - a more robust implementation would
-                    # check for the specific C-N bond formation at the position where Cl was
-                    snar_count += 1
-                    print(f"Potential SNAr reaction detected: {rsmi}")
+                # For starting materials, we don't check preservation (they're the source)
+                if node.get("in_stock", False):
+                    print(f"  Starting material, no need to check preservation")
+                    return
+            else:
+                print(f"Could not parse molecule at depth {depth}: {smiles}")
+
+        elif node["type"] == "reaction":
+            # Check if this reaction might affect stereochemistry
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                print(f"Reaction at depth {depth}: {rsmi}")
+
+                # Check for reactions known to potentially affect stereochemistry
+                stereo_affecting_reactions = [
+                    "Reduction of ketone to secondary alcohol",
+                    "Reduction of aldehydes and ketones to alcohols",
+                    "Oxidation of secondary alcohol to ketone",
+                    "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones",
+                    "Diels-Alder",
+                    "Aldol condensation",
+                ]
+
+                for rxn_type in stereo_affecting_reactions:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        print(f"  Warning: Reaction {rxn_type} may affect stereochemistry")
+
+                        # Check if product has expected stereocenters
+                        product = rsmi.split(">")[-1]
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol:
+                            product_stereocenters = Chem.FindMolChiralCenters(
+                                product_mol, includeUnassigned=False
+                            )
+
+                            # Check reactants
+                            reactants = rsmi.split(">")[0].split(".")
+                            reactant_stereocenters = []
+                            for reactant in reactants:
+                                reactant_mol = Chem.MolFromSmiles(reactant)
+                                if reactant_mol:
+                                    reactant_stereocenters.extend(
+                                        Chem.FindMolChiralCenters(
+                                            reactant_mol, includeUnassigned=False
+                                        )
+                                    )
+
+                            # If reactants had stereocenters but product has fewer, flag as not preserved
+                            if len(reactant_stereocenters) > 0 and len(product_stereocenters) < len(
+                                reactant_stereocenters
+                            ):
+                                print(
+                                    f"  Stereocenter count decreased: {len(reactant_stereocenters)} → {len(product_stereocenters)}"
+                                )
+                                preserved = False
+                                return
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Call dfs_traverse on the root node
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if multiple SNAr reactions were detected
-    multiple_snar = snar_count >= 2
+    # Check if all stereocenters were preserved
+    if preserved:
+        print("All stereocenters appear to be preserved throughout the synthesis")
+    else:
+        print("Some stereocenters were not preserved during the synthesis")
 
-    if multiple_snar:
-        print(f"Multiple SNAr reactions detected: {snar_count}")
-
-    return multiple_snar
+    return preserved

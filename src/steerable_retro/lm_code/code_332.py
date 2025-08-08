@@ -2,69 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects the transformation of a nitrile group to an amidoxime group.
+    Detects if the synthesis route includes a debromination step (C-Br to C-H conversion).
     """
-    transformation_detected = False
+    found_debromination = False
 
     def dfs_traverse(node):
-        nonlocal transformation_detected
+        nonlocal found_debromination
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for nitrile in reactants
-            nitrile_pattern = Chem.MolFromSmarts("[#6]#[#7]")
-            nitrile_present = False
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(nitrile_pattern):
-                        nitrile_present = True
-                        print(f"Found nitrile in reactant: {reactant}")
-                except:
-                    continue
+            # Check for C-Br bond in reactants
+            c_br_pattern = Chem.MolFromSmarts("[#6][Br]")
 
-            # Check for amidoxime in product
-            amidoxime_pattern = Chem.MolFromSmarts("[#6](=[#7])[#7][#8]")
-            amidoxime_present = False
-            try:
-                mol = Chem.MolFromSmiles(product)
-                if mol and mol.HasSubstructMatch(amidoxime_pattern):
-                    amidoxime_present = True
-                    print(f"Found amidoxime in product: {product}")
-            except:
-                pass
+            for reactant in reactants_smiles:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.HasSubstructMatch(c_br_pattern):
+                    # Check if the bromine is absent in the product
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol:
+                        # If product has fewer bromines than reactant, it's likely a debromination
+                        reactant_br_count = len(reactant_mol.GetSubstructMatches(c_br_pattern))
+                        product_br_count = len(product_mol.GetSubstructMatches(c_br_pattern))
 
-            # If both conditions are met, we've found our strategy
-            if nitrile_present and amidoxime_present:
-                transformation_detected = True
-                print("Detected nitrile to amidoxime transformation")
+                        if product_br_count < reactant_br_count:
+                            found_debromination = True
+                            print("Found debromination step")
+                            break
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return transformation_detected
+    return found_debromination

@@ -2,66 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a late-stage esterification
-    (formation of an ester bond in the final or penultimate step).
+    This function detects if the synthesis includes a transition metal-catalyzed biaryl formation.
     """
-    has_late_esterification = False
+    # Track if we found biaryl coupling
+    found_biaryl_coupling = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_late_esterification
+    # SMARTS patterns
+    aryl_halide_pattern = Chem.MolFromSmarts("c-[Br,I,Cl]")
+    biaryl_pattern = Chem.MolFromSmarts("c:c-c:c")  # Simplified pattern for biaryl
 
-        if node["type"] == "reaction" and depth <= 1:  # Only check final or penultimate steps
+    def dfs_traverse(node):
+        nonlocal found_biaryl_coupling
+
+        if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if an ester is formed
-                reactants_mol = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
-                product_mol = Chem.MolFromSmiles(product_part)
+                # Check for biaryl coupling
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-                # Define ester pattern
-                ester_pattern = Chem.MolFromSmarts("[C](=[O])[O;!H1]")
+                has_aryl_halide = any(
+                    mol and mol.HasSubstructMatch(aryl_halide_pattern) for mol in reactant_mols
+                )
+                has_biaryl = product_mol and product_mol.HasSubstructMatch(biaryl_pattern)
 
-                # Check if ester is in product but not in reactants
-                if product_mol and product_mol.HasSubstructMatch(ester_pattern):
-                    ester_in_reactants = False
-                    for r_mol in reactants_mol:
-                        if r_mol and r_mol.HasSubstructMatch(ester_pattern):
-                            ester_in_reactants = True
-                            break
+                if has_aryl_halide and has_biaryl:
+                    found_biaryl_coupling = True
+                    print("Found biaryl formation via coupling")
 
-                    if not ester_in_reactants:
-                        has_late_esterification = True
-                        print(f"Found late-stage esterification at depth {depth}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    print(
-        f"Synthesis {'has' if has_late_esterification else 'does not have'} late-stage esterification"
-    )
-    return has_late_esterification
+
+    return found_biaryl_coupling

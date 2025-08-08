@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,47 +54,137 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis maintains an indole-benzyl scaffold
-    throughout the synthesis while modifying other parts of the molecule.
+    Detects if the synthesis follows a linear strategy where each step builds upon
+    a single precursor molecule rather than combining multiple complex fragments.
     """
-    # Track if indole-benzyl scaffold is present throughout
-    scaffold_present_at_all_steps = True
-    steps_analyzed = 0
+    is_linear = True
+
+    def is_simple_reagent(mol_smiles):
+        """Identify common simple reagents that shouldn't count as complex reactants"""
+        mol = Chem.MolFromSmiles(mol_smiles)
+        if not mol:
+            return True
+
+        # Small molecules are considered simple reagents
+        if mol.GetNumHeavyAtoms() <= 6:
+            return True
+
+        # Check for common reagent functional groups
+        common_reagent_fgs = [
+            "Triflate",
+            "Tosylate",
+            "Mesylate",
+            "Primary halide",
+            "Secondary halide",
+            "Tertiary halide",
+            "Acyl halide",
+            "Boronic acid",
+            "Boronic ester",
+            "Zinc halide",
+            "Tin",
+            "Alkyl lithium",
+            "Aryl lithium",
+            "Magnesium halide",
+        ]
+
+        for fg in common_reagent_fgs:
+            if checker.check_fg(fg, mol_smiles):
+                return True
+
+        # Check for common simple reagent rings
+        common_reagent_rings = ["cyclopropane", "cyclobutane", "oxirane", "aziridine", "thiirane"]
+        for ring in common_reagent_rings:
+            if checker.check_ring(ring, mol_smiles) and mol.GetNumHeavyAtoms() <= 10:
+                return True
+
+        return False
+
+    def is_coupling_reaction(rsmi):
+        """Check if this is a coupling reaction that inherently needs two components"""
+        coupling_rxn_types = [
+            "Suzuki coupling",
+            "Buchwald-Hartwig",
+            "Sonogashira",
+            "Heck",
+            "Stille reaction",
+            "Negishi coupling",
+            "Ullmann condensation",
+            "Kumada cross-coupling",
+            "Hiyama-Denmark Coupling",
+            "Chan-Lam",
+            "Catellani reaction",
+            "Goldberg coupling",
+            "Ullmann-Goldberg Substitution",
+        ]
+
+        for rxn_type in coupling_rxn_types:
+            if checker.check_reaction(rxn_type, rsmi):
+                print(f"Detected coupling reaction: {rxn_type}")
+                return True
+
+        return False
+
+    def is_acceptable_multicomponent_reaction(rsmi):
+        """Check if this is a multi-component reaction that is commonly used in linear synthesis"""
+        acceptable_rxn_types = [
+            "Reductive amination",
+            "Wittig",
+            "Aldol condensation",
+            "Schotten-Baumann",
+            "Ugi reaction",
+            "Petasis reaction",
+            "Pictet-Spengler",
+            "Michael addition",
+            "Knoevenagel Condensation",
+            "Henry Reaction",
+            "Mitsunobu",
+            "Eschweiler-Clarke",
+            "Paal-Knorr pyrrole synthesis",
+        ]
+
+        for rxn_type in acceptable_rxn_types:
+            if checker.check_reaction(rxn_type, rsmi):
+                print(f"Detected acceptable multi-component reaction: {rxn_type}")
+                return True
+
+        return False
 
     def dfs_traverse(node):
-        nonlocal scaffold_present_at_all_steps, steps_analyzed
+        nonlocal is_linear
 
-        if node["type"] == "mol" and ("in_stock" not in node or not node["in_stock"]):
-            mol_smiles = node["smiles"]
+        if not is_linear:
+            return  # Stop traversal if already determined to be non-linear
 
-            # Check for indole scaffold using checker function
-            has_indole = checker.check_ring("indole", mol_smiles)
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # Check for benzyl group using RDKit pattern matching
-            # Benzyl group is a phenyl ring connected to a CH2 group
-            mol = Chem.MolFromSmiles(mol_smiles)
-            benzyl_pattern = Chem.MolFromSmarts("c1ccccc1C")
-            has_benzyl = mol.HasSubstructMatch(benzyl_pattern) if mol else False
+            # Count non-trivial reactants (excluding simple reagents)
+            complex_reactants = []
+            for reactant_smiles in reactants_smiles:
+                try:
+                    if not is_simple_reagent(reactant_smiles):
+                        mol = Chem.MolFromSmiles(reactant_smiles)
+                        if mol and mol.GetNumHeavyAtoms() > 8:  # Threshold for complex molecules
+                            complex_reactants.append(reactant_smiles)
+                except Exception as e:
+                    print(f"Error processing reactant {reactant_smiles}: {e}")
 
-            print(f"Scaffold check for {mol_smiles}: indole={has_indole}, benzyl={has_benzyl}")
+            # If more than one complex reactant, check if it's an acceptable reaction type
+            if len(complex_reactants) > 1:
+                if not (is_coupling_reaction(rsmi) or is_acceptable_multicomponent_reaction(rsmi)):
+                    print(
+                        f"Non-linear step detected with {len(complex_reactants)} complex reactants"
+                    )
+                    is_linear = False
+                    return
+                else:
+                    print("Multi-component reaction is acceptable in linear synthesis")
 
-            if not (has_indole and has_benzyl):
-                scaffold_present_at_all_steps = False
-                print(f"Indole-benzyl scaffold not complete in molecule: {mol_smiles}")
-            else:
-                print(f"Indole-benzyl scaffold found in molecule: {mol_smiles}")
-
-            steps_analyzed += 1
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-
-    print(f"Total steps analyzed: {steps_analyzed}")
-    print(f"Scaffold present throughout: {scaffold_present_at_all_steps}")
-
-    # We need to have analyzed at least 3 steps and found the scaffold in all of them
-    return scaffold_present_at_all_steps and steps_analyzed >= 3
+    return is_linear

@@ -2,64 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route includes a phthalimide deprotection step
-    to reveal a primary amine.
+    This function detects a strategy involving amide formation from an ester and amine.
     """
-    phthalimide_deprotection_found = False
+    found_amide_formation = False
 
-    def dfs_traverse(node):
-        nonlocal phthalimide_deprotection_found
+    def dfs_traverse(node, depth=0):
+        nonlocal found_amide_formation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check for phthalimide pattern in reactant
-            phthalimide_pattern = Chem.MolFromSmarts("O=C1c2ccccc2C(=O)N1[#6]")
-            amine_pattern = Chem.MolFromSmarts("[NH2][#6]")
+            try:
+                # Check for amide formation
+                product_mol = Chem.MolFromSmiles(product_part)
 
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                product_mol = Chem.MolFromSmiles(product)
+                # Look for amide pattern in product
+                amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
 
-                if (
-                    reactant_mol
-                    and product_mol
-                    and phthalimide_pattern
-                    and amine_pattern
-                    and reactant_mol.HasSubstructMatch(phthalimide_pattern)
-                    and product_mol.HasSubstructMatch(amine_pattern)
-                ):
-                    print(f"Phthalimide deprotection detected: {rsmi}")
-                    phthalimide_deprotection_found = True
-                    break
+                if product_mol and product_mol.HasSubstructMatch(amide_pattern):
+                    # Check if reactants include an ester and an amine
+                    reactants = reactants_part.split(".")
+                    has_ester = False
+                    has_amine = False
 
-        # Continue traversing
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]")
+                            amine_pattern = Chem.MolFromSmarts("[NH2]")
+
+                            if reactant_mol.HasSubstructMatch(ester_pattern):
+                                has_ester = True
+                            if reactant_mol.HasSubstructMatch(amine_pattern):
+                                has_amine = True
+
+                    if has_ester and has_amine:
+                        found_amide_formation = True
+                        print(f"Found amide formation from ester and amine at depth {depth}")
+            except:
+                print(f"Error processing reaction at depth {depth}")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return phthalimide_deprotection_found
+
+    return found_amide_formation

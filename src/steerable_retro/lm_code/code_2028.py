@@ -2,76 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a late-stage reductive amination strategy.
-    It looks for a reaction at depth 0 or 1 that combines a carbonyl compound with an amine.
+    This function detects if the synthetic route contains aromatic nitration.
     """
-    reductive_amination_found = False
+    found_nitration = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal reductive_amination_found
+        nonlocal found_nitration
 
-        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            if "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if reactants contain both carbonyl and amine groups
-                reactants = reactants_str.split(".")
+                # Check for nitro group in product but not in reactants
+                nitro_pattern = Chem.MolFromSmarts("c[N+](=[O])[O-]")
 
-                carbonyl_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#6]")
-                amine_pattern = Chem.MolFromSmarts("[#7H2]-[#6]")
+                product_mol = Chem.MolFromSmiles(product)
 
-                has_carbonyl = False
-                has_amine = False
+                if product_mol and product_mol.HasSubstructMatch(nitro_pattern):
+                    # Check if nitro group is not present in reactants
+                    nitro_in_reactants = False
+                    for reactant in reactants:
+                        if "N(=O)(O)" in reactant or "[N+](=[O])[O-]" in reactant:
+                            continue  # Skip nitrating agent
 
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(carbonyl_pattern):
-                            has_carbonyl = True
-                        if mol and mol.HasSubstructMatch(amine_pattern):
-                            has_amine = True
-                    except:
-                        continue
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
+                            nitro_in_reactants = True
+                            break
 
-                # Check if product has C-N bond that wasn't in reactants
-                if has_carbonyl and has_amine:
-                    try:
-                        product_mol = Chem.MolFromSmiles(product_str)
-                        cn_bond_pattern = Chem.MolFromSmarts("[#6]-[#7]-[#6]")
-                        if product_mol and product_mol.HasSubstructMatch(cn_bond_pattern):
-                            print("Late-stage reductive amination detected at depth", depth)
-                            reductive_amination_found = True
-                    except:
-                        pass
+                    if not nitro_in_reactants:
+                        print(f"Found aromatic nitration at depth {depth}")
+                        found_nitration = True
 
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal from root
     dfs_traverse(route)
-
-    return reductive_amination_found
+    return found_nitration

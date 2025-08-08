@@ -2,86 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a late-stage Suzuki cross-coupling strategy where
-    boronic ester and triflate/halide coupling partners are prepared and then joined.
+    Detects a linear synthesis strategy where each step builds directly on the previous product
+    without convergent steps.
     """
-    # Track if we found the key components
-    found_borylation = False
-    found_triflation_or_halide = False
-    found_coupling = False
-    reaction_depths = {}
-    max_depth = 0
+    # Track the number of reactants at each step
+    reactant_counts = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_borylation, found_triflation_or_halide, found_coupling, max_depth
-
-        max_depth = max(max_depth, depth)
-
         if node["type"] == "reaction":
-            reaction_depths[depth] = reaction_depths.get(depth, 0) + 1
-
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
 
-                # Check for borylation (aryl-Br → aryl-B(OR)2)
-                if any("Br" in r for r in reactants) and "B" in product and "O" in product:
-                    found_borylation = True
-                    print(f"Found borylation at depth {depth}")
+                # Count non-empty reactants
+                count = sum(1 for r in reactants_smiles if r.strip())
 
-                # Check for triflation or halide formation
-                if any("S(=O)(=O)" in r and "F" in r for r in reactants) or any(
-                    "Br" in product for r in reactants
-                ):
-                    found_triflation_or_halide = True
-                    print(f"Found triflation/halide at depth {depth}")
+                # Ensure we have enough slots in our list
+                while len(reactant_counts) <= depth:
+                    reactant_counts.append(0)
 
-                # Check for coupling (two fragments joining)
-                if (
-                    len(reactants) >= 2
-                    and "B" in rsmi
-                    and ("O" in rsmi or "Br" in rsmi or "I" in rsmi)
-                ):
-                    # This is a simplification - real implementation would check for actual coupling
-                    found_coupling = True
-                    print(f"Found potential coupling reaction at depth {depth}")
+                reactant_counts[depth] = count
+                print(f"Depth {depth}: {count} reactants")
 
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if coupling occurs in the second half of synthesis
-    late_stage = False
-    if found_coupling:
-        for depth, count in reaction_depths.items():
-            if depth <= max_depth / 2:  # First half of synthesis (lower depth values)
-                late_stage = True
-                break
+    # Check if all steps have at most 2 reactants (linear synthesis)
+    # and at least one step has exactly 2 reactants (not just functional group manipulations)
+    is_linear = all(count <= 2 for count in reactant_counts) and any(
+        count == 2 for count in reactant_counts
+    )
 
-    result = found_borylation and found_triflation_or_halide and found_coupling and late_stage
-    print(f"Late-stage Suzuki coupling strategy detected: {result}")
-    return result
+    if is_linear:
+        print("Detected linear synthesis strategy")
+    else:
+        print("Not a linear synthesis strategy")
+
+    return is_linear

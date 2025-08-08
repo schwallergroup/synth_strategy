@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,89 +54,65 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects aromatic nucleophilic substitution where a chlorine on an aromatic ring
-    is replaced by an amine group.
+    Detects if the synthesis route includes a Suzuki coupling reaction
+    (boronic acid as reactant with C-C bond formation).
     """
-    # Initialize tracking variable
-    has_aromatic_nucleophilic_substitution = False
+    has_suzuki = False
 
-    def dfs_traverse(node):
-        nonlocal has_aromatic_nucleophilic_substitution
+    def dfs_traverse(node, depth=0):
+        nonlocal has_suzuki
 
         if node["type"] == "reaction":
-            # Extract reactants and products
             try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                print(f"Checking reaction at depth {depth}: {rsmi}")
 
-                # Check for specific aromatic nucleophilic substitution reactions
+                # Check if this is a Suzuki coupling reaction using the checker
+                # Check all possible Suzuki coupling variations from the provided list
                 if (
-                    checker.check_reaction("Ullmann-Goldberg Substitution amine", rsmi)
-                    or checker.check_reaction(
-                        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
-                    )
-                    or checker.check_reaction(
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
-                    )
-                    or checker.check_reaction(
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
-                    )
-                    or checker.check_reaction("Buchwald-Hartwig", rsmi)
+                    checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
+                    or checker.check_reaction("Suzuki coupling with sulfonic esters", rsmi)
+                    or checker.check_reaction("{Suzuki}", rsmi)
                 ):
 
-                    # Verify that we have an aromatic halide in reactants and an amine in product
-                    has_aromatic_halide = any(
-                        checker.check_fg("Aromatic halide", r) for r in reactants_smiles
-                    )
-                    has_amine_product = (
-                        checker.check_fg("Primary amine", product_smiles)
-                        or checker.check_fg("Secondary amine", product_smiles)
-                        or checker.check_fg("Tertiary amine", product_smiles)
-                        or checker.check_fg("Aniline", product_smiles)
-                    )
+                    has_suzuki = True
+                    print(f"Detected Suzuki coupling at depth {depth}: {rsmi}")
 
-                    if has_aromatic_halide and has_amine_product:
-                        print(f"Detected aromatic nucleophilic substitution in reaction: {rsmi}")
-                        has_aromatic_nucleophilic_substitution = True
+                # If not detected by reaction type, check for characteristic functional groups
+                if not has_suzuki:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-                # Alternative check for nucleophilic aromatic substitution
-                # This covers cases where the specific reaction type might not be recognized
-                elif any(checker.check_fg("Aromatic halide", r) for r in reactants_smiles):
-                    # Check if any reactant has aromatic halide and product has amine
-                    # but no reactant has the same amine group
-                    has_amine_reactants = any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        or checker.check_fg("Tertiary amine", r)
-                        or checker.check_fg("Aniline", r)
-                        for r in reactants_smiles
+                    has_boronic_reactant = any(
+                        checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
+                        for r in reactants
+                    )
+                    has_halide_reactant = any(
+                        checker.check_fg("Aromatic halide", r)
+                        or checker.check_fg("Primary halide", r)
+                        or checker.check_fg("Secondary halide", r)
+                        or checker.check_fg("Tertiary halide", r)
+                        for r in reactants
                     )
 
-                    has_amine_product = (
-                        checker.check_fg("Primary amine", product_smiles)
-                        or checker.check_fg("Secondary amine", product_smiles)
-                        or checker.check_fg("Tertiary amine", product_smiles)
-                        or checker.check_fg("Aniline", product_smiles)
-                    )
-
-                    if has_amine_product and not has_amine_reactants:
+                    # Check if product has a new C-C bond that wasn't in reactants
+                    # This is a simplification - in a real implementation we would need to check the actual bond formation
+                    if has_boronic_reactant and has_halide_reactant:
                         print(
-                            f"Detected potential aromatic nucleophilic substitution in reaction: {rsmi}"
+                            f"Detected potential Suzuki coupling based on functional groups at depth {depth}"
                         )
-                        has_aromatic_nucleophilic_substitution = True
-
+                        has_suzuki = True
             except Exception as e:
-                print(f"Error processing reaction: {e}")
+                print(f"Error processing reaction node: {e}")
 
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-
-    print(
-        f"Aromatic nucleophilic substitution strategy detected: {has_aromatic_nucleophilic_substitution}"
-    )
-    return has_aromatic_nucleophilic_substitution
+    print(f"Final result: Suzuki coupling {'found' if has_suzuki else 'not found'} in route")
+    return has_suzuki

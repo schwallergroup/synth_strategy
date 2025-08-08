@@ -2,91 +2,127 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving sequential formation of multiple
-    heterocycles (imidazole and pyrazole) in the synthesis route.
+    This function detects reductive amination (amine + aldehyde/ketone → substituted amine).
     """
-    # Track heterocycle formations with their depths
-    heterocycle_formations = []
+    reductive_amination_found = False
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+    def dfs_traverse(node):
+        nonlocal reductive_amination_found
+
+        if node["type"] == "reaction" and not reductive_amination_found:
+            try:
                 rsmi = node["metadata"]["rsmi"]
+                print(f"Examining reaction: {rsmi}")
+
+                # Split reaction SMILES to get reactants and product
                 reactants_smiles = rsmi.split(">")[0].split(".")
                 product_smiles = rsmi.split(">")[-1]
 
-                try:
-                    # Convert to RDKit molecules
-                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    product = Chem.MolFromSmiles(product_smiles)
+                # Check for reductive amination reaction directly using the checker
+                if checker.check_reaction("Reductive amination with aldehyde", rsmi):
+                    print(f"Reductive amination with aldehyde detected in reaction: {rsmi}")
+                    reductive_amination_found = True
+                    return
 
-                    if product and all(r for r in reactants):
-                        # Check for imidazole formation
-                        imidazole_pattern = Chem.MolFromSmarts("[nH]1cncc1")
-                        reactant_imidazole_count = sum(
-                            len(r.GetSubstructMatches(imidazole_pattern)) for r in reactants if r
-                        )
-                        product_imidazole_count = len(
-                            product.GetSubstructMatches(imidazole_pattern)
-                        )
+                if checker.check_reaction("Reductive amination with ketone", rsmi):
+                    print(f"Reductive amination with ketone detected in reaction: {rsmi}")
+                    reductive_amination_found = True
+                    return
 
-                        if product_imidazole_count > reactant_imidazole_count:
-                            heterocycle_formations.append(("imidazole", depth))
-                            print(f"Detected imidazole formation at depth {depth}")
+                if checker.check_reaction("Reductive amination with alcohol", rsmi):
+                    print(f"Reductive amination with alcohol detected in reaction: {rsmi}")
+                    reductive_amination_found = True
+                    return
 
-                        # Check for pyrazole formation
-                        pyrazole_pattern = Chem.MolFromSmarts("[nH]1ncc[c]1")
-                        reactant_pyrazole_count = sum(
-                            len(r.GetSubstructMatches(pyrazole_pattern)) for r in reactants if r
-                        )
-                        product_pyrazole_count = len(product.GetSubstructMatches(pyrazole_pattern))
+                # If direct reaction check failed, check for the pattern manually
+                # Check if reactants contain amine and aldehyde/ketone
+                has_amine = False
+                has_carbonyl = False
 
-                        if product_pyrazole_count > reactant_pyrazole_count:
-                            heterocycle_formations.append(("pyrazole", depth))
-                            print(f"Detected pyrazole formation at depth {depth}")
+                for reactant in reactants_smiles:
+                    if checker.check_fg("Primary amine", reactant) or checker.check_fg(
+                        "Secondary amine", reactant
+                    ):
+                        print(f"Found amine in reactant: {reactant}")
+                        has_amine = True
 
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
+                    if checker.check_fg("Aldehyde", reactant) or checker.check_fg(
+                        "Ketone", reactant
+                    ):
+                        print(f"Found carbonyl in reactant: {reactant}")
+                        has_carbonyl = True
 
-        # Process children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+                # Check if product contains a substituted amine (secondary or tertiary)
+                has_substituted_amine = checker.check_fg(
+                    "Secondary amine", product_smiles
+                ) or checker.check_fg("Tertiary amine", product_smiles)
+
+                if has_amine and has_carbonyl and has_substituted_amine:
+                    print(f"Manual detection of reductive amination pattern in reaction: {rsmi}")
+                    reductive_amination_found = True
+                    return
+
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
+
+        # Traverse children if reductive amination not found yet
+        if not reductive_amination_found:
+            for child in node.get("children", []):
+                dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if we have at least 2 different heterocycle formations
-    unique_heterocycles = set(h_type for h_type, _ in heterocycle_formations)
-
-    # The strategy is present if we have at least 2 different heterocycle formations
-    strategy_present = len(unique_heterocycles) >= 2
-
-    if strategy_present:
-        print(
-            f"Detected sequential heterocycle formation strategy with {len(unique_heterocycles)} different heterocycles"
-        )
-        for h_type, depth in heterocycle_formations:
-            print(f"  - {h_type} formation at depth {depth}")
-
-    return strategy_present
+    return reductive_amination_found

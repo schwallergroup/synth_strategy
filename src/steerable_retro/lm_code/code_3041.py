@@ -2,79 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving both oxidation and reduction reactions
-    in the same route, specifically looking for carbonyl reductions and alcohol oxidations.
+    This function detects a linear synthesis strategy where each reaction
+    has only one non-commercial reactant that leads to further reactions
+    (indicating sequential addition).
+
+    In a retrosynthetic tree, a linear synthesis means that at each step,
+    only one of the reactants is derived from a previous reaction.
     """
-    oxidation_count = 0
-    reduction_count = 0
+    is_linear = True
 
-    def dfs_traverse(node):
-        nonlocal oxidation_count, reduction_count
+    def dfs_traverse(node, depth=0):
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        # Skip further processing if we already know it's not linear
+        if not is_linear:
+            return
 
-            # Check for carbonyl reduction (aldehyde/ketone to alcohol)
-            aldehyde_pattern = Chem.MolFromSmarts("[C;H1](=O)")
-            ketone_pattern = Chem.MolFromSmarts("[C](=O)[C,c]")
-            alcohol_pattern = Chem.MolFromSmarts("[C;H1,H2]([OH])")
+        if node["type"] == "reaction":
+            print(f"Examining reaction at depth {depth}")
 
-            for reactant in reactants:
-                r_mol = Chem.MolFromSmiles(reactant)
-                if r_mol:
-                    if r_mol.HasSubstructMatch(aldehyde_pattern) or r_mol.HasSubstructMatch(
-                        ketone_pattern
-                    ):
-                        p_mol = Chem.MolFromSmiles(product)
-                        if p_mol and p_mol.HasSubstructMatch(alcohol_pattern):
-                            reduction_count += 1
-                            print(f"Detected carbonyl reduction: {reactant} -> {product}")
+            # Count non-commercial reactants that lead to further reactions
+            complex_reactants = []
 
-            # Check for alcohol oxidation (alcohol to carboxylic acid or aldehyde)
-            alcohol_pattern = Chem.MolFromSmarts("[C;H1,H2]([OH])")
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
-            aldehyde_pattern = Chem.MolFromSmarts("[C;H1](=O)")
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    # Check if this non-commercial reactant leads to further reactions
+                    has_reaction_children = False
+                    for grandchild in child.get("children", []):
+                        if grandchild["type"] == "reaction":
+                            has_reaction_children = True
+                            break
 
-            for reactant in reactants:
-                r_mol = Chem.MolFromSmiles(reactant)
-                if r_mol and r_mol.HasSubstructMatch(alcohol_pattern):
-                    p_mol = Chem.MolFromSmiles(product)
-                    if p_mol and (
-                        p_mol.HasSubstructMatch(carboxylic_acid_pattern)
-                        or p_mol.HasSubstructMatch(aldehyde_pattern)
-                    ):
-                        oxidation_count += 1
-                        print(f"Detected alcohol oxidation: {reactant} -> {product}")
+                    if has_reaction_children:
+                        complex_reactants.append(child["smiles"])
+
+            # If more than one complex reactant leads to further reactions, it's not linear
+            if len(complex_reactants) > 1:
+                is_linear = False
+                print(
+                    f"Non-linear reaction found at depth {depth} with {len(complex_reactants)} complex reactants"
+                )
+                for i, smiles in enumerate(complex_reactants):
+                    print(f"  Complex reactant {i+1}: {smiles[:30]}...")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Return True if both oxidation and reduction are present
-    return oxidation_count > 0 and reduction_count > 0
+    if is_linear:
+        print("The synthesis route follows a linear strategy")
+    else:
+        print("The synthesis route does not follow a linear strategy")
+
+    return is_linear

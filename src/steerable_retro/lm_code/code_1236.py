@@ -2,69 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage fragment coupling via C-N bond formation.
+    Detects if the synthesis involves fragment coupling via amide bond formation.
     """
-    late_stage_coupling = False
+    amide_formation_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_coupling
+    def dfs_traverse(node):
+        nonlocal amide_formation_found
 
-        if (
-            node["type"] == "reaction" and "children" in node and depth <= 1
-        ):  # Only check at depth 0 or 1 (late stage)
-            # Get reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check if there are multiple reactants (fragment coupling)
-            if len(reactants_smiles) >= 2:
-                # Convert to RDKit molecules
-                reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            # Check for amide formation pattern
+            if len(reactants) >= 2:  # At least two reactants for fragment coupling
+                # Look for acid chloride and amine patterns in reactants
+                acid_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                amide_pattern = Chem.MolFromSmarts("C(=O)N")
 
-                if all(reactant_mols) and product_mol:
-                    # Check for C-N bond formation
-                    c_n_pattern = Chem.MolFromSmarts("[#6]-[#7]")
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
+                product_mol = Chem.MolFromSmiles(product)
 
-                    # Count C-N bonds in reactants and product
-                    reactant_c_n_count = sum(
-                        len(mol.GetSubstructMatches(c_n_pattern)) for mol in reactant_mols
+                if product_mol and product_mol.HasSubstructMatch(amide_pattern):
+                    has_acid_chloride = any(
+                        mol and mol.HasSubstructMatch(acid_chloride_pattern)
+                        for mol in reactant_mols
                     )
-                    product_c_n_count = len(product_mol.GetSubstructMatches(c_n_pattern))
+                    has_amine = any(
+                        mol and mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols
+                    )
 
-                    # Check if product has more C-N bonds than reactants combined
-                    if product_c_n_count > reactant_c_n_count:
-                        # Check complexity of reactants (at least 10 atoms each)
-                        if all(mol.GetNumAtoms() >= 10 for mol in reactant_mols):
-                            print(f"Late-stage fragment coupling via C-N bond detected: {rsmi}")
-                            late_stage_coupling = True
+                    if has_acid_chloride and has_amine:
+                        amide_formation_found = True
+                        print(
+                            f"Found amide bond formation at depth {node.get('metadata', {}).get('ID', '')}"
+                        )
 
-        # Traverse children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return late_stage_coupling
+    return amide_formation_found

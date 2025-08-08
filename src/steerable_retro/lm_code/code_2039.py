@@ -2,65 +2,109 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves coupling of a pyridine-containing
-    fragment with another fragment.
+    Detects if the synthesis is centered around a heterocyclic structure
+    that persists throughout the synthesis.
     """
-    result = False
+    # Common heterocycles to check
+    heterocycles = [
+        "pyrimidine",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "triazole",
+        "tetrazole",
+        "furan",
+        "thiophene",
+        "pyrrole",
+        "indole",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+    ]
 
-    def dfs_traverse(node):
-        nonlocal result
+    # Track depths and molecules where heterocycles are found
+    heterocycle_info = {}  # {heterocycle_type: {depth: smiles}}
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "mol" and "smiles" in node:
+            mol_smiles = node["smiles"]
+            try:
+                # Check for each heterocycle type
+                for heterocycle in heterocycles:
+                    if checker.check_ring(heterocycle, mol_smiles):
+                        if heterocycle not in heterocycle_info:
+                            heterocycle_info[heterocycle] = {}
+                        heterocycle_info[heterocycle][depth] = mol_smiles
+                        print(f"{heterocycle} detected at depth {depth} in molecule: {mol_smiles}")
+            except Exception as e:
+                print(f"Error checking heterocycle: {e}")
 
-            # Check if there are at least 2 reactants (fragment coupling)
-            if len(reactants) >= 2:
-                # Create RDKit molecules
-                try:
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-                    prod_mol = Chem.MolFromSmiles(product)
-
-                    # Check for pyridine in at least one reactant
-                    pyridine_pattern = Chem.MolFromSmarts("c1ccncc1")
-                    has_pyridine = any(
-                        m and m.HasSubstructMatch(pyridine_pattern) for m in reactant_mols if m
-                    )
-
-                    # Check if the product is larger than each individual reactant
-                    if has_pyridine and prod_mol:
-                        prod_atoms = prod_mol.GetNumAtoms()
-                        if all(m is None or m.GetNumAtoms() < prod_atoms for m in reactant_mols):
-                            result = True
-                            print("Pyridine fragment coupling detected")
-                except:
-                    pass
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return result
+
+    # Check if any heterocycle persists through multiple depths
+    for heterocycle, depths_dict in heterocycle_info.items():
+        if len(depths_dict) >= 2:
+            print(
+                f"Heterocycle-based synthesis strategy detected: {heterocycle} persists through {len(depths_dict)} depths"
+            )
+            return True
+
+    print("No heterocycle-based synthesis strategy detected")
+    return False

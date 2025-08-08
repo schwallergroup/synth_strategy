@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,97 +54,37 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route involves a late-stage ring disconnection
-    (early in retrosynthesis, which means low depth).
+    Detects if the synthesis includes an azide to amine conversion step.
     """
-    ring_disconnection_depth = None
+    has_conversion = False
 
-    # List of common ring types to check
-    ring_types = [
-        "benzene",
-        "pyridine",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "furan",
-        "thiophene",
-        "pyrrole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "cyclopropane",
-        "cyclobutane",
-        "cyclopentane",
-        "cyclohexane",
-        "piperidine",
-        "tetrahydrofuran",
-        "tetrahydropyran",
-    ]
+    def dfs_traverse(node):
+        nonlocal has_conversion
 
-    def dfs_traverse(node, current_depth=0):
-        nonlocal ring_disconnection_depth
-
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             try:
-                # Get depth from metadata or use current_depth
-                depth = int(node["metadata"].get("depth", current_depth))
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0]
+                products = rsmi.split(">")[-1]
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+                # Check for specific azide reduction reactions from the provided list
+                if checker.check_reaction("Azide to amine reduction (Staudinger)", rsmi):
+                    print(f"Found Staudinger reduction: {rsmi}")
+                    has_conversion = True
+                    return
 
-                # Check for specific rings in product
-                product_rings = {}
-                for ring_type in ring_types:
-                    if checker.check_ring(ring_type, product_smiles):
-                        product_rings[ring_type] = True
-                        print(f"Found {ring_type} in product")
-
-                # Check for rings in reactants
-                reactant_rings = {}
-                for reactant in reactants_smiles:
-                    for ring_type in ring_types:
-                        if checker.check_ring(ring_type, reactant):
-                            reactant_rings[ring_type] = reactant_rings.get(ring_type, 0) + 1
-                            print(f"Found {ring_type} in reactant: {reactant}")
-
-                # Check if any ring in product is not in reactants (ring disconnection)
-                for ring_type in product_rings:
-                    if ring_type not in reactant_rings:
-                        print(f"Ring disconnection detected: {ring_type} at depth {depth}")
-                        if ring_disconnection_depth is None or depth < ring_disconnection_depth:
-                            ring_disconnection_depth = depth
-
-                # Also check total ring count as a fallback
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                reactants_ring_count = 0
-                for r in reactants_smiles:
-                    mol = Chem.MolFromSmiles(r)
-                    if mol:
-                        reactants_ring_count += mol.GetRingInfo().NumRings()
-
-                if product_mol:
-                    product_ring_count = product_mol.GetRingInfo().NumRings()
-                    if product_ring_count > reactants_ring_count:
-                        print(
-                            f"Ring count disconnection at depth {depth}: Product has {product_ring_count} rings, reactants have {reactants_ring_count} rings"
-                        )
-                        if ring_disconnection_depth is None or depth < ring_disconnection_depth:
-                            ring_disconnection_depth = depth
-
+                # Check for general azide reduction
+                if checker.check_fg("Azide", reactants) and not checker.check_fg("Azide", products):
+                    if checker.check_fg("Primary amine", products):
+                        print(f"Found azide to amine conversion: {rsmi}")
+                        has_conversion = True
+                        return
             except Exception as e:
-                print(f"Error in ring disconnection detection: {e}")
+                print(f"Error processing reaction: {e}")
 
-        # Process children with incremented depth
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Consider it late-stage if it happens at depth 0, 1, or 2
-    result = ring_disconnection_depth is not None and ring_disconnection_depth <= 2
-    print(f"Late-stage ring disconnection detected: {result} (depth: {ring_disconnection_depth})")
-
-    return result
+    return has_conversion

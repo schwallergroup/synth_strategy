@@ -2,76 +2,86 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects Suzuki coupling between heteroaromatic systems.
-    Looks for C-C bond formation between a boronate and an aryl halide,
-    where at least one is a heterocycle.
+    This function detects the use of sulfonamide as a protection strategy for amines.
     """
-    suzuki_detected = False
+    protection_found = False
+    deprotection_found = False
 
     def dfs_traverse(node):
-        nonlocal suzuki_detected
+        nonlocal protection_found, deprotection_found
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for boronate in reactants
-                boronate_pattern = Chem.MolFromSmarts("[c][B][O][C]")
-                # Check for aryl halide in reactants
-                aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
-                # Check for heterocycles
-                thiophene_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#16][#6]1")
-                pyridine_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6][#7][#6]1")
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
 
-                has_boronate = False
-                has_aryl_halide = False
-                has_heterocycle = False
+            # Check for sulfonamide formation (protection)
+            sulfonamide_pattern = Chem.MolFromSmarts("[NH]-[S](=O)(=O)[#6]")
+            amine_pattern = Chem.MolFromSmarts("[NH2]")
+            sulfonyl_pattern = Chem.MolFromSmarts("[#6]-[S](=O)(=O)[Cl]")
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(boronate_pattern):
-                            has_boronate = True
-                        if mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
-                        if mol.HasSubstructMatch(thiophene_pattern) or mol.HasSubstructMatch(
-                            pyridine_pattern
-                        ):
-                            has_heterocycle = True
+            if (
+                product_mol is not None
+                and product_mol.HasSubstructMatch(sulfonamide_pattern)
+                and any(r is not None and r.HasSubstructMatch(amine_pattern) for r in reactant_mols)
+                and any(
+                    r is not None and r.HasSubstructMatch(sulfonyl_pattern) for r in reactant_mols
+                )
+            ):
+                protection_found = True
+                print("Sulfonamide protection detected")
 
-                # Check if product has a new C-C bond between aromatics
-                prod_mol = Chem.MolFromSmiles(product)
-                if prod_mol and has_boronate and has_aryl_halide and has_heterocycle:
-                    # This is a simplified check - in a real implementation,
-                    # we would need to track the specific atoms involved in the new bond
-                    suzuki_detected = True
-                    print(f"Detected Suzuki coupling between heteroaromatics: {rsmi}")
+            # Check for sulfonamide cleavage (deprotection)
+            if (
+                any(
+                    r is not None and r.HasSubstructMatch(sulfonamide_pattern)
+                    for r in reactant_mols
+                )
+                and product_mol is not None
+                and product_mol.HasSubstructMatch(amine_pattern)
+            ):
+                deprotection_found = True
+                print("Sulfonamide deprotection detected")
 
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return suzuki_detected
+
+    # Protection strategy involves both protection and deprotection
+    strategy_detected = protection_found or deprotection_found
+
+    if strategy_detected:
+        print("Protection/deprotection strategy with sulfonamide detected")
+
+    return strategy_detected

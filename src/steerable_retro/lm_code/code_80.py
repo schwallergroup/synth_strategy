@@ -2,66 +2,93 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves benzimidazole ring formation.
+    Detects a linear synthesis strategy where each step involves modification of one functional group,
+    with a specific sequence of functional group interconversions (e.g., nitro → amine → amide).
     """
-    benzimidazole_pattern = Chem.MolFromSmarts("c1nc2ccccc2[nH]1")
-    benzimidazole_formed = False
+    # Initialize tracking variables
+    reactions_sequence = []
 
-    def dfs_traverse(node):
-        nonlocal benzimidazole_formed
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check if reactants don't have benzimidazole but product does
-                reactants_have_benzimidazole = False
-                for r_smiles in reactants_smiles:
-                    try:
-                        r_mol = Chem.MolFromSmiles(r_smiles)
-                        if r_mol and r_mol.HasSubstructMatch(benzimidazole_pattern):
-                            reactants_have_benzimidazole = True
-                            break
-                    except:
-                        continue
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                try:
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-                    product_has_benzimidazole = product_mol and product_mol.HasSubstructMatch(
-                        benzimidazole_pattern
-                    )
+            if product and all(r for r in reactants):
+                # Identify reaction type
+                nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
+                amine_pattern = Chem.MolFromSmarts("[#7H2]")
+                amide_pattern = Chem.MolFromSmarts("[#7H]-[#6](=[#8])")
+                chloro_pattern = Chem.MolFromSmarts("[Cl]-[#6]")
 
-                    if not reactants_have_benzimidazole and product_has_benzimidazole:
-                        print("Benzimidazole formation detected")
-                        benzimidazole_formed = True
-                except:
-                    pass
+                # Check for nitro reduction
+                if any(
+                    r.HasSubstructMatch(nitro_pattern) for r in reactants if r
+                ) and product.HasSubstructMatch(amine_pattern):
+                    reactions_sequence.append(("nitro_reduction", depth))
+                    print(f"Found nitro reduction at depth {depth}")
 
+                # Check for amide formation
+                if any(
+                    r.HasSubstructMatch(amine_pattern) for r in reactants if r
+                ) and product.HasSubstructMatch(amide_pattern):
+                    reactions_sequence.append(("amide_formation", depth))
+                    print(f"Found amide formation at depth {depth}")
+
+                # Check for chloride displacement
+                if any(
+                    r.HasSubstructMatch(chloro_pattern) for r in reactants if r
+                ) and not product.HasSubstructMatch(chloro_pattern):
+                    reactions_sequence.append(("chloride_displacement", depth))
+                    print(f"Found chloride displacement at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return benzimidazole_formed
+
+    # Sort reactions by depth (higher depth = earlier in synthesis)
+    reactions_sequence.sort(key=lambda x: x[1], reverse=True)
+    reaction_types = [r[0] for r in reactions_sequence]
+
+    # Check if we have the specific sequence: chloride displacement → nitro reduction → amide formation
+    expected_sequence = ["chloride_displacement", "nitro_reduction", "amide_formation"]
+    sequence_match = len(reaction_types) >= 3 and all(
+        exp == act for exp, act in zip(expected_sequence, reaction_types[:3])
+    )
+
+    print(f"Reaction sequence: {reaction_types}")
+    print(f"Linear functional group interconversion strategy detected: {sequence_match}")
+    return sequence_match

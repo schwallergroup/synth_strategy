@@ -2,188 +2,131 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route uses alcohol activation (e.g., mesylation, tosylation, triflation, halogenation)
-    followed by nucleophilic substitution.
+    This function detects a linear synthesis strategy using malononitrile as a key building block,
+    with a sequence of Knoevenagel condensation, reduction, and alkylation.
     """
-    activation_reactions = []
-    substitution_reactions = []
+    # Initialize flags for each step in the strategy
+    has_knoevenagel = False
+    has_reduction_after_knoevenagel = False
+    has_alkylation_after_reduction = False
+
+    # Track the depth of reactions for sequence analysis
+    reaction_sequence = []
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        nonlocal has_knoevenagel, has_reduction_after_knoevenagel, has_alkylation_after_reduction
+
+        if node["type"] == "reaction":
+            # Store reaction information with depth
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_str = rsmi.split(">")[0]
+            product_str = rsmi.split(">")[-1]
 
-            print(f"Examining reaction at depth {depth}: {rsmi}")
-            print(f"Reactants: {reactants}")
-            print(f"Product: {product}")
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
+            product = Chem.MolFromSmiles(product_str) if product_str else None
 
-            # Check for alcohol activation reactions
-            has_alcohol = any(
-                checker.check_fg("Primary alcohol", r)
-                or checker.check_fg("Secondary alcohol", r)
-                or checker.check_fg("Tertiary alcohol", r)
-                or checker.check_fg("Aromatic alcohol", r)
-                for r in reactants
-            )
+            if product and reactants:
+                reaction_sequence.append((depth, reactants, product, rsmi))
 
-            if has_alcohol:
-                print(f"Found alcohol in reactants at depth {depth}")
-
-            has_activated = (
-                checker.check_fg("Mesylate", product)
-                or checker.check_fg("Tosylate", product)
-                or checker.check_fg("Triflate", product)
-                or checker.check_fg("Primary halide", product)
-                or checker.check_fg("Secondary halide", product)
-            )
-
-            if has_activated:
-                print(f"Found activated group in product at depth {depth}")
-
-            # Check for specific activation reactions if available
-            is_activation_rxn = (
-                checker.check_reaction("Formation of Sulfonic Esters", rsmi)
-                or checker.check_reaction(
-                    "Formation of Sulfonic Esters on TMS protected alcohol", rsmi
-                )
-                or checker.check_reaction("Alcohol to triflate conversion", rsmi)
-                or checker.check_reaction("Alcohol to chloride_sulfonyl chloride", rsmi)
-                or checker.check_reaction("Alcohol to chloride_SOCl2", rsmi)
-                or checker.check_reaction("Alcohol to chloride_PCl5_ortho", rsmi)
-                or checker.check_reaction("Alcohol to chloride_POCl3", rsmi)
-                or checker.check_reaction("Alcohol to chloride_HCl", rsmi)
-                or checker.check_reaction("Appel reaction", rsmi)
-            )
-
-            if is_activation_rxn:
-                print(f"Found activation reaction at depth {depth}")
-
-            # Detect activation if either pattern is found
-            if (has_alcohol and has_activated) or is_activation_rxn:
-                activation_reactions.append((depth, rsmi))
-                print(f"Found alcohol activation at depth {depth}: {rsmi}")
-
-            # Check for nucleophilic substitution with activated leaving groups
-            has_leaving_group = any(
-                checker.check_fg("Mesylate", r)
-                or checker.check_fg("Tosylate", r)
-                or checker.check_fg("Triflate", r)
-                or checker.check_fg("Primary halide", r)
-                or checker.check_fg("Secondary halide", r)
-                for r in reactants
-            )
-
-            if has_leaving_group:
-                print(f"Found leaving group in reactants at depth {depth}")
-
-            # Check if the leaving group is gone in the product
-            leaving_group_gone = not (
-                checker.check_fg("Mesylate", product)
-                or checker.check_fg("Tosylate", product)
-                or checker.check_fg("Triflate", product)
-                or checker.check_fg("Primary halide", product)
-                or checker.check_fg("Secondary halide", product)
-            )
-
-            if leaving_group_gone:
-                print(f"Leaving group is gone in product at depth {depth}")
-
-            # Check for nucleophilic substitution reactions
-            is_subst_rxn = (
-                checker.check_reaction("Williamson Ether Synthesis", rsmi)
-                or checker.check_reaction("S-alkylation of thiols", rsmi)
-                or checker.check_reaction("N-alkylation of primary amines with alkyl halides", rsmi)
-                or checker.check_reaction(
-                    "N-alkylation of secondary amines with alkyl halides", rsmi
-                )
-                or checker.check_reaction("Mitsunobu aryl ether", rsmi)
-                or checker.check_reaction("Mitsunobu esterification", rsmi)
-                or checker.check_reaction("Alcohol to azide", rsmi)
-            )
-
-            if is_subst_rxn:
-                print(f"Found substitution reaction at depth {depth}")
-
-            # Detect substitution if either pattern is found
-            if (has_leaving_group and leaving_group_gone) or is_subst_rxn:
-                substitution_reactions.append((depth, rsmi))
-                print(f"Found nucleophilic substitution at depth {depth}: {rsmi}")
-
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Traverse the route
     dfs_traverse(route)
 
-    print(f"Activation reactions found: {len(activation_reactions)}")
-    print(f"Substitution reactions found: {len(substitution_reactions)}")
+    # Sort reactions by depth (higher depth = earlier in synthesis)
+    reaction_sequence.sort(key=lambda x: x[0], reverse=True)
 
-    # Check if we found both activation and substitution reactions
-    if activation_reactions and substitution_reactions:
-        # Sort by depth
-        activation_reactions.sort(key=lambda x: x[0])
-        substitution_reactions.sort(key=lambda x: x[0])
+    # Check for the specific sequence pattern
+    for i, (depth, reactants, product, rsmi) in enumerate(reaction_sequence):
+        # Check for Knoevenagel condensation (aldehyde + malononitrile → α,β-unsaturated nitrile)
+        if not has_knoevenagel:
+            aldehyde_pattern = Chem.MolFromSmarts("[#6][CH]=O")
+            malononitrile_pattern = Chem.MolFromSmarts("[#6]([C]#[N])([C]#[N])")
+            unsaturated_nitrile_pattern = Chem.MolFromSmarts("[#6]([C]#[N])([C]#[N])=[#6]")
 
-        print(f"Sorted activation reactions: {activation_reactions}")
-        print(f"Sorted substitution reactions: {substitution_reactions}")
+            has_aldehyde = any(mol.HasSubstructMatch(aldehyde_pattern) for mol in reactants if mol)
+            has_malononitrile = any(
+                mol.HasSubstructMatch(malononitrile_pattern) for mol in reactants if mol
+            )
+            product_has_unsaturated_nitrile = product and product.HasSubstructMatch(
+                unsaturated_nitrile_pattern
+            )
 
-        # In forward synthesis, activation should happen before substitution
-        # In retrosynthesis (our traversal), activation depth should be greater than substitution depth
-        for act_depth, act_rsmi in activation_reactions:
-            for subst_depth, subst_rsmi in substitution_reactions:
-                if act_depth > subst_depth:  # Changed from < to >
-                    print(f"Alcohol activation-substitution strategy detected:")
-                    print(f"  Activation at depth {act_depth}: {act_rsmi}")
-                    print(f"  Substitution at depth {subst_depth}: {subst_rsmi}")
-                    return True
+            if has_aldehyde and has_malononitrile and product_has_unsaturated_nitrile:
+                has_knoevenagel = True
+                print(f"Found Knoevenagel condensation at depth {depth}")
+                continue
 
-    return False
+        # Check for reduction of α,β-unsaturated nitrile after Knoevenagel
+        if has_knoevenagel and not has_reduction_after_knoevenagel and i > 0:
+            unsaturated_nitrile_pattern = Chem.MolFromSmarts("[#6]([C]#[N])([C]#[N])=[#6]")
+            saturated_nitrile_pattern = Chem.MolFromSmarts("[#6]([C]#[N])([C]#[N])[#6]")
+
+            reactant_has_unsaturated = any(
+                mol and mol.HasSubstructMatch(unsaturated_nitrile_pattern) for mol in reactants
+            )
+            product_has_saturated = product and product.HasSubstructMatch(saturated_nitrile_pattern)
+
+            if reactant_has_unsaturated and product_has_saturated:
+                has_reduction_after_knoevenagel = True
+                print(f"Found reduction of α,β-unsaturated nitrile at depth {depth}")
+                continue
+
+        # Check for alkylation at geminal dinitrile carbon after reduction
+        if has_reduction_after_knoevenagel and not has_alkylation_after_reduction and i > 1:
+            geminal_dinitrile_pattern = Chem.MolFromSmarts("[#6]([C]#[N])([C]#[N])[#6]")
+            alkylated_dinitrile_pattern = Chem.MolFromSmarts("[#6]([C]#[N])([C]#[N])([#6])[#6]")
+
+            reactant_has_geminal = any(
+                mol and mol.HasSubstructMatch(geminal_dinitrile_pattern) for mol in reactants
+            )
+            product_has_alkylated = product and product.HasSubstructMatch(
+                alkylated_dinitrile_pattern
+            )
+
+            if reactant_has_geminal and product_has_alkylated:
+                has_alkylation_after_reduction = True
+                print(f"Found alkylation at geminal dinitrile carbon at depth {depth}")
+                continue
+
+    # Check if the complete strategy was found
+    strategy_detected = (
+        has_knoevenagel and has_reduction_after_knoevenagel and has_alkylation_after_reduction
+    )
+
+    if strategy_detected:
+        print("Detected complete malononitrile-based linear synthesis strategy")
+    else:
+        print("Did not detect complete malononitrile-based linear synthesis strategy")
+        print(
+            f"Knoevenagel: {has_knoevenagel}, Reduction: {has_reduction_after_knoevenagel}, Alkylation: {has_alkylation_after_reduction}"
+        )
+
+    return strategy_detected

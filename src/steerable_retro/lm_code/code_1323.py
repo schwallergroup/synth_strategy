@@ -2,127 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves formation of a urea moiety
-    in the final or penultimate step.
+    This function detects the use of sulfonylmethyl (CH2-SO2) as a linking group between aromatic fragments.
     """
-    urea_formation_detected = False
+    found_sulfonylmethyl_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal urea_formation_detected
+        nonlocal found_sulfonylmethyl_formation
 
-        if node["type"] == "reaction" and depth <= 1:  # Final or penultimate step
-            print(f"Checking reaction step at depth {depth}")
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                print(f"Reaction SMILES: {rsmi}")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+            # Check for sulfonylmethyl linker in product
+            sulfonylmethyl_pattern = "[c][CH2][S](=O)(=O)[c]"
 
-                try:
-                    # Check if any reactant contains urea or thiourea
-                    reactants_list = reactants_smiles.split(".")
-                    reactants_have_urea = any(
-                        checker.check_fg("Urea", reactant) for reactant in reactants_list
-                    )
-                    reactants_have_thiourea = any(
-                        checker.check_fg("Thiourea", reactant) for reactant in reactants_list
-                    )
+            product = Chem.MolFromSmiles(product_smiles)
+            if product and product.HasSubstructMatch(Chem.MolFromSmarts(sulfonylmethyl_pattern)):
+                # Check if this pattern is new (not in all reactants)
+                all_have_pattern = True
+                for r_smiles in reactants_smiles:
+                    r = Chem.MolFromSmiles(r_smiles)
+                    if r and not r.HasSubstructMatch(Chem.MolFromSmarts(sulfonylmethyl_pattern)):
+                        all_have_pattern = False
+                        break
 
-                    # Check if product contains urea or thiourea
-                    product_has_urea = checker.check_fg("Urea", product_smiles)
-                    product_has_thiourea = checker.check_fg("Thiourea", product_smiles)
+                if not all_have_pattern:
+                    found_sulfonylmethyl_formation = True
+                    print(f"Sulfonylmethyl linker formation detected at depth {depth}")
 
-                    print(f"Depth {depth} - Reactants have urea: {reactants_have_urea}")
-                    print(f"Depth {depth} - Reactants have thiourea: {reactants_have_thiourea}")
-                    print(f"Depth {depth} - Product has urea: {product_has_urea}")
-                    print(f"Depth {depth} - Product has thiourea: {product_has_thiourea}")
-
-                    # Check if this is a urea/thiourea formation reaction
-                    is_urea_synthesis = (
-                        checker.check_reaction(
-                            "Urea synthesis via isocyanate and primary amine", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Urea synthesis via isocyanate and secondary amine", rsmi
-                        )
-                        or checker.check_reaction("Urea synthesis via isocyanate and diazo", rsmi)
-                        or checker.check_reaction(
-                            "Urea synthesis via isocyanate and sulfonamide", rsmi
-                        )
-                        or checker.check_reaction("urea", rsmi)
-                        or checker.check_reaction("thiourea", rsmi)
-                    )
-
-                    print(
-                        f"Depth {depth} - Is urea/thiourea synthesis reaction: {is_urea_synthesis}"
-                    )
-
-                    # Urea/thiourea formation is detected if:
-                    # 1. Product has urea/thiourea but reactants don't, OR
-                    # 2. The reaction is specifically a urea/thiourea synthesis
-                    if (
-                        (product_has_urea and not reactants_have_urea)
-                        or (product_has_thiourea and not reactants_have_thiourea)
-                        or is_urea_synthesis
-                    ):
-                        print(f"Urea/thiourea formation detected at depth {depth}")
-                        urea_formation_detected = True
-                except Exception as e:
-                    print(f"Error processing SMILES in urea_formation_strategy: {str(e)}")
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: urea_formation_detected = {urea_formation_detected}")
-    return urea_formation_detected
+
+    return found_sulfonylmethyl_formation

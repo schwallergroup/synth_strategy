@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,135 +54,111 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving the use of persistent directing groups
-    (like methoxy) that remain throughout the synthesis.
+    This function detects a synthetic strategy involving heterocyclic systems,
+    particularly focusing on morpholine fused to pyridine.
     """
-    # Track molecules with directing groups at each depth
-    molecules_by_depth = {}
-    max_depth = 0
+    # List of nitrogen heterocycles to check
+    n_heterocycles = [
+        "pyridine",
+        "pyrrole",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+    ]
 
-    def dfs_traverse(node, depth=0, path_id=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, depth)
+    # List of oxygen heterocycles to check
+    o_heterocycles = [
+        "furan",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "morpholine",
+    ]
+
+    has_heterocycle = False
+    has_morpholine_pyridine = False
+
+    def dfs_traverse(node, depth=0):
+        nonlocal has_heterocycle, has_morpholine_pyridine
 
         if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            if mol_smiles:
-                # Check specifically for methoxy groups (common directing groups)
-                has_methoxy = "OC" in mol_smiles and checker.check_fg("Ether", mol_smiles)
+            smiles = node.get("smiles", "")
+            if not smiles:
+                return
 
-                # Get more specific directing groups
-                if has_methoxy:
-                    # Store molecule info with the directing group
-                    if depth not in molecules_by_depth:
-                        molecules_by_depth[depth] = []
+            try:
+                # Check for morpholine and pyridine in the same molecule
+                has_morpholine = checker.check_ring("morpholine", smiles)
+                has_pyridine = checker.check_ring("pyridine", smiles)
 
-                    # Create RDKit molecule to analyze the methoxy positions
-                    try:
-                        mol = Chem.MolFromSmiles(mol_smiles)
-                        if mol:
-                            # Get atom indices of methoxy groups
-                            methoxy_indices = []
-                            for atom in mol.GetAtoms():
-                                if atom.GetSymbol() == "O" and atom.GetDegree() == 2:
-                                    neighbors = [n.GetAtomicNum() for n in atom.GetNeighbors()]
-                                    if 6 in neighbors:  # Carbon
-                                        for n in atom.GetNeighbors():
-                                            if (
-                                                n.GetAtomicNum() == 6 and n.GetDegree() == 1
-                                            ):  # Methyl carbon
-                                                methoxy_indices.append(atom.GetIdx())
+                if has_morpholine and has_pyridine:
+                    print(f"Detected molecule with both morpholine and pyridine rings: {smiles}")
+                    has_morpholine_pyridine = True
+                    has_heterocycle = True
 
-                            molecules_by_depth[depth].append(
-                                {
-                                    "smiles": mol_smiles,
-                                    "path_id": path_id,
-                                    "methoxy_indices": methoxy_indices,
-                                }
-                            )
-                            print(
-                                f"Detected methoxy directing group at depth {depth}: {mol_smiles}"
-                            )
-                    except Exception as e:
-                        print(f"Error analyzing molecule: {e}")
+                # Check for any nitrogen heterocycle
+                for ring in n_heterocycles:
+                    if checker.check_ring(ring, smiles):
+                        print(f"Detected nitrogen heterocycle ({ring}): {smiles}")
+                        has_heterocycle = True
+                        break
 
-        # Traverse children with unique path IDs for each branch
-        for i, child in enumerate(node.get("children", [])):
-            dfs_traverse(child, depth + 1, path_id * 10 + i)
+                # Check for any oxygen heterocycle if we haven't found a nitrogen one
+                if not has_heterocycle:
+                    for ring in o_heterocycles:
+                        if checker.check_ring(ring, smiles):
+                            print(f"Detected oxygen heterocycle ({ring}): {smiles}")
+                            has_heterocycle = True
+                            break
+            except Exception as e:
+                print(f"Error checking molecule {smiles}: {str(e)}")
 
-    # Start traversal
+        elif node["type"] == "reaction":
+            try:
+                # Check if this reaction forms a heterocycle
+                if "metadata" in node and "rsmi" in node["metadata"]:
+                    rsmi = node["metadata"]["rsmi"]
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
+
+                    # Check if product contains heterocycles not present in reactants
+                    product_has_heterocycle = False
+                    for ring in n_heterocycles + o_heterocycles:
+                        if checker.check_ring(ring, product):
+                            product_has_heterocycle = True
+
+                            # Check if any reactant has this heterocycle
+                            reactant_has_heterocycle = False
+                            for reactant in reactants:
+                                if checker.check_ring(ring, reactant):
+                                    reactant_has_heterocycle = True
+                                    break
+
+                            if not reactant_has_heterocycle:
+                                print(f"Detected heterocycle formation reaction: {rsmi}")
+                                print(f"Formed heterocycle: {ring}")
+                                has_heterocycle = True
+                                break
+            except Exception as e:
+                print(f"Error checking reaction: {str(e)}")
+
+        # Continue traversal
+        for child in node.get("children", []):
+            dfs_traverse(child, depth + 1)
+
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if we have any directing groups
-    if not molecules_by_depth:
-        print("No directing groups detected")
-        return False
-
-    # Check for persistence along synthesis paths
-    persistent_paths = set()
-
-    # Extract all unique path IDs at the earliest stage (highest depth)
-    earliest_depth = max(molecules_by_depth.keys()) if molecules_by_depth else 0
-    earliest_paths = set()
-    for mol_info in molecules_by_depth.get(earliest_depth, []):
-        earliest_paths.add(mol_info["path_id"])
-
-    # For each path starting from the earliest stage, check if directing groups persist
-    for path_id in earliest_paths:
-        current_path_id = path_id
-        consecutive_depths = []
-        methoxy_positions = []
-
-        # Trace the path from earliest to latest stage
-        for depth in sorted(molecules_by_depth.keys(), reverse=True):
-            for mol_info in molecules_by_depth[depth]:
-                # Check if this molecule is in our current path
-                if (
-                    mol_info["path_id"] == current_path_id
-                    or current_path_id % (10 * (10 ** (max_depth - depth))) == mol_info["path_id"]
-                ):
-                    consecutive_depths.append(depth)
-                    methoxy_positions.append(mol_info["methoxy_indices"])
-                    # Update path_id for next iteration (going up the tree)
-                    current_path_id = mol_info["path_id"] // 10
-                    break
-
-        # Calculate coverage and check if methoxy persists
-        if consecutive_depths:
-            # Check if we have directing groups in at least 75% of the depths
-            depth_coverage = len(consecutive_depths) / (max_depth + 1)
-
-            # Check if methoxy groups persist (present in consecutive molecules)
-            methoxy_persists = len(consecutive_depths) >= 3  # At least 3 consecutive depths
-
-            if depth_coverage >= 0.5 and methoxy_persists:
-                persistent_paths.add(path_id)
-                print(
-                    f"Path {path_id} has persistent methoxy directing group with coverage {depth_coverage:.2f}"
-                )
-
-    # Check if we have a continuous sequence of depths with methoxy groups
-    depth_sequence = sorted(molecules_by_depth.keys())
-    longest_sequence = 0
-    current_sequence = 1
-
-    for i in range(1, len(depth_sequence)):
-        if depth_sequence[i] == depth_sequence[i - 1] + 2:  # Account for reaction nodes
-            current_sequence += 1
-        else:
-            longest_sequence = max(longest_sequence, current_sequence)
-            current_sequence = 1
-
-    longest_sequence = max(longest_sequence, current_sequence)
-
-    # Strategy is present if we have a long enough sequence of depths with methoxy groups
-    # or if at least one path has persistent directing group
-    strategy_present = (longest_sequence >= 3) or (len(persistent_paths) > 0)
-
-    print(f"Depths with directing groups: {sorted(molecules_by_depth.keys())}")
-    print(f"Max depth: {max_depth}")
-    print(f"Longest sequence of consecutive depths: {longest_sequence}")
-    print(f"Persistent paths: {persistent_paths}")
-    print(f"Strategy detected: {strategy_present}")
-
-    return strategy_present
+    return has_heterocycle or has_morpholine_pyridine

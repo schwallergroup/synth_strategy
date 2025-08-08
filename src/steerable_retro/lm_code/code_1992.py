@@ -2,61 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route employs a late-stage halogenation strategy,
-    specifically looking for halogenation (I, Br, Cl, F) in the final steps.
+    Detects if the synthesis route includes phenol alkylation with a dibromoalkane
     """
-    late_stage_halogenation_found = False
+    phenol_alkylation_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_halogenation_found
+    def dfs_traverse(node):
+        nonlocal phenol_alkylation_found
 
-        if node["type"] == "reaction" and depth <= 1:  # Check only final two steps
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if product contains halogen that wasn't in reactants
+            # Check if one reactant is a dibromoalkane
+            dibromo_pattern = Chem.MolFromSmarts("[Br][C][C][C][Br]")
+            phenol_pattern = Chem.MolFromSmarts("[c][OH]")
+            aryl_ether_pattern = Chem.MolFromSmarts("[c][O][C][C][C][Br]")
+
+            dibromo_found = False
+            phenol_found = False
+
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol:
+                    if reactant_mol.HasSubstructMatch(dibromo_pattern):
+                        dibromo_found = True
+                    if reactant_mol.HasSubstructMatch(phenol_pattern):
+                        phenol_found = True
+
             product_mol = Chem.MolFromSmiles(product)
-            if product_mol:
-                # Check for halogens in product
-                halogen_pattern = Chem.MolFromSmarts("[#6]-[#9,#17,#35,#53]")
-                if product_mol.HasSubstructMatch(halogen_pattern):
-                    # Check if this halogen was newly introduced
-                    all_reactants_have_halogen = True
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and not reactant_mol.HasSubstructMatch(halogen_pattern):
-                            all_reactants_have_halogen = False
-                            break
 
-                    if not all_reactants_have_halogen:
-                        print(f"Late-stage halogenation detected at depth {depth}")
-                        late_stage_halogenation_found = True
+            if (
+                dibromo_found
+                and phenol_found
+                and product_mol
+                and product_mol.HasSubstructMatch(aryl_ether_pattern)
+            ):
+                print("Found phenol alkylation with dibromoalkane")
+                phenol_alkylation_found = True
 
-        # Continue traversal
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return late_stage_halogenation_found
+    return phenol_alkylation_found

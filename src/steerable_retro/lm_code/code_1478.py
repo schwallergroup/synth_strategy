@@ -2,42 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects the combined protection-activation-etherification strategy with late-stage sulfonamide formation.
+    This function detects the combined strategy of multiple amide formations,
+    thiazole ring formation, nitro reduction, and nitrile preservation in a linear synthesis.
     """
-    # Check for all components of the strategy
-    has_phthalimide = phthalimide_protection_strategy(route)
-    has_tosylation = tosylation_activation_strategy(route)
-    has_etherification = etherification_via_tosylate_strategy(route)
-    has_late_sulfonamide = late_stage_sulfonamide_formation(route)
+    # Check all individual strategies
+    has_multiple_amides = multiple_amide_formations_strategy(route)
+    has_thiazole_formation = thiazole_ring_formation_strategy(route)
+    has_nitro_reduction = nitro_reduction_strategy(route)
+    preserves_nitrile = nitrile_preservation_strategy(route)
+    has_trifluoromethyl = trifluoromethyl_containing_strategy(route)
+    is_linear = linear_synthesis_strategy(route)
 
-    # The full strategy requires at least 3 of the 4 components
-    strategy_score = sum(
-        [has_phthalimide, has_tosylation, has_etherification, has_late_sulfonamide]
-    )
-    full_strategy_detected = strategy_score >= 3
+    print(f"Multiple amide formations: {has_multiple_amides}")
+    print(f"Thiazole ring formation: {has_thiazole_formation}")
+    print(f"Nitro reduction: {has_nitro_reduction}")
+    print(f"Nitrile preservation: {preserves_nitrile}")
+    print(f"Trifluoromethyl containing: {has_trifluoromethyl}")
+    print(f"Linear synthesis: {is_linear}")
 
-    print(
-        f"Protection-activation-etherification strategy detected: {full_strategy_detected} (score: {strategy_score}/4)"
+    # Combined strategy requires all individual strategies to be present
+    result = (
+        has_multiple_amides
+        and has_thiazole_formation
+        and has_nitro_reduction
+        and preserves_nitrile
+        and has_trifluoromethyl
+        and is_linear
     )
-    return full_strategy_detected
+
+    print(f"Combined strategy detected: {result}")
+    return result

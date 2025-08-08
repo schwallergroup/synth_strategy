@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,114 +54,250 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route involves a late-stage esterification of a carboxylic acid.
-    Late stage means at depth 0 or 1 (final or penultimate step).
+    This function detects if the synthesis follows a linear strategy
+    where each step has only one non-reagent reactant.
+
+    A linear synthesis strategy means that at each step, only one major building block
+    is added to the growing molecule, while other reactants are considered reagents.
     """
-    esterification_found = False
-    esterification_depth = None
+    is_linear = True
+
+    # Common reagent patterns
+    common_reagents = [
+        "H2O",
+        "H2",
+        "O2",
+        "N2",
+        "CO2",
+        "CO",
+        "HCl",
+        "H2SO4",
+        "HNO3",
+        "NaOH",
+        "KOH",
+        "NH3",
+        "CH3OH",
+        "CH3CH2OH",
+        "CH3COOH",
+        "NaCl",
+        "KCl",
+        "NaBH4",
+        "LiAlH4",
+        "Pd/C",
+        "SOCl2",
+        "PCl3",
+        "PCl5",
+        "PBr3",
+        "I2",
+        "Br2",
+        "Cl2",
+        "NaH",
+        "KH",
+        "NaNH2",
+        "LDA",
+        "BuLi",
+        "MeLi",
+        "Et3N",
+        "DIBAL",
+        "DCC",
+        "EDC",
+        "HOBt",
+        "DMAP",
+        "TsCl",
+        "MsCl",
+        "Ac2O",
+        "Boc2O",
+        "TFA",
+        "HBr",
+        "HI",
+        "H2O2",
+        "KMnO4",
+        "OsO4",
+        "mCPBA",
+        "NBS",
+        "NCS",
+        "NIS",
+        "TBAF",
+        "TMSCl",
+        "TBSCl",
+        "TBDPSCl",
+        "MeI",
+        "EtI",
+        "BnBr",
+        "AllylBr",
+        "MgBr2",
+        "ZnCl2",
+        "CuI",
+        "CuCl",
+        "CuBr",
+        "Pd(OAc)2",
+        "Pd(PPh3)4",
+        "Pd(dba)2",
+        "Pt/C",
+        "Raney Ni",
+        "NaBH3CN",
+        "NaCNBH3",
+        "B2H6",
+        "BH3",
+        "BBr3",
+        "BCl3",
+        "AlCl3",
+        "TiCl4",
+        "SnCl2",
+        "SnCl4",
+        "FeCl3",
+        "CrO3",
+        "SeO2",
+        "NaIO4",
+        "LiOH",
+        "K2CO3",
+        "Na2CO3",
+        "NaHCO3",
+        "KHCO3",
+        "MgSO4",
+        "Na2SO4",
+        "CaCl2",
+        "CaCO3",
+        "MgCl2",
+        "ZnBr2",
+        "DMF",
+        "DMSO",
+        "THF",
+        "DCM",
+        "CHCl3",
+        "CCl4",
+        "MeCN",
+        "Acetone",
+        "EtOAc",
+        "Hexane",
+        "Toluene",
+        "Benzene",
+        "Pyridine",
+        "Imidazole",
+        "DBU",
+        "DABCO",
+        "HMPA",
+        "HMDS",
+        "LiHMDS",
+        "NaHMDS",
+        "KHMDS",
+        "PPh3",
+        "P(OEt)3",
+        "DEAD",
+        "DIAD",
+        "AIBN",
+        "TEMPO",
+        "NaOCl",
+        "NaOBr",
+        "NaI",
+        "KI",
+        "CsF",
+        "CsCO3",
+        "Cs2CO3",
+        "AgNO3",
+        "Ag2O",
+        "AgOAc",
+        "Cu(OAc)2",
+        "CuSO4",
+        "FeSO4",
+        "Fe(acac)3",
+        "Zn(OAc)2",
+        "ZnO",
+        "ZnSO4",
+        "MnO2",
+        "Mn(OAc)2",
+        "NiCl2",
+        "Ni(acac)2",
+        "CoCl2",
+        "Co(OAc)2",
+        "RuCl3",
+        "Ru(bpy)3",
+        "IrCl3",
+        "PtCl2",
+        "PtO2",
+        "AuCl",
+        "AuCl3",
+    ]
+
+    def is_likely_reagent(smiles):
+        """Determine if a molecule is likely a reagent rather than a building block."""
+        # Check if it's in our common reagents list
+        if smiles in common_reagents:
+            return True
+
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if not mol:
+                return False
+
+            # Very small molecules are likely reagents
+            if mol.GetNumAtoms() <= 3:
+                return True
+
+            # Check for common reagent functional groups
+            if (
+                checker.check_fg("Triflate", smiles)
+                or checker.check_fg("Mesylate", smiles)
+                or checker.check_fg("Tosylate", smiles)
+                or checker.check_fg("Acyl halide", smiles)
+                or checker.check_fg("Magnesium halide", smiles)
+                or checker.check_fg("Zinc halide", smiles)
+            ):
+                return True
+
+            # Molecules with only C, H, O, N, S, P and <= 8 atoms are often reagents
+            atom_symbols = [atom.GetSymbol() for atom in mol.GetAtoms()]
+            if (
+                set(atom_symbols).issubset({"C", "H", "O", "N", "S", "P"})
+                and mol.GetNumAtoms() <= 8
+            ):
+                return True
+
+            # Simple salts are likely reagents
+            if (
+                any(
+                    symbol in ["Li", "Na", "K", "Mg", "Ca", "Cl", "Br", "I", "F"]
+                    for symbol in atom_symbols
+                )
+                and mol.GetNumAtoms() <= 10
+            ):
+                return True
+
+            return False
+        except:
+            # If we can't parse it, assume it's not a reagent
+            return False
 
     def dfs_traverse(node, depth=0):
-        nonlocal esterification_found, esterification_depth
+        nonlocal is_linear
+
+        if not is_linear:  # Early return if we already know it's not linear
+            return
 
         if node["type"] == "reaction":
-            # Extract reactants and product
+            # Extract reactants
             try:
                 rsmi = node["metadata"]["rsmi"]
                 reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
 
-                print(f"Checking reaction at depth {depth}")
-                print(f"Reactants: {reactants_smiles}")
-                print(f"Product: {product_smiles}")
+                # Count non-reagent reactants
+                building_blocks = []
+                for reactant in reactants_smiles:
+                    if not is_likely_reagent(reactant):
+                        building_blocks.append(reactant)
 
-                # Check for esterification pattern (forward direction)
-                reactant_has_carboxylic = any(
-                    checker.check_fg("Carboxylic acid", r) for r in reactants_smiles
-                )
-                product_has_ester = checker.check_fg("Ester", product_smiles)
-
-                # Check for hydrolysis pattern (reverse direction in retrosynthesis)
-                reactant_has_ester = any(checker.check_fg("Ester", r) for r in reactants_smiles)
-                product_has_carboxylic = checker.check_fg("Carboxylic acid", product_smiles)
-
-                print(f"Reactant has carboxylic acid: {reactant_has_carboxylic}")
-                print(f"Product has ester: {product_has_ester}")
-                print(f"Reactant has ester: {reactant_has_ester}")
-                print(f"Product has carboxylic acid: {product_has_carboxylic}")
-
-                # Check for various esterification reactions
-                is_esterification = checker.check_reaction(
-                    "Esterification of Carboxylic Acids", rsmi
-                )
-                is_transesterification = checker.check_reaction("Transesterification", rsmi)
-                is_o_alkylation = checker.check_reaction(
-                    "O-alkylation of carboxylic acids with diazo compounds", rsmi
-                )
-
-                # Check for hydrolysis (reverse of esterification in retrosynthesis)
-                is_hydrolysis = checker.check_reaction(
-                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-                )
-                is_saponification_methyl = checker.check_reaction(
-                    "Ester saponification (methyl deprotection)", rsmi
-                )
-                is_saponification_alkyl = checker.check_reaction(
-                    "Ester saponification (alkyl deprotection)", rsmi
-                )
-
-                print(f"Is esterification reaction: {is_esterification}")
-                print(f"Is transesterification: {is_transesterification}")
-                print(f"Is O-alkylation: {is_o_alkylation}")
-                print(f"Is hydrolysis: {is_hydrolysis}")
-                print(f"Is saponification (methyl): {is_saponification_methyl}")
-                print(f"Is saponification (alkyl): {is_saponification_alkyl}")
-
-                # Forward direction: carboxylic acid -> ester
-                forward_esterification = (
-                    reactant_has_carboxylic
-                    and product_has_ester
-                    and (is_esterification or is_transesterification or is_o_alkylation)
-                )
-
-                # Reverse direction: ester -> carboxylic acid (in retrosynthesis, this is esterification)
-                reverse_esterification = (
-                    reactant_has_ester
-                    and product_has_carboxylic
-                    and (is_hydrolysis or is_saponification_methyl or is_saponification_alkyl)
-                )
-
-                # If reaction checkers fail, fall back to functional group transformation
-                fg_transformation = (reactant_has_carboxylic and product_has_ester) or (
-                    reactant_has_ester and product_has_carboxylic
-                )
-
-                if forward_esterification:
-                    print(f"Forward esterification detected at depth {depth}")
-                    esterification_found = True
-                    esterification_depth = depth
-                elif reverse_esterification:
-                    print(f"Reverse esterification (hydrolysis) detected at depth {depth}")
-                    esterification_found = True
-                    esterification_depth = depth
-                elif fg_transformation:
+                if len(building_blocks) > 1:
                     print(
-                        f"Esterification/hydrolysis detected by functional group transformation at depth {depth}"
+                        f"Detected convergent step at depth {depth} with {len(building_blocks)} major reactants"
                     )
-                    esterification_found = True
-                    esterification_depth = depth
+                    is_linear = False
             except Exception as e:
-                print(f"Error processing reaction node: {e}")
+                print(f"Error processing reaction at depth {depth}: {e}")
 
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-
-    # Check if esterification was found at depth 0 or 1 (late stage)
-    result = (
-        esterification_found and (esterification_depth is not None) and (esterification_depth <= 1)
-    )
-    print(f"Late-stage esterification strategy detected: {result}")
-    return result
+    return is_linear

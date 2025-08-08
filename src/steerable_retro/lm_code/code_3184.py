@@ -2,61 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves nitro reduction to amine.
+    This function detects if the synthesis involves formation of a sulfonamide
+    bond (S-N) from a sulfonyl chloride and an amine.
     """
-    has_nitro_reduction = False
+    has_sulfonamide_formation = False
 
     def dfs_traverse(node):
-        nonlocal has_nitro_reduction
+        nonlocal has_sulfonamide_formation
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for nitro reduction
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check if product contains sulfonamide
+                sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])-[#7]")
+                product_mol = Chem.MolFromSmiles(product)
 
-            # Look for nitro group in reactants
-            nitro_pattern = Chem.MolFromSmarts("[#6][N+](=O)[O-]")
-            has_nitro = any(
-                mol is not None and mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols
-            )
+                if product_mol and product_mol.HasSubstructMatch(sulfonamide_pattern):
+                    # Check if reactants contain sulfonyl chloride and amine
+                    sulfonyl_chloride_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])-[#17]")
+                    amine_pattern = Chem.MolFromSmarts("[#7;H2]")
 
-            # Look for amine in product at same position
-            if has_nitro and product_mol is not None:
-                amine_pattern = Chem.MolFromSmarts("[#6][NH2]")
-                if product_mol.HasSubstructMatch(amine_pattern):
-                    has_nitro_reduction = True
-                    print("Detected nitro reduction to amine")
+                    has_sulfonyl_chloride = False
+                    has_amine = False
 
-        # Traverse children
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            if mol.HasSubstructMatch(sulfonyl_chloride_pattern):
+                                has_sulfonyl_chloride = True
+                                print("Found sulfonyl chloride in reactants")
+                            if mol.HasSubstructMatch(amine_pattern):
+                                has_amine = True
+                                print("Found amine in reactants")
+
+                    if has_sulfonyl_chloride and has_amine:
+                        has_sulfonamide_formation = True
+                        print("Detected sulfonamide formation")
+
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_nitro_reduction
+
+    return has_sulfonamide_formation

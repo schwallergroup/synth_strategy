@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,116 +54,134 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy where an alkyne intermediate is used
-    to form a heterocycle (specifically looking for terminal alkyne → heterocycle).
+    This function detects a synthetic strategy involving multiple amide coupling reactions.
+
+    It traverses the synthesis route and identifies various types of amide coupling reactions,
+    including direct coupling of carboxylic acids with amines, acylation with acid halides,
+    and other amide formation reactions.
+
+    Returns True if at least 2 amide coupling reactions are found.
     """
-    # Define heterocycle ring types to check
-    heterocycle_rings = [
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "triazole",
-        "tetrazole",
-        "indole",
-        "benzimidazole",
-        "benzoxazole",
-        "benzothiazole",
-        "indazole",
-        "isoxazole",
-        "isothiazole",
-        "oxadiazole",
-        "thiadiazole",
-        "furan",
-        "thiophene",
-        "pyran",
-        "dioxane",
+    # Count amide couplings
+    amide_coupling_count = 0
+
+    # List of reaction types that represent amide couplings
+    amide_coupling_reactions = [
+        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+        "Acyl chloride with ammonia to amide",
+        "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+        "Acyl chloride with secondary amine to amide",
+        "Carboxylic acid with primary amine to amide",
+        "Ester with ammonia to amide",
+        "Ester with primary amine to amide",
+        "Ester with secondary amine to amide",
+        "Schotten-Baumann_amide",
+        "Carboxylic acid to amide conversion",
     ]
 
-    # Track reactions in the synthetic route
-    reaction_sequence = []
+    def count_amide_bonds(mol_smiles):
+        """Count the number of amide bonds in a molecule"""
+        amide_count = 0
+        if checker.check_fg("Primary amide", mol_smiles):
+            amide_count += len(checker.get_fg_atom_indices("Primary amide", mol_smiles))
+        if checker.check_fg("Secondary amide", mol_smiles):
+            amide_count += len(checker.get_fg_atom_indices("Secondary amide", mol_smiles))
+        if checker.check_fg("Tertiary amide", mol_smiles):
+            amide_count += len(checker.get_fg_atom_indices("Tertiary amide", mol_smiles))
+        return amide_count
+
+    def count_amide_formations(reactants, product):
+        """Count how many new amide bonds are formed in the reaction"""
+        # Count amides in reactants
+        reactant_amide_count = sum(count_amide_bonds(r) for r in reactants)
+
+        # Count amides in product
+        product_amide_count = count_amide_bonds(product)
+
+        # Return the number of new amide bonds formed
+        new_amides = max(0, product_amide_count - reactant_amide_count)
+        print(
+            f"New amide bonds formed: {new_amides} (Product: {product_amide_count}, Reactants: {reactant_amide_count})"
+        )
+        return new_amides
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        nonlocal amide_coupling_count
 
-            # Store reaction information with depth
-            reaction_info = {
-                "rsmi": rsmi,
-                "reactants": reactants,
-                "product": product,
-                "depth": depth,
-                "has_alkyne_reactant": False,
-                "forms_heterocycle": False,
-                "heterocycle_type": None,
-            }
-
+        if node["type"] == "reaction":
+            # Extract reaction SMILES
             try:
-                # Check for terminal alkyne in reactants
-                for reactant in reactants:
-                    if checker.check_fg("Alkyne", reactant):
-                        reaction_info["has_alkyne_reactant"] = True
-                        print(f"Terminal alkyne detected in reaction at depth {depth}")
-                        break
+                rsmi = node.get("metadata", {}).get("rsmi", "")
+                if not rsmi:
+                    return
 
-                # Check for heterocycle formation in product
-                product_has_heterocycle = False
-                product_heterocycle_type = None
+                # Extract reactants and product
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if product contains a heterocycle that wasn't in the reactants
-                for ring_type in heterocycle_rings:
-                    if checker.check_ring(ring_type, product):
-                        # Check if any reactant already had this heterocycle
-                        reactants_have_heterocycle = any(
-                            checker.check_ring(ring_type, reactant) for reactant in reactants
-                        )
+                amide_couplings_in_reaction = 0
 
-                        if not reactants_have_heterocycle:
-                            product_has_heterocycle = True
-                            product_heterocycle_type = ring_type
-                            print(f"Heterocycle formation ({ring_type}) detected at depth {depth}")
-                            break
+                # Method 1: Check for known amide coupling reaction types
+                for reaction_type in amide_coupling_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(f"Found amide coupling reaction: {reaction_type} at depth {depth}")
+                        print(f"Reaction SMILES: {rsmi}")
+                        amide_couplings_in_reaction += 1
+                        # Don't break - continue checking for other reaction types
 
-                reaction_info["forms_heterocycle"] = product_has_heterocycle
-                reaction_info["heterocycle_type"] = product_heterocycle_type
+                # Method 2: Check for amide formation by examining functional groups
+                # Always perform this check regardless of reaction type identification
 
-                # Add to our sequence
-                reaction_sequence.append(reaction_info)
+                # Check if product contains amide group
+                if (
+                    checker.check_fg("Primary amide", product)
+                    or checker.check_fg("Secondary amide", product)
+                    or checker.check_fg("Tertiary amide", product)
+                ):
+
+                    # Check if reactants contain carboxylic acid, acyl halide, or ester
+                    has_acid_derivative = any(
+                        checker.check_fg("Carboxylic acid", r)
+                        or checker.check_fg("Acyl halide", r)
+                        or checker.check_fg("Ester", r)
+                        for r in reactants
+                    )
+
+                    # Check if reactants contain amine
+                    has_amine = any(
+                        checker.check_fg("Primary amine", r)
+                        or checker.check_fg("Secondary amine", r)
+                        or checker.check_fg("Aniline", r)
+                        for r in reactants
+                    )
+
+                    if has_acid_derivative and has_amine:
+                        # Count the actual number of amide bonds formed
+                        new_amides = count_amide_formations(reactants, product)
+                        if new_amides > 0:
+                            print(
+                                f"Found {new_amides} amide coupling(s) by functional group analysis at depth {depth}"
+                            )
+                            print(f"Reaction SMILES: {rsmi}")
+                            amide_couplings_in_reaction = max(
+                                amide_couplings_in_reaction, new_amides
+                            )
+
+                # Add the number of amide couplings found in this reaction
+                amide_coupling_count += amide_couplings_in_reaction
 
             except Exception as e:
-                print(f"Error analyzing reaction: {e}")
+                print(f"Error processing reaction node: {e}")
 
-        # Traverse children with increased depth
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Analyze the reaction sequence to find alkyne → heterocycle pattern
-    # Sort by depth to get chronological order (higher depth = earlier in synthesis)
-    reaction_sequence.sort(key=lambda x: x["depth"], reverse=True)
+    print(f"Total amide coupling reactions found: {amide_coupling_count}")
 
-    # Look for the pattern: a reaction with alkyne followed by a reaction forming heterocycle
-    found_alkyne_step = False
-    alkyne_depth = -1
-
-    for reaction in reaction_sequence:
-        if reaction["has_alkyne_reactant"] and not found_alkyne_step:
-            found_alkyne_step = True
-            alkyne_depth = reaction["depth"]
-            print(f"Found alkyne intermediate at depth {alkyne_depth}")
-
-        # Check if we found a heterocycle formation after the alkyne step
-        if found_alkyne_step and reaction["forms_heterocycle"] and reaction["depth"] < alkyne_depth:
-            print(
-                f"Found heterocycle formation at depth {reaction['depth']} after alkyne at depth {alkyne_depth}"
-            )
-            print(f"Heterocycle type: {reaction['heterocycle_type']}")
-            return True
-
-    return False
+    # Return True if multiple amide couplings are found
+    return amide_coupling_count >= 2

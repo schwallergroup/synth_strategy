@@ -2,118 +2,119 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving multiple Boc deprotection steps.
+    This function detects a strategy involving heterocycle formation (imidazole and pyrazole)
+    combined with nitro group chemistry (introduction and reduction).
     """
-    boc_deprotection_count = 0
+    # Track if we found the key elements of the strategy
+    has_nitro_introduction = False
+    has_nitro_reduction = False
+    has_imidazole_formation = False
+    has_pyrazole_formation = False
 
     def dfs_traverse(node):
-        nonlocal boc_deprotection_count
+        nonlocal has_nitro_introduction, has_nitro_reduction, has_imidazole_formation, has_pyrazole_formation
 
         if node["type"] == "reaction":
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check if this is a Boc deprotection reaction using reaction type
-                if (
-                    checker.check_reaction("Boc amine deprotection", rsmi)
-                    or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
-                    or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
-                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
-                ):
-                    boc_deprotection_count += 1
-                    print(f"Found Boc deprotection step: {rsmi}")
-                # If reaction type check fails, try checking for Boc group disappearance
-                else:
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                try:
+                    # Convert to RDKit molecules
+                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                    product = Chem.MolFromSmiles(product_smiles)
 
-                    # Count actual Boc groups in reactants and product
-                    boc_count_in_reactants = 0
-                    for r in reactants:
-                        try:
-                            # Get all instances of Boc groups in each reactant
-                            boc_indices = checker.get_fg_atom_indices("Boc", r)
-                            if boc_indices:
-                                boc_count_in_reactants += len(boc_indices)
-                        except:
-                            # Handle potential errors in functional group detection
-                            pass
+                    if product and all(r for r in reactants):
+                        # Check for nitro introduction
+                        nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
+                        reactant_nitro_count = sum(
+                            len(r.GetSubstructMatches(nitro_pattern)) for r in reactants if r
+                        )
+                        product_nitro_count = len(product.GetSubstructMatches(nitro_pattern))
 
-                    boc_count_in_product = 0
-                    try:
-                        # Get all instances of Boc groups in the product
-                        boc_indices = checker.get_fg_atom_indices("Boc", product)
-                        if boc_indices:
-                            boc_count_in_product = len(boc_indices)
-                    except:
-                        # Handle potential errors in functional group detection
-                        pass
+                        if product_nitro_count > reactant_nitro_count:
+                            has_nitro_introduction = True
+                            print("Detected nitro group introduction")
 
-                    # Calculate how many Boc groups were removed
-                    boc_groups_removed = boc_count_in_reactants - boc_count_in_product
+                        # Check for nitro reduction
+                        amine_pattern = Chem.MolFromSmarts("[NH2]")
+                        reactant_amine_count = sum(
+                            len(r.GetSubstructMatches(amine_pattern)) for r in reactants if r
+                        )
+                        product_amine_count = len(product.GetSubstructMatches(amine_pattern))
 
-                    if boc_groups_removed > 0:
-                        # Add the number of Boc groups removed
-                        boc_deprotection_count += boc_groups_removed
-                        print(f"Found Boc deprotection step (detected by FG change): {rsmi}")
-                        print(f"Number of Boc groups removed: {boc_groups_removed}")
+                        if product_amine_count > reactant_amine_count and any(
+                            len(r.GetSubstructMatches(nitro_pattern)) > 0 for r in reactants if r
+                        ):
+                            has_nitro_reduction = True
+                            print("Detected nitro reduction to amine")
 
-        # Traverse children
+                        # Check for imidazole formation
+                        imidazole_pattern = Chem.MolFromSmarts("[nH]1cncc1")
+                        reactant_imidazole_count = sum(
+                            len(r.GetSubstructMatches(imidazole_pattern)) for r in reactants if r
+                        )
+                        product_imidazole_count = len(
+                            product.GetSubstructMatches(imidazole_pattern)
+                        )
+
+                        if product_imidazole_count > reactant_imidazole_count:
+                            has_imidazole_formation = True
+                            print("Detected imidazole formation")
+
+                        # Check for pyrazole formation
+                        pyrazole_pattern = Chem.MolFromSmarts("[nH]1ncc[c]1")
+                        reactant_pyrazole_count = sum(
+                            len(r.GetSubstructMatches(pyrazole_pattern)) for r in reactants if r
+                        )
+                        product_pyrazole_count = len(product.GetSubstructMatches(pyrazole_pattern))
+
+                        if product_pyrazole_count > reactant_pyrazole_count:
+                            has_pyrazole_formation = True
+                            print("Detected pyrazole formation")
+
+                except Exception as e:
+                    print(f"Error processing reaction: {e}")
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Total Boc deprotection steps: {boc_deprotection_count}")
-    # Strategy requires at least 2 Boc deprotection steps
-    return boc_deprotection_count >= 2
+    # The strategy is present if we have heterocycle formation and nitro chemistry
+    strategy_present = (has_imidazole_formation or has_pyrazole_formation) and (
+        has_nitro_introduction or has_nitro_reduction
+    )
+
+    if strategy_present:
+        print("Detected heterocycle formation with nitro chemistry strategy")
+
+    return strategy_present

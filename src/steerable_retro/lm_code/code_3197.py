@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,137 +54,69 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving fluorinated building blocks
-    in heterocycle synthesis.
+    Detects a strategy involving ring opening in the late stage of synthesis
+    while preserving key functional groups.
     """
-    # Track key features
-    has_heterocycle_formation = False
-    fluorinated_reactants = 0
-    has_fluorinated_heterocycle_product = False
+    # Track if ring opening occurs in late stage
+    late_stage_ring_opening = False
 
-    # List of heterocyclic rings to check
-    heterocycles = [
-        "furan",
-        "pyrrole",
-        "thiophene",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "isoxazole",
-        "isothiazole",
-        "oxadiazole",
-        "thiadiazole",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "purine",
-    ]
+    # Track if key functional groups are preserved
+    key_functional_groups_preserved = False
 
-    # List of heterocycle formation reactions to check
-    heterocycle_reactions = [
-        "benzimidazole_derivatives_carboxylic-acid/ester",
-        "benzimidazole_derivatives_aldehyde",
-        "benzothiazole",
-        "benzoxazole_arom-aldehyde",
-        "benzoxazole_carboxylic-acid",
-        "thiazole",
-        "tetrazole_terminal",
-        "tetrazole_connect_regioisomere_1",
-        "tetrazole_connect_regioisomere_2",
-        "1,2,4-triazole_acetohydrazide",
-        "1,2,4-triazole_carboxylic-acid/ester",
-        "pyrazole",
-        "Paal-Knorr pyrrole",
-        "triaryl-imidazole",
-        "Fischer indole",
-        "benzofuran",
-        "benzothiophene",
-        "indole",
-        "oxadiazole",
-        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-        "Huisgen 1,3 dipolar cycloaddition",
-        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-        "Pyrazole formation",
-        "Formation of NOS Heterocycles",
-    ]
-
-    def has_fluorine(smiles):
-        """Check if a molecule contains fluorine atoms"""
-        return (
-            checker.check_fg("Trifluoro group", smiles)
-            or (checker.check_fg("Primary halide", smiles) and "F" in smiles)
-            or (checker.check_fg("Secondary halide", smiles) and "F" in smiles)
-            or (checker.check_fg("Tertiary halide", smiles) and "F" in smiles)
-            or (checker.check_fg("Aromatic halide", smiles) and "F" in smiles)
-            or "F" in smiles
-        )
-
-    def has_heterocycle_struct(smiles):
-        """Check if a molecule contains a heterocyclic structure"""
-        return any(checker.check_ring(ring, smiles) for ring in heterocycles)
+    # List of functional groups to check for preservation
+    key_fgs = ["Nitrile", "Ester", "Carboxylic acid", "Amide", "Alcohol"]
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_heterocycle_formation, fluorinated_reactants, has_fluorinated_heterocycle_product
+        nonlocal late_stage_ring_opening, key_functional_groups_preserved
 
-        if node["type"] == "mol":
-            if node["smiles"]:
-                # Check if this molecule has both a heterocycle and fluorine
-                if has_heterocycle_struct(node["smiles"]) and has_fluorine(node["smiles"]):
-                    print(f"Found molecule with heterocycle and fluorine: {node['smiles']}")
-                    # If this is the final product (depth 0), mark it
-                    if depth == 0:
-                        has_fluorinated_heterocycle_product = True
-                        print("Final product contains fluorinated heterocycle")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Count fluorinated reactants/intermediates
-                if has_fluorine(node["smiles"]) and depth > 0:
-                    fluorinated_reactants += 1
-                    print(f"Found fluorinated reactant/intermediate: {node['smiles']}")
+                # Check for ring opening in late stage (depth ≤ 3)
+                if depth <= 3 and not late_stage_ring_opening:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol:
+                        product_ring_info = product_mol.GetRingInfo()
+                        product_ring_count = product_ring_info.NumRings()
 
-        elif node["type"] == "reaction":
-            # Check if this is a heterocycle formation reaction
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rxn_smiles = node["metadata"]["rsmi"]
+                        # In retrosynthesis, ring opening appears as ring formation
+                        # Check each reactant for fewer rings than the product
+                        for reactant_smiles in reactants_smiles:
+                            if reactant_smiles:
+                                reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                                if reactant_mol:
+                                    reactant_ring_info = reactant_mol.GetRingInfo()
+                                    reactant_ring_count = reactant_ring_info.NumRings()
 
-                # Check for specific heterocycle formation reactions
-                for reaction in heterocycle_reactions:
-                    if checker.check_reaction(reaction, rxn_smiles):
-                        has_heterocycle_formation = True
-                        print(f"Found heterocycle formation reaction: {reaction}")
-                        break
+                                    if product_ring_count > reactant_ring_count:
+                                        print(
+                                            f"Detected late-stage ring opening at depth {depth}: {reactant_ring_count} rings → {product_ring_count} rings"
+                                        )
+                                        print(f"Product: {product_smiles}")
+                                        print(f"Reactant: {reactant_smiles}")
 
-                # If no specific reaction was found, check if the reaction creates a heterocycle
-                if not has_heterocycle_formation:
-                    reactants = rxn_smiles.split(">")[0].split(".")
-                    product = rxn_smiles.split(">")[-1]
+                                        # Check if any key functional group is preserved
+                                        preserved_groups = []
+                                        for fg in key_fgs:
+                                            if checker.check_fg(
+                                                fg, product_smiles
+                                            ) and checker.check_fg(fg, reactant_smiles):
+                                                preserved_groups.append(fg)
 
-                    # Check if product has heterocycle but reactants don't
-                    if has_heterocycle_struct(product) and not all(
-                        has_heterocycle_struct(r) for r in reactants
-                    ):
-                        has_heterocycle_formation = True
-                        print(f"Found general heterocycle formation reaction: {rxn_smiles}")
+                                        if preserved_groups:
+                                            print(
+                                                f"Functional groups preserved during ring opening: {', '.join(preserved_groups)}"
+                                            )
+                                            key_functional_groups_preserved = True
+                                            late_stage_ring_opening = True
+                                            break
 
-                    # Check if reaction modifies a heterocycle and involves fluorine
-                    if has_heterocycle_struct(product) and any(has_fluorine(r) for r in reactants):
-                        print("Reaction modifies heterocycle with fluorinated building block")
-
-                        # If the product has fluorine that wasn't in the heterocycle reactants
-                        if has_fluorine(product) and not any(
-                            has_heterocycle_struct(r) and has_fluorine(r) for r in reactants
-                        ):
-                            has_heterocycle_formation = True
-                            print("Reaction adds fluorine to heterocycle")
+            except Exception as e:
+                print(f"Error processing reaction at depth {depth}: {e}")
 
         # Process children
         for child in node.get("children", []):
@@ -190,16 +125,10 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Determine if this strategy is present
-    # Modified criteria: fluorinated reactants AND either heterocycle formation OR fluorinated heterocycle product
-    strategy_present = fluorinated_reactants >= 1 and (
-        has_heterocycle_formation or has_fluorinated_heterocycle_product
-    )
+    # Check if the strategy is present
+    strategy_present = late_stage_ring_opening and key_functional_groups_preserved
 
-    print(f"Fluorinated heterocycle strategy detection results:")
-    print(f"  Heterocycle formation reaction present: {has_heterocycle_formation}")
-    print(f"  Fluorinated reactants/intermediates: {fluorinated_reactants}")
-    print(f"  Fluorinated heterocycle in final product: {has_fluorinated_heterocycle_product}")
-    print(f"  Strategy present: {strategy_present}")
+    if strategy_present:
+        print("Detected late-stage ring opening strategy with functional group preservation")
 
     return strategy_present

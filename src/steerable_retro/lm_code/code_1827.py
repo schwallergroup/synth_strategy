@@ -2,64 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves a Boc deprotection in the early stages.
+    Detects if the synthetic route involves manipulation of nitrogen-containing heterocycles.
     """
-    found_boc_deprotection = False
-    max_depth = 0
+    n_heterocycle_pattern = Chem.MolFromSmarts("c1[n]cc*1")  # Basic N-heterocycle pattern
+    has_n_heterocycle_manipulation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_boc_deprotection, max_depth
-
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal has_n_heterocycle_manipulation
 
         if node["type"] == "reaction":
-            # Extract reactants and products
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+                try:
+                    # Check if both reactants and products contain N-heterocycles
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                    product_mol = Chem.MolFromSmiles(product)
 
-            if product and reactants:
-                # Check for Boc group in reactants but not in product
-                boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")
-                if any(r and r.HasSubstructMatch(boc_pattern) for r in reactants) and (
-                    not product.HasSubstructMatch(boc_pattern)
-                ):
-                    found_boc_deprotection = True
-                    print(f"Found Boc deprotection at depth {depth}")
+                    if all(reactant_mols) and product_mol:
+                        reactant_has_n_heterocycle = any(
+                            m.HasSubstructMatch(n_heterocycle_pattern) for m in reactant_mols if m
+                        )
+                        product_has_n_heterocycle = product_mol.HasSubstructMatch(
+                            n_heterocycle_pattern
+                        )
 
-        # Continue traversing
+                        if reactant_has_n_heterocycle and product_has_n_heterocycle:
+                            # Check if there's a change in the heterocycle
+                            main_reactant = max(reactant_mols, key=lambda m: m.GetNumAtoms())
+                            if main_reactant.GetNumAtoms() != product_mol.GetNumAtoms():
+                                has_n_heterocycle_manipulation = True
+                                print(f"Found N-heterocycle manipulation: {rsmi}")
+                except:
+                    print(f"Error processing SMILES in N-heterocycle detection: {rsmi}")
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Consider it early stage if deprotection occurs in the upper half of the synthesis depth
-    early_stage = found_boc_deprotection and (max_depth / 2 < max_depth)
-    print(f"Boc deprotection in early stage detected: {early_stage}")
-    return early_stage
+    print(f"N-heterocycle manipulation detected: {has_n_heterocycle_manipulation}")
+    return has_n_heterocycle_manipulation

@@ -2,78 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthesis strategy that involves halide displacement
-    reactions, particularly the conversion of alkyl halides to other functional groups.
+    This function detects if the synthetic route involves esterification.
     """
-    # Track halide displacement reactions
-    halide_displacements = 0
+    esterification_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal halide_displacements
+    def dfs_traverse(node):
+        nonlocal esterification_found
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
-            product = Chem.MolFromSmiles(product_part)
+            # Check if reactants contain a carboxylic acid and an alcohol, and product contains an ester
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-            if product is None or any(r is None for r in reactants):
-                print("Warning: Could not parse some molecules in reaction")
-                return
+            if product_mol and len(reactant_mols) >= 2:
+                # Check for carboxylic acid in reactants
+                acid_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2H]")
+                has_acid = any(mol.HasSubstructMatch(acid_pattern) for mol in reactant_mols if mol)
 
-            # Check for halide displacement patterns
-            # Alkyl halide to nitrile
-            if any(
-                r.HasSubstructMatch(Chem.MolFromSmarts("[#6][Br,Cl,I,F]")) for r in reactants
-            ) and product.HasSubstructMatch(Chem.MolFromSmarts("[#6]C#N")):
-                halide_displacements += 1
-                print(f"Detected halide displacement: Alkyl halide to nitrile at depth {depth}")
-
-            # Alkyl halide to other nucleophilic substitution products
-            if any(
-                r.HasSubstructMatch(Chem.MolFromSmarts("[#6][Br,Cl,I,F]")) for r in reactants
-            ) and (
-                product.HasSubstructMatch(Chem.MolFromSmarts("[#6][O,N,S]"))
-                or product.HasSubstructMatch(Chem.MolFromSmarts("[#6][#6]"))
-            ):
-                halide_displacements += 1
-                print(
-                    f"Detected halide displacement: General nucleophilic substitution at depth {depth}"
+                # Check for alcohol in reactants
+                alcohol_pattern = Chem.MolFromSmarts("[OX2H]")
+                has_alcohol = any(
+                    mol.HasSubstructMatch(alcohol_pattern) for mol in reactant_mols if mol
                 )
 
-        # Process children
-        if "children" in node:
-            for child in node["children"]:
-                dfs_traverse(child, depth + 1)
+                # Check for ester in product
+                ester_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2][C]")
+                has_ester = product_mol.HasSubstructMatch(ester_pattern) if product_mol else False
 
-    # Start traversal
+                if has_acid and has_alcohol and has_ester:
+                    print("Esterification detected")
+                    esterification_found = True
+
+        for child in node.get("children", []):
+            dfs_traverse(child)
+
     dfs_traverse(route)
-
-    print(f"Halide displacement reactions: {halide_displacements}")
-
-    # Return True if we have at least one halide displacement reaction
-    return halide_displacements >= 1
+    return esterification_found

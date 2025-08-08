@@ -2,142 +2,167 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if a stereocenter is maintained throughout the entire synthesis.
+    This function detects if the synthesis involves multiple C-O bond formations or cleavages.
     """
-    # Track stereocenters by their atom mapping IDs
-    stereocenters_by_depth = {}
-    max_depth = 0
+    c_o_bond_operations = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal c_o_bond_operations
 
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            mol = Chem.MolFromSmiles(mol_smiles)
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
 
-            if mol:
-                # Get chiral atoms in this molecule
-                chiral_atoms = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
-                if chiral_atoms:
-                    if depth not in stereocenters_by_depth:
-                        stereocenters_by_depth[depth] = set()
-                    stereocenters_by_depth[depth].update([atom_idx for atom_idx, _ in chiral_atoms])
-                    print(f"Depth {depth}: Found {len(chiral_atoms)} stereocenters in {mol_smiles}")
+                # Extract reactants and product
+                try:
+                    reactants_part = rsmi.split(">")[0]
+                    product_part = rsmi.split(">")[-1]
+                    reactants = reactants_part.split(".")
 
-        elif node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"].get("rsmi", "")
-                if rsmi:
-                    # Extract product and reactants from atom-mapped reaction SMILES
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+                    # Check for C-O bond formation reactions
+                    c_o_formation_reactions = [
+                        "Williamson Ether Synthesis",
+                        "Esterification of Carboxylic Acids",
+                        "Alcohol protection with silyl ethers",
+                        "O-alkylation of carboxylic acids with diazo compounds",
+                        "Aldehyde or ketone acetalization",
+                        "Diol acetalization",
+                        "Oxidative esterification of primary alcohols",
+                        "Alcohol to ether",
+                        "Mitsunobu aryl ether",
+                        "Mitsunobu esterification",
+                    ]
 
-                    # Check stereocenters in product and map to reactants
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        # Get atom mapping from product
-                        product_atom_maps = {}
-                        for atom in product_mol.GetAtoms():
-                            map_num = atom.GetAtomMapNum()
-                            if map_num > 0:
-                                product_atom_maps[atom.GetIdx()] = map_num
+                    # Check for C-O bond cleavage reactions
+                    c_o_cleavage_reactions = [
+                        "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
+                        "Alcohol deprotection from silyl ethers",
+                        "Acetal hydrolysis to diol",
+                        "Acetal hydrolysis to aldehyde",
+                        "Ketal hydrolysis to ketone",
+                        "Cleavage of methoxy ethers to alcohols",
+                        "Cleavage of alkoxy ethers to alcohols",
+                        "Ether cleavage to primary alcohol",
+                    ]
 
-                        # Get chiral atoms in product
-                        product_chiral_atoms = Chem.FindMolChiralCenters(
-                            product_mol, includeUnassigned=False
+                    # Check if the reaction involves C-O bond formation or cleavage
+                    for rxn_type in c_o_formation_reactions + c_o_cleavage_reactions:
+                        if checker.check_reaction(rxn_type, rsmi):
+                            print(f"C-O bond manipulation detected: {rxn_type}")
+                            c_o_bond_operations += 1
+                            break
+
+                    # If no specific reaction type was found, check for functional group changes
+                    # that indicate C-O bond manipulation
+                    if not any(
+                        checker.check_reaction(rxn_type, rsmi)
+                        for rxn_type in c_o_formation_reactions + c_o_cleavage_reactions
+                    ):
+                        # Check for ether formation
+                        product_has_ether = checker.check_fg("Ether", product_part)
+                        reactants_have_alcohol = any(
+                            checker.check_fg("Primary alcohol", r)
+                            or checker.check_fg("Secondary alcohol", r)
+                            or checker.check_fg("Tertiary alcohol", r)
+                            for r in reactants
                         )
 
-                        # Track mapped stereocenters
-                        for atom_idx, stereo in product_chiral_atoms:
-                            if atom_idx in product_atom_maps:
-                                map_num = product_atom_maps[atom_idx]
-                                if depth not in stereocenters_by_depth:
-                                    stereocenters_by_depth[depth] = set()
-                                stereocenters_by_depth[depth].add(map_num)
-                                print(
-                                    f"Depth {depth}: Found stereocenter with map ID {map_num} in product"
-                                )
+                        # Check for ester formation
+                        product_has_ester = checker.check_fg("Ester", product_part)
+                        reactants_have_carboxylic_acid = any(
+                            checker.check_fg("Carboxylic acid", r) for r in reactants
+                        )
+                        reactants_have_alcohol = reactants_have_alcohol or any(
+                            checker.check_fg("Aromatic alcohol", r) for r in reactants
+                        )
 
-                        # Check if stereocenters in reactants match those in product
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                # Get atom mapping from reactant
-                                reactant_atom_maps = {}
-                                for atom in reactant_mol.GetAtoms():
-                                    map_num = atom.GetAtomMapNum()
-                                    if map_num > 0:
-                                        reactant_atom_maps[atom.GetIdx()] = map_num
+                        # Check for alcohol deprotection
+                        product_has_alcohol = (
+                            checker.check_fg("Primary alcohol", product_part)
+                            or checker.check_fg("Secondary alcohol", product_part)
+                            or checker.check_fg("Tertiary alcohol", product_part)
+                            or checker.check_fg("Aromatic alcohol", product_part)
+                        )
 
-                                # Get chiral atoms in reactant
-                                reactant_chiral_atoms = Chem.FindMolChiralCenters(
-                                    reactant_mol, includeUnassigned=False
-                                )
+                        # Detect C-O bond formation
+                        if (product_has_ether and reactants_have_alcohol) or (
+                            product_has_ester
+                            and reactants_have_carboxylic_acid
+                            and reactants_have_alcohol
+                        ):
+                            print(f"C-O bond formation detected through functional group analysis")
+                            c_o_bond_operations += 1
 
-                                # Track mapped stereocenters
-                                for atom_idx, stereo in reactant_chiral_atoms:
-                                    if atom_idx in reactant_atom_maps:
-                                        map_num = reactant_atom_maps[atom_idx]
-                                        if depth + 1 not in stereocenters_by_depth:
-                                            stereocenters_by_depth[depth + 1] = set()
-                                        stereocenters_by_depth[depth + 1].add(map_num)
-                                        print(
-                                            f"Depth {depth+1}: Found stereocenter with map ID {map_num} in reactant"
-                                        )
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                        # Detect C-O bond cleavage
+                        elif product_has_alcohol and (
+                            any(checker.check_fg("Ether", r) for r in reactants)
+                            or any(checker.check_fg("Ester", r) for r in reactants)
+                        ):
+                            print(f"C-O bond cleavage detected through functional group analysis")
+                            c_o_bond_operations += 1
 
+                except Exception as e:
+                    print(f"Error processing reaction: {e}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if there are stereocenters at all depths
-    if not stereocenters_by_depth:
-        print("No stereocenters found in the synthesis route")
-        return False
-
-    # Find stereocenters that appear at all depths
-    all_depths = set(range(max_depth + 1))
-    depths_with_stereocenters = set(stereocenters_by_depth.keys())
-
-    # Check if stereocenters exist at all depths
-    if depths_with_stereocenters != all_depths:
-        print(
-            f"Stereocenters not present at all depths. Missing at depths: {all_depths - depths_with_stereocenters}"
-        )
-        return False
-
-    # Check if at least one stereocenter exists at each depth
-    has_maintained_stereocenter = all(
-        len(stereocenters_by_depth.get(depth, [])) > 0 for depth in range(max_depth + 1)
-    )
-
-    print(f"Maintained stereocenter throughout synthesis: {has_maintained_stereocenter}")
-    if has_maintained_stereocenter:
-        print(f"Stereocenters present at all depths")
-
-    return has_maintained_stereocenter
+    print(f"Total C-O bond operations detected: {c_o_bond_operations}")
+    # Return True if at least 2 C-O bond operations are detected
+    return c_o_bond_operations >= 2

@@ -2,77 +2,115 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving the conversion of an
-    acid chloride to a Weinreb amide.
+    Detects a strategy involving early-stage protections and
+    late-stage deprotections in the synthetic route.
     """
-    # Initialize tracking variables
-    has_acid_chloride_to_weinreb = False
+    protection_steps = []
+    deprotection_steps = []
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal has_acid_chloride_to_weinreb
+    def dfs_traverse(node, depth=0):
+        nonlocal protection_steps, deprotection_steps, max_depth
+        max_depth = max(max_depth, depth)
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            # Check for acid chloride in reactants
-            acid_chloride_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#17]")
-            # Check for Weinreb amide in product
-            weinreb_amide_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#7](-[#6])-[#6](=[#8])-[#6]")
+                if product and all(r is not None for r in reactants):
+                    # Check for protection steps
+                    # Acetylation
+                    acetyl_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
+                    amine_pattern = Chem.MolFromSmarts("[NH2]")
+                    acetamide_pattern = Chem.MolFromSmarts("NC(=O)C")
 
-            has_acid_chloride = False
-            for reactant in reactants_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(acid_chloride_pattern):
-                        has_acid_chloride = True
-                        break
-                except:
-                    continue
+                    if (
+                        any(r.HasSubstructMatch(acetyl_chloride_pattern) for r in reactants)
+                        and any(r.HasSubstructMatch(amine_pattern) for r in reactants)
+                        and product.HasSubstructMatch(acetamide_pattern)
+                    ):
+                        protection_steps.append(depth)
+                        print(f"Found acetylation protection at depth {depth}")
 
-            has_weinreb = False
-            try:
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if product_mol and product_mol.HasSubstructMatch(weinreb_amide_pattern):
-                    has_weinreb = True
-            except:
-                pass
+                    # Esterification
+                    carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
+                    methyl_ester_pattern = Chem.MolFromSmarts("[C](=O)[O][CH3]")
+                    tbutyl_ester_pattern = Chem.MolFromSmarts("[C](=O)[O]C(C)(C)C")
 
-            if has_acid_chloride and has_weinreb:
-                print("Found acid chloride to Weinreb amide transformation")
-                has_acid_chloride_to_weinreb = True
+                    if (
+                        product.HasSubstructMatch(methyl_ester_pattern)
+                        or product.HasSubstructMatch(tbutyl_ester_pattern)
+                    ) and any(r.HasSubstructMatch(carboxylic_acid_pattern) for r in reactants):
+                        protection_steps.append(depth)
+                        print(f"Found esterification protection at depth {depth}")
+
+                    # Check for deprotection steps
+                    # Boc deprotection
+                    boc_pattern = Chem.MolFromSmarts("[NH][C](=O)[O]C(C)(C)C")
+
+                    if any(
+                        r.HasSubstructMatch(boc_pattern) for r in reactants
+                    ) and product.HasSubstructMatch(amine_pattern):
+                        deprotection_steps.append(depth)
+                        print(f"Found Boc deprotection at depth {depth}")
+
+                    # Ester hydrolysis
+                    if (
+                        any(r.HasSubstructMatch(methyl_ester_pattern) for r in reactants)
+                        or any(r.HasSubstructMatch(tbutyl_ester_pattern) for r in reactants)
+                    ) and product.HasSubstructMatch(carboxylic_acid_pattern):
+                        deprotection_steps.append(depth)
+                        print(f"Found ester hydrolysis at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return has_acid_chloride_to_weinreb
+    # Sort steps by depth
+    protection_steps.sort(reverse=True)  # Higher depth = earlier in synthesis
+    deprotection_steps.sort()  # Lower depth = later in synthesis
+
+    # Check if we have early protections and late deprotections
+    has_early_protection = any(depth > max_depth / 2 for depth in protection_steps)
+    has_late_deprotection = any(depth <= max_depth / 2 for depth in deprotection_steps)
+
+    print(f"Protection steps: {protection_steps}")
+    print(f"Deprotection steps: {deprotection_steps}")
+    print(f"Max depth: {max_depth}")
+    print(f"Early protection: {has_early_protection}")
+    print(f"Late deprotection: {has_late_deprotection}")
+
+    return has_early_protection and has_late_deprotection

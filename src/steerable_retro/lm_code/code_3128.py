@@ -2,184 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy that builds a pyridine scaffold
-    and connects it to a piperidine via C-N bond formation.
+    This function detects a synthetic strategy involving the formation of a ketone
+    that bridges two aromatic systems.
     """
-    # Track key components and reactions
-    pyridine_nodes = []
-    piperidine_nodes = []
-    connection_nodes = []
-    connection_reactions = []
+    # Track if we find a ketone connecting two aromatic rings
+    has_aromatic_carbonyl_bridge = False
 
-    def dfs_traverse(node, depth=0):
-        # Process molecule nodes
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+    # Define SMARTS patterns
+    diaryl_ketone_pattern = Chem.MolFromSmarts("c-C(=O)-c")
 
-            # Check for pyridine
-            if checker.check_ring("pyridine", mol_smiles):
-                pyridine_nodes.append((mol_smiles, depth))
-                print(f"Found pyridine at depth {depth}: {mol_smiles}")
+    def dfs_traverse(node):
+        nonlocal has_aromatic_carbonyl_bridge
 
-            # Check for piperidine
-            if checker.check_ring("piperidine", mol_smiles):
-                piperidine_nodes.append((mol_smiles, depth))
-                print(f"Found piperidine at depth {depth}: {mol_smiles}")
-
-            # Check for connected structure (both rings in same molecule)
-            if checker.check_ring("pyridine", mol_smiles) and checker.check_ring(
-                "piperidine", mol_smiles
-            ):
-                connection_nodes.append((mol_smiles, depth))
-                print(f"Found connected structure at depth {depth}: {mol_smiles}")
-
-        # Process reaction nodes
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            try:
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for C-N bond forming reactions
-                if (
-                    checker.check_reaction("Buchwald-Hartwig", rsmi)
-                    or checker.check_reaction("N-arylation", rsmi)
-                    or checker.check_reaction("Ullmann-Goldberg Substitution amine", rsmi)
-                    or checker.check_reaction(
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
-                    )
-                    or checker.check_reaction(
-                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
-                    )
-                ):
+                try:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
 
-                    # Check if this reaction connects pyridine and piperidine
-                    has_pyridine_reactant = any(
-                        checker.check_ring("pyridine", r) for r in reactants
-                    )
-                    has_piperidine_reactant = any(
-                        checker.check_ring("piperidine", r) for r in reactants
-                    )
-                    has_both_in_product = checker.check_ring(
-                        "pyridine", product
-                    ) and checker.check_ring("piperidine", product)
+                    # Check if product contains a ketone connecting two aromatic rings
+                    if product_mol and product_mol.HasSubstructMatch(diaryl_ketone_pattern):
+                        # Check if this is a new formation (not present in reactants)
+                        reactant_has_pattern = False
+                        for r_smiles in reactants_smiles:
+                            if r_smiles:
+                                r_mol = Chem.MolFromSmiles(r_smiles)
+                                if r_mol and r_mol.HasSubstructMatch(diaryl_ketone_pattern):
+                                    reactant_has_pattern = True
+                                    break
 
-                    if has_pyridine_reactant and has_piperidine_reactant and has_both_in_product:
-                        connection_reactions.append((rsmi, depth))
-                        print(f"Found connection reaction at depth {depth}: {rsmi}")
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                        if not reactant_has_pattern:
+                            print("Detected formation of aromatic-carbonyl-aromatic bridge")
+                            has_aromatic_carbonyl_bridge = True
 
-        # Traverse children
+                except Exception as e:
+                    print(f"Error processing reaction: {e}")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Analyze results to determine if strategy is present
-    has_pyridine = len(pyridine_nodes) > 0
-    has_piperidine = len(piperidine_nodes) > 0
-    has_connection = len(connection_nodes) > 0
-    has_connection_reaction = len(connection_reactions) > 0
-
-    # Special case: If the target molecule (depth 0) already contains both rings connected,
-    # this is a valid example of the strategy
-    if has_connection and any(depth == 0 for _, depth in connection_nodes):
-        print("Found linear pyridine-piperidine connection strategy (already connected in target)")
-        return True
-
-    # Check for linear synthesis pattern:
-    # 1. Both scaffolds should be present
-    # 2. Either a connection reaction or a connected product should be found
-    # 3. The connected structure should appear at a lower depth than individual scaffolds
-
-    if has_pyridine and has_piperidine and (has_connection or has_connection_reaction):
-        # Check if the connection appears later in synthesis (lower depth)
-        if has_connection:
-            min_connection_depth = min(depth for _, depth in connection_nodes)
-
-            # Find scaffolds at greater depths (earlier in synthesis) than the connection
-            pyridine_earlier = [
-                depth for _, depth in pyridine_nodes if depth > min_connection_depth
-            ]
-            piperidine_earlier = [
-                depth for _, depth in piperidine_nodes if depth > min_connection_depth
-            ]
-
-            # If we find individual scaffolds at earlier synthesis stages, this is our pattern
-            if pyridine_earlier and piperidine_earlier:
-                print("Found linear pyridine-piperidine connection strategy")
-                return True
-
-        # If we found a connection reaction, that's sufficient evidence
-        if has_connection_reaction:
-            print("Found linear pyridine-piperidine connection strategy via reaction")
-            return True
-
-    # Check if we have evidence of separate synthesis of both scaffolds
-    # followed by their connection (even if we don't have the exact connection reaction)
-    if has_pyridine and has_piperidine and has_connection:
-        # Get the minimum depth where we see a connection
-        min_connection_depth = min(depth for _, depth in connection_nodes)
-
-        # Check if we have individual scaffolds at greater depths
-        isolated_pyridine = any(depth > min_connection_depth for _, depth in pyridine_nodes)
-        isolated_piperidine = any(depth > min_connection_depth for _, depth in piperidine_nodes)
-
-        if isolated_pyridine and isolated_piperidine:
-            print(
-                "Found linear pyridine-piperidine connection strategy (inferred from synthesis path)"
-            )
-            return True
-
-    return False
+    print(f"Aromatic carbonyl bridge strategy detected: {has_aromatic_carbonyl_bridge}")
+    return has_aromatic_carbonyl_bridge

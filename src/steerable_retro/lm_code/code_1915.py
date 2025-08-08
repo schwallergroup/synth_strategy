@@ -2,55 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves esterification of a carboxylic acid as one of the final steps.
+    Detects if the synthesis follows a linear strategy where each reaction
+    builds upon the product of the previous reaction.
     """
-    has_late_esterification = False
+    reaction_count = 0
+    is_linear = True
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_late_esterification
+        nonlocal reaction_count, is_linear
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            reaction_count += 1
 
-            # Check if this is an esterification reaction
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[C](=[O])[O][C]")):
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(
-                        Chem.MolFromSmarts("[C](=[O])[OH]")
-                    ):
-                        # Check if this is a late-stage reaction (depth <= 1)
-                        if depth <= 1:
-                            has_late_esterification = True
-                            print(f"Detected late-stage esterification at depth {depth}")
-                        break
+            # Check if this reaction has exactly one non-commercial reactant
+            # (which would be the product of the previous reaction)
+            non_commercial_reactants = 0
+            for child in node.get("children", []):
+                if child["type"] == "mol":
+                    if not child.get("in_stock", False):
+                        non_commercial_reactants += 1
 
+            # If more than one non-commercial reactant, it's not a linear synthesis
+            if non_commercial_reactants > 1:
+                is_linear = False
+                print(
+                    f"Non-linear step detected at depth {depth}: {non_commercial_reactants} non-commercial reactants"
+                )
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return has_late_esterification
+
+    # A synthesis with at least 3 reactions that maintains linearity
+    if reaction_count >= 3 and is_linear:
+        print(f"Linear synthesis strategy detected with {reaction_count} reactions")
+        return True
+    return False

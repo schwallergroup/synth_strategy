@@ -2,153 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes that use thiourea intermediates as precursors for heterocycle formation.
+    This function detects a synthetic strategy involving linear assembly of fragments
+    rather than convergent synthesis.
     """
-    # Track if we found the strategy
-    found_thiourea_intermediate = False
-    thiourea_used_for_heterocycle = False
+    # Track reaction depths and number of fragments at each step
+    reaction_data = []
 
-    def dfs_traverse(node):
-        nonlocal found_thiourea_intermediate, thiourea_used_for_heterocycle
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
-
-            # Check if any reactant has thiourea
-            has_thiourea_in_reactants = False
-            thiourea_reactant = None
-
-            for reactant in reactants_smiles:
-                try:
-                    if checker.check_fg("Thiourea", reactant):
-                        has_thiourea_in_reactants = True
-                        found_thiourea_intermediate = True
-                        thiourea_reactant = reactant
-                        print(f"Found thiourea intermediate: {reactant}")
-                        break
-                except Exception as e:
-                    print(f"Error checking thiourea in reactant: {e}")
-                    continue
-
-            # If thiourea found in reactants, check if it's used for heterocycle formation
-            if has_thiourea_in_reactants:
-                try:
-                    # Check if product has any heterocyclic structure
-                    heterocycle_rings = [
-                        "benzothiazole",
-                        "thiazole",
-                        "benzimidazole",
-                        "benzoxazole",
-                        "oxazole",
-                        "imidazole",
-                        "triazole",
-                        "tetrazole",
-                    ]
-
-                    # Check if product contains a heterocycle
-                    has_heterocycle = False
-                    for ring in heterocycle_rings:
-                        if checker.check_ring(ring, product_smiles):
-                            print(f"Found heterocycle in product: {ring}")
-                            has_heterocycle = True
-                            break
-
-                    # Check if thiourea is not present in the product (consumed)
-                    thiourea_consumed = not checker.check_fg("Thiourea", product_smiles)
-
-                    # Check if this is a heterocycle formation reaction
-                    is_heterocycle_formation = False
-                    heterocycle_formation_reactions = [
-                        "benzothiazole",
-                        "benzimidazole_derivatives_aldehyde",
-                        "benzoxazole",
-                        "thiazole",
-                    ]
-
-                    for rxn_type in heterocycle_formation_reactions:
-                        if checker.check_reaction(rxn_type, rsmi):
-                            print(f"Found heterocycle formation reaction: {rxn_type}")
-                            is_heterocycle_formation = True
-                            break
-
-                    # If we have a heterocycle in the product, thiourea is consumed,
-                    # and it's a heterocycle formation reaction, then thiourea was used for heterocycle formation
-                    if has_heterocycle and thiourea_consumed and is_heterocycle_formation:
-                        thiourea_used_for_heterocycle = True
-                        print("Confirmed thiourea used for heterocycle formation")
-
-                    # If we can't confirm the reaction type but we see thiourea consumed and heterocycle formed,
-                    # we'll still consider it a match
-                    elif has_heterocycle and thiourea_consumed:
-                        thiourea_used_for_heterocycle = True
-                        print(
-                            "Thiourea likely used for heterocycle formation (reaction type not confirmed)"
-                        )
-
-                except Exception as e:
-                    print(f"Error checking heterocycle formation: {e}")
+                # Record number of fragments at this depth
+                reaction_data.append((depth, len(reactants_smiles)))
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if thiourea was used as a precursor for heterocycle formation
-    return found_thiourea_intermediate and thiourea_used_for_heterocycle
+    # Analyze reaction data to determine if synthesis is linear
+    # In linear synthesis, most steps have 2 or fewer reactants
+    if not reaction_data:
+        return False
+
+    linear_steps = sum(1 for _, num_reactants in reaction_data if num_reactants <= 2)
+    total_steps = len(reaction_data)
+
+    # If more than 75% of steps are linear (2 or fewer reactants), consider it a linear strategy
+    is_linear = (linear_steps / total_steps) >= 0.75
+
+    if is_linear:
+        print(f"Linear fragment assembly detected: {linear_steps}/{total_steps} steps are linear")
+
+    return is_linear

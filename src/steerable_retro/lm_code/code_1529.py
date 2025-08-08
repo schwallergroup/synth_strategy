@@ -2,48 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves the use of trimethylsilyl (TMS)
-    protecting groups throughout the synthesis.
+    Detects if a nitro group persists through multiple steps of the synthesis.
     """
-    tms_found = False
+    nitro_reactions = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal tms_found
+        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            product_smiles = rsmi.split(">")[-1]
 
-        if node["type"] == "mol":
-            if "smiles" in node:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    # Check for TMS group
-                    tms_pattern = Chem.MolFromSmarts("[C][Si]([C])([C])[C]")
-                    if mol.HasSubstructMatch(tms_pattern):
-                        print(f"Found TMS protecting group in molecule at depth {depth}")
-                        tms_found = True
+            # Check for nitro group in product
+            nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
 
-        # Continue traversal
+            if nitro_pattern:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+
+                if product_mol and product_mol.HasSubstructMatch(nitro_pattern):
+                    nitro_reactions.append(depth)
+                    print(f"Nitro group found at depth {depth}")
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return tms_found
+
+    # Check if nitro group persists through at least 2 reactions
+    persists = len(nitro_reactions) >= 2
+
+    if persists:
+        print(f"Nitro group persists through {len(nitro_reactions)} reactions")
+
+    return persists

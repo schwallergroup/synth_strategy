@@ -2,167 +2,115 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves both oxidation and reduction steps.
+    This function detects a strategy involving sequential functional group
+    interconversions at a benzylic position (carboxylic acid → alcohol →
+    chloride → ether) combined with aromatic substitution.
     """
-    oxidation_found = False
-    reduction_found = False
-
-    # Lists of oxidation and reduction reaction types
-    oxidation_reactions = [
-        "Oxidation of aldehydes to carboxylic acids",
-        "Oxidation of ketone to carboxylic acid",
-        "Oxidation of alcohol to carboxylic acid",
-        "Oxidation of primary alcohols",
-        "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones",
-        "Oxidation of alkene to aldehyde",
-        "Oxidation of alkene to carboxylic acid",
-        "Oxidation of alcohol and aldehyde to ester",
-        "Oxidative esterification of primary alcohols",
-        "Quinone formation",
-        "Aromatic hydroxylation",
-        "Sulfanyl to sulfinyl_peroxide",
-        "Sulfanyl to sulfinyl_H2O2",
-    ]
-
-    reduction_reactions = [
-        "Reduction of aldehydes and ketones to alcohols",
-        "Reduction of ester to primary alcohol",
-        "Reduction of ketone to secondary alcohol",
-        "Reduction of carboxylic acid to primary alcohol",
-        "Reduction of nitro groups to amines",
-        "Reduction of nitrile to amine",
-        "Reduction of primary amides to amines",
-        "Reduction of secondary amides to amines",
-        "Reduction of tertiary amides to amines",
-        "Nef reaction (nitro to ketone)",
-        "Azide to amine reduction (Staudinger)",
-    ]
-
-    # Functional group pairs for oxidation/reduction
-    oxidation_fg_pairs = [
-        ("Primary alcohol", "Aldehyde"),
-        ("Primary alcohol", "Carboxylic acid"),
-        ("Secondary alcohol", "Ketone"),
-        ("Aldehyde", "Carboxylic acid"),
-        ("Primary amine", "Nitrile"),
-        ("Primary amine", "Nitro group"),
-        ("Aliphatic thiol", "Sulfoxide"),
-        ("Aliphatic thiol", "Sulfone"),
-    ]
-
-    reduction_fg_pairs = [
-        ("Aldehyde", "Primary alcohol"),
-        ("Ketone", "Secondary alcohol"),
-        ("Carboxylic acid", "Primary alcohol"),
-        ("Ester", "Primary alcohol"),
-        ("Nitrile", "Primary amine"),
-        ("Nitro group", "Primary amine"),
-        ("Azide", "Primary amine"),
-        ("Sulfoxide", "Aliphatic thiol"),
-        ("Sulfone", "Aliphatic thiol"),
-    ]
+    # Track if we've found each transformation
+    found_carboxylic_acid_reduction = False
+    found_alcohol_to_chloride = False
+    found_chloride_to_ether = False
+    found_aryl_halide_to_nitrile = False
 
     def dfs_traverse(node):
-        nonlocal oxidation_found, reduction_found
+        nonlocal found_carboxylic_acid_reduction, found_alcohol_to_chloride
+        nonlocal found_chloride_to_ether, found_aryl_halide_to_nitrile
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for known oxidation reactions
-                for rxn_type in oxidation_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Oxidation detected: {rxn_type} in reaction: {rsmi}")
-                        oxidation_found = True
-                        break
+            # Check for carboxylic acid reduction to alcohol
+            carboxylic_acid_pattern = Chem.MolFromSmarts("[c][C](=O)[OH]")
+            benzylic_alcohol_pattern = Chem.MolFromSmarts("[c][C][OH]")
 
-                # Check for known reduction reactions
-                for rxn_type in reduction_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Reduction detected: {rxn_type} in reaction: {rsmi}")
-                        reduction_found = True
-                        break
+            # Check for alcohol to chloride conversion
+            benzylic_chloride_pattern = Chem.MolFromSmarts("[c][C][Cl]")
 
-                # If no specific reaction type was found, check for functional group transformations
-                if not (oxidation_found and reduction_found):
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+            # Check for chloride to ether conversion
+            benzylic_ether_pattern = Chem.MolFromSmarts("[c][C][O][C]")
 
-                    # Check for oxidation based on functional group changes
-                    if not oxidation_found:
-                        for r_fg, p_fg in oxidation_fg_pairs:
-                            if any(
-                                checker.check_fg(r_fg, r) for r in reactants
-                            ) and checker.check_fg(p_fg, product):
-                                print(f"Oxidation detected: {r_fg} to {p_fg} in reaction: {rsmi}")
-                                oxidation_found = True
-                                break
+            # Check for aryl halide to nitrile conversion
+            aryl_bromide_pattern = Chem.MolFromSmarts("[c][Br]")
+            aryl_nitrile_pattern = Chem.MolFromSmarts("[c][C]#[N]")
 
-                    # Check for reduction based on functional group changes
-                    if not reduction_found:
-                        for r_fg, p_fg in reduction_fg_pairs:
-                            if any(
-                                checker.check_fg(r_fg, r) for r in reactants
-                            ) and checker.check_fg(p_fg, product):
-                                print(f"Reduction detected: {r_fg} to {p_fg} in reaction: {rsmi}")
-                                reduction_found = True
-                                break
+            # Process product molecule
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                # Check reactants
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
+
+                # Check for carboxylic acid reduction
+                if any(
+                    mol.HasSubstructMatch(carboxylic_acid_pattern) for mol in reactant_mols
+                ) and product_mol.HasSubstructMatch(benzylic_alcohol_pattern):
+                    found_carboxylic_acid_reduction = True
+                    print("Found carboxylic acid reduction to benzylic alcohol")
+
+                # Check for alcohol to chloride conversion
+                if any(
+                    mol.HasSubstructMatch(benzylic_alcohol_pattern) for mol in reactant_mols
+                ) and product_mol.HasSubstructMatch(benzylic_chloride_pattern):
+                    found_alcohol_to_chloride = True
+                    print("Found benzylic alcohol to chloride conversion")
+
+                # Check for chloride to ether conversion
+                if any(
+                    mol.HasSubstructMatch(benzylic_chloride_pattern) for mol in reactant_mols
+                ) and product_mol.HasSubstructMatch(benzylic_ether_pattern):
+                    found_chloride_to_ether = True
+                    print("Found benzylic chloride to ether conversion")
+
+                # Check for aryl halide to nitrile conversion
+                if any(
+                    mol.HasSubstructMatch(aryl_bromide_pattern) for mol in reactant_mols
+                ) and product_mol.HasSubstructMatch(aryl_nitrile_pattern):
+                    found_aryl_halide_to_nitrile = True
+                    print("Found aryl halide to nitrile conversion")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    result = oxidation_found and reduction_found
-    print(f"Bidirectional redox strategy detected: {result}")
+    # Strategy is present if we found at least 3 of the 4 transformations
+    transformations_found = sum(
+        [
+            found_carboxylic_acid_reduction,
+            found_alcohol_to_chloride,
+            found_chloride_to_ether,
+            found_aryl_halide_to_nitrile,
+        ]
+    )
+
+    result = transformations_found >= 3
+    print(f"Benzylic functional group interconversion strategy detected: {result}")
     return result

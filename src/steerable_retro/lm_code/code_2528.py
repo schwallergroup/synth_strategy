@@ -2,68 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving late-stage amide coupling with a piperazine fragment.
+    Detects if the synthesis includes a Boc protection step.
+    Looks for formation of a tert-butoxycarbonyl group on nitrogen.
     """
-    # Track if we found the required transformations
-    amide_coupling_with_piperazine = False
+    boc_protection_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_coupling_with_piperazine
+    def dfs_traverse(node):
+        nonlocal boc_protection_found
 
-        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions (low depth)
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                try:
-                    # Convert to RDKit molecules
-                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    product = Chem.MolFromSmiles(product_smiles)
+            # Check if product contains Boc group
+            boc_pattern = Chem.MolFromSmarts("[#7]-[C](=[O])-[O]-C([C])([C])[C]")
 
-                    if product and all(r for r in reactants):
-                        # Check for amide formation
-                        amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
-                        carboxylic_pattern = Chem.MolFromSmarts("[C](=[O])[O;H]")
-                        piperazine_pattern = Chem.MolFromSmarts("[N]1[C][C][N][C][C]1")
+            # Check if reactants include Boc anhydride or similar
+            boc_reagent_pattern = re.compile(r"CC\(C\)\(C\)OC\(=O\)O")
 
-                        # Check if product has amide bond and piperazine
-                        if (
-                            product.HasSubstructMatch(amide_pattern)
-                            and product.HasSubstructMatch(piperazine_pattern)
-                            and any(r.HasSubstructMatch(carboxylic_pattern) for r in reactants)
-                        ):
-                            amide_coupling_with_piperazine = True
-                            print("Detected late-stage amide coupling with piperazine")
-                except:
-                    print("Error processing reaction SMILES")
+            boc_reagent_found = False
+            for reactant in reactants:
+                if boc_reagent_pattern.search(reactant):
+                    boc_reagent_found = True
+                    break
 
-        # Process children with increased depth
+            try:
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(boc_pattern) and boc_reagent_found:
+                    boc_protection_found = True
+                    print("Detected Boc protection step")
+            except:
+                pass
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return amide_coupling_with_piperazine
+    return boc_protection_found

@@ -2,72 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthesis strategy that utilizes phenylacetylene as a key building block,
-    particularly through Sonogashira coupling.
+    Detects a strategy involving the transformation of an ester to an aldehyde.
     """
-    # Initialize tracking variables
-    has_phenylacetylene = False
-    has_sonogashira = False
+    ester_to_aldehyde_found = False
 
     def dfs_traverse(node):
-        nonlocal has_phenylacetylene, has_sonogashira
+        nonlocal ester_to_aldehyde_found
 
-        if node["type"] == "mol":
-            # Check if this molecule is phenylacetylene
-            smiles = node.get("smiles", "")
-            if smiles and node.get("in_stock", False):
-                mol = Chem.MolFromSmiles(smiles)
-                if mol:
-                    phenylacetylene_pattern = Chem.MolFromSmarts("c1ccccc1C#C")
-                    if mol.HasSubstructMatch(phenylacetylene_pattern):
-                        has_phenylacetylene = True
-                        print("Detected phenylacetylene as starting material")
-
-        elif node["type"] == "reaction":
-            # Extract reaction information
+        if (
+            node.get("type") == "reaction"
+            and "metadata" in node
+            and "rsmi" in node.get("metadata", {})
+        ):
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check for Sonogashira coupling
-            if "#" in product_smiles:
-                # Check if one reactant has halogen and another has terminal alkyne
-                has_halogen = any(re.search(r"Br|I|Cl", r) for r in reactants_smiles)
-                has_alkyne = any("#" in r for r in reactants_smiles)
+            # Check for ester in reactants
+            ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])")
 
-                if has_halogen and has_alkyne:
-                    has_sonogashira = True
-                    print("Detected Sonogashira coupling")
+            # Check for aldehyde in product
+            aldehyde_pattern = Chem.MolFromSmarts("[#6;H1]=[#8]")
 
-        # Traverse children
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
+            product = Chem.MolFromSmiles(product_part) if product_part else None
+
+            if product and all(r for r in reactants):
+                has_ester = any(r.HasSubstructMatch(ester_pattern) for r in reactants if r)
+                has_aldehyde = product.HasSubstructMatch(aldehyde_pattern)
+
+                if has_ester and has_aldehyde:
+                    print("Ester to aldehyde transformation detected")
+                    ester_to_aldehyde_found = True
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
     dfs_traverse(route)
 
-    # Check if both required elements are present
-    strategy_detected = has_phenylacetylene and has_sonogashira
+    print(f"Ester to aldehyde transformation found: {ester_to_aldehyde_found}")
 
-    return strategy_detected
+    return ester_to_aldehyde_found

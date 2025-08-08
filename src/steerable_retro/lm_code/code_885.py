@@ -2,53 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route maintains a bromide functional group
-    throughout multiple steps of the synthesis.
+    This function detects Suzuki coupling for biaryl formation.
+    Looks for C-C bond formation between two aromatic rings where one reactant
+    contains a boronic acid and the other is an activated arene.
     """
-    steps_with_bromide = 0
-    total_steps = 0
+    suzuki_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal steps_with_bromide, total_steps
+    def dfs_traverse(node):
+        nonlocal suzuki_detected
 
         if node["type"] == "reaction":
-            total_steps += 1
-            if "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for bromide on aromatic ring
-                bromide_pattern = Chem.MolFromSmarts("[#6;a][Br]")
+                # Check for boronic acid in reactants
+                boronic_acid_pattern = Chem.MolFromSmarts("[c]-[B]([OH])[OH]")
 
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(bromide_pattern):
-                    steps_with_bromide += 1
-                    print(f"Bromide detected in product at depth {depth}")
+                # Check for triflate or halide in reactants
+                leaving_group_pattern = Chem.MolFromSmarts("[c]-[O,F,Cl,Br,I]")
+
+                # Check for biaryl in product
+                biaryl_pattern = Chem.MolFromSmarts("c1ccccc1-c1ccccc1")
+
+                has_boronic_acid = False
+                has_leaving_group = False
+
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(boronic_acid_pattern):
+                            has_boronic_acid = True
+                        if mol and mol.HasSubstructMatch(leaving_group_pattern):
+                            has_leaving_group = True
+                    except:
+                        continue
+
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    has_biaryl = product_mol and product_mol.HasSubstructMatch(biaryl_pattern)
+
+                    if has_boronic_acid and has_leaving_group and has_biaryl:
+                        print("Detected Suzuki coupling for biaryl formation")
+                        suzuki_detected = True
+                except:
+                    pass
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    # Return True if bromide is present in at least 75% of steps
-    return total_steps > 0 and steps_with_bromide / total_steps >= 0.75
+    return suzuki_detected

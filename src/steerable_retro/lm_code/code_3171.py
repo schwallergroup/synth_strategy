@@ -2,87 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a cyclopropanation reaction.
+    Detects if the synthesis route uses a sequence of nucleophilic substitutions,
+    particularly looking for halogen replacement by N or S nucleophiles.
     """
-    cyclopropanation_found = False
+    substitution_reactions = []
 
-    def dfs_traverse(node):
-        nonlocal cyclopropanation_found
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            try:
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check if product contains a cyclopropane
-                if checker.check_ring("cyclopropane", product):
-                    # Check if cyclopropane was already in reactants
-                    cyclopropane_in_reactants = False
+                # Patterns for nucleophilic substitution
+                c_x_pattern = Chem.MolFromSmarts("[#6]-[#17,#35,#53]")  # C-Cl, C-Br, C-I
+                c_n_pattern = Chem.MolFromSmarts("[#6]-[#7]")  # C-N
+                c_s_pattern = Chem.MolFromSmarts("[#6]-[#16]")  # C-S
+
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+
+                    # Check each reactant for halogen pattern
                     for reactant in reactants:
-                        if checker.check_ring("cyclopropane", reactant):
-                            cyclopropane_in_reactants = True
-                            break
+                        if not reactant:
+                            continue
 
-                    if not cyclopropane_in_reactants:
-                        print(f"Cyclopropanation detected in reaction: {rsmi}")
-                        cyclopropanation_found = True
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if not reactant_mol:
+                            continue
 
-        # Continue traversing
+                        # If reactant has C-X bond
+                        if reactant_mol.HasSubstructMatch(c_x_pattern):
+                            # Check if product has new C-N or C-S bonds
+                            if product_mol.HasSubstructMatch(c_n_pattern):
+                                print(f"Nucleophilic substitution: C-X to C-N at depth {depth}")
+                                substitution_reactions.append((depth, "C-N"))
+
+                            if product_mol.HasSubstructMatch(c_s_pattern):
+                                print(f"Nucleophilic substitution: C-X to C-S at depth {depth}")
+                                substitution_reactions.append((depth, "C-S"))
+                except:
+                    pass
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return cyclopropanation_found
+
+    # Check if we have at least 2 nucleophilic substitution reactions
+    return len(substitution_reactions) >= 2

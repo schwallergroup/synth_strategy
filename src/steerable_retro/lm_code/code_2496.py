@@ -2,74 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves early-stage functional group manipulations
-    (at depths 4-5) before heterocycle formation and coupling.
+    This function detects if the synthesis involves a sequence of functional group interconversions:
+    carboxylic acid → ketone → olefin with nitrile.
     """
-    early_fg_manipulation = False
+    # Define patterns for functional groups
+    carboxylic_acid_pattern = Chem.MolFromSmarts("[CX3](=O)[OX2H1]")
+    ketone_pattern = Chem.MolFromSmarts("[#6][CX3](=O)[#6]")
+    cyanoethylidene_pattern = Chem.MolFromSmarts("[#6]=C-C#N")
 
-    def dfs_traverse(node, depth=0):
-        nonlocal early_fg_manipulation
+    # Track if we've seen each transformation
+    carboxylic_acid_to_ketone = False
+    ketone_to_cyanoethylidene = False
 
-        if node["type"] == "reaction" and depth >= 4:
-            # Extract reactants and product
+    def dfs_traverse(node):
+        nonlocal carboxylic_acid_to_ketone, ketone_to_cyanoethylidene
+
+        if node["type"] == "reaction":
             rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
-
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Define patterns for functional group transformations
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2H1]")
-            alcohol_pattern = Chem.MolFromSmarts("[CX4H2][OX2H]")
-            aldehyde_pattern = Chem.MolFromSmarts("[CX3H1](=[OX1])[#6]")
+            product_mol = Chem.MolFromSmiles(product)
 
-            try:
-                reactant_mol = Chem.MolFromSmiles(reactants[0])
-                product_mol = Chem.MolFromSmiles(product)
+            # Check for carboxylic acid to ketone transformation
+            if product_mol and product_mol.HasSubstructMatch(ketone_pattern):
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(carboxylic_acid_pattern):
+                        carboxylic_acid_to_ketone = True
+                        print(f"Carboxylic acid to ketone transformation detected: {rsmi}")
+                        break
 
-                # Check for acid to alcohol or alcohol to aldehyde transformations
-                if reactant_mol and product_mol:
-                    if reactant_mol.HasSubstructMatch(
-                        carboxylic_acid_pattern
-                    ) and product_mol.HasSubstructMatch(alcohol_pattern):
-                        print(
-                            f"Detected early carboxylic acid to alcohol reduction at depth {depth}"
-                        )
-                        early_fg_manipulation = True
+            # Check for ketone to cyanoethylidene transformation
+            if product_mol and product_mol.HasSubstructMatch(cyanoethylidene_pattern):
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(ketone_pattern):
+                        ketone_to_cyanoethylidene = True
+                        print(f"Ketone to cyanoethylidene transformation detected: {rsmi}")
+                        break
 
-                    if reactant_mol.HasSubstructMatch(
-                        alcohol_pattern
-                    ) and product_mol.HasSubstructMatch(aldehyde_pattern):
-                        print(f"Detected early alcohol to aldehyde oxidation at depth {depth}")
-                        early_fg_manipulation = True
-            except:
-                pass
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return early_fg_manipulation
+
+    # The strategy is detected if both transformations are present
+    strategy_detected = carboxylic_acid_to_ketone and ketone_to_cyanoethylidene
+    print(f"Functional group interconversion sequence detected: {strategy_detected}")
+    return strategy_detected

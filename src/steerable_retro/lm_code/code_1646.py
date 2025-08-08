@@ -2,72 +2,146 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects late-stage amide coupling (amine + carboxylic acid).
+    This function detects direct C-H functionalization to form an aldehyde.
     """
-    has_late_stage_amide_coupling = False
+    ch_to_aldehyde_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_late_stage_amide_coupling
+        nonlocal ch_to_aldehyde_detected
 
-        if node["type"] == "reaction" and depth <= 1:  # Late stage = low depth
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for amine and carboxylic acid in reactants
-                amine_pattern = Chem.MolFromSmarts("c[NH2]")
-                carboxylic_pattern = Chem.MolFromSmarts("[#6]C(=O)[OH]")
+                # Check if product contains aldehyde
+                if checker.check_fg("Aldehyde", product_smiles):
+                    # Check if any reactant does NOT contain aldehyde
+                    reactant_without_aldehyde = False
+                    for reactant in reactants_smiles:
+                        if not checker.check_fg("Aldehyde", reactant):
+                            reactant_without_aldehyde = True
+                            break
 
-                # Check for amide in product
-                amide_pattern = Chem.MolFromSmarts("[NH]C(=O)")
+                    if reactant_without_aldehyde:
+                        # Check for specific C-H functionalization reactions
+                        if (
+                            checker.check_reaction("Oxidation of alkene to aldehyde", rsmi)
+                            or checker.check_reaction("Oxidation of alcohol to aldehyde", rsmi)
+                            or checker.check_reaction("Aromatic hydroxylation", rsmi)
+                            or checker.check_reaction("Directed ortho metalation of arenes", rsmi)
+                            or checker.check_reaction("Hydration of alkyne to aldehyde", rsmi)
+                            or checker.check_reaction("Bouveault aldehyde synthesis", rsmi)
+                            or checker.check_reaction(
+                                "Homologation of aldehydes with formaldehyde", rsmi
+                            )
+                            or checker.check_reaction(
+                                "Homologation of diazo compounds to aldehydes using formaldehyde",
+                                rsmi,
+                            )
+                        ):
 
-                has_amine = False
-                has_carboxylic = False
-                has_amide = False
+                            print(f"Detected C-H functionalization to aldehyde at depth {depth}")
+                            print(f"Reaction SMILES: {rsmi}")
+                            ch_to_aldehyde_detected = True
+                            return
 
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            if mol.HasSubstructMatch(amine_pattern):
-                                has_amine = True
-                            if mol.HasSubstructMatch(carboxylic_pattern):
-                                has_carboxylic = True
-                    except:
-                        continue
+                        # Check for primary alcohol oxidation (common C-H functionalization equivalent)
+                        for reactant in reactants_smiles:
+                            if checker.check_fg("Primary alcohol", reactant):
+                                print(
+                                    f"Detected primary alcohol oxidation to aldehyde at depth {depth}"
+                                )
+                                print(f"Reaction SMILES: {rsmi}")
+                                ch_to_aldehyde_detected = True
+                                return
 
-                try:
-                    mol = Chem.MolFromSmiles(product)
-                    if mol and mol.HasSubstructMatch(amide_pattern):
-                        has_amide = True
-                except:
-                    pass
+                        # Additional check for general C-H functionalization
+                        # by comparing atom counts and checking for aldehyde formation
+                        product_mol = Chem.MolFromSmiles(product_smiles)
+                        for reactant in reactants_smiles:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol and product_mol:
+                                # Check if atom count difference is small (typical for C-H functionalization)
+                                if abs(reactant_mol.GetNumAtoms() - product_mol.GetNumAtoms()) <= 5:
+                                    # Ensure we're not just detecting a simple functional group conversion
+                                    if not (
+                                        checker.check_fg("Ketone", reactant)
+                                        or checker.check_fg("Carboxylic acid", reactant)
+                                        or checker.check_fg("Ester", reactant)
+                                        or checker.check_fg("Nitrile", reactant)
+                                        or checker.check_fg("Amide", reactant)
+                                        or checker.check_fg("Acyl halide", reactant)
+                                    ):
 
-                if has_amine and has_carboxylic and has_amide:
-                    print("Detected late-stage amide coupling")
-                    has_late_stage_amide_coupling = True
+                                        # Check for alkyne or alkene that could be oxidized to aldehyde
+                                        if (
+                                            checker.check_fg("Alkyne", reactant)
+                                            or checker.check_fg("Alkene", reactant)
+                                            or checker.check_fg("Allyl", reactant)
+                                            or checker.check_fg("Vinyl", reactant)
+                                        ):
+                                            print(
+                                                f"Detected potential C-H functionalization to aldehyde at depth {depth}"
+                                            )
+                                            print(f"Reaction SMILES: {rsmi}")
+                                            ch_to_aldehyde_detected = True
+                                            return
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -75,4 +149,5 @@ def main(route):
 
     # Start traversal from the root
     dfs_traverse(route)
-    return has_late_stage_amide_coupling
+
+    return ch_to_aldehyde_detected

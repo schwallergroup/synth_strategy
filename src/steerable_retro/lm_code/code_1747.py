@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,90 +54,85 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects formation of an ester with a tertiary alcohol containing two thiophene rings.
+    This function detects if the synthesis route involves aromatic cyanation
+    (replacement of aryl halide with nitrile).
     """
-    found_bis_thiophene_ester = False
+    has_aromatic_cyanation = False
 
-    def dfs_traverse(node):
-        nonlocal found_bis_thiophene_ester
+    def dfs_traverse(node, depth=0):
+        nonlocal has_aromatic_cyanation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            products_part = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            print(f"Examining reaction: {rsmi}")
+                # Check if any reactant has an aromatic halide
+                has_aryl_halide = False
+                has_cyanide_source = False
 
-            # Check for esterification or related reactions
-            is_esterification = checker.check_reaction("Esterification of Carboxylic Acids", rsmi)
-            is_hydrolysis = checker.check_reaction(
-                "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
-            )
+                for reactant in reactants:
+                    if checker.check_fg("Aromatic halide", reactant):
+                        has_aryl_halide = True
+                        print(f"Found aromatic halide in reactant: {reactant}")
 
-            if is_esterification or is_hydrolysis:
-                print(f"Found {'esterification' if is_esterification else 'hydrolysis'} reaction")
+                    # Check for potential cyanide sources - look for CN, metal cyanides, etc.
+                    if (
+                        "CN" in reactant
+                        or "C#N" in reactant
+                        or "N#C" in reactant
+                        or "[N-]" in reactant
+                    ):
+                        has_cyanide_source = True
+                        print(f"Found potential cyanide source: {reactant}")
 
-                # For esterification: alcohol in reactants, ester in products
-                # For hydrolysis: ester in reactants, alcohol in products
-                alcohol_molecules = (
-                    reactants_part.split(".") if is_esterification else products_part.split(".")
-                )
-                ester_molecules = (
-                    products_part.split(".") if is_esterification else reactants_part.split(".")
-                )
+                # Check for nitrile in product
+                has_nitrile_product = checker.check_fg("Nitrile", product)
+                if has_nitrile_product:
+                    print(f"Found nitrile in product: {product}")
 
-                # Look for tertiary alcohol with two thiophene rings
-                for mol_smiles in alcohol_molecules:
-                    print(f"Checking molecule for tertiary alcohol: {mol_smiles}")
+                    # Verify this is a cyanation reaction
+                    if has_aryl_halide and has_cyanide_source:
+                        print("Found both aromatic halide and cyanide source")
 
-                    if checker.check_fg("Tertiary alcohol", mol_smiles):
-                        print("Found tertiary alcohol")
+                        # Try to check if this is a known reaction type
+                        if checker.check_reaction("Aromatic dehalogenation", rsmi):
+                            print(f"Detected aromatic dehalogenation at depth {depth}")
+                            has_aromatic_cyanation = True
+                        else:
+                            # Perform additional checks to confirm cyanation
+                            product_mol = Chem.MolFromSmiles(product)
 
-                        # Check for thiophene rings
-                        if checker.check_ring("thiophene", mol_smiles):
-                            thiophene_indices = checker.get_ring_atom_indices(
-                                "thiophene", mol_smiles
-                            )
-                            thiophene_count = len(thiophene_indices)
-                            print(f"Found {thiophene_count} thiophene rings")
+                            # Check if the product has an aromatic ring with a nitrile attached
+                            if product_mol:
+                                aryl_nitrile_pattern = Chem.MolFromSmarts("c-C#N")
+                                if product_mol.HasSubstructMatch(aryl_nitrile_pattern):
+                                    print(f"Found aryl-nitrile pattern in product")
 
-                            if thiophene_count >= 2:
-                                print("Found tertiary alcohol with at least 2 thiophene rings")
+                                    # If we have an aromatic ring with nitrile and had aryl halide in reactants
+                                    # plus a cyanide source, it's likely an aromatic cyanation
+                                    has_aromatic_cyanation = True
+                                    print(
+                                        f"Detected aromatic cyanation based on structural analysis at depth {depth}"
+                                    )
 
-                                # Check if there's a corresponding ester
-                                for ester_smiles in ester_molecules:
-                                    if checker.check_fg("Ester", ester_smiles):
-                                        print(
-                                            "Found ester in the corresponding part of the reaction"
-                                        )
-                                        found_bis_thiophene_ester = True
-                                        return  # Early return once found
-
-            # Also check for other reactions that might form this specific ester
-            for reactant in reactants_part.split("."):
-                if checker.check_fg("Tertiary alcohol", reactant) and checker.check_ring(
-                    "thiophene", reactant
-                ):
-                    thiophene_indices = checker.get_ring_atom_indices("thiophene", reactant)
-                    if len(thiophene_indices) >= 2:
-                        print("Found tertiary alcohol with at least 2 thiophene rings in reactants")
-
-                        for product in products_part.split("."):
-                            if checker.check_fg("Ester", product) and checker.check_ring(
-                                "thiophene", product
-                            ):
-                                product_thiophene_indices = checker.get_ring_atom_indices(
-                                    "thiophene", product
+                    # Even if we don't have explicit cyanide source in reactants, check the transformation
+                    elif has_aryl_halide and has_nitrile_product:
+                        # Check if the product has an aromatic ring with a nitrile attached
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol:
+                            aryl_nitrile_pattern = Chem.MolFromSmarts("c-C#N")
+                            if product_mol.HasSubstructMatch(aryl_nitrile_pattern):
+                                print(
+                                    f"Found aryl-nitrile pattern in product with aromatic halide in reactants"
                                 )
-                                if len(product_thiophene_indices) >= 2:
-                                    print("Found ester with at least 2 thiophene rings in products")
-                                    found_bis_thiophene_ester = True
-                                    return  # Early return once found
+                                # This is likely a cyanation even if we don't see the cyanide source
+                                has_aromatic_cyanation = True
+                                print(f"Detected probable aromatic cyanation at depth {depth}")
 
-        # Continue traversing if not found yet
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return found_bis_thiophene_ester
+    return has_aromatic_cyanation

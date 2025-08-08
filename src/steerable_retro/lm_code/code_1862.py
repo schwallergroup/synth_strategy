@@ -2,67 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving nitro reduction to form amines
-    as key intermediates in the synthesis.
+    Detects if the synthesis involves formation of an aryl ether (C-O-C where one C is aromatic).
+    Looks for reactions where a hydroxyl group and aryl halide form an ether.
     """
-    found_nitro_reduction = False
+    found_ether_formation = False
 
-    def dfs_traverse(node):
-        nonlocal found_nitro_reduction
+    def dfs_traverse(node, depth=0):
+        nonlocal found_ether_formation
 
         if node["type"] == "reaction":
-            # Extract reaction information
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for nitro reduction
-            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                # Patterns for hydroxyl and aryl halide
+                hydroxyl_pattern = Chem.MolFromSmarts("[OH]")
+                aryl_halide_pattern = Chem.MolFromSmarts("c[Br,I,Cl]")
 
-            # Nitro pattern
-            nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])-[O-]")
-            # Amine pattern
-            amine_pattern = Chem.MolFromSmarts("[#6]-[NH2]")
+                # Check for hydroxyl and aryl halide in reactants
+                has_hydroxyl = False
+                has_aryl_halide = False
 
-            # Check if reactants have nitro groups and product has amines
-            reactants_have_nitro = any(
-                r is not None and r.HasSubstructMatch(nitro_pattern) for r in reactants_mols
-            )
-            product_has_amine = product_mol is not None and product_mol.HasSubstructMatch(
-                amine_pattern
-            )
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if not mol:
+                        continue
+                    if mol.HasSubstructMatch(hydroxyl_pattern):
+                        has_hydroxyl = True
+                    if mol.HasSubstructMatch(aryl_halide_pattern):
+                        has_aryl_halide = True
 
-            if reactants_have_nitro and product_has_amine:
-                found_nitro_reduction = True
-                print("Found nitro reduction to amine")
+                # Check for aryl ether in product
+                product_mol = Chem.MolFromSmiles(product)
+                aryl_ether_pattern = Chem.MolFromSmarts("c-[#8]-[#6]")
+                has_aryl_ether = product_mol and product_mol.HasSubstructMatch(aryl_ether_pattern)
+
+                if has_hydroxyl and has_aryl_halide and has_aryl_ether:
+                    found_ether_formation = True
+                    print(f"Detected aryl ether formation at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return found_nitro_reduction
+    return found_ether_formation

@@ -2,86 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy where a nitro group is reduced to an amine and then
-    further functionalized to a tertiary amine.
+    This function detects early-stage aromatic nucleophilic substitution (SNAr).
     """
-    # Track if we found the required transformations
-    found_nitro_to_amine = False
-    found_amine_to_tertiary = False
+    snar_detected = False
 
     def dfs_traverse(node):
-        nonlocal found_nitro_to_amine, found_amine_to_tertiary
+        nonlocal snar_detected
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Parse molecules
+            # Check if this is an early-stage reaction (depth >= 5)
+            if "depth" in node["metadata"] and node["metadata"].get("depth", -1) >= 5:
                 try:
-                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
-                    product = Chem.MolFromSmiles(product_smiles)
+                    # Look for patterns indicating SNAr
+                    # Typically involves F/Cl/etc. on aromatic being replaced with OR/NR2/etc.
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            # SMARTS for aromatic with F/Cl
+                            halo_aromatic = Chem.MolFromSmarts("c[F,Cl]")
 
-                    # Check for nitro to amine transformation
-                    nitro_pattern = Chem.MolFromSmarts("[#7+](=[O])[O-]")
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
+                            # Check if reactant has halo-aromatic
+                            if reactant_mol.HasSubstructMatch(halo_aromatic):
+                                product_mol = Chem.MolFromSmiles(product)
+                                # SMARTS for aromatic with OR
+                                ether_aromatic = Chem.MolFromSmarts("cO[C,c]")
 
-                    reactants_have_nitro = any(
-                        r.HasSubstructMatch(nitro_pattern) for r in reactants if r is not None
-                    )
-                    product_has_amine = product is not None and product.HasSubstructMatch(
-                        amine_pattern
-                    )
-
-                    if reactants_have_nitro and product_has_amine:
-                        print("Found nitro to amine transformation")
-                        found_nitro_to_amine = True
-
-                    # Check for amine to tertiary amine transformation
-                    tertiary_amine_pattern = Chem.MolFromSmarts("[#7]([#6])([#6])")
-
-                    reactants_have_amine = any(
-                        r.HasSubstructMatch(amine_pattern) for r in reactants if r is not None
-                    )
-                    product_has_tertiary_amine = product is not None and product.HasSubstructMatch(
-                        tertiary_amine_pattern
-                    )
-
-                    if reactants_have_amine and product_has_tertiary_amine:
-                        print("Found amine to tertiary amine transformation")
-                        found_amine_to_tertiary = True
-
+                                # Check if product has ether-aromatic
+                                if product_mol and product_mol.HasSubstructMatch(ether_aromatic):
+                                    print("Detected aromatic nucleophilic substitution")
+                                    snar_detected = True
+                                    break
                 except:
-                    print(f"Error processing reaction SMILES: {rsmi}")
+                    pass
 
-        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Strategy is present if both transformations are found
-    return found_nitro_to_amine and found_amine_to_tertiary
+    return snar_detected

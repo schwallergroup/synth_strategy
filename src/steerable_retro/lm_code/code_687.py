@@ -2,91 +2,107 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a strategy involving early-stage protections and
-    late-stage deprotections in the synthetic route.
+    Detects a strategy where stereocenters are formed during the synthesis.
     """
-    protection_steps = []
-    deprotection_steps = []
-    max_depth = 0
+    # Track if we found stereocenter formation
+    stereocenter_formation_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal protection_steps, deprotection_steps, max_depth
-        max_depth = max(max_depth, depth)
+        nonlocal stereocenter_formation_found
 
         if node["type"] == "reaction":
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+                # Check for stereocenter formation
+                try:
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
+                    product_mol = Chem.MolFromSmiles(product_part) if product_part else None
 
-                if product and all(r is not None for r in reactants):
-                    # Check for protection steps
-                    # Acetylation
-                    acetyl_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
-                    acetamide_pattern = Chem.MolFromSmarts("NC(=O)C")
+                    if all(reactant_mols) and product_mol:
+                        # Count stereocenters in reactants and product
+                        reactant_stereocenters = sum(
+                            len(Chem.FindMolChiralCenters(mol, includeUnassigned=True))
+                            for mol in reactant_mols
+                        )
+                        product_stereocenters = len(
+                            Chem.FindMolChiralCenters(product_mol, includeUnassigned=True)
+                        )
 
-                    if (
-                        any(r.HasSubstructMatch(acetyl_chloride_pattern) for r in reactants)
-                        and any(r.HasSubstructMatch(amine_pattern) for r in reactants)
-                        and product.HasSubstructMatch(acetamide_pattern)
-                    ):
-                        protection_steps.append(depth)
-                        print(f"Found acetylation protection at depth {depth}")
+                        print(
+                            f"Depth {depth}: Reactant stereocenters: {reactant_stereocenters}, Product stereocenters: {product_stereocenters}"
+                        )
 
-                    # Esterification
-                    carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
-                    methyl_ester_pattern = Chem.MolFromSmarts("[C](=O)[O][CH3]")
-                    tbutyl_ester_pattern = Chem.MolFromSmarts("[C](=O)[O]C(C)(C)C")
+                        # Check for stereocenter formation (in retrosynthesis, reactants have more stereocenters)
+                        if reactant_stereocenters > product_stereocenters:
+                            stereocenter_formation_found = True
+                            print(f"Stereocenter formation detected at depth {depth}")
 
-                    if (
-                        product.HasSubstructMatch(methyl_ester_pattern)
-                        or product.HasSubstructMatch(tbutyl_ester_pattern)
-                    ) and any(r.HasSubstructMatch(carboxylic_acid_pattern) for r in reactants):
-                        protection_steps.append(depth)
-                        print(f"Found esterification protection at depth {depth}")
-
-                    # Check for deprotection steps
-                    # Boc deprotection
-                    boc_pattern = Chem.MolFromSmarts("[NH][C](=O)[O]C(C)(C)C")
-
-                    if any(
-                        r.HasSubstructMatch(boc_pattern) for r in reactants
-                    ) and product.HasSubstructMatch(amine_pattern):
-                        deprotection_steps.append(depth)
-                        print(f"Found Boc deprotection at depth {depth}")
-
-                    # Ester hydrolysis
-                    if (
-                        any(r.HasSubstructMatch(methyl_ester_pattern) for r in reactants)
-                        or any(r.HasSubstructMatch(tbutyl_ester_pattern) for r in reactants)
-                    ) and product.HasSubstructMatch(carboxylic_acid_pattern):
-                        deprotection_steps.append(depth)
-                        print(f"Found ester hydrolysis at depth {depth}")
+                        # Check for specific stereoselective reactions
+                        if (
+                            checker.check_reaction("Diels-Alder", rsmi)
+                            or checker.check_reaction("aldol condensation", rsmi)
+                            or checker.check_reaction("Sharpless epoxidation", rsmi)
+                            or checker.check_reaction("asymmetric hydrogenation", rsmi)
+                        ):
+                            stereocenter_formation_found = True
+                            print(f"Stereocenter-forming reaction detected at depth {depth}")
+                except Exception as e:
+                    print(f"Error processing reaction at depth {depth}: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -95,18 +111,5 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Sort steps by depth
-    protection_steps.sort(reverse=True)  # Higher depth = earlier in synthesis
-    deprotection_steps.sort()  # Lower depth = later in synthesis
-
-    # Check if we have early protections and late deprotections
-    has_early_protection = any(depth > max_depth / 2 for depth in protection_steps)
-    has_late_deprotection = any(depth <= max_depth / 2 for depth in deprotection_steps)
-
-    print(f"Protection steps: {protection_steps}")
-    print(f"Deprotection steps: {deprotection_steps}")
-    print(f"Max depth: {max_depth}")
-    print(f"Early protection: {has_early_protection}")
-    print(f"Late deprotection: {has_late_deprotection}")
-
-    return has_early_protection and has_late_deprotection
+    print(f"Stereocenter formation strategy detection result: {stereocenter_formation_found}")
+    return stereocenter_formation_found

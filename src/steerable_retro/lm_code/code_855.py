@@ -2,66 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving activation of an alcohol
-    to a chloride (OH → Cl) as a leaving group.
+    This function detects if the synthetic route involves amide formation
+    in the late stages of the synthesis.
     """
-    alcohol_to_chloride_detected = False
+    amide_formation_depths = []
 
-    def dfs_traverse(node):
-        nonlocal alcohol_to_chloride_detected
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                # Check for amide formation patterns
+                product_mol = Chem.MolFromSmiles(product)
+                amide_pattern = Chem.MolFromSmarts("C(=O)N")
 
-            # Check for alcohol to chloride conversion
-            alcohol_pattern = Chem.MolFromSmarts("[#8H1][#6]")
-            chloride_pattern = Chem.MolFromSmarts("[Cl][#6]")
+                if product_mol and product_mol.HasSubstructMatch(amide_pattern):
+                    # Check if this is a new amide formation
+                    amine_pattern = Chem.MolFromSmarts("[NH2]")
+                    acid_pattern = Chem.MolFromSmarts("C(=O)O")
+                    acid_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                    has_amine = False
+                    has_acid_or_derivative = False
 
-            if (
-                product_mol
-                and any(r and r.HasSubstructMatch(alcohol_pattern) for r in reactant_mols)
-                and product_mol.HasSubstructMatch(chloride_pattern)
-            ):
-                # Additional check to confirm it's an alcohol to chloride conversion
-                # Look for OH disappearance and Cl appearance
-                if any(
-                    r and r.HasSubstructMatch(alcohol_pattern) for r in reactant_mols
-                ) and not any(r and r.HasSubstructMatch(chloride_pattern) for r in reactant_mols):
-                    print(f"Detected alcohol to chloride conversion: {rsmi}")
-                    alcohol_to_chloride_detected = True
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if reactant_mol.HasSubstructMatch(amine_pattern):
+                                has_amine = True
+                            if reactant_mol.HasSubstructMatch(
+                                acid_pattern
+                            ) or reactant_mol.HasSubstructMatch(acid_chloride_pattern):
+                                has_acid_or_derivative = True
+
+                    if has_amine and has_acid_or_derivative:
+                        amide_formation_depths.append(depth)
+                        print(f"Amide formation detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Alcohol activation to chloride strategy detected: {alcohol_to_chloride_detected}")
-    return alcohol_to_chloride_detected
+    # Check if there's an amide formation at depth 0-2 (late stage)
+    return any(depth <= 2 for depth in amide_formation_depths)

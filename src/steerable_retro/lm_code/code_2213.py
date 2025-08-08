@@ -2,69 +2,122 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
-def main(route, min_rings=3):
+def main(route):
     """
-    Detects if the final product contains at least the specified number of aromatic rings.
+    This function detects if the synthesis begins with a nitroaldol condensation (C-C bond formation).
+    Early stage corresponds to high depth in the retrosynthetic tree.
     """
-    ring_count = 0
+    # Track if we found a Henry reaction and at what depth
+    found_henry_reaction = False
+    henry_reaction_depth = 0
+    max_depth_found = 0
 
-    def count_aromatic_rings(mol):
-        if not mol:
-            return 0
+    def is_nitroaldol_condensation(rsmi):
+        """Helper function to identify nitroaldol condensations based on functional groups"""
+        try:
+            # Split reaction SMILES into reactants and products
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        # Find all aromatic rings
-        ring_info = mol.GetRingInfo().AtomRings()
-        aromatic_ring_count = 0
+            # Check if any reactant has a nitro group
+            has_nitro_reactant = any(checker.check_fg("Nitro group", r) for r in reactants_smiles)
 
-        for ring in ring_info:
-            is_aromatic = True
-            for atom_idx in ring:
-                atom = mol.GetAtomWithIdx(atom_idx)
-                if not atom.GetIsAromatic():
-                    is_aromatic = False
-                    break
-            if is_aromatic:
-                aromatic_ring_count += 1
-                print(f"Found aromatic ring: {[i for i in ring]}")
+            # Check if any reactant has an aldehyde
+            has_aldehyde_reactant = any(checker.check_fg("Aldehyde", r) for r in reactants_smiles)
 
-        return aromatic_ring_count
+            # If both nitro and aldehyde are present in reactants, it's likely a nitroaldol condensation
+            if has_nitro_reactant and has_aldehyde_reactant:
+                print(f"Detected nitroaldol condensation pattern in: {rsmi}")
+                return True
+
+            return False
+        except Exception as e:
+            print(f"Error in is_nitroaldol_condensation: {e}")
+            return False
 
     def dfs_traverse(node, depth=0):
-        nonlocal ring_count
+        nonlocal found_henry_reaction, henry_reaction_depth, max_depth_found
 
-        if depth == 0 and node["type"] == "mol" and "smiles" in node:
-            print(f"Analyzing final product with SMILES: {node['smiles']}")
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                ring_count = count_aromatic_rings(mol)
-                print(f"Found {ring_count} aromatic rings in final product")
-            else:
-                print(f"Error: Could not parse SMILES string: {node['smiles']}")
+        # Update max depth
+        max_depth_found = max(max_depth_found, depth)
+
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
+
+            # Check if this is a Henry Reaction using the checker or by functional group pattern
+            if checker.check_reaction("Henry Reaction", rsmi) or is_nitroaldol_condensation(rsmi):
+                print(f"Found nitroaldol condensation at depth {depth}")
+                found_henry_reaction = True
+                henry_reaction_depth = depth
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Traverse the route to find Henry reactions and max depth
     dfs_traverse(route)
-    result = ring_count >= min_rings
-    print(f"Result: {result} (Found {ring_count} rings, minimum required: {min_rings})")
-    return result
+
+    # Determine if the Henry reaction is in the early stage (high depth)
+    # Consider it early stage if it's within 3 levels of the maximum depth
+    early_stage_henry = found_henry_reaction and henry_reaction_depth >= max_depth_found - 3
+
+    print(f"Max depth found: {max_depth_found}")
+    print(
+        f"Nitroaldol condensation depth: {henry_reaction_depth if found_henry_reaction else 'Not found'}"
+    )
+    print(f"Early nitroaldol condensation strategy: {early_stage_henry}")
+
+    return early_stage_henry

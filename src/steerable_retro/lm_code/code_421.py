@@ -2,93 +2,112 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves an amine protection-deprotection sequence,
-    specifically looking for Cbz (carbamate) protection.
+    Detects if the morpholine ring is preserved throughout the synthesis.
+    This means that once the morpholine ring is introduced, it remains intact
+    in all subsequent steps leading to the final product.
     """
-    protection_depth = None
-    deprotection_depth = None
+    # Track when morpholine is first introduced and if it's preserved
+    morpholine_introduced = False
+    morpholine_preserved = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal protection_depth, deprotection_depth
+    def dfs_traverse(node, depth=0, parent_has_morpholine=False):
+        nonlocal morpholine_introduced, morpholine_preserved
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node:
+            # Check if this molecule has a morpholine ring
+            has_morpholine = checker.check_ring("morpholine", node["smiles"])
 
-            # Check for carbamate protection (amine + Cbz-Cl → N-Cbz)
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            carbamate_pattern = Chem.MolFromSmarts("[N][C](=[O])[O][C]")
+            # Skip checking in-stock molecules (starting materials)
+            if node.get("in_stock", False):
+                print(f"Skipping in-stock molecule at depth {depth}: {node['smiles']}")
+                return
 
-            # Check for amine in reactants
-            amine_in_reactants = False
-            for reactant in reactants_smiles:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2]")):
-                    amine_in_reactants = True
-                    break
+            # If parent had morpholine but this molecule doesn't, preservation failed
+            if parent_has_morpholine and not has_morpholine:
+                morpholine_preserved = False
+                print(f"Morpholine lost at depth {depth} in molecule {node['smiles']}")
 
-            # Protection: amine → carbamate
-            if (
-                product_mol
-                and product_mol.HasSubstructMatch(carbamate_pattern)
-                and amine_in_reactants
-            ):
-                protection_depth = depth
-                print(f"Amine protection detected at depth {depth}")
+            # If this molecule has morpholine, mark it as introduced
+            if has_morpholine:
+                morpholine_introduced = True
+                print(f"Morpholine found at depth {depth} in molecule {node['smiles']}")
 
-            # Deprotection: carbamate → amine
-            carbamate_in_reactants = False
-            for reactant in reactants_smiles:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(carbamate_pattern):
-                    carbamate_in_reactants = True
-                    break
+        # Continue traversing with updated parent_has_morpholine status
+        current_has_morpholine = False
+        if node["type"] == "mol" and "smiles" in node:
+            current_has_morpholine = checker.check_ring("morpholine", node["smiles"])
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if (
-                product_mol
-                and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2]"))
-                and carbamate_in_reactants
-            ):
-                deprotection_depth = depth
-                print(f"Amine deprotection detected at depth {depth}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, depth + 1, current_has_morpholine)
+
+    # First check if the target molecule contains morpholine
+    target_has_morpholine = checker.check_ring("morpholine", route["smiles"])
+    if not target_has_morpholine:
+        print(f"Target molecule does not contain morpholine: {route['smiles']}")
+        return False
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if both protection and deprotection were found, and protection happened before deprotection
-    has_protection_deprotection = (
-        protection_depth is not None
-        and deprotection_depth is not None
-        and protection_depth > deprotection_depth
-    )
-
-    print(f"Amine protection-deprotection sequence: {has_protection_deprotection}")
-    print(f"Protection depth: {protection_depth}, Deprotection depth: {deprotection_depth}")
-    return has_protection_deprotection
+    # Return True if morpholine was introduced and preserved throughout
+    if morpholine_introduced and morpholine_preserved:
+        print("Morpholine preserved throughout synthesis after introduction")
+        return True
+    elif not morpholine_introduced:
+        print("Morpholine not found in any non-stock molecules in the route")
+        return False
+    else:
+        print("Morpholine was introduced but not preserved throughout synthesis")
+        return False

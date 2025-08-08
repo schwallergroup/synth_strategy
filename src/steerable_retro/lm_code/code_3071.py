@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,149 +54,93 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a strategy involving introduction and manipulation of a formyl group.
+    This function detects a strategy involving ester hydrolysis.
     """
-    found_formyl_introduction = False
-    found_formyl_manipulation = False
-
-    # Store reactions for analysis
-    formyl_introduction_reactions = []
-    formyl_manipulation_reactions = []
+    has_ester_hydrolysis = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_formyl_introduction, found_formyl_manipulation
+        nonlocal has_ester_hydrolysis
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            # Extract product and reactants
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for formyl group presence
-                product_has_formyl = checker.check_fg("Formaldehyde", product) or checker.check_fg(
-                    "Aldehyde", product
-                )
-                reactants_have_formyl = any(
-                    checker.check_fg("Formaldehyde", r) or checker.check_fg("Aldehyde", r)
-                    for r in reactants
+                print(f"Checking reaction at depth {depth}: {rsmi}")
+
+                # Check if this is an ester hydrolysis reaction - check multiple reaction types
+                is_hydrolysis = (
+                    checker.check_reaction(
+                        "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+                    )
+                    or checker.check_reaction("Ester saponification (methyl deprotection)", rsmi)
+                    or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
+                    or checker.check_reaction("COOH ethyl deprotection", rsmi)
                 )
 
-                # Check for formyl introduction (typically early in synthesis)
-                if depth >= 2:  # More flexible depth threshold
-                    # Check for formylation reactions
-                    is_formylation = (
-                        checker.check_reaction("Carbonylation with aryl formates", rsmi)
-                        or checker.check_reaction("Bouveault aldehyde synthesis", rsmi)
-                        or checker.check_reaction("Oxidation of alkene to aldehyde", rsmi)
-                        or checker.check_reaction("Oxidation of primary alcohol to aldehyde", rsmi)
-                        or checker.check_reaction(
-                            "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones",
-                            rsmi,
-                        )
-                        or checker.check_reaction("Hydration of alkyne to aldehyde", rsmi)
+                if is_hydrolysis:
+                    print(f"Found potential ester hydrolysis reaction at depth {depth}")
+
+                    # Verify ester and carboxylic acid presence
+                    has_ester = False
+                    has_acid = False
+
+                    # Check reactants
+                    for reactant in reactants_smiles:
+                        if checker.check_fg("Ester", reactant):
+                            has_ester = True
+                            print(f"Found ester in reactant: {reactant}")
+                        if checker.check_fg("Carboxylic acid", reactant):
+                            has_acid = True
+                            print(f"Found carboxylic acid in reactant: {reactant}")
+
+                    # Check product
+                    if checker.check_fg("Ester", product_smiles):
+                        has_ester = True
+                        print(f"Found ester in product: {product_smiles}")
+                    if checker.check_fg("Carboxylic acid", product_smiles):
+                        has_acid = True
+                        print(f"Found carboxylic acid in product: {product_smiles}")
+
+                    # Confirm ester hydrolysis if both functional groups are present
+                    if has_ester and has_acid:
+                        has_ester_hydrolysis = True
+                        print(f"Confirmed ester hydrolysis at depth {depth}")
+
+                # Even if not detected by reaction type, check for pattern of ester to acid conversion
+                else:
+                    # Check if reactants contain ester and product contains acid
+                    has_ester_in_reactants = any(
+                        checker.check_fg("Ester", r) for r in reactants_smiles
+                    )
+                    has_acid_in_product = checker.check_fg("Carboxylic acid", product_smiles)
+
+                    # Check if product contains ester and reactants contain acid (retrosynthetic direction)
+                    has_ester_in_product = checker.check_fg("Ester", product_smiles)
+                    has_acid_in_reactants = any(
+                        checker.check_fg("Carboxylic acid", r) for r in reactants_smiles
                     )
 
-                    # Check for common formylating agents in reactants
-                    has_formylating_agent = any(
-                        checker.check_fg("Formaldehyde", r)
-                        or "CN(C)C=O" in r  # DMF
-                        or "OC=O" in r  # Formic acid
-                        or "C(=O)Cl" in r  # Formyl chloride
-                        for r in reactants
-                    )
-
-                    if (
-                        (product_has_formyl and not reactants_have_formyl)
-                        or is_formylation
-                        or (has_formylating_agent and product_has_formyl)
+                    # Check for ester hydrolysis pattern in either direction
+                    if (has_ester_in_reactants and has_acid_in_product) or (
+                        has_ester_in_product and has_acid_in_reactants
                     ):
-                        found_formyl_introduction = True
-                        formyl_introduction_reactions.append((rsmi, depth))
-                        print(f"Found formyl group introduction at depth {depth}")
-                        print(f"Reaction SMILES: {rsmi}")
+                        print(
+                            f"Detected ester hydrolysis pattern at depth {depth} without specific reaction type"
+                        )
+                        has_ester_hydrolysis = True
 
-                # Check for formyl group manipulation (can occur at any stage)
-                # Check if formyl group is being transformed
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
 
-                # Check for specific formyl manipulation reactions
-                is_formyl_manipulation = (
-                    checker.check_reaction("Oxidation of aldehydes to carboxylic acids", rsmi)
-                    or checker.check_reaction(
-                        "Reduction of aldehydes and ketones to alcohols", rsmi
-                    )
-                    or checker.check_reaction("Aldol condensation", rsmi)
-                    or checker.check_reaction("Wittig reaction with triphenylphosphorane", rsmi)
-                    or checker.check_reaction("Reductive amination with aldehyde", rsmi)
-                    or checker.check_reaction(
-                        "Addition of primary amines to aldehydes/thiocarbonyls", rsmi
-                    )
-                    or checker.check_reaction(
-                        "Addition of secondary amines to aldehydes/thiocarbonyls", rsmi
-                    )
-                    or checker.check_reaction("Benzothiazole formation from aldehyde", rsmi)
-                    or checker.check_reaction("Benzoxazole formation from aldehyde", rsmi)
-                    or checker.check_reaction("Benzimidazole formation from aldehyde", rsmi)
-                    or checker.check_reaction("Homologation of aldehydes with formaldehyde", rsmi)
-                    or checker.check_reaction(
-                        "Derived alcohol via homologation of aldehydes with formaldehyde", rsmi
-                    )
-                    or checker.check_reaction(
-                        "Derived benzimidazole via homologation of aldehydes with formaldehyde",
-                        rsmi,
-                    )
-                    or checker.check_reaction("Acetal hydrolysis to aldehyde", rsmi)
-                    or checker.check_reaction("Aldehyde or ketone acetalization", rsmi)
-                )
-
-                # Check if formyl group is being used in a reaction (present in reactants)
-                formyl_used_in_reaction = reactants_have_formyl and (
-                    # Check if the reaction is using the formyl group
-                    not product_has_formyl
-                    or
-                    # Or if it's being transformed into something else
-                    checker.check_fg("Carboxylic acid", product)
-                    or checker.check_fg("Primary alcohol", product)
-                    or checker.check_fg("Primary amine", product)
-                    or checker.check_fg("Imine", product)
-                    or checker.check_fg("Oxime", product)
-                    or checker.check_fg("Acetal/Ketal", product)
-                    or
-                    # Or if it's part of a new ring system
-                    any(
-                        checker.check_ring(ring, product)
-                        for ring in [
-                            "benzothiazole",
-                            "benzoxazole",
-                            "benzimidazole",
-                            "oxadiazole",
-                            "thiazole",
-                            "oxazole",
-                            "imidazole",
-                        ]
-                    )
-                )
-
-                if is_formyl_manipulation or formyl_used_in_reaction:
-                    found_formyl_manipulation = True
-                    formyl_manipulation_reactions.append((rsmi, depth))
-                    print(f"Found formyl group manipulation at depth {depth}")
-                    print(f"Reaction SMILES: {rsmi}")
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
+    print(f"Final result: has_ester_hydrolysis = {has_ester_hydrolysis}")
 
-    # Print summary
-    if found_formyl_introduction:
-        print(f"Found {len(formyl_introduction_reactions)} formyl introduction reactions")
-    if found_formyl_manipulation:
-        print(f"Found {len(formyl_manipulation_reactions)} formyl manipulation reactions")
-
-    # Check if we have both introduction and manipulation
-    result = found_formyl_introduction and found_formyl_manipulation
-    print(f"Final result: {result}")
-
-    return result
+    return has_ester_hydrolysis

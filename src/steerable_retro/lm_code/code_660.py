@@ -2,87 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a late-stage Suzuki coupling strategy where a boronic acid derivative
-    is prepared in early stages and used in a late-stage coupling to join complex fragments.
+    This function detects if the synthesis involves both guanidine and sulfonamide
+    functional groups in the final product.
     """
-    # Track if we found the key reactions
-    found_suzuki_coupling = False
-    found_borylation = False
-    suzuki_depth = None
-    borylation_depth = None
+    # SMARTS patterns for guanidine and sulfonamide
+    guanidine_pattern = Chem.MolFromSmarts("[#6](=[#7])[#7]")
+    sulfonamide_pattern = Chem.MolFromSmarts("[#7][#16](=[#8])(=[#8])[#6]")
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_suzuki_coupling, found_borylation, suzuki_depth, borylation_depth
+    contains_both = False
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+    def dfs_traverse(node):
+        nonlocal contains_both
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+        if node["type"] == "mol" and node.get("smiles"):
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    has_guanidine = mol.HasSubstructMatch(guanidine_pattern)
+                    has_sulfonamide = mol.HasSubstructMatch(sulfonamide_pattern)
 
-            if product and all(reactants):
-                # Check for Suzuki coupling
-                boronic_pattern = Chem.MolFromSmarts("[B][O]")
-                halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
-
-                has_boronic = any(mol.HasSubstructMatch(boronic_pattern) for mol in reactants)
-                has_halide = any(mol.HasSubstructMatch(halide_pattern) for mol in reactants)
-
-                if has_boronic and has_halide and depth <= 1:  # Late-stage (depth 0 or 1)
-                    found_suzuki_coupling = True
-                    suzuki_depth = depth
-                    print(f"Found Suzuki coupling at depth {depth}")
-
-                # Check for borylation
-                boronic_ester_pattern = Chem.MolFromSmarts("[c][B]1O[C](C)(C)[C](C)(C)O1")
-                if (
-                    any(mol.HasSubstructMatch(boronic_ester_pattern) for mol in reactants)
-                    and depth >= 2
-                ):  # Early-stage
-                    found_borylation = True
-                    borylation_depth = depth
-                    print(f"Found borylation at depth {depth}")
+                    if has_guanidine and has_sulfonamide:
+                        contains_both = True
+                        print("Found both guanidine and sulfonamide groups")
+            except:
+                print(f"Error processing SMILES: {node['smiles']}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if we found the pattern: borylation in early stages, Suzuki in late stages
-    if found_suzuki_coupling and found_borylation:
-        if (
-            suzuki_depth is not None
-            and borylation_depth is not None
-            and suzuki_depth < borylation_depth
-        ):
-            print("Detected late-stage Suzuki coupling strategy")
-            return True
-
-    return False
+    print(f"Contains both guanidine and sulfonamide: {contains_both}")
+    return contains_both

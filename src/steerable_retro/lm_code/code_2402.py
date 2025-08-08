@@ -2,70 +2,82 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the route contains a Michael addition to an α,β-unsaturated nitrile.
+    This function detects if the synthesis involves multiple C-N bond formations
+    (e.g., amide and urea).
     """
-    has_michael_addition = False
+    cn_bond_formations = 0
 
     def dfs_traverse(node):
-        nonlocal has_michael_addition
+        nonlocal cn_bond_formations
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product = Chem.MolFromSmiles(product_smiles)
+                # Check for amide formation
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    amide_pattern = Chem.MolFromSmarts("[#7][#6](=[#8])[#6]")
+                    urea_pattern = Chem.MolFromSmarts("[#7][#6](=[#8])[#7]")
 
-            if product and all(r for r in reactants) and len(reactants) >= 2:
-                # Check for Michael addition to α,β-unsaturated nitrile
-                unsaturated_nitrile_pattern = Chem.MolFromSmarts("[C]=[C][C]#[N]")
-                secondary_amine_pattern = Chem.MolFromSmarts("[N;H1]([C])[C]")
-                tertiary_amine_pattern = Chem.MolFromSmarts("[N;H0]([C])([C])[C]")
+                    # Count matches in product
+                    product_amide_matches = len(product_mol.GetSubstructMatches(amide_pattern))
+                    product_urea_matches = len(product_mol.GetSubstructMatches(urea_pattern))
 
-                reactants_have_unsaturated_nitrile = any(
-                    r.HasSubstructMatch(unsaturated_nitrile_pattern) for r in reactants if r
-                )
-                reactants_have_secondary_amine = any(
-                    r.HasSubstructMatch(secondary_amine_pattern) for r in reactants if r
-                )
-                product_has_tertiary_amine = product.HasSubstructMatch(tertiary_amine_pattern)
+                    # Count matches in reactants
+                    reactant_amide_matches = 0
+                    reactant_urea_matches = 0
 
-                if (
-                    reactants_have_unsaturated_nitrile
-                    and reactants_have_secondary_amine
-                    and product_has_tertiary_amine
-                ):
-                    has_michael_addition = True
-                    print(
-                        f"Michael addition to α,β-unsaturated nitrile detected in reaction: {rsmi}"
-                    )
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            reactant_amide_matches += len(
+                                reactant_mol.GetSubstructMatches(amide_pattern)
+                            )
+                            reactant_urea_matches += len(
+                                reactant_mol.GetSubstructMatches(urea_pattern)
+                            )
 
+                    # If product has more amide or urea groups than reactants combined, a C-N bond was formed
+                    if (
+                        product_amide_matches > reactant_amide_matches
+                        or product_urea_matches > reactant_urea_matches
+                    ):
+                        cn_bond_formations += 1
+                        print(f"Detected C-N bond formation, total count: {cn_bond_formations}")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from root
     dfs_traverse(route)
-    print(f"Michael addition to α,β-unsaturated nitrile: {has_michael_addition}")
-    return has_michael_addition
+
+    return cn_bond_formations >= 2  # Return True if at least 2 C-N bond formations

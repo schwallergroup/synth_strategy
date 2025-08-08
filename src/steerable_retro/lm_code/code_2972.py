@@ -2,63 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route employs a halogen-metal exchange strategy
-    (typically bromide to boronic ester) for cross-coupling preparation.
+    This function detects if an amide formation occurs in the early stages of the synthesis.
     """
-    has_halogen_metal_exchange = False
+    early_amide_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_halogen_metal_exchange
+        nonlocal early_amide_formation
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth >= 3:  # Early stage (depth 3 or higher)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for aryl halide to boronic ester transformation
-            aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,I]")
-            boronic_pattern = Chem.MolFromSmarts("[c]-[B](-[O])-[O]")
+                # Check for acyl chloride pattern in reactants
+                acyl_chloride_pattern = Chem.MolFromSmarts("[#6](=[#8])[Cl]")
+                amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
+                amide_pattern = Chem.MolFromSmarts("[#6](=[#8])[#7]")
 
-            try:
-                reactant_mol = Chem.MolFromSmiles(reactants[0])
+                # Check if reactants contain acyl chloride and amine
+                acyl_chloride_present = False
+                amine_present = False
+
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        if reactant_mol.HasSubstructMatch(acyl_chloride_pattern):
+                            acyl_chloride_present = True
+                        if reactant_mol.HasSubstructMatch(amine_pattern):
+                            amine_present = True
+
+                # Check if product contains amide
                 product_mol = Chem.MolFromSmiles(product)
+                amide_in_product = product_mol and product_mol.HasSubstructMatch(amide_pattern)
 
-                if (
-                    reactant_mol
-                    and product_mol
-                    and reactant_mol.HasSubstructMatch(aryl_halide_pattern)
-                    and product_mol.HasSubstructMatch(boronic_pattern)
-                ):
-                    has_halogen_metal_exchange = True
-                    print(f"Found halogen-metal exchange at depth {depth}")
-            except:
-                pass
+                if acyl_chloride_present and amine_present and amide_in_product:
+                    early_amide_formation = True
+                    print(f"Detected amide formation at depth {depth}")
 
-        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return has_halogen_metal_exchange
+    return early_amide_formation

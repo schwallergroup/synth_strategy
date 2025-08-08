@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,107 +54,87 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if multiple different protection groups (Boc and Cbz)
-    are used in the synthesis.
+    This function detects the use of ketone protection via ketal formation in the synthetic route.
     """
-    # Track protection groups
-    boc_used = False
-    cbz_used = False
+    ketone_protected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal boc_used, cbz_used
+    def dfs_traverse(node):
+        nonlocal ketone_protected
 
-        # Check molecule nodes
-        if node["type"] == "mol" and node["smiles"]:
-            mol_smiles = node["smiles"]
-
-            # Check for Boc protection group
-            if checker.check_fg("Boc", mol_smiles):
-                boc_used = True
-                print(f"Boc group detected at depth {depth} in molecule: {mol_smiles[:20]}...")
-
-            # Check for Cbz (carboxybenzyl) protection group
-            # Cbz has a carbamic ester functional group with a benzene ring
-            if checker.check_fg("Carbamic ester", mol_smiles) and checker.check_ring(
-                "benzene", mol_smiles
-            ):
-                # Additional check to distinguish from Boc
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if mol:
-                    # If it has a carbamic ester but is not Boc, it's likely Cbz or similar
-                    if not checker.check_fg("Boc", mol_smiles):
-                        cbz_used = True
-                        print(
-                            f"Cbz group detected at depth {depth} in molecule: {mol_smiles[:20]}..."
-                        )
-
-        # Check reaction nodes
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for Boc protection/deprotection reactions
-            if checker.check_reaction("Boc amine protection", rsmi) or checker.check_reaction(
-                "Boc amine deprotection", rsmi
-            ):
-                boc_used = True
-                print(f"Boc protection/deprotection reaction detected at depth {depth}")
+            # Check for ketone protection (ketone + diol -> ketal)
+            # Using the acetalization reaction check
+            if checker.check_reaction(
+                "Aldehyde or ketone acetalization", rsmi
+            ) or checker.check_reaction("Diol acetalization", rsmi):
+                # Verify ketone in reactants
+                has_ketone = any(checker.check_fg("Ketone", r) for r in reactants_smiles)
 
-            # Check for Cbz protection/deprotection reactions
-            # Since there's no direct checker for Cbz reactions, look for keywords
-            if "Cbz" in rsmi or "CBz" in rsmi or "benzyloxycarbonyl" in rsmi.lower():
-                cbz_used = True
-                print(f"Cbz protection/deprotection reaction detected at depth {depth}")
+                # Check if product has a ketal structure
+                has_ketal_product = checker.check_fg("Acetal/Ketal", product_smiles)
 
-            # Check product and reactants for protection groups
-            try:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                if has_ketone and has_ketal_product:
+                    print(f"Detected ketone protection via ketal formation: {rsmi}")
+                    ketone_protected = True
 
-                # Check if Boc is introduced or removed in the reaction
-                product_has_boc = checker.check_fg("Boc", product)
-                reactants_have_boc = any(checker.check_fg("Boc", r) for r in reactants)
-                if product_has_boc or reactants_have_boc:
-                    boc_used = True
-                    print(f"Boc group involved in reaction at depth {depth}")
+            # Also check for ketal hydrolysis to ketone (deprotection)
+            elif checker.check_reaction(
+                "Ketal hydrolysis to ketone", rsmi
+            ) or checker.check_reaction("Acetal hydrolysis to ketone", rsmi):
+                # Verify ketal in reactants
+                has_ketal = any(checker.check_fg("Acetal/Ketal", r) for r in reactants_smiles)
 
-                # Check if Cbz is introduced or removed in the reaction
-                product_has_cbz = checker.check_fg(
-                    "Carbamic ester", product
-                ) and checker.check_ring("benzene", product)
-                reactants_have_cbz = any(
-                    checker.check_fg("Carbamic ester", r) and checker.check_ring("benzene", r)
-                    for r in reactants
-                )
+                # Check if product has a ketone structure
+                has_ketone_product = checker.check_fg("Ketone", product_smiles)
 
-                # Additional check to distinguish from Boc
-                if (product_has_cbz and not checker.check_fg("Boc", product)) or any(
-                    checker.check_fg("Carbamic ester", r)
-                    and checker.check_ring("benzene", r)
-                    and not checker.check_fg("Boc", r)
-                    for r in reactants
-                ):
-                    cbz_used = True
-                    print(f"Cbz group involved in reaction at depth {depth}")
-            except Exception as e:
-                print(f"Error analyzing reaction SMILES: {e}")
+                if has_ketal and has_ketone_product:
+                    print(f"Detected ketone deprotection from ketal: {rsmi}")
+                    ketone_protected = True
+
+            # Alternative check if reaction type check fails
+            elif not ketone_protected:
+                # Check for ketone in reactants
+                ketone_reactants = [r for r in reactants_smiles if checker.check_fg("Ketone", r)]
+
+                # Check for ketal in product
+                has_ketal_product = checker.check_fg("Acetal/Ketal", product_smiles)
+
+                # Check for diol in reactants (two OH groups)
+                diol_reactants = []
+                for r in reactants_smiles:
+                    # Check for alcohol functional groups
+                    alcohol_count = 0
+                    for fg in ["Primary alcohol", "Secondary alcohol", "Tertiary alcohol"]:
+                        if checker.check_fg(fg, r):
+                            alcohol_indices = checker.get_fg_atom_indices(fg, r)
+                            alcohol_count += len(alcohol_indices)
+
+                    if alcohol_count >= 2:
+                        diol_reactants.append(r)
+
+                if ketone_reactants and diol_reactants and has_ketal_product:
+                    print(f"Detected potential ketone protection: {rsmi}")
+                    ketone_protected = True
+
+                # Check for ketal in reactants and ketone in product (deprotection)
+                ketal_reactants = [
+                    r for r in reactants_smiles if checker.check_fg("Acetal/Ketal", r)
+                ]
+                has_ketone_product = checker.check_fg("Ketone", product_smiles)
+
+                if ketal_reactants and has_ketone_product:
+                    print(f"Detected potential ketone deprotection: {rsmi}")
+                    ketone_protected = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if both protection groups are used
-    if boc_used and cbz_used:
-        print("Multiple protection groups (Boc and Cbz) strategy detected")
-        return True
-
-    if boc_used:
-        print("Only Boc protection group detected")
-    elif cbz_used:
-        print("Only Cbz protection group detected")
-    else:
-        print("No protection groups detected")
-
-    return False
+    return ketone_protected

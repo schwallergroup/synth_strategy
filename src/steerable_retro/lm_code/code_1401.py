@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,165 +54,167 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a synthesis featuring multiple different nitrogen protecting groups
-    (at least 2 different types) being used throughout the synthesis.
+    This function detects if the synthesis involves multiple C-N bond formations.
     """
-    # Track protecting groups and events
-    protecting_groups_used = set()
-    protection_events = []
-    deprotection_events = []
+    cn_bond_count = 0
 
-    # List of common nitrogen protecting groups to check
-    n_protecting_groups = ["Boc", "Phthalimide", "Tosyl", "Nosyl", "Acetyl", "Trifluoroacetyl"]
+    def dfs_traverse(node):
+        nonlocal cn_bond_count
 
-    # Import RDKit for substructure matching
-    from rdkit import Chem
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
 
-    # Define Cbz pattern for detection
-    cbz_pattern = Chem.MolFromSmiles("C(=O)OCc1ccccc1")
+            try:
+                # Split reaction SMILES to analyze reactants and product
+                parts = rsmi.split(">")
+                reactants = parts[0].split(".")
+                product = parts[-1]  # Use parts[-1] to safely get the product
 
-    def has_cbz_group(smiles):
-        """Check if a molecule contains a Cbz group"""
-        try:
-            mol = Chem.MolFromSmiles(smiles)
-            if mol and mol.HasSubstructMatch(cbz_pattern):
-                return True
-        except:
-            pass
-        return False
+                # Check if the reaction involves C-N bond formation
+                is_cn_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal protecting_groups_used, protection_events, deprotection_events
+                # Check named C-N bond formation reactions
+                named_reactions = [
+                    # SNAr and related reactions
+                    "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
+                    "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
+                    "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
+                    "Ullmann-Goldberg Substitution amine",
+                    "Goldberg coupling",
+                    "Goldberg coupling aryl amine-aryl chloride",
+                    "Goldberg coupling aryl amide-aryl chloride",
+                    "Buchwald-Hartwig",
+                    "N-arylation_heterocycles",
+                    # Amide formation reactions
+                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                    "Acyl chloride with ammonia to amide",
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                    "Acyl chloride with secondary amine to amide",
+                    "Carboxylic acid with primary amine to amide",
+                    "Ester with ammonia to amide",
+                    "Ester with primary amine to amide",
+                    "Ester with secondary amine to amide",
+                    "Schotten-Baumann_amide",
+                    "Acylation of primary amines",
+                    "Acylation of secondary amines",
+                    # Reductive amination
+                    "Reductive amination with aldehyde",
+                    "Reductive amination with ketone",
+                    "Reductive amination with alcohol",
+                    "reductive amination",
+                    # Urea formation
+                    "Urea synthesis via isocyanate and primary amine",
+                    "Urea synthesis via isocyanate and secondary amine",
+                    "Urea synthesis via isocyanate and diazo",
+                    "Urea synthesis via isocyanate and sulfonamide",
+                    "urea",
+                    # Other C-N bond formations
+                    "Alkylation of amines",
+                    "N-alkylation of primary amines with alkyl halides",
+                    "N-alkylation of secondary amines with alkyl halides",
+                    "aza-Michael addition aromatic",
+                    "aza-Michael addition secondary",
+                    "aza-Michael addition primary",
+                    "Aminolysis of esters",
+                    "Ring opening of epoxide with amine",
+                    "Intramolecular amination (heterocycle formation)",
+                    "Intramolecular amination of azidobiphenyls (heterocycle formation)",
+                ]
 
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
+                for reaction_name in named_reactions:
+                    if checker.check_reaction(reaction_name, rsmi):
+                        is_cn_formation = True
+                        print(f"Found C-N bond formation via {reaction_name}: {rsmi}")
+                        break
 
-            # Check for protecting groups in molecules
-            for pg in n_protecting_groups:
-                if checker.check_fg(pg, mol_smiles):
-                    protecting_groups_used.add(pg)
-                    print(f"Found protecting group {pg} in molecule: {mol_smiles}")
+                # If not a named reaction, check for general C-N bond formation patterns
+                if not is_cn_formation:
+                    # Check for amine/amide/nitrogen-containing reactants
+                    nitrogen_reactants = [
+                        "Primary amine",
+                        "Secondary amine",
+                        "Tertiary amine",
+                        "Aniline",
+                        "Azide",
+                        "Hydrazine",
+                        "Primary amide",
+                        "Secondary amide",
+                        "Tertiary amide",
+                    ]
 
-            # Check for Cbz group
-            if has_cbz_group(mol_smiles):
-                protecting_groups_used.add("Cbz")
-                print(f"Found Cbz protecting group in molecule: {mol_smiles}")
+                    has_nitrogen_reactant = False
+                    for reactant in reactants:
+                        for fg in nitrogen_reactants:
+                            if checker.check_fg(fg, reactant):
+                                has_nitrogen_reactant = True
+                                break
+                        if has_nitrogen_reactant:
+                            break
 
-        elif node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                    # Check for carbon-containing electrophiles
+                    carbon_electrophiles = [
+                        "Aromatic halide",
+                        "Primary halide",
+                        "Secondary halide",
+                        "Tertiary halide",
+                        "Acyl halide",
+                        "Carboxylic acid",
+                        "Ester",
+                        "Aldehyde",
+                        "Ketone",
+                        "Nitrile",
+                    ]
 
-                # Check for Boc protection reactions
-                if (
-                    checker.check_reaction("Boc amine protection", rsmi)
-                    or checker.check_reaction("Boc amine protection explicit", rsmi)
-                    or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
-                    or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
-                    or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
-                    or checker.check_reaction("Boc amine protection of primary amine", rsmi)
-                ):
-                    protection_events.append(("Boc", rsmi))
-                    protecting_groups_used.add("Boc")
-                    print(f"Detected Boc protection reaction: {rsmi}")
+                    has_carbon_electrophile = False
+                    for reactant in reactants:
+                        for fg in carbon_electrophiles:
+                            if checker.check_fg(fg, reactant):
+                                has_carbon_electrophile = True
+                                break
+                        if has_carbon_electrophile:
+                            break
 
-                # Check for Boc deprotection reactions
-                if (
-                    checker.check_reaction("Boc amine deprotection", rsmi)
-                    or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
-                    or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
-                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
-                ):
-                    deprotection_events.append(("Boc", rsmi))
-                    protecting_groups_used.add("Boc")
-                    print(f"Detected Boc deprotection reaction: {rsmi}")
+                    # Check if product has new nitrogen-carbon bonds
+                    # This is a simplified check - in a real implementation, we would need to analyze
+                    # the atom mapping to confirm new C-N bonds are formed
+                    nitrogen_carbon_products = [
+                        "Aniline",
+                        "Primary amine",
+                        "Secondary amine",
+                        "Tertiary amine",
+                        "Primary amide",
+                        "Secondary amide",
+                        "Tertiary amide",
+                        "Urea",
+                        "Thiourea",
+                        "Carbamate",
+                    ]
 
-                # Check for Cbz protection/deprotection
-                reactants_have_cbz = any(has_cbz_group(r) for r in reactants)
-                product_has_cbz = has_cbz_group(product)
+                    has_nitrogen_carbon_product = False
+                    for fg in nitrogen_carbon_products:
+                        if checker.check_fg(fg, product):
+                            has_nitrogen_carbon_product = True
+                            break
 
-                if not reactants_have_cbz and product_has_cbz:
-                    protection_events.append(("Cbz", rsmi))
-                    protecting_groups_used.add("Cbz")
-                    print(f"Detected Cbz protection: {rsmi}")
+                    if (
+                        has_nitrogen_reactant
+                        and has_carbon_electrophile
+                        and has_nitrogen_carbon_product
+                    ):
+                        # This is a potential C-N bond formation
+                        # In a more sophisticated implementation, we would check atom mappings
+                        is_cn_formation = True
+                        print(f"Found potential C-N bond formation: {rsmi}")
 
-                if reactants_have_cbz and not product_has_cbz:
-                    deprotection_events.append(("Cbz", rsmi))
-                    protecting_groups_used.add("Cbz")
-                    print(f"Detected Cbz deprotection: {rsmi}")
+                if is_cn_formation:
+                    cn_bond_count += 1
+            except Exception as e:
+                print(f"Error processing reaction SMILES: {rsmi}, Error: {e}")
 
-                # Check for Carboxyl benzyl deprotection reaction
-                if checker.check_reaction("Carboxyl benzyl deprotection", rsmi):
-                    deprotection_events.append(("Cbz", rsmi))
-                    protecting_groups_used.add("Cbz")
-                    print(f"Detected Cbz deprotection reaction: {rsmi}")
-
-                # Check for phthalimide protection/deprotection
-                reactants_have_phthalimide = any(
-                    checker.check_fg("Phthalimide", r) for r in reactants
-                )
-                product_has_phthalimide = checker.check_fg("Phthalimide", product)
-
-                if not reactants_have_phthalimide and product_has_phthalimide:
-                    protection_events.append(("Phthalimide", rsmi))
-                    protecting_groups_used.add("Phthalimide")
-                    print(f"Detected Phthalimide protection: {rsmi}")
-
-                if reactants_have_phthalimide and not product_has_phthalimide:
-                    deprotection_events.append(("Phthalimide", rsmi))
-                    protecting_groups_used.add("Phthalimide")
-                    print(f"Detected Phthalimide deprotection: {rsmi}")
-
-                if checker.check_reaction("Phthalimide deprotection", rsmi):
-                    deprotection_events.append(("Phthalimide", rsmi))
-                    protecting_groups_used.add("Phthalimide")
-                    print(f"Detected Phthalimide deprotection reaction: {rsmi}")
-
-                # Check for other protection/deprotection events
-                for pg in n_protecting_groups:
-                    if pg not in ["Boc", "Phthalimide"]:  # Already handled above
-                        reactants_have_pg = any(checker.check_fg(pg, r) for r in reactants)
-                        product_has_pg = checker.check_fg(pg, product)
-
-                        if not reactants_have_pg and product_has_pg:
-                            protection_events.append((pg, rsmi))
-                            protecting_groups_used.add(pg)
-                            print(f"Detected {pg} protection: {rsmi}")
-
-                        if reactants_have_pg and not product_has_pg:
-                            deprotection_events.append((pg, rsmi))
-                            protecting_groups_used.add(pg)
-                            print(f"Detected {pg} deprotection: {rsmi}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Count total protection/deprotection events
-    total_events = len(protection_events) + len(deprotection_events)
-
-    # Check if the strategy is present
-    has_multiple_protecting_groups = len(protecting_groups_used) >= 2
-    has_multiple_events = total_events >= 2
-
-    print(f"Protecting groups used: {protecting_groups_used}")
-    print(f"Protection events: {len(protection_events)}")
-    print(f"Deprotection events: {len(deprotection_events)}")
-    print(f"Total events: {total_events}")
-
-    # If we have at least 2 different protecting groups in the molecules,
-    # consider it a multiple protection strategy even if we don't detect events
-    if len(protecting_groups_used) >= 2:
-        print(f"Multiple nitrogen protection strategy detected!")
-        return True
-
-    # Original condition
-    if has_multiple_protecting_groups and has_multiple_events:
-        print(f"Multiple nitrogen protection strategy detected!")
-        return True
-
-    return False
+    print(f"Total C-N bond formations found: {cn_bond_count}")
+    return cn_bond_count >= 2  # Return True if at least 2 C-N bonds are formed

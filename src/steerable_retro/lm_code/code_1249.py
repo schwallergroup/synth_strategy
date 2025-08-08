@@ -2,55 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves assembly of multiple heterocyclic structures
-    (pyridine, benzodioxole, piperazine).
+    This function detects if the synthesis route involves formation of a heterocyclic ring system
+    (particularly pyridine) in the early stages of the synthesis.
     """
-    heterocycles_found = set()
+    heterocycle_formation_detected = False
 
-    def dfs_traverse(node):
-        if node["type"] == "mol" and "smiles" in node:
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for pyridine
-                pyridine_pattern = Chem.MolFromSmarts("c1ccccn1")
-                if mol.HasSubstructMatch(pyridine_pattern):
-                    heterocycles_found.add("pyridine")
+    def dfs_traverse(node, depth=0):
+        nonlocal heterocycle_formation_detected
 
-                # Check for benzodioxole
-                benzodioxole_pattern = Chem.MolFromSmarts("C1OCOc2ccccc12")
-                if mol.HasSubstructMatch(benzodioxole_pattern):
-                    heterocycles_found.add("benzodioxole")
+        if node["type"] == "reaction" and depth >= 4:  # Early stage (high depth)
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for piperazine
-                piperazine_pattern = Chem.MolFromSmarts("N1CCNCC1")
-                if mol.HasSubstructMatch(piperazine_pattern):
-                    heterocycles_found.add("piperazine")
+                # Count rings in reactants and product
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product)
+
+                if product_mol and all(reactant_mols):
+                    # Count nitrogen-containing rings in reactants
+                    reactant_n_rings = 0
+                    for mol in reactant_mols:
+                        for ring in Chem.GetSSSR(mol):
+                            ring_atoms = set(ring)
+                            for atom_idx in ring_atoms:
+                                atom = mol.GetAtomWithIdx(atom_idx)
+                                if atom.GetAtomicNum() == 7:  # Nitrogen
+                                    reactant_n_rings += 1
+                                    break
+
+                    # Count nitrogen-containing rings in product
+                    product_n_rings = 0
+                    for ring in Chem.GetSSSR(product_mol):
+                        ring_atoms = set(ring)
+                        for atom_idx in ring_atoms:
+                            atom = product_mol.GetAtomWithIdx(atom_idx)
+                            if atom.GetAtomicNum() == 7:  # Nitrogen
+                                product_n_rings += 1
+                                break
+
+                    # If product has more nitrogen rings than reactants combined, it's a heterocycle formation
+                    if product_n_rings > reactant_n_rings:
+                        print(f"Heterocycle formation detected at depth {depth}")
+                        heterocycle_formation_detected = True
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    print(f"Found heterocycles: {heterocycles_found}")
-    # Return True if at least 2 different heterocycles are found
-    return len(heterocycles_found) >= 2
+    return heterocycle_formation_detected

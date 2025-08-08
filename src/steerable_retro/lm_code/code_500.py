@@ -2,106 +2,108 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy.
-
-    A linear synthesis strategy is characterized by:
-    1. Multiple reaction steps (at least 3)
-    2. No more than 2 non-trivial reactants per step
-    3. A dominant pathway where most reactions have one main product and one main reactant
+    Detects if heterocycles are preserved throughout the synthesis route.
     """
-    # Track reaction depths and branching
-    reaction_depths = set()
-    max_reactants_per_step = 0
 
-    # Track the longest path
-    path_lengths = []
+    def get_heterocycles(mol_smiles):
+        heterocycles = []
+        for ring_name in [
+            "furan",
+            "pyrrole",
+            "pyridine",
+            "pyrazole",
+            "imidazole",
+            "oxazole",
+            "thiazole",
+            "pyrimidine",
+            "pyrazine",
+            "pyridazine",
+            "triazole",
+            "tetrazole",
+        ]:
+            if checker.check_ring(ring_name, mol_smiles):
+                heterocycles.append(ring_name)
+        return heterocycles
 
-    def dfs_traverse(node, depth=0):
-        nonlocal reaction_depths, max_reactants_per_step
+    # First identify target heterocycles
+    target_heterocycles = []
+    if route["type"] == "mol":
+        target_heterocycles = get_heterocycles(route["smiles"])
+        print(f"Target molecule contains heterocycles: {target_heterocycles}")
 
-        if node["type"] == "reaction":
-            # Store the depth
-            reaction_depths.add(depth)
+    # If no heterocycles in target, strategy doesn't apply
+    if not target_heterocycles:
+        print("No heterocycles in target molecule")
+        return True
 
-            # Extract reactants
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
+    def dfs(node, depth=0):
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            current_heterocycles = get_heterocycles(node["smiles"])
 
-            # Count non-trivial reactants (excluding small molecules)
-            non_trivial_reactants = 0
-            for reactant in reactants_smiles:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.GetNumHeavyAtoms() > 6:  # More reliable than SMILES length
-                    non_trivial_reactants += 1
+            # Check if all target heterocycles are present
+            for cycle in target_heterocycles:
+                if cycle not in current_heterocycles:
+                    print(f"Heterocycle {cycle} not preserved at depth {depth}")
+                    return False
 
-            max_reactants_per_step = max(max_reactants_per_step, non_trivial_reactants)
+        # Continue DFS traversal
+        all_preserved = True
+        for child in node.get("children", []):
+            if not dfs(child, depth + 1):
+                all_preserved = False
 
-            # Process children and track path lengths
-            child_paths = []
-            for child in node.get("children", []):
-                child_path = dfs_traverse(child, depth + 1)
-                child_paths.append(child_path)
+        return all_preserved
 
-            # Return the longest path through this node
-            if child_paths:
-                return 1 + max(child_paths)
-            return 1
-
-        elif node["type"] == "mol":
-            # For leaf nodes (starting materials)
-            if not node.get("children", []):
-                path_lengths.append(depth)
-                return 0
-
-            # For intermediate molecules, continue traversal
-            child_paths = []
-            for child in node.get("children", []):
-                child_path = dfs_traverse(child, depth)
-                child_paths.append(child_path)
-
-            # Return the longest path through this node
-            if child_paths:
-                return max(child_paths)
-            return 0
-
-    # Start traversal and get the longest path
-    longest_path = dfs_traverse(route)
-
-    # Calculate the ratio of the longest path to total reactions
-    path_ratio = longest_path / len(reaction_depths) if reaction_depths else 0
-
-    # Linear synthesis typically has:
-    # 1. Multiple reaction steps (at least 3)
-    # 2. No more than 2 non-trivial reactants per step
-    # 3. A high ratio of longest path to total reactions (indicating limited branching)
-    result = (
-        len(reaction_depths) >= 3 and max_reactants_per_step <= 2 and path_ratio >= 0.7
-    )  # At least 70% of reactions are on the main path
-
-    print(f"Linear synthesis strategy detected: {result}")
-    print(f"Number of reaction steps: {len(reaction_depths)}")
-    print(f"Max non-trivial reactants per step: {max_reactants_per_step}")
-    print(f"Longest path ratio: {path_ratio:.2f}")
-
-    return result
+    return dfs(route)

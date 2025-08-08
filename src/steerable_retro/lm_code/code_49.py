@@ -2,92 +2,103 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving late-stage SNAr coupling to form diaryl ether
-    followed by benzofuran ring formation.
+    This function detects Boc deprotection steps in the synthesis route.
     """
-    # Track if we found the key transformations
-    found_diaryl_ether_formation = False
-    found_benzofuran_formation = False
-    diaryl_ether_depth = -1
-    benzofuran_depth = -1
+    boc_deprotection = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_diaryl_ether_formation, found_benzofuran_formation
-        nonlocal diaryl_ether_depth, benzofuran_depth
+    def dfs_traverse(node):
+        nonlocal boc_deprotection
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
-                product = Chem.MolFromSmiles(product_str) if product_str else None
+            # Check for Boc deprotection reactions using the checker function
+            if (
+                checker.check_reaction("Boc amine deprotection", rsmi)
+                or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
+                or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
+                or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
+            ):
+                print(f"Boc deprotection detected in reaction: {rsmi}")
+                boc_deprotection = True
 
-                if product and all(r is not None for r in reactants):
-                    # Check for diaryl ether formation (SNAr)
-                    phenol_pattern = Chem.MolFromSmarts("[c][OH]")
-                    fluoro_pattern = Chem.MolFromSmarts("[c][F,Cl,Br,I]")
-                    diaryl_ether_pattern = Chem.MolFromSmarts("[c][O][c]")
+            # If reaction checker didn't identify it, try checking for functional group changes
+            if not boc_deprotection:
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                    has_phenol = any(r.HasSubstructMatch(phenol_pattern) for r in reactants)
-                    has_haloarene = any(r.HasSubstructMatch(fluoro_pattern) for r in reactants)
-                    product_has_diaryl_ether = product.HasSubstructMatch(diaryl_ether_pattern)
+                # Check if any reactant has Boc group and product has primary/secondary amine
+                boc_in_reactants = any(checker.check_fg("Boc", reactant) for reactant in reactants)
 
-                    if has_phenol and has_haloarene and product_has_diaryl_ether:
-                        found_diaryl_ether_formation = True
-                        diaryl_ether_depth = depth
-                        print(f"Found diaryl ether formation at depth {depth}")
+                if boc_in_reactants:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol:
+                        # Check if product has amine but no Boc
+                        has_amine = checker.check_fg("Primary amine", product) or checker.check_fg(
+                            "Secondary amine", product
+                        )
+                        has_no_boc = not checker.check_fg("Boc", product)
 
-                    # Check for benzofuran formation
-                    benzofuran_pattern = Chem.MolFromSmarts("[c]1[c][c][c][c]2[c]1[o][c][c]2")
-
-                    reactants_have_benzofuran = any(
-                        r.HasSubstructMatch(benzofuran_pattern) for r in reactants
-                    )
-                    product_has_benzofuran = product.HasSubstructMatch(benzofuran_pattern)
-
-                    if not reactants_have_benzofuran and product_has_benzofuran:
-                        found_benzofuran_formation = True
-                        benzofuran_depth = depth
-                        print(f"Found benzofuran formation at depth {depth}")
+                        if has_amine and has_no_boc:
+                            print(f"Boc deprotection detected by functional group analysis: {rsmi}")
+                            boc_deprotection = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-
-    # Check if both transformations were found and in the correct order
-    # (benzofuran formation should come after diaryl ether formation in the synthesis,
-    # which means a lower depth in the retrosynthetic tree)
-    if found_diaryl_ether_formation and found_benzofuran_formation:
-        if benzofuran_depth < diaryl_ether_depth:
-            print(
-                "Strategy detected: Late-stage diaryl ether formation followed by benzofuran ring construction"
-            )
-            return True
-
-    return False
+    return boc_deprotection

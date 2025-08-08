@@ -2,108 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes that form benzothiazole rings from thiourea intermediates.
+    This function detects a synthetic strategy involving selective functionalization
+    of a symmetrical diol to create an asymmetric molecule.
     """
-    # Track if we found the strategy
-    found_thiourea = False
-    found_benzothiazole_formation = False
+    diol_used = False
+    asymmetric_product = False
+
+    # SMARTS for diol
+    diol_pattern = Chem.MolFromSmarts("[OH][CH2][CH2][CH2][CH2][CH2][OH]")
 
     def dfs_traverse(node):
-        nonlocal found_thiourea, found_benzothiazole_formation
+        nonlocal diol_used, asymmetric_product
 
-        if node["type"] == "mol":
-            # Check for thiourea in molecules
-            if checker.check_fg("Thiourea", node["smiles"]):
-                found_thiourea = True
-                print(f"Found thiourea intermediate: {node['smiles']}")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                products_smiles = rsmi.split(">")[-1]
 
-        elif node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+                try:
+                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles.split(".")]
+                    product = Chem.MolFromSmiles(products_smiles)
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                    # Check if a diol is used as reactant
+                    if any(r and r.HasSubstructMatch(diol_pattern) for r in reactants if r):
+                        diol_used = True
+                        print("Diol detected as reactant")
 
-            # Check if this is a benzothiazole formation reaction
-            if checker.check_reaction("benzothiazole", rsmi) or checker.check_reaction(
-                "{benzothiazole}", rsmi
-            ):
-                print(f"Found benzothiazole formation reaction: {rsmi}")
+                    # Check if product has one OH and one protected or functionalized OH
+                    if product:
+                        oh_pattern = Chem.MolFromSmarts("[OH]")
+                        oh_count = len(product.GetSubstructMatches(oh_pattern))
 
-                # Check if product contains benzothiazole ring
-                if checker.check_ring("benzothiazole", product_smiles):
-                    print(f"Product contains benzothiazole ring: {product_smiles}")
-
-                    # Check if any reactant has thiourea
-                    for reactant in reactants_smiles:
-                        if checker.check_fg("Thiourea", reactant):
-                            found_benzothiazole_formation = True
-                            print(f"Found benzothiazole formation from thiourea")
-                            break
-
-            # Alternative check: look for benzothiazole formation without specific reaction type
-            if not found_benzothiazole_formation:
-                # Check if product contains benzothiazole ring
-                if checker.check_ring("benzothiazole", product_smiles):
-                    # Check if any reactant has thiourea but not benzothiazole
-                    for reactant in reactants_smiles:
-                        if checker.check_fg("Thiourea", reactant) and not checker.check_ring(
-                            "benzothiazole", reactant
-                        ):
-                            found_benzothiazole_formation = True
-                            print(f"Found benzothiazole formation from thiourea (pattern-based)")
-                            break
+                        # If product has exactly one OH and originally came from a diol
+                        if oh_count == 1 and diol_used:
+                            asymmetric_product = True
+                            print("Asymmetric functionalization of diol detected")
+                except:
+                    pass
 
         # Traverse children
         for child in node.get("children", []):
@@ -112,5 +73,4 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if both conditions are met
-    return found_thiourea and found_benzothiazole_formation
+    return diol_used and asymmetric_product

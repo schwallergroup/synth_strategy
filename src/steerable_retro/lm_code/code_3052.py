@@ -2,70 +2,53 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects convergent synthesis with amide bond formation between two complex fragments.
+    This function detects if the synthetic route involves a trifluoromethyl-substituted aromatic ring.
     """
-    convergent_amide_found = False
+    trifluoromethyl_present = False
 
     def dfs_traverse(node):
-        nonlocal convergent_amide_found
+        nonlocal trifluoromethyl_present
 
-        if node["type"] == "reaction" and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # SMARTS pattern for trifluoromethyl group attached to aromatic carbon
+                trifluoromethyl_pattern = Chem.MolFromSmarts("[c]-[C]([F])([F])[F]")
+                if mol.HasSubstructMatch(trifluoromethyl_pattern):
+                    trifluoromethyl_present = True
+                    print(f"Found trifluoromethyl group in molecule: {node['smiles']}")
 
-            # Check for acid chloride and amine patterns in reactants
-            acid_chloride_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[Cl]")
-            amine_pattern = Chem.MolFromSmarts("[NX3;H2]")
-            amide_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[NX3;H1]")
-
-            # Check if both reactants are complex (more than 15 atoms)
-            complex_reactants = 0
-            acid_chloride_found = False
-            amine_found = False
-
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol:
-                    if mol.GetNumAtoms() > 15:
-                        complex_reactants += 1
-                    if mol.HasSubstructMatch(acid_chloride_pattern):
-                        acid_chloride_found = True
-                    if mol.HasSubstructMatch(amine_pattern):
-                        amine_found = True
-
-            product_mol = Chem.MolFromSmiles(product)
-            amide_formed = product_mol and product_mol.HasSubstructMatch(amide_pattern)
-
-            if acid_chloride_found and amine_found and amide_formed and complex_reactants >= 1:
-                convergent_amide_found = True
-                print("Found convergent synthesis with amide bond formation")
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return convergent_amide_found
+
+    print(f"Trifluoromethyl group detected: {trifluoromethyl_present}")
+    return trifluoromethyl_present

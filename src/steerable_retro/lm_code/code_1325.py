@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,105 +54,104 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves multiple amide bond formations.
+    This function detects if the synthesis route uses late-stage amide formation
+    as the final step from a carboxylic acid.
     """
-    amide_formation_count = 0
-    amide_formation_reactions = [
-        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
-        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-        "Carboxylic acid with primary amine to amide",
-        "Acyl chloride with ammonia to amide",
-        "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-        "Acyl chloride with secondary amine to amide",
-        "Ester with ammonia to amide",
-        "Ester with primary amine to amide",
-        "Ester with secondary amine to amide",
-        "Schotten-Baumann_amide",
-        "Acylation of primary amines",
-        "Acylation of secondary amines",
-    ]
+    late_stage_amide = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal amide_formation_count
+        nonlocal late_stage_amide
 
-        if node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        print(f"Examining node at depth {depth}, type: {node['type']}")
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+        # Check if this is a reaction node at depth 0 or 1 (late stage)
+        if node["type"] == "reaction" and depth <= 1:
+            print(f"Examining potential late-stage reaction at depth {depth}")
 
-                # Check if this is an amide formation reaction by reaction type
-                is_amide_formation = False
-                for reaction_type in amide_formation_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Found amide formation reaction: {reaction_type}")
-                        is_amide_formation = True
-                        break
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                try:
+                    rsmi = node["metadata"]["rsmi"]
+                    print(f"Reaction SMILES: {rsmi}")
 
-                # If not identified by reaction type, check by functional group changes
-                if not is_amide_formation:
-                    # Count amides in product
-                    product_amide_count = 0
-                    if checker.check_fg("Primary amide", product):
-                        product_amide_count += 1
-                    if checker.check_fg("Secondary amide", product):
-                        product_amide_count += 1
-                    if checker.check_fg("Tertiary amide", product):
-                        product_amide_count += 1
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-                    # Count amides in reactants
-                    reactant_amide_count = 0
-                    for reactant in reactants:
-                        if checker.check_fg("Primary amide", reactant):
-                            reactant_amide_count += 1
-                        if checker.check_fg("Secondary amide", reactant):
-                            reactant_amide_count += 1
-                        if checker.check_fg("Tertiary amide", reactant):
-                            reactant_amide_count += 1
+                    print(f"Reactants: {reactants}")
+                    print(f"Product: {product}")
 
-                    # Check if an amide was formed
-                    if product_amide_count > reactant_amide_count:
-                        print(
-                            f"Detected amide formation by FG count: product={product_amide_count}, reactants={reactant_amide_count}"
-                        )
+                    # Check if this is an amide formation reaction directly
+                    amide_reaction_types = [
+                        "Carboxylic acid with primary amine to amide",
+                        "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                        "Acyl chloride with secondary amine to amide",
+                        "Ester with primary amine to amide",
+                        "Ester with secondary amine to amide",
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                        "Acylation of primary amines",
+                        "Acylation of secondary amines",
+                        "Schotten-Baumann_amide",
+                        "Acyl chloride with ammonia to amide",
+                    ]
 
-                        # Verify this is actually an amide formation by checking for reactants
+                    is_amide_formation = False
+                    for reaction_type in amide_reaction_types:
+                        if checker.check_reaction(reaction_type, rsmi):
+                            is_amide_formation = True
+                            print(f"Detected amide formation reaction type: {reaction_type}")
+                            break
+
+                    # If direct reaction check failed, check for functional groups
+                    if not is_amide_formation:
+                        # Check if reactants contain carboxylic acid or acyl halide
+                        has_acid = False
+                        has_acyl_halide = False
                         has_amine = False
-                        has_carboxylic_acid_or_derivative = False
 
                         for reactant in reactants:
+                            if checker.check_fg("Carboxylic acid", reactant):
+                                has_acid = True
+                                print(f"Found carboxylic acid in reactant: {reactant}")
+
+                            if checker.check_fg("Acyl halide", reactant):
+                                has_acyl_halide = True
+                                print(f"Found acyl halide in reactant: {reactant}")
+
                             if (
                                 checker.check_fg("Primary amine", reactant)
                                 or checker.check_fg("Secondary amine", reactant)
-                                or checker.check_fg("Tertiary amine", reactant)
+                                or checker.check_fg("Aniline", reactant)
                             ):
                                 has_amine = True
+                                print(f"Found amine in reactant: {reactant}")
 
-                            if (
-                                checker.check_fg("Carboxylic acid", reactant)
-                                or checker.check_fg("Acyl halide", reactant)
-                                or checker.check_fg("Ester", reactant)
-                                or checker.check_fg("Anhydride", reactant)
-                            ):
-                                has_carboxylic_acid_or_derivative = True
+                        # Check if product contains amide
+                        has_amide = False
+                        if (
+                            checker.check_fg("Primary amide", product)
+                            or checker.check_fg("Secondary amide", product)
+                            or checker.check_fg("Tertiary amide", product)
+                        ):
+                            has_amide = True
+                            print(f"Found amide in product: {product}")
 
-                        if has_amine and has_carboxylic_acid_or_derivative:
+                        # If we have the right functional groups, check if this could be amide formation
+                        if has_amide and (
+                            (has_acid and has_amine) or (has_acyl_halide and has_amine)
+                        ):
                             is_amide_formation = True
-                            print(f"Confirmed amide formation by reactant analysis")
+                            print("Detected amide formation based on functional groups")
 
-                if is_amide_formation:
-                    amide_formation_count += 1
-                    print(f"Total amide formations so far: {amide_formation_count}")
+                    if is_amide_formation:
+                        late_stage_amide = True
+                        print(f"Detected late-stage amide formation at depth {depth}")
 
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                except Exception as e:
+                    print(f"Error processing reaction: {e}")
 
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    print(f"Final amide formation count: {amide_formation_count}")
-    return amide_formation_count >= 2
+    print(f"Final result: {late_stage_amide}")
+    return late_stage_amide

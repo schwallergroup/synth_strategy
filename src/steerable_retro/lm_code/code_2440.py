@@ -2,86 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects an azide reduction to amine in the synthesis.
+    Detects a synthesis featuring late-stage introduction of a heteroaromatic ring,
+    typically via nucleophilic aromatic substitution in the final steps.
     """
-    azide_reduction = False
+    # Track late-stage heteroaryl introduction
+    late_stage_heteroaryl_introduction = False
 
-    def dfs_traverse(node):
-        nonlocal azide_reduction
+    # Pattern for heteroaromatic rings
+    heteroaromatic_pattern = Chem.MolFromSmarts("[a;!c]1[a][a][a][a][a]1")
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_heteroaryl_introduction
 
-            # First check if this is a known azide reduction reaction
-            if checker.check_reaction("Azide to amine reduction (Staudinger)", rsmi):
-                print(f"Found azide reduction reaction (Staudinger): {rsmi}")
-                azide_reduction = True
-            # If not a Staudinger reduction, check for other azide reduction reactions
-            elif any(checker.check_fg("Azide", r) for r in reactants) and checker.check_fg(
-                "Primary amine", product
-            ):
-                # Verify that the azide is actually being reduced to an amine
-                # by checking that the product doesn't have azide and at least one reactant doesn't have primary amine
-                if not checker.check_fg("Azide", product) and any(
-                    not checker.check_fg("Primary amine", r) for r in reactants
-                ):
-                    print(f"Found azide reduction reaction: {rsmi}")
-                    azide_reduction = True
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
+                # Check if any reactant has a heteroaromatic ring
+                reactant_has_heteroaromatic = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(heteroaromatic_pattern):
+                        reactant_has_heteroaromatic = True
+
+                # Check if product has a heteroaromatic ring
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(heteroaromatic_pattern):
+                    if reactant_has_heteroaromatic:
+                        # Check if this is likely an SNAr reaction (halogen on heteroaromatic)
+                        halogen_heteroaromatic = Chem.MolFromSmarts("[a;!c][a]([F,Cl,Br,I])")
+                        for reactant in reactants:
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol and mol.HasSubstructMatch(halogen_heteroaromatic):
+                                late_stage_heteroaryl_introduction = True
+                                print(
+                                    f"Late-stage heteroaryl introduction detected at depth {depth}"
+                                )
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    return azide_reduction
+    if late_stage_heteroaryl_introduction:
+        print("Late-stage heteroaryl introduction strategy detected")
+        return True
+    return False

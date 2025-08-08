@@ -2,82 +2,54 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves sequential nitrogen functionalization steps
-    (multiple reactions forming C-N bonds)
+    Detects if the synthesis involves an indole-containing building block.
     """
-    n_functionalization_depths = []
+    indole_detected = False
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+        nonlocal indole_detected
 
-            # Check for nitrogen-containing functional groups
-            amine_pattern = Chem.MolFromSmarts("[N;H]")
-            amide_pattern = Chem.MolFromSmarts("C(=O)[N]")
-
-            # Check if product has a new C-N bond not present in reactants
+        if node["type"] == "mol":
+            smiles = node["smiles"]
             try:
-                product_mol = Chem.MolFromSmiles(product_part)
-
-                # Look for amide formation or amine alkylation
-                if product_mol and (
-                    product_mol.HasSubstructMatch(amide_pattern)
-                    or product_mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]-[N](-[#6])-[#6]"))
-                ):
-
-                    # Check if this is a new bond formation
-                    reactants = reactants_part.split(".")
-                    has_same_bond_in_reactants = False
-
-                    for reactant in reactants:
-                        try:
-                            r_mol = Chem.MolFromSmiles(reactant)
-                            if r_mol and r_mol.HasSubstructMatch(amide_pattern):
-                                has_same_bond_in_reactants = True
-                        except:
-                            continue
-
-                    if not has_same_bond_in_reactants:
-                        print(f"Found nitrogen functionalization at depth {depth}")
-                        n_functionalization_depths.append(depth)
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    # Indole pattern
+                    indole_pattern = Chem.MolFromSmarts("[#6]1[#6][#7H][#6]2[#6][#6][#6][#6][#6]12")
+                    if mol.HasSubstructMatch(indole_pattern):
+                        print(f"Detected indole-containing structure at depth {depth}")
+                        indole_detected = True
             except:
-                pass
+                print("Error processing molecule SMILES")
 
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-
-    # Check if we have at least 2 nitrogen functionalization steps
-    if len(n_functionalization_depths) >= 2:
-        # Check if they are sequential (no more than 2 steps apart)
-        n_functionalization_depths.sort()
-        for i in range(1, len(n_functionalization_depths)):
-            if n_functionalization_depths[i] - n_functionalization_depths[i - 1] <= 2:
-                print("Found sequential nitrogen functionalization steps")
-                return True
-
-    return False
+    return indole_detected

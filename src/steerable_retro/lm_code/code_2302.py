@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,73 +54,69 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the route employs a Grignard or organolithium addition strategy
-    where an aryl halide reacts with an aldehyde to form a secondary alcohol.
+    This function detects a synthetic strategy involving multiple Boc deprotection steps.
     """
-    found_addition = False
+    boc_deprotection_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_addition
+    def dfs_traverse(node):
+        nonlocal boc_deprotection_count
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
 
-            # Check if this is a Grignard reaction with aldehyde
-            if checker.check_reaction("Grignard from aldehyde to alcohol", rsmi):
-                print(f"Found Grignard addition to aldehyde at depth {depth}")
-                found_addition = True
-                return
+                # Check if this is a Boc deprotection reaction using reaction type
+                if (
+                    checker.check_reaction("Boc amine deprotection", rsmi)
+                    or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
+                    or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
+                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
+                ):
+                    boc_deprotection_count += 1
+                    print(f"Found Boc deprotection step: {rsmi}")
+                # If reaction type check fails, try checking for Boc group disappearance
+                else:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-            # Check for organolithium preparation followed by aldehyde addition
-            if checker.check_reaction("Preparation of organolithium compounds", rsmi):
-                print(f"Found organolithium preparation at depth {depth}")
+                    # Count actual Boc groups in reactants and product
+                    boc_count_in_reactants = 0
+                    for r in reactants:
+                        try:
+                            # Get all instances of Boc groups in each reactant
+                            boc_indices = checker.get_fg_atom_indices("Boc", r)
+                            if boc_indices:
+                                boc_count_in_reactants += len(boc_indices)
+                        except:
+                            # Handle potential errors in functional group detection
+                            pass
 
-                # Look for subsequent aldehyde addition in parent reaction
-                for sibling in node.get("children", []):
-                    if (
-                        sibling["type"] == "reaction"
-                        and "metadata" in sibling
-                        and "rsmi" in sibling["metadata"]
-                    ):
-                        sibling_rsmi = sibling["metadata"]["rsmi"]
-                        reactants = sibling_rsmi.split(">")[0].split(".")
-                        product = sibling_rsmi.split(">")[-1]
+                    boc_count_in_product = 0
+                    try:
+                        # Get all instances of Boc groups in the product
+                        boc_indices = checker.get_fg_atom_indices("Boc", product)
+                        if boc_indices:
+                            boc_count_in_product = len(boc_indices)
+                    except:
+                        # Handle potential errors in functional group detection
+                        pass
 
-                        # Check if any reactant is an aldehyde
-                        has_aldehyde = any(checker.check_fg("Aldehyde", r) for r in reactants)
+                    # Calculate how many Boc groups were removed
+                    boc_groups_removed = boc_count_in_reactants - boc_count_in_product
 
-                        # Check if product is a secondary alcohol
-                        if has_aldehyde and checker.check_fg("Secondary alcohol", product):
-                            print(f"Found organolithium addition to aldehyde at depth {depth+1}")
-                            found_addition = True
-                            return
+                    if boc_groups_removed > 0:
+                        # Add the number of Boc groups removed
+                        boc_deprotection_count += boc_groups_removed
+                        print(f"Found Boc deprotection step (detected by FG change): {rsmi}")
+                        print(f"Number of Boc groups removed: {boc_groups_removed}")
 
-            # Manual check for aryl/alkyl halide + aldehyde → secondary alcohol
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check for halide and aldehyde in reactants
-            has_halide = any(
-                checker.check_fg("Primary halide", r)
-                or checker.check_fg("Secondary halide", r)
-                or checker.check_fg("Tertiary halide", r)
-                or checker.check_fg("Aromatic halide", r)
-                for r in reactants
-            )
-
-            has_aldehyde = any(checker.check_fg("Aldehyde", r) for r in reactants)
-
-            # Check for secondary alcohol in product
-            has_sec_alcohol = checker.check_fg("Secondary alcohol", product)
-
-            if has_halide and has_aldehyde and has_sec_alcohol:
-                print(f"Found potential Grignard/organolithium addition at depth {depth}")
-                found_addition = True
-
-        # Continue DFS traversal
+        # Traverse children
         for child in node.get("children", []):
-            if not found_addition:  # Stop traversal if we already found what we're looking for
-                dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return found_addition
+
+    print(f"Total Boc deprotection steps: {boc_deprotection_count}")
+    # Strategy requires at least 2 Boc deprotection steps
+    return boc_deprotection_count >= 2

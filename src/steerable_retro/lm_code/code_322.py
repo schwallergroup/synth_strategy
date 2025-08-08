@@ -2,63 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves reduction of an alkyne to an alkane.
+    This function detects if a sulfonamide and chloroaryl moiety are maintained
+    throughout the synthesis route.
     """
-    alkyne_reduction_found = False
+    # Track if these functional groups are present at each step
+    all_products_have_sulfonamide = True
+    all_products_have_chloroaryl = True
 
-    def dfs_traverse(node):
-        nonlocal alkyne_reduction_found
+    def dfs_traverse(node, depth=0):
+        nonlocal all_products_have_sulfonamide, all_products_have_chloroaryl
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for alkyne in reactants
-                alkyne_pattern = Chem.MolFromSmarts("[C]#[C]")
+            try:
+                product = Chem.MolFromSmiles(product_smiles)
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
+                # Check for sulfonamide group
+                sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])[#7]")
+                if not (product and product.HasSubstructMatch(sulfonamide_pattern)):
+                    all_products_have_sulfonamide = False
+                    print(f"Product at depth {depth} lacks sulfonamide group")
 
-                    if reactant_mol.HasSubstructMatch(alkyne_pattern):
-                        # Check if the product has the alkyne converted to alkane
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol:
-                            # If product doesn't have alkyne but has similar structure,
-                            # it's likely a reduction occurred
-                            if not product_mol.HasSubstructMatch(alkyne_pattern):
-                                print("Alkyne reduction detected")
-                                alkyne_reduction_found = True
+                # Check for chloroaryl moiety
+                chloroaryl_pattern = Chem.MolFromSmarts("[c]-[Cl]")
+                if not (product and product.HasSubstructMatch(chloroaryl_pattern)):
+                    all_products_have_chloroaryl = False
+                    print(f"Product at depth {depth} lacks chloroaryl moiety")
 
-        # Traverse children
+            except:
+                # If we can't parse the SMILES, assume the pattern isn't maintained
+                all_products_have_sulfonamide = False
+                all_products_have_chloroaryl = False
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return alkyne_reduction_found
+    return all_products_have_sulfonamide and all_products_have_chloroaryl

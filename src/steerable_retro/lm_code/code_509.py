@@ -2,66 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects ester to amide conversion in the synthetic sequence.
+    This function detects a synthetic strategy involving nitro reduction to form an amine.
     """
-    found_pattern = False
+    has_nitro_reduction = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
+    def dfs_traverse(node):
+        nonlocal has_nitro_reduction
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Check if any reactant has a nitro group
+                nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-            # Check for ester pattern in reactants and amide in product
-            ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][#6]")
-            amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
+                        # Check if product has an amine where nitro was
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol and product_mol.HasSubstructMatch(amine_pattern):
+                            print("Detected nitro reduction to amine")
+                            has_nitro_reduction = True
 
-            # Check if any reactant has ester and product has amide
-            ester_in_reactants = False
-            for reactant in reactants_smiles:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(ester_pattern):
-                    ester_in_reactants = True
-                    break
-
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            amide_in_product = product_mol and product_mol.HasSubstructMatch(amide_pattern)
-
-            if ester_in_reactants and amide_in_product:
-                found_pattern = True
-                print(f"Found ester to amide conversion at depth {depth}")
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return found_pattern
+    return has_nitro_reduction

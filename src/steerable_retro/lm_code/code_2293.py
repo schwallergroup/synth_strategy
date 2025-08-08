@@ -2,60 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage thiazole formation via S-alkylation.
+    This function detects a synthetic strategy involving piperazine ring formation.
     """
-    thiazole_formation_detected = False
+    has_piperazine_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal thiazole_formation_detected
+    def dfs_traverse(node):
+        nonlocal has_piperazine_formation
 
-        if node["type"] == "reaction" and depth <= 1:  # Late stage (low depth)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"].get("rsmi", "")
+            if rsmi:
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
 
-                # Check if product contains thiazole
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("c1sccn1")):
-                    # Check if reactants contain thiol and alkyl halide
-                    for reactant in reactants_smiles:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[SH]")):
-                                for r2 in reactants_smiles:
-                                    r2_mol = Chem.MolFromSmiles(r2)
-                                    if r2_mol and r2_mol.HasSubstructMatch(
-                                        Chem.MolFromSmarts("[C][Cl,Br,I]")
-                                    ):
-                                        thiazole_formation_detected = True
-                                        print(
-                                            f"Late-stage thiazole formation detected at depth {depth}"
-                                        )
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
+                product = Chem.MolFromSmiles(product_part) if product_part else None
 
+                if product and all(r for r in reactants):
+                    # Check for piperazine in product
+                    piperazine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#7][#6][#6]1")
+
+                    # Check for bis-chloroethylamine pattern in reactants
+                    bis_chloro_pattern = Chem.MolFromSmarts("Cl[#6][#6][#7][#6][#6]Cl")
+
+                    has_piperazine = product.HasSubstructMatch(piperazine_pattern)
+                    has_bis_chloro = any(r.HasSubstructMatch(bis_chloro_pattern) for r in reactants)
+
+                    # Check for aniline in reactants
+                    aniline_pattern = Chem.MolFromSmarts("[c][NH2]")
+                    has_aniline = any(r.HasSubstructMatch(aniline_pattern) for r in reactants)
+
+                    if has_piperazine and (has_bis_chloro or has_aniline):
+                        print("Detected piperazine ring formation")
+                        has_piperazine_formation = True
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return thiazole_formation_detected
+
+    print(f"Piperazine formation strategy detected: {has_piperazine_formation}")
+    return has_piperazine_formation

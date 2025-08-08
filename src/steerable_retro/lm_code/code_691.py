@@ -2,129 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects Fischer indole synthesis as a key ring-forming step.
-    Looks for phenylhydrazine reacting with a ketone to form an indole.
+    This function detects if the route involves late-stage sulfonamide formation.
+    Late-stage means in the final steps (low depth in retrosynthetic tree).
     """
-    fischer_indole_detected = False
+    sulfonamide_formed = False
+    late_stage = False
 
-    def dfs_traverse(node):
-        nonlocal fischer_indole_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal sulfonamide_formed, late_stage
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                try:
-                    rsmi = node["metadata"]["rsmi"]
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (final or penultimate step)
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                    print(f"Analyzing reaction: {rsmi}")
-
-                    # First check if this is a Fischer indole reaction directly
-                    if checker.check_reaction("Fischer indole", rsmi):
-                        print(f"Fischer indole synthesis detected via reaction check: {rsmi}")
-                        fischer_indole_detected = True
-                        return
-
-                    # If direct check fails, check for the components
-                    has_aryl_hydrazine = False
-                    has_ketone = False
-                    has_hydrazone = False
-                    has_indole_product = False
-
-                    # Check reactants for arylhydrazine, ketone, and hydrazone
+                # Check if product contains sulfonamide but reactants don't
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(
+                    Chem.MolFromSmarts("[#7]-[#16](=[#8])(=[#8])-[#7]")
+                ):
+                    # Check if this is a formation (not present in reactants)
+                    sulfonamide_in_reactants = False
                     for reactant in reactants:
-                        if not reactant:
-                            continue
-
-                        # Check for arylhydrazine (phenylhydrazine or derivatives)
-                        if checker.check_fg("Hydrazine", reactant) and any(
-                            checker.check_ring(ring, reactant)
-                            for ring in ["benzene", "naphthalene", "anthracene"]
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(
+                            Chem.MolFromSmarts("[#7]-[#16](=[#8])(=[#8])-[#7]")
                         ):
-                            has_aryl_hydrazine = True
-                            print(f"Found arylhydrazine in reactant: {reactant}")
+                            sulfonamide_in_reactants = True
+                            break
 
-                        # Check for ketone
-                        if checker.check_fg("Ketone", reactant):
-                            has_ketone = True
-                            print(f"Found ketone in reactant: {reactant}")
+                    if not sulfonamide_in_reactants:
+                        sulfonamide_formed = True
+                        late_stage = True
+                        print(f"Late-stage sulfonamide formation detected at depth {depth}")
 
-                        # Check for hydrazone (intermediate in Fischer indole synthesis)
-                        if checker.check_fg("Hydrazone", reactant) and any(
-                            checker.check_ring(ring, reactant)
-                            for ring in ["benzene", "naphthalene", "anthracene"]
-                        ):
-                            has_hydrazone = True
-                            print(f"Found aryl hydrazone in reactant: {reactant}")
-
-                    # Check product for indole
-                    if product and checker.check_ring("indole", product):
-                        has_indole_product = True
-                        print(f"Found indole in product: {product}")
-
-                    # Verify components are present for Fischer indole synthesis
-                    # Either: arylhydrazine + ketone → indole
-                    # Or: aryl hydrazone → indole
-                    if has_indole_product and (
-                        (has_aryl_hydrazine and has_ketone) or has_hydrazone
-                    ):
-                        print(f"Fischer indole synthesis detected via component check: {rsmi}")
-                        fischer_indole_detected = True
-
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return fischer_indole_detected
+    return sulfonamide_formed and late_stage

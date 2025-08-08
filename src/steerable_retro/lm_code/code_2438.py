@@ -2,158 +2,105 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a Boc protection/deprotection sequence in the synthesis.
-    Returns True if a Boc group is added early in the synthesis and removed later.
+    Detects a synthesis featuring multiple nitrogen protecting group manipulations
+    (≥2 different protecting groups) with a late-stage introduction of a heteroaromatic ring
+    via nucleophilic aromatic substitution.
     """
-    # Track protection and deprotection events with depth information
-    protection_events = []  # Will store (depth, molecule_smiles, atom_indices)
-    deprotection_events = []  # Will store (depth, molecule_smiles, atom_indices)
+    # Track protecting groups and late-stage heteroaryl introduction
+    protecting_groups_used = set()
+    late_stage_heteroaryl_introduction = False
+    max_depth = 0
+
+    # SMARTS patterns for protecting groups
+    phthalimide_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6][#6][#6]1C(=O)[N]C(=O)")
+    boc_pattern = Chem.MolFromSmarts("[#6]C([#6])([#6])OC(=O)[N]")
+    cbz_pattern = Chem.MolFromSmarts("O=C([O][C][c]1[cH][cH][cH][cH][cH]1)[N]")
+
+    # Pattern for heteroaromatic rings
+    heteroaromatic_pattern = Chem.MolFromSmarts("[a;!c]1[a][a][a][a][a]1")
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        nonlocal protecting_groups_used, late_stage_heteroaryl_introduction, max_depth
 
-            # Check for Boc protection using checker function
-            if (
-                checker.check_reaction("Boc amine protection", rsmi)
-                or checker.check_reaction("Boc amine protection explicit", rsmi)
-                or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
-                or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
-                or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
-                or checker.check_reaction("Boc amine protection of primary amine", rsmi)
-            ):
-                print(f"Found Boc protection reaction at depth {depth}: {rsmi}")
-                # Store the protection event with depth and product molecule
-                protection_events.append((depth, product))
+        max_depth = max(max_depth, depth)
 
-            # Check for Boc deprotection using checker function
-            elif (
-                checker.check_reaction("Boc amine deprotection", rsmi)
-                or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
-                or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
-                or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
-            ):
-                print(f"Found Boc deprotection reaction at depth {depth}: {rsmi}")
-                # Store the deprotection event with depth and reactant molecule
-                # In deprotection, the Boc group is on the reactant
-                for reactant in reactants:
-                    if checker.check_fg("Carbamic ester", reactant):
-                        deprotection_events.append((depth, reactant))
-                        break
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for protecting groups
+                if mol.HasSubstructMatch(phthalimide_pattern):
+                    protecting_groups_used.add("phthalimide")
+                if mol.HasSubstructMatch(boc_pattern):
+                    protecting_groups_used.add("boc")
+                if mol.HasSubstructMatch(cbz_pattern):
+                    protecting_groups_used.add("cbz")
 
-            # Fallback to pattern matching if checker doesn't identify the reactions
-            else:
-                # Check for Boc protection patterns
-                boc_reagents = ["C(C)(C)OC(=O)", "OC(=O)OC(C)(C)C", "(Boc)2O", "Boc2O"]
-                if any(
-                    any(boc_r in r for boc_r in boc_reagents) for r in reactants
-                ) and checker.check_fg("Carbamic ester", product):
-                    # Verify an amine in reactants is being protected
-                    if any(
-                        checker.check_fg(fg, r)
-                        for r in reactants
-                        for fg in ["Primary amine", "Secondary amine"]
-                    ):
-                        print(
-                            f"Found Boc protection reaction (pattern match) at depth {depth}: {rsmi}"
-                        )
-                        protection_events.append((depth, product))
+        elif node["type"] == "reaction":
+            # Check for late-stage heteroaryl introduction
+            if depth <= 1:  # Late stage (depth 0 or 1)
+                if "rsmi" in node.get("metadata", {}):
+                    rsmi = node["metadata"]["rsmi"]
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-                # Check for Boc deprotection patterns
-                elif any(checker.check_fg("Carbamic ester", r) for r in reactants):
-                    # Verify an amine in the product (deprotected)
-                    if any(
-                        checker.check_fg(fg, product)
-                        for fg in ["Primary amine", "Secondary amine", "Tertiary amine"]
-                    ):
-                        print(
-                            f"Found Boc deprotection reaction (pattern match) at depth {depth}: {rsmi}"
-                        )
-                        for reactant in reactants:
-                            if checker.check_fg("Carbamic ester", reactant):
-                                deprotection_events.append((depth, reactant))
-                                break
+                    # Check if any reactant has a heteroaromatic ring
+                    reactant_has_heteroaromatic = False
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(heteroaromatic_pattern):
+                            reactant_has_heteroaromatic = True
 
-        # Traverse children (going backward in synthesis)
+                    # Check if product has a heteroaromatic ring
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol and product_mol.HasSubstructMatch(heteroaromatic_pattern):
+                        if reactant_has_heteroaromatic:
+                            # Check if this is likely an SNAr reaction (halogen on heteroaromatic)
+                            halogen_heteroaromatic = Chem.MolFromSmarts("[a;!c][a]([F,Cl,Br,I])")
+                            for reactant in reactants:
+                                mol = Chem.MolFromSmiles(reactant)
+                                if mol and mol.HasSubstructMatch(halogen_heteroaromatic):
+                                    late_stage_heteroaryl_introduction = True
+                                    print(
+                                        f"Late-stage heteroaryl introduction detected at depth {depth}"
+                                    )
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if we have both protection and deprotection events
-    has_protection = len(protection_events) > 0
-    has_deprotection = len(deprotection_events) > 0
+    # Check if the strategy is present
+    has_multiple_protecting_groups = len(protecting_groups_used) >= 2
 
-    print(f"Boc protection events: {len(protection_events)}")
-    print(f"Boc deprotection events: {len(deprotection_events)}")
-
-    # Check if protection happens at a higher depth (earlier in synthesis)
-    # than deprotection (later in synthesis)
-    valid_sequence = False
-    if has_protection and has_deprotection:
-        # Get the minimum depth of protection (earliest protection)
-        min_protection_depth = min(depth for depth, _ in protection_events)
-        # Get the maximum depth of deprotection (latest deprotection)
-        max_deprotection_depth = max(depth for depth, _ in deprotection_events)
-
-        # In a valid sequence, protection should happen earlier (higher depth)
-        # than deprotection (lower depth)
-        valid_sequence = min_protection_depth > max_deprotection_depth
-        print(f"Min protection depth: {min_protection_depth}")
-        print(f"Max deprotection depth: {max_deprotection_depth}")
-        print(f"Valid sequence: {valid_sequence}")
-
-    # Return True if we have both protection and deprotection in the correct sequence
-    return has_protection and has_deprotection and valid_sequence
+    if has_multiple_protecting_groups and late_stage_heteroaryl_introduction:
+        print(f"Protection-deprotection cascade with late-stage heteroaryl introduction detected")
+        print(f"Protecting groups used: {protecting_groups_used}")
+        return True
+    return False

@@ -2,70 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves reduction of a nitro group to an amine.
+    Detects if the synthesis follows a linear strategy without convergent steps
     """
-    has_nitro_reduction = False
+    # Track the maximum branching factor at each depth
+    branching_factors = {}
 
-    def dfs_traverse(node):
-        nonlocal has_nitro_reduction
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            # Extract reactants and product
+            # Count number of reactants
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            num_reactants = len(reactants)
 
-            # Check for nitro reduction
-            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+            # Update maximum branching factor at this depth
+            if depth not in branching_factors or num_reactants > branching_factors[depth]:
+                branching_factors[depth] = num_reactants
 
-            if product_mol and all(m for m in reactant_mols):
-                # Look for nitro group in reactants
-                nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
-
-                # Check if any reactant has nitro group
-                nitro_in_reactants = False
-                for r_mol in reactant_mols:
-                    if r_mol.HasSubstructMatch(nitro_pattern):
-                        nitro_in_reactants = True
-                        break
-
-                # Check if product has amine group
-                amine_in_product = product_mol.HasSubstructMatch(amine_pattern)
-
-                # If reactant has nitro and product has amine, likely a reduction
-                if nitro_in_reactants and amine_in_product:
-                    has_nitro_reduction = True
-                    print(f"Nitro reduction detected in reaction: {rsmi}")
-
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(f"Nitro reduction strategy: {has_nitro_reduction}")
-    return has_nitro_reduction
+    print(f"Branching factors at each depth: {branching_factors}")
+
+    # A linear synthesis should have a maximum branching factor of 2
+    # (allowing for reagents that aren't part of the main synthetic path)
+    is_linear = all(bf <= 2 for bf in branching_factors.values())
+
+    return is_linear

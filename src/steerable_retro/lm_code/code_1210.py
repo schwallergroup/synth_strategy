@@ -2,67 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects sulfonamide formation from sulfonyl chloride and amine.
+    Detects if the synthetic route creates a biaryl system containing methoxy groups.
     """
-    sulfonamide_formation_found = False
+    methoxy_biaryl_detected = False
 
     def dfs_traverse(node):
-        nonlocal sulfonamide_formation_found
+        nonlocal methoxy_biaryl_detected
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for methoxy group
+                methoxy_pattern = Chem.MolFromSmarts("c[O][CH3]")
+                has_methoxy = mol.HasSubstructMatch(methoxy_pattern)
 
-            # Check for sulfonyl chloride in reactants
-            sulfonyl_chloride_pattern = Chem.MolFromSmarts("S(=O)(=O)Cl")
+                # Check for biaryl system
+                biaryl_pattern = Chem.MolFromSmarts("c:c-c:c")
+                has_biaryl = mol.HasSubstructMatch(biaryl_pattern)
 
-            # Check for sulfonamide in product
-            sulfonamide_pattern = Chem.MolFromSmarts("S(=O)(=O)N")
+                if has_methoxy and has_biaryl:
+                    print("Detected methoxy-containing biaryl system")
+                    methoxy_biaryl_detected = True
 
-            # Check if reactants have sulfonyl chloride and product has sulfonamide
-            reactants_have_sulfonyl_chloride = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(sulfonyl_chloride_pattern)
-                for r in reactants
-                if r
-            )
-            product_has_sulfonamide = (
-                Chem.MolFromSmiles(product).HasSubstructMatch(sulfonamide_pattern)
-                if product
-                else False
-            )
-
-            if reactants_have_sulfonyl_chloride and product_has_sulfonamide:
-                sulfonamide_formation_found = True
-                print("Sulfonamide formation detected")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Sulfonamide formation detected: {sulfonamide_formation_found}")
-    return sulfonamide_formation_found
+    return methoxy_biaryl_detected

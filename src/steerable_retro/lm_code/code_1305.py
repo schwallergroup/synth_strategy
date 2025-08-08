@@ -2,79 +2,86 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis with carbonyl functional group progression
-    (ester → acid → amide → aldehyde → oxime)
+    This function detects multiple functional group interconversions,
+    such as alcohol to bromide, alcohol to carboxylic acid, etc.
     """
-    # Define SMARTS patterns for carbonyl functional groups
-    ester_pattern = Chem.MolFromSmarts("[#6][CX3](=[OX1])[OX2][#6]")
-    acid_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2H]")
-    weinreb_amide_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[N][OX2][#6]")
-    aldehyde_pattern = Chem.MolFromSmarts("[CX3H1](=[OX1])[#6]")
-    oxime_pattern = Chem.MolFromSmarts("[CX3]=[NX2][OX2H]")
+    interconversions = []
 
-    # Track which functional groups are found and at what depth
-    found_groups = {}
+    def dfs_traverse(node):
+        nonlocal interconversions
 
-    def dfs_traverse(node, depth=0):
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                if mol.HasSubstructMatch(ester_pattern):
-                    found_groups["ester"] = depth
-                if mol.HasSubstructMatch(acid_pattern):
-                    found_groups["acid"] = depth
-                if mol.HasSubstructMatch(weinreb_amide_pattern):
-                    found_groups["weinreb"] = depth
-                if mol.HasSubstructMatch(aldehyde_pattern):
-                    found_groups["aldehyde"] = depth
-                if mol.HasSubstructMatch(oxime_pattern):
-                    found_groups["oxime"] = depth
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
+
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
+
+                if product_mol and reactant_mols:
+                    # Alcohol to bromide
+                    alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
+                    bromide_pattern = Chem.MolFromSmarts("[#6]-[#35]")
+
+                    if any(
+                        r.HasSubstructMatch(alcohol_pattern) for r in reactant_mols if r
+                    ) and product_mol.HasSubstructMatch(bromide_pattern):
+                        interconversions.append("alcohol_to_bromide")
+                        print(f"Found alcohol to bromide conversion: {rsmi}")
+
+                    # Benzyl alcohol to carboxylic acid
+                    benzyl_alcohol_pattern = Chem.MolFromSmarts("[c]-[#6]-[#8;H1]")
+                    carboxylic_acid_pattern = Chem.MolFromSmarts("[c]-[#6](=[#8])-[#8;H1]")
+
+                    if any(
+                        r.HasSubstructMatch(benzyl_alcohol_pattern) for r in reactant_mols if r
+                    ) and product_mol.HasSubstructMatch(carboxylic_acid_pattern):
+                        interconversions.append("benzyl_alcohol_to_carboxylic_acid")
+                        print(f"Found benzyl alcohol to carboxylic acid conversion: {rsmi}")
+
+                    # Aryl halide to phenol
+                    aryl_halide_pattern = Chem.MolFromSmarts("[c]-[#9,#17,#35,#53]")
+                    phenol_pattern = Chem.MolFromSmarts("[c]-[#8;H1]")
+
+                    if any(
+                        r.HasSubstructMatch(aryl_halide_pattern) for r in reactant_mols if r
+                    ) and product_mol.HasSubstructMatch(phenol_pattern):
+                        interconversions.append("aryl_halide_to_phenol")
+                        print(f"Found aryl halide to phenol conversion: {rsmi}")
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have at least 3 of the expected functional groups in the correct order
-    # Remember: higher depth = earlier in synthesis (retrosynthetic direction)
-    required_groups = ["ester", "acid", "weinreb", "aldehyde", "oxime"]
-    found_required = [group for group in required_groups if group in found_groups]
+    unique_interconversions = set(interconversions)
+    print(f"Unique functional group interconversions: {unique_interconversions}")
 
-    if len(found_required) >= 3:
-        # Check if the order is correct (higher depth should come first in synthesis)
-        for i in range(len(found_required) - 1):
-            current = found_required[i]
-            next_group = found_required[i + 1]
-            if found_groups[current] <= found_groups[next_group]:
-                print(
-                    f"Carbonyl progression order violation: {current} at depth {found_groups[current]} comes before {next_group} at depth {found_groups[next_group]}"
-                )
-                return False
-
-        print(f"Found carbonyl progression strategy with groups: {found_required}")
-        return True
-
-    print("Did not find sufficient evidence of carbonyl progression strategy")
-    return False
+    # Return True if we have at least 2 different types of interconversions
+    return len(unique_interconversions) >= 2

@@ -2,69 +2,98 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects nitro reduction to amine in the synthesis route.
-    """
-    nitro_reduction_found = False
+    Detects if the synthesis follows a linear pattern where each reaction
+    has exactly one product that becomes the reactant for the next step.
 
-    def dfs_traverse(node):
-        nonlocal nitro_reduction_found
+    In retrosynthetic analysis, this means each reaction should have exactly
+    one non-in_stock reactant molecule.
+    """
+    is_linear = True
+
+    # Track molecules that are part of the main synthetic pathway
+    intermediate_molecules = set()
+
+    def dfs_traverse(node, depth=0):
+        nonlocal is_linear
 
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Get all non-stock reactants (children of type "mol" that are not in_stock)
+            non_stock_reactants = [
+                child
+                for child in node.get("children", [])
+                if child["type"] == "mol" and not child.get("in_stock", False)
+            ]
 
-                # Check for nitro group in reactants
-                nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
-                amine_pattern = Chem.MolFromSmarts("[#7;H2]")
+            # In a linear synthesis, each reaction in the main pathway should have exactly one non-stock reactant
+            # Except for leaf reactions which might have only in-stock reactants
+            if len(non_stock_reactants) > 1:
+                is_linear = False
+                print(
+                    f"Non-linear step detected: reaction has {len(non_stock_reactants)} non-stock reactants"
+                )
 
-                # Check if any reactant has nitro group
-                reactant_has_nitro = False
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if (
-                        reactant_mol
-                        and nitro_pattern
-                        and reactant_mol.HasSubstructMatch(nitro_pattern)
-                    ):
-                        reactant_has_nitro = True
-                        break
+            # Track intermediate molecules for the main pathway
+            for child in non_stock_reactants:
+                intermediate_molecules.add(child["smiles"])
 
-                # Check if product has new amine group
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    reactant_has_nitro
-                    and product_mol
-                    and amine_pattern
-                    and product_mol.HasSubstructMatch(amine_pattern)
-                ):
-                    nitro_reduction_found = True
-                    print("Nitro reduction detected")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # First pass: identify all intermediate molecules
     dfs_traverse(route)
-    return nitro_reduction_found
+
+    # Second pass: check if any molecule is used in multiple reactions
+    # In a linear synthesis, each intermediate should be used exactly once
+    molecule_usage_count = {}
+
+    def count_molecule_usage(node):
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            smiles = node["smiles"]
+            if smiles in molecule_usage_count:
+                molecule_usage_count[smiles] += 1
+            else:
+                molecule_usage_count[smiles] = 1
+
+        # Traverse children
+        for child in node.get("children", []):
+            count_molecule_usage(child)
+
+    count_molecule_usage(route)
+
+    # Check if any intermediate molecule is used more than once
+    # This would indicate a branching or convergent synthesis
+    for smiles, count in molecule_usage_count.items():
+        if count > 1 and smiles in intermediate_molecules:
+            is_linear = False
+            print(f"Non-linear pattern detected: molecule {smiles} is used in {count} reactions")
+
+    if is_linear:
+        print("Linear synthesis pattern detected")
+
+    return is_linear

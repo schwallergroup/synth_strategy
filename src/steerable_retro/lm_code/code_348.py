@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,104 +54,93 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route uses a late-stage amide coupling strategy.
-    This checks if an amide bond is formed in the final step (depth 0).
+    This function detects if the synthetic route involves formation of a biaryl motif.
     """
-    amide_formation_at_late_stage = False
+    biaryl_formed = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_formation_at_late_stage
+    def dfs_traverse(node):
+        nonlocal biaryl_formed
 
-        if node["type"] == "reaction" and depth <= 1:  # Check depth 0 and 1 for late-stage
-            print(f"Examining reaction at depth {depth}")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Get reaction SMILES
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                print("No reaction SMILES found")
-                return
-
-            print(f"Reaction SMILES: {rsmi}")
-
-            # Extract reactants and product
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check if this is an amide formation reaction using the checker function
-            is_amide_reaction = False
-
-            # Check for various amide formation reaction types
-            amide_reaction_types = [
-                "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                "Acyl chloride with ammonia to amide",
-                "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                "Acyl chloride with secondary amine to amide",
-                "Carboxylic acid with primary amine to amide",
-                "Ester with ammonia to amide",
-                "Ester with primary amine to amide",
-                "Ester with secondary amine to amide",
-                "Schotten-Baumann_amide",
+            # Check if this is a known biaryl-forming reaction
+            biaryl_forming_reactions = [
+                "Suzuki",
+                "Stille",
+                "Negishi",
+                "Ullmann condensation",
+                "Kumada cross-coupling",
+                "Hiyama-Denmark Coupling",
             ]
 
-            for reaction_type in amide_reaction_types:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Detected amide formation reaction: {reaction_type}")
-                    is_amide_reaction = True
+            for rxn_type in biaryl_forming_reactions:
+                if checker.check_reaction(rxn_type, rsmi):
+                    print(f"Detected biaryl formation via {rxn_type} reaction")
+                    biaryl_formed = True
                     break
 
-            # If no specific reaction type matched, check for functional group changes
-            if not is_amide_reaction:
-                # Check for carboxylic acid, acyl halide, or ester in reactants
-                has_acid = any(checker.check_fg("Carboxylic acid", r) for r in reactants)
-                has_acyl_halide = any(checker.check_fg("Acyl halide", r) for r in reactants)
-                has_ester = any(checker.check_fg("Ester", r) for r in reactants)
-                has_anhydride = any(checker.check_fg("Anhydride", r) for r in reactants)
+            # If not already identified as biaryl-forming, check for biaryl structure formation
+            if not biaryl_formed:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
 
-                # Check for amine in reactants
-                has_primary_amine = any(checker.check_fg("Primary amine", r) for r in reactants)
-                has_secondary_amine = any(checker.check_fg("Secondary amine", r) for r in reactants)
+                if product_mol and all(r is not None for r in reactants_mols if r):
+                    # Check if product contains biaryl motif
+                    biaryl_smarts = "c:c-c:c"  # Basic biaryl pattern
+                    biaryl_query = Chem.MolFromSmarts(biaryl_smarts)
 
-                # Check for amide in product
-                has_amide_product = (
-                    checker.check_fg("Primary amide", product)
-                    or checker.check_fg("Secondary amide", product)
-                    or checker.check_fg("Tertiary amide", product)
-                )
+                    if product_mol.HasSubstructMatch(biaryl_query):
+                        # Check if reactants already had the biaryl motif
+                        if not any(r and r.HasSubstructMatch(biaryl_query) for r in reactants_mols):
+                            print("Detected biaryl formation through structural analysis")
+                            biaryl_formed = True
 
-                print(
-                    f"Carboxylic acid: {has_acid}, Acyl halide: {has_acyl_halide}, Ester: {has_ester}, Anhydride: {has_anhydride}"
-                )
-                print(f"Primary amine: {has_primary_amine}, Secondary amine: {has_secondary_amine}")
-                print(f"Amide in product: {has_amide_product}")
+                            # Additional check: look for aromatic rings connected by a single bond
+                            for bond in product_mol.GetBonds():
+                                begin_atom = product_mol.GetAtomWithIdx(bond.GetBeginAtomIdx())
+                                end_atom = product_mol.GetAtomWithIdx(bond.GetEndAtomIdx())
 
-                # Check if we have the right combination of reactants and product
-                if has_amide_product and (
-                    (has_acid and (has_primary_amine or has_secondary_amine))
-                    or (has_acyl_halide and (has_primary_amine or has_secondary_amine))
-                    or (has_ester and (has_primary_amine or has_secondary_amine))
-                    or (has_anhydride and (has_primary_amine or has_secondary_amine))
-                ):
-                    print(
-                        f"Detected amide formation at depth {depth} through functional group analysis"
-                    )
-                    is_amide_reaction = True
+                                # Check if bond connects two aromatic atoms and is a single bond
+                                if (
+                                    begin_atom.GetIsAromatic()
+                                    and end_atom.GetIsAromatic()
+                                    and bond.GetBondType() == Chem.BondType.SINGLE
+                                ):
+                                    # Verify these atoms are in different rings
+                                    if begin_atom.IsInRing() and end_atom.IsInRing():
+                                        ring_info = product_mol.GetRingInfo()
 
-            # If we found an amide formation reaction at the appropriate depth
-            if is_amide_reaction:
-                if depth == 0:
-                    print("Confirmed late-stage amide coupling at final step (depth 0)")
-                    amide_formation_at_late_stage = True
-                elif (
-                    depth == 1 and not amide_formation_at_late_stage
-                ):  # Only set if depth 0 hasn't already set it
-                    print("Confirmed late-stage amide coupling at penultimate step (depth 1)")
-                    amide_formation_at_late_stage = True
+                                        # Get the rings that contain these atoms
+                                        begin_rings = set(
+                                            [
+                                                i
+                                                for i, ring in enumerate(ring_info.AtomRings())
+                                                if begin_atom.GetIdx() in ring
+                                            ]
+                                        )
+                                        end_rings = set(
+                                            [
+                                                i
+                                                for i, ring in enumerate(ring_info.AtomRings())
+                                                if end_atom.GetIdx() in ring
+                                            ]
+                                        )
 
-        # Traverse children
+                                        # Check if they share any rings
+                                        if not begin_rings.isdisjoint(end_rings):
+                                            # They share rings, so they're in the same ring system
+                                            continue
+
+                                        print(
+                                            "Confirmed biaryl bond between different ring systems"
+                                        )
+                                        biaryl_formed = True
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    print(f"Final result: {amide_formation_at_late_stage}")
-    return amide_formation_at_late_stage
+    return biaryl_formed

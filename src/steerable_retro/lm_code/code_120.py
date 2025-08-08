@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,101 +54,156 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves the convergent assembly
-    of three key fragments: methylphenyl core, piperidine scaffold, and cyano-pyridine.
+    Detects if the synthesis route contains both oxidation and reduction steps.
     """
-    # Track fragments and their positions in the synthesis
-    fragment_paths = {"methylphenyl": [], "piperidine": [], "cyanopyridine": []}
+    found_oxidation = False
+    found_reduction = False
 
-    # Track depth of each node to identify convergent steps
-    node_depths = {}
+    # List of oxidation reaction types
+    oxidation_reactions = [
+        "Oxidation of aldehydes to carboxylic acids",
+        "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones",
+        "Oxidation of ketone to carboxylic acid",
+        "Oxidation of alcohol to carboxylic acid",
+        "Oxidation of nitrile to carboxylic acid",
+        "Oxidation of amide to carboxylic acid",
+        "Alkene oxidation to aldehyde",
+        "Oxidative esterification of primary alcohols",
+        "Oxidation of alcohol and aldehyde to ester",
+        "Aromatic hydroxylation",
+        "Oxidation of boronic acids",
+        "Oxidation of boronic esters",
+    ]
 
-    def identify_fragments(mol_smiles):
-        """Identify which fragments are present in a molecule"""
-        fragments = set()
+    # List of reduction reaction types
+    reduction_reactions = [
+        "Reduction of aldehydes and ketones to alcohols",
+        "Reduction of ester to primary alcohol",
+        "Reduction of ketone to secondary alcohol",
+        "Reduction of carboxylic acid to primary alcohol",
+        "Reduction of nitro groups to amines",
+        "Reduction of nitrile to amide",
+        "Reduction of nitrile to amine",
+        "Reduction of primary amides to amines",
+        "Reduction of secondary amides to amines",
+        "Reduction of tertiary amides to amines",
+        "Azide to amine reduction (Staudinger)",
+    ]
 
-        # Check for methylphenyl core (phenyl with methyl or connected to triazole/imidazole)
-        if checker.check_ring("benzene", mol_smiles) and any(
-            [
-                "cnn" in mol_smiles,  # Triazole-like structure
-                checker.check_ring("triazole", mol_smiles),
-                checker.check_ring("imidazole", mol_smiles),
-                checker.check_fg("Methyl", mol_smiles),
-            ]
-        ):
-            fragments.add("methylphenyl")
+    def dfs_traverse(node):
+        nonlocal found_oxidation, found_reduction
 
-        # Check for piperidine scaffold
-        if checker.check_ring("piperidine", mol_smiles):
-            fragments.add("piperidine")
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
 
-        # Check for cyano-pyridine
-        if checker.check_ring("pyridine", mol_smiles) and checker.check_fg("Nitrile", mol_smiles):
-            fragments.add("cyanopyridine")
+            try:
+                # Check for oxidation reactions
+                for rxn_type in oxidation_reactions:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        found_oxidation = True
+                        print(f"Found oxidation step: {rxn_type}")
+                        break
 
-        return fragments
+                # Check for reduction reactions
+                for rxn_type in reduction_reactions:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        found_reduction = True
+                        print(f"Found reduction step: {rxn_type}")
+                        break
 
-    def dfs_traverse(node, depth=0):
-        # Store the depth of this node
-        node_id = id(node)
-        node_depths[node_id] = depth
+                # If we haven't found specific reaction types, check for functional group changes
+                if not found_oxidation or not found_reduction:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            fragments = identify_fragments(mol_smiles)
+                    # Check for oxidation by functional group changes
+                    if not found_oxidation:
+                        # Alcohol to aldehyde/ketone/acid/ester (oxidation)
+                        alcohol_in_reactants = any(
+                            checker.check_fg("Primary alcohol", r)
+                            or checker.check_fg("Secondary alcohol", r)
+                            or checker.check_fg("Tertiary alcohol", r)
+                            or checker.check_fg("Aromatic alcohol", r)
+                            for r in reactants
+                        )
 
-            # Record which fragments are found at this node
-            for fragment in fragments:
-                fragment_paths[fragment].append((node_id, depth))
+                        oxidized_in_product = (
+                            checker.check_fg("Aldehyde", product)
+                            or checker.check_fg("Ketone", product)
+                            or checker.check_fg("Carboxylic acid", product)
+                            or checker.check_fg("Ester", product)
+                        )
 
-            # Check if this is a starting material
-            if node.get("in_stock", False):
-                print(f"Found starting material with fragments: {fragments}, SMILES: {mol_smiles}")
+                        if alcohol_in_reactants and oxidized_in_product:
+                            found_oxidation = True
+                            print("Found oxidation step (alcohol to carbonyl)")
+
+                        # Aldehyde to carboxylic acid (oxidation)
+                        aldehyde_in_reactants = any(
+                            checker.check_fg("Aldehyde", r) for r in reactants
+                        )
+                        acid_in_product = checker.check_fg("Carboxylic acid", product)
+
+                        if aldehyde_in_reactants and acid_in_product:
+                            found_oxidation = True
+                            print("Found oxidation step (aldehyde to acid)")
+
+                    # Check for reduction by functional group changes
+                    if not found_reduction:
+                        # Carbonyl to alcohol (reduction)
+                        carbonyl_in_reactants = any(
+                            checker.check_fg("Aldehyde", r)
+                            or checker.check_fg("Ketone", r)
+                            or checker.check_fg("Carboxylic acid", r)
+                            or checker.check_fg("Ester", r)
+                            or checker.check_fg("Amide", r)
+                            for r in reactants
+                        )
+
+                        alcohol_in_product = (
+                            checker.check_fg("Primary alcohol", product)
+                            or checker.check_fg("Secondary alcohol", product)
+                            or checker.check_fg("Tertiary alcohol", product)
+                        )
+
+                        if carbonyl_in_reactants and alcohol_in_product:
+                            found_reduction = True
+                            print("Found reduction step (carbonyl to alcohol)")
+
+                        # Nitro to amine (reduction)
+                        nitro_in_reactants = any(
+                            checker.check_fg("Nitro group", r) for r in reactants
+                        )
+                        amine_in_product = (
+                            checker.check_fg("Primary amine", product)
+                            or checker.check_fg("Secondary amine", product)
+                            or checker.check_fg("Tertiary amine", product)
+                            or checker.check_fg("Aniline", product)
+                        )
+
+                        if nitro_in_reactants and amine_in_product:
+                            found_reduction = True
+                            print("Found reduction step (nitro to amine)")
+
+                        # Azide to amine (reduction)
+                        azide_in_reactants = any(checker.check_fg("Azide", r) for r in reactants)
+
+                        if azide_in_reactants and amine_in_product:
+                            found_reduction = True
+                            print("Found reduction step (azide to amine)")
+
+            except Exception as e:
+                print(f"Error processing reaction SMILES: {e}")
 
         # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Traverse the route to identify fragments
+    # Start traversal
     dfs_traverse(route)
 
-    # Count how many unique fragments were found
-    fragments_found = sum(1 for paths in fragment_paths.values() if paths)
-    print(f"Found {fragments_found} unique fragments")
+    # Check if we found both oxidation and reduction
+    strategy_present = found_oxidation and found_reduction
 
-    # Check if we have all three fragments
-    if fragments_found < 3:
-        # Try to identify the missing fragment from the starting materials
-        missing_fragments = [f for f, paths in fragment_paths.items() if not paths]
-        print(f"Missing fragments: {missing_fragments}")
-        return False
-
-    # Analyze if the synthesis is convergent by checking depths
-    # For convergent synthesis, fragments should be introduced early (higher depth)
-    # and combined later (lower depth)
-
-    # Get the earliest (highest depth) appearance of each fragment
-    earliest_appearances = {}
-    for fragment, paths in fragment_paths.items():
-        if paths:
-            # Sort by depth in descending order (highest depth first)
-            sorted_paths = sorted(paths, key=lambda x: x[1], reverse=True)
-            earliest_appearances[fragment] = sorted_paths[0]
-
-    # Check if fragments appear at different branches (different node IDs)
-    unique_nodes = len(set(node_id for node_id, _ in earliest_appearances.values()))
-
-    print(f"Fragments appear at {unique_nodes} different branches")
-    print(f"Earliest appearances: {earliest_appearances}")
-
-    # For convergent synthesis:
-    # 1. We need all three fragments
-    # 2. They should appear at different branches (at least 2 different branches)
-    # 3. They should be combined later in the synthesis
-
-    is_convergent = fragments_found >= 3 and unique_nodes >= 2
-
-    if is_convergent:
-        print("Found convergent assembly of three fragments")
-
-    return is_convergent
+    print(f"Oxidation-reduction sequence strategy detected: {strategy_present}")
+    return strategy_present

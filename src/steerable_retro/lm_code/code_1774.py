@@ -2,54 +2,54 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis maintains a stereocenter throughout the route.
+    Detects synthesis strategy involving protected nitrogen heterocycle.
     """
-    stereocenters_by_depth = {}
+    protected_n_heterocycle = False
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node):
+        nonlocal protected_n_heterocycle
+
         if node["type"] == "mol":
-            smiles = node["smiles"]
-            try:
-                mol = Chem.MolFromSmiles(smiles)
-                if mol:
-                    # Find atoms with specified stereochemistry
-                    chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=False)
-                    if chiral_centers:
-                        print(f"Detected {len(chiral_centers)} stereocenters at depth {depth}")
-                        stereocenters_by_depth[depth] = len(chiral_centers)
-            except:
-                print("Error processing molecule SMILES")
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for Boc-protected nitrogen in a ring
+                boc_n_pattern = Chem.MolFromSmarts("[#6](=[O])-[O]-[C](-[CH3])(-[CH3])-[CH3]")
+                n_heterocycle_pattern = Chem.MolFromSmarts("[N;R]")
 
-        # Process children
+                if mol.HasSubstructMatch(boc_n_pattern) and mol.HasSubstructMatch(
+                    n_heterocycle_pattern
+                ):
+                    print("Detected protected nitrogen heterocycle")
+                    protected_n_heterocycle = True
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Check if stereocenters are maintained throughout
-    depths = sorted(stereocenters_by_depth.keys())
-    if len(depths) >= 2 and depths[0] == 0:  # Ensure final product has stereocenter
-        print(f"Stereocenters detected at depths: {depths}")
-        return True
-    return False
+    return protected_n_heterocycle

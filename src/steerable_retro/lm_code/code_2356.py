@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,47 +54,81 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis maintains a pyridazinone core throughout.
+    This function detects if the synthesis follows a linear strategy without convergent steps.
     """
-    # Track if all non-starting material molecules have pyridazinone core
-    all_have_core = True
+    # Track the number of reactants at each step and branching points
+    multi_reactant_steps = 0
+    branching_points = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal all_have_core
+    def dfs_traverse(node):
+        nonlocal multi_reactant_steps, branching_points
 
-        if node["type"] == "mol" and "smiles" in node:
-            # Skip checking starting materials
-            if node.get("in_stock", False):
-                return
+        # Check for branching in the synthesis tree
+        if node["type"] == "mol":
+            reaction_children = [
+                child for child in node.get("children", []) if child["type"] == "reaction"
+            ]
+            if len(reaction_children) > 1:
+                print(f"Found branching point at molecule: {node['smiles']}")
+                branching_points += 1
 
-            # Check for pyridazinone core (pyridazine ring with carbonyl)
-            has_pyridazine = checker.check_ring("pyridazine", node["smiles"])
+        # Check for convergent steps (multiple complex reactants)
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            if has_pyridazine:
-                # Check for carbonyl group attached to pyridazine
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    # Pyridazinone pattern: pyridazine with carbonyl
-                    pyridazinone_pattern = Chem.MolFromSmarts("n1ncc(=O)cc1")
-                    alt_pattern = Chem.MolFromSmarts("n1nc(=O)ccc1")
+                # If a step has more than one reactant (excluding solvents, catalysts)
+                if len(reactants) > 1:
+                    # Count reactants with more than 10 heavy atoms as complex
+                    complex_reactants = 0
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.GetNumHeavyAtoms() > 10:
+                            # Don't count common activating agents as complex reactants
+                            if not any(
+                                checker.check_fg(fg, reactant)
+                                for fg in [
+                                    "Acyl halide",
+                                    "Sulfonyl halide",
+                                    "Triflate",
+                                    "Mesylate",
+                                    "Tosylate",
+                                ]
+                            ):
+                                complex_reactants += 1
 
-                    if not (
-                        mol.HasSubstructMatch(pyridazinone_pattern)
-                        or mol.HasSubstructMatch(alt_pattern)
-                    ):
-                        print(
-                            f"Molecule at depth {depth} has pyridazine but no carbonyl: {node['smiles']}"
-                        )
-                        all_have_core = False
-            else:
-                print(f"Molecule at depth {depth} missing pyridazine ring: {node['smiles']}")
-                all_have_core = False
+                    # Check if this is a convergent step, excluding common coupling reactions
+                    if complex_reactants > 1:
+                        # Some coupling reactions are commonly used in linear synthesis
+                        common_coupling_rxns = [
+                            "Suzuki coupling with boronic acids",
+                            "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
+                            "Sonogashira alkyne_aryl halide",
+                            "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
+                            "Stille reaction_aryl",
+                        ]
+
+                        if not any(
+                            checker.check_reaction(rxn, rsmi) for rxn in common_coupling_rxns
+                        ):
+                            print(
+                                f"Found convergent step with {complex_reactants} complex reactants: {rsmi}"
+                            )
+                            multi_reactant_steps += 1
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    return all_have_core
+    # If there are no convergent steps or branching points, it's a linear synthesis
+    is_linear = multi_reactant_steps == 0 and branching_points == 0
+    if is_linear:
+        print("Detected linear synthesis strategy")
+    else:
+        print("Detected non-linear synthesis strategy")
+
+    return is_linear

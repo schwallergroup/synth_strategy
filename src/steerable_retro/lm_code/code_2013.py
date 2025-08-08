@@ -2,83 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects convergent synthesis with Suzuki coupling.
-    It looks for a synthesis where two complex fragments are joined via Suzuki coupling.
+    This function detects if the synthesis uses an aryl ether linker installation
+    strategy via phenol alkylation.
     """
-    suzuki_found = False
-    is_convergent = False
+    has_aryl_ether_formation = False
 
-    def dfs_traverse(node):
-        nonlocal suzuki_found, is_convergent
+    def dfs_traverse(node, depth=0):
+        nonlocal has_aryl_ether_formation
 
         if node["type"] == "reaction":
-            # Check if this is a Suzuki coupling
-            if "rsmi" in node.get("metadata", {}):
+            if "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for boronic acid/ester in reactants
-                boronic_pattern = Chem.MolFromSmarts("[#6]-[#5](-[#8])-[#8]")
-                aryl_halide_pattern = Chem.MolFromSmarts("[#6]:[#6]-[#35,#53,#17]")
+                # Check for phenol alkylation
+                phenol_pattern = Chem.MolFromSmarts("c[O;H1]")
+                bromo_pattern = Chem.MolFromSmarts("[Br][C]")
+                aryl_ether_pattern = Chem.MolFromSmarts("c[O][C][C][C][C]C(=O)")
 
-                has_boronic = False
-                has_aryl_halide = False
-
+                has_phenol = False
+                has_bromo = False
                 for reactant in reactants:
                     mol = Chem.MolFromSmiles(reactant)
                     if mol:
-                        if mol.HasSubstructMatch(boronic_pattern):
-                            has_boronic = True
-                        if mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
+                        if mol.HasSubstructMatch(phenol_pattern):
+                            has_phenol = True
+                        if mol.HasSubstructMatch(bromo_pattern):
+                            has_bromo = True
 
-                # If both patterns are found and product has a new biaryl bond, it's likely a Suzuki coupling
-                if has_boronic and has_aryl_halide:
-                    # Check if product has a biaryl bond that wasn't in reactants
-                    prod_mol = Chem.MolFromSmiles(product)
-                    if prod_mol:
-                        biaryl_pattern = Chem.MolFromSmarts("c:c-c:c")
-                        if prod_mol.HasSubstructMatch(biaryl_pattern):
-                            suzuki_found = True
+                product_mol = Chem.MolFromSmiles(product)
+                has_aryl_ether = product_mol and product_mol.HasSubstructMatch(aryl_ether_pattern)
 
-                            # Check if both fragments are complex (more than 10 atoms)
-                            complex_fragments = 0
-                            for reactant in reactants:
-                                mol = Chem.MolFromSmiles(reactant)
-                                if mol and mol.GetNumAtoms() > 10:
-                                    complex_fragments += 1
-
-                            if complex_fragments >= 2:
-                                is_convergent = True
-                                print("Found convergent Suzuki coupling")
+                if has_phenol and has_bromo and has_aryl_ether:
+                    print(f"Detected aryl ether formation via phenol alkylation at depth {depth}")
+                    has_aryl_ether_formation = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-
-    return suzuki_found and is_convergent
+    return has_aryl_ether_formation

@@ -2,66 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves manipulation of nitrogen-containing heterocycles.
+    This function detects a strategy involving the formation of an ether linkage (C-O-C)
+    between a phenol and a hydroxyethyl-containing fragment.
     """
-    n_heterocycle_pattern = Chem.MolFromSmarts("c1[n]cc*1")  # Basic N-heterocycle pattern
-    has_n_heterocycle_manipulation = False
+    found_ether_formation = False
 
-    def dfs_traverse(node):
-        nonlocal has_n_heterocycle_manipulation
+    def dfs_traverse(node, depth=0):
+        nonlocal found_ether_formation
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-                try:
-                    # Check if both reactants and products contain N-heterocycles
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                    product_mol = Chem.MolFromSmiles(product)
+            parts = rsmi.split(">")
+            if len(parts) < 3:
+                return
 
-                    if all(reactant_mols) and product_mol:
-                        reactant_has_n_heterocycle = any(
-                            m.HasSubstructMatch(n_heterocycle_pattern) for m in reactant_mols if m
-                        )
-                        product_has_n_heterocycle = product_mol.HasSubstructMatch(
-                            n_heterocycle_pattern
-                        )
+            reactants_smiles = parts[0].split(".")
+            product_smiles = parts[2]
 
-                        if reactant_has_n_heterocycle and product_has_n_heterocycle:
-                            # Check if there's a change in the heterocycle
-                            main_reactant = max(reactant_mols, key=lambda m: m.GetNumAtoms())
-                            if main_reactant.GetNumAtoms() != product_mol.GetNumAtoms():
-                                has_n_heterocycle_manipulation = True
-                                print(f"Found N-heterocycle manipulation: {rsmi}")
-                except:
-                    print(f"Error processing SMILES in N-heterocycle detection: {rsmi}")
+            # Check if product contains ether linkage
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("c-[OX2]-[CX4]")):
+                # Check if one reactant has phenol
+                has_phenol = False
+                has_alcohol = False
 
+                for reactant in reactants_smiles:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if not reactant_mol:
+                        continue
+
+                    if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("c[OX2H]")):
+                        has_phenol = True
+                    if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("[CX4][OX2H]")):
+                        has_alcohol = True
+
+                if has_phenol or has_alcohol:
+                    print(f"Found ether linkage formation at depth {depth}")
+                    found_ether_formation = True
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from root
     dfs_traverse(route)
-    print(f"N-heterocycle manipulation detected: {has_n_heterocycle_manipulation}")
-    return has_n_heterocycle_manipulation
+
+    return found_ether_formation

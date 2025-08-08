@@ -2,60 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage nitro group reduction (depth 0-1).
+    This function detects Suzuki coupling reactions forming biaryl systems.
+    Looks for reactions where a boronic acid and aryl halide form a biaryl system.
     """
-    late_nitro_reduction = False
+    suzuki_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_nitro_reduction
+    def dfs_traverse(node):
+        nonlocal suzuki_detected
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check if this is a nitro reduction
-            if reactants_part and product_part:
-                reactant_mol = Chem.MolFromSmiles(reactants_part)
-                product_mol = Chem.MolFromSmiles(product_part)
+            # Check for boronic acid in reactants
+            boronic_acid_pattern = Chem.MolFromSmarts("[c][B]([OH])[OH]")
+            # Check for aryl halide in reactants
+            aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
+            # Check for biaryl in product
+            biaryl_pattern = Chem.MolFromSmarts("[c]!@[c]")
 
-                if reactant_mol and product_mol:
-                    nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-                    amine_pattern = Chem.MolFromSmarts("[NH2]")
+            has_boronic_acid = False
+            has_aryl_halide = False
 
-                    if reactant_mol.HasSubstructMatch(
-                        nitro_pattern
-                    ) and product_mol.HasSubstructMatch(amine_pattern):
-                        # Check if this is late stage (depth 0-1)
-                        if depth <= 1:
-                            late_nitro_reduction = True
-                            print(f"Detected late-stage nitro reduction at depth {depth}")
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(boronic_acid_pattern):
+                        has_boronic_acid = True
+                    if mol and mol.HasSubstructMatch(aryl_halide_pattern):
+                        has_aryl_halide = True
+                except:
+                    continue
 
-        # Traverse children with incremented depth
+            try:
+                product_mol = Chem.MolFromSmiles(product)
+                has_biaryl = product_mol and product_mol.HasSubstructMatch(biaryl_pattern)
+            except:
+                has_biaryl = False
+
+            if has_boronic_acid and has_aryl_halide and has_biaryl:
+                print("Suzuki coupling detected: boronic acid + aryl halide → biaryl")
+                suzuki_detected = True
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
     dfs_traverse(route)
-    return late_nitro_reduction
+    return suzuki_detected

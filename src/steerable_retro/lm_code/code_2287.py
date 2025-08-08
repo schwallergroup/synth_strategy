@@ -2,72 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects SNAr diaryl ether formation strategy where an aryl fluoride
-    reacts with a phenol to form a diaryl ether.
+    Detects if the synthesis involves assembly of multiple heterocyclic structures
+    (pyridine, benzodioxole, piperazine).
     """
-    snar_detected = False
+    heterocycles_found = set()
 
     def dfs_traverse(node):
-        nonlocal snar_detected
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for pyridine
+                pyridine_pattern = Chem.MolFromSmarts("c1ccccn1")
+                if mol.HasSubstructMatch(pyridine_pattern):
+                    heterocycles_found.add("pyridine")
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                # Check for benzodioxole
+                benzodioxole_pattern = Chem.MolFromSmarts("C1OCOc2ccccc12")
+                if mol.HasSubstructMatch(benzodioxole_pattern):
+                    heterocycles_found.add("benzodioxole")
 
-            # Check if reactants contain aryl fluoride and phenol
-            aryl_fluoride_pattern = Chem.MolFromSmarts("[c][F]")
-            phenol_pattern = Chem.MolFromSmarts("[c][OH]")
-            diaryl_ether_pattern = Chem.MolFromSmarts("[c][O][c]")
-
-            reactants_have_aryl_fluoride = False
-            reactants_have_phenol = False
-            product_has_diaryl_ether = False
-
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(aryl_fluoride_pattern):
-                        reactants_have_aryl_fluoride = True
-                    if mol and mol.HasSubstructMatch(phenol_pattern):
-                        reactants_have_phenol = True
-                except:
-                    continue
-
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(diaryl_ether_pattern):
-                    product_has_diaryl_ether = True
-            except:
-                pass
-
-            if reactants_have_aryl_fluoride and reactants_have_phenol and product_has_diaryl_ether:
-                print("SNAr diaryl ether formation detected")
-                snar_detected = True
+                # Check for piperazine
+                piperazine_pattern = Chem.MolFromSmarts("N1CCNCC1")
+                if mol.HasSubstructMatch(piperazine_pattern):
+                    heterocycles_found.add("piperazine")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return snar_detected
+    print(f"Found heterocycles: {heterocycles_found}")
+    # Return True if at least 2 different heterocycles are found
+    return len(heterocycles_found) >= 2

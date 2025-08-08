@@ -2,73 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving multiple C-N bond formations
-    throughout the synthesis (at least 2).
+    Detects a synthetic strategy involving halogenated intermediates (bromo or chloro compounds)
+    as reactive species.
     """
-    c_n_bond_formations = 0
+    has_bromo_intermediate = False
+    has_chloro_intermediate = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal c_n_bond_formations
+    def dfs_traverse(node):
+        nonlocal has_bromo_intermediate, has_chloro_intermediate
 
-        if node["type"] == "reaction":
-            # Check if this reaction forms a C-N bond
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node and not node.get("in_stock", False):
+            # Only check intermediates, not starting materials
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Check for halogenated compounds
+                    bromo_pattern = Chem.MolFromSmarts("[Br]")
+                    chloro_pattern = Chem.MolFromSmarts("[Cl]")
 
-                try:
-                    # Convert to molecules
-                    product_mol = Chem.MolFromSmiles(product)
-                    reactant_mols = [
-                        Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)
-                    ]
+                    if mol.HasSubstructMatch(bromo_pattern):
+                        has_bromo_intermediate = True
+                        print("Found brominated intermediate")
 
-                    # Check for C-N bond formation
-                    c_n_pattern = Chem.MolFromSmarts("[#6]-[#7]")
-                    if product_mol:
-                        product_c_n_bonds = len(product_mol.GetSubstructMatches(c_n_pattern))
+                    if mol.HasSubstructMatch(chloro_pattern):
+                        has_chloro_intermediate = True
+                        print("Found chlorinated intermediate")
+            except:
+                print(f"Error processing molecule SMILES: {node['smiles']}")
 
-                        # Count C-N bonds in reactants
-                        reactant_c_n_bonds = sum(
-                            len(mol.GetSubstructMatches(c_n_pattern))
-                            for mol in reactant_mols
-                            if mol
-                        )
-
-                        if product_c_n_bonds > reactant_c_n_bonds:
-                            c_n_bond_formations += 1
-                            print(f"C-N bond formation detected in reaction at depth {depth}")
-                except:
-                    pass
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
 
-    # Return True if at least 2 C-N bond formations were detected
-    return c_n_bond_formations >= 2
+    # Strategy is present if either bromo or chloro intermediates are found
+    return has_bromo_intermediate or has_chloro_intermediate

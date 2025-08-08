@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,118 +54,188 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects esterification of carboxylic acid or related transformations
-    including ester hydrolysis, saponification, and transesterification.
+    This function detects a linear synthesis route featuring SNAr C-N bond formation,
+    nitro reduction, amide coupling, and late-stage heterocycle construction.
     """
-    has_esterification = False
+    # Initialize flags for each key transformation
+    has_snar = False
+    has_nitro_reduction = False
+    has_amide_formation = False
+    has_heterocycle_formation = False
+    has_methoxy = False
+    has_cyclopropyl = False
 
-    def dfs_traverse(node):
-        nonlocal has_esterification
+    def dfs_traverse(node, depth=0):
+        nonlocal has_snar, has_nitro_reduction, has_amide_formation, has_heterocycle_formation, has_methoxy, has_cyclopropyl
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and depth == 0:
+            # Check for methoxy group in final product
+            if checker.check_fg("Ether", node["smiles"]):
+                has_methoxy = True
+                print(f"Methoxy group detected in final product: {node['smiles']}")
 
-                print(f"Examining reaction: {rsmi}")
+            # Check for cyclopropyl group in final product
+            if checker.check_ring("cyclopropane", node["smiles"]):
+                has_cyclopropyl = True
+                print(f"Cyclopropyl group detected in final product: {node['smiles']}")
 
-                # Check for direct esterification
-                if checker.check_reaction("Esterification of Carboxylic Acids", rsmi):
-                    print(f"Detected esterification reaction: {rsmi}")
-                    has_esterification = True
-                    return
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_str = rsmi.split(">")[0]
+            product_str = rsmi.split(">")[-1]
 
-                # Check for ester hydrolysis (reverse of esterification)
-                if checker.check_reaction(
-                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+            # Check for SNAr reaction - expanded to include more reaction types
+            if (
+                checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
+                or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
+                or checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
+            ):
+                has_snar = True
+                print(f"SNAr reaction detected: {rsmi}")
+
+            # Alternative check for SNAr: look for nitro group and amine nucleophile
+            if not has_snar:
+                reactants = reactants_str.split(".")
+                for reactant in reactants:
+                    if checker.check_fg("Nitro group", reactant) and any(
+                        checker.check_fg(fg, reactants_str)
+                        for fg in ["Primary amine", "Secondary amine", "Aniline"]
+                    ):
+                        has_snar = True
+                        print(f"SNAr reaction detected via functional groups: {rsmi}")
+                        break
+
+            # Check for nitro reduction
+            if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                has_nitro_reduction = True
+                print(f"Nitro reduction detected: {rsmi}")
+
+            # Alternative check for nitro reduction: nitro in reactants, amine in products
+            if not has_nitro_reduction:
+                if checker.check_fg("Nitro group", reactants_str) and checker.check_fg(
+                    "Primary amine", product_str
                 ):
-                    print(f"Detected ester hydrolysis reaction: {rsmi}")
-                    has_esterification = True
-                    return
+                    has_nitro_reduction = True
+                    print(f"Nitro reduction detected via functional groups: {rsmi}")
 
-                # Check for ester saponification
-                if checker.check_reaction(
-                    "Ester saponification (methyl deprotection)", rsmi
-                ) or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi):
-                    print(f"Detected ester saponification reaction: {rsmi}")
-                    has_esterification = True
-                    return
+            # Check for amide formation - expanded list
+            amide_reactions = [
+                "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                "Carboxylic acid with primary amine to amide",
+                "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                "Ester with primary amine to amide",
+                "Acylation of primary amines",
+                "Acylation of secondary amines",
+                "Acyl chloride with secondary amine to amide",
+                "Ester with secondary amine to amide",
+                "Schotten-Baumann_amide",
+            ]
+            if any(checker.check_reaction(rxn, rsmi) for rxn in amide_reactions):
+                has_amide_formation = True
+                print(f"Amide formation detected: {rsmi}")
 
-                # Check for transesterification
-                if checker.check_reaction("Transesterification", rsmi):
-                    print(f"Detected transesterification reaction: {rsmi}")
-                    has_esterification = True
-                    return
-
-                # Check for O-alkylation with diazo compounds
-                if checker.check_reaction(
-                    "O-alkylation of carboxylic acids with diazo compounds", rsmi
+            # Alternative check for amide formation: acid/acyl halide + amine → amide
+            if not has_amide_formation:
+                if (
+                    (
+                        checker.check_fg("Carboxylic acid", reactants_str)
+                        or checker.check_fg("Acyl halide", reactants_str)
+                    )
+                    and (
+                        checker.check_fg("Primary amine", reactants_str)
+                        or checker.check_fg("Secondary amine", reactants_str)
+                    )
+                    and checker.check_fg("Primary amide", product_str)
+                    or checker.check_fg("Secondary amide", product_str)
                 ):
-                    print(f"Detected diazo esterification: {rsmi}")
-                    has_esterification = True
-                    return
+                    has_amide_formation = True
+                    print(f"Amide formation detected via functional groups: {rsmi}")
 
-                print("Not identified by reaction checker, trying functional group analysis")
+            # Check for heterocycle formation - expanded list
+            heterocycle_reactions = [
+                "Formation of NOS Heterocycles",
+                "benzimidazole_derivatives_carboxylic-acid/ester",
+                "benzimidazole_derivatives_aldehyde",
+                "benzothiazole",
+                "benzoxazole_arom-aldehyde",
+                "benzoxazole_carboxylic-acid",
+                "thiazole",
+                "tetrazole_terminal",
+                "1,2,4-triazole_acetohydrazide",
+                "1,2,4-triazole_carboxylic-acid/ester",
+                "pyrazole",
+                "oxadiazole",
+                "Paal-Knorr pyrrole synthesis",
+                "Pictet-Spengler",
+                "Fischer indole",
+                "Niementowski_quinazoline",
+                "Intramolecular amination (heterocycle formation)",
+                "Intramolecular amination of azidobiphenyls (heterocycle formation)",
+            ]
+            if any(checker.check_reaction(rxn, rsmi) for rxn in heterocycle_reactions):
+                has_heterocycle_formation = True
+                print(f"Heterocycle formation detected: {rsmi}")
 
-                # Check for carboxylic acid in reactants and ester in product (esterification)
-                has_carboxylic_acid_reactants = any(
-                    checker.check_fg("Carboxylic acid", reactant) for reactant in reactants
-                )
-                has_ester_product = checker.check_fg("Ester", product)
+            # Alternative check for heterocycle formation: count rings in reactants vs products
+            if not has_heterocycle_formation:
+                # Check if a new heterocycle appears in the product
+                heterocycles = [
+                    "pyrrole",
+                    "pyridine",
+                    "pyrazole",
+                    "imidazole",
+                    "oxazole",
+                    "thiazole",
+                    "triazole",
+                    "tetrazole",
+                    "indole",
+                    "benzimidazole",
+                    "benzoxazole",
+                    "benzothiazole",
+                ]
 
-                # Check for ester in reactants and carboxylic acid in product (hydrolysis)
-                has_ester_reactants = any(
-                    checker.check_fg("Ester", reactant) for reactant in reactants
-                )
-                has_carboxylic_acid_product = checker.check_fg("Carboxylic acid", product)
+                for ring in heterocycles:
+                    if not any(
+                        checker.check_ring(ring, r) for r in reactants_str.split(".")
+                    ) and checker.check_ring(ring, product_str):
+                        has_heterocycle_formation = True
+                        print(f"Heterocycle formation detected via ring check ({ring}): {rsmi}")
+                        break
 
-                # Check for alcohol in reactants (typical for esterification)
-                has_alcohol = any(
-                    checker.check_fg("Primary alcohol", reactant)
-                    or checker.check_fg("Secondary alcohol", reactant)
-                    or checker.check_fg("Tertiary alcohol", reactant)
-                    or checker.check_fg("Aromatic alcohol", reactant)
-                    or checker.check_fg("Enol", reactant)
-                    for reactant in reactants
-                )
+            # Additional check for methoxy and cyclopropyl in products
+            if checker.check_fg("Ether", product_str):
+                has_methoxy = True
+                print(f"Methoxy group detected in product: {product_str}")
 
-                # Check for diazo compounds (alternative esterification route)
-                has_diazo = any(checker.check_fg("Diazo", reactant) for reactant in reactants)
+            if checker.check_ring("cyclopropane", product_str):
+                has_cyclopropyl = True
+                print(f"Cyclopropyl group detected in product: {product_str}")
 
-                print(f"Has carboxylic acid in reactants: {has_carboxylic_acid_reactants}")
-                print(f"Has ester in product: {has_ester_product}")
-                print(f"Has ester in reactants: {has_ester_reactants}")
-                print(f"Has carboxylic acid in product: {has_carboxylic_acid_product}")
-                print(f"Has alcohol in reactants: {has_alcohol}")
-                print(f"Has diazo compound in reactants: {has_diazo}")
-
-                # Esterification: carboxylic acid + alcohol → ester
-                if has_carboxylic_acid_reactants and has_ester_product:
-                    print(
-                        f"Detected functional group changes consistent with esterification: {rsmi}"
-                    )
-                    has_esterification = True
-                    return
-
-                # Hydrolysis: ester → carboxylic acid
-                if has_ester_reactants and has_carboxylic_acid_product:
-                    print(
-                        f"Detected functional group changes consistent with ester hydrolysis: {rsmi}"
-                    )
-                    has_esterification = True
-                    return
-
-                # Transesterification: ester + alcohol → different ester
-                if has_ester_reactants and has_ester_product and has_alcohol:
-                    print(
-                        f"Detected functional group changes consistent with transesterification: {rsmi}"
-                    )
-                    has_esterification = True
-                    return
-
+        # Recursively traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_esterification
+
+    # Check if the strategy is present (requires at least 3 of the key transformations)
+    strategy_score = sum(
+        [
+            has_snar,
+            has_nitro_reduction,
+            has_amide_formation,
+            has_heterocycle_formation,
+            has_methoxy,
+            has_cyclopropyl,
+        ]
+    )
+
+    print(f"Strategy score: {strategy_score}/6")
+    print(
+        f"SNAr: {has_snar}, Nitro reduction: {has_nitro_reduction}, Amide formation: {has_amide_formation}"
+    )
+    print(
+        f"Heterocycle formation: {has_heterocycle_formation}, Methoxy: {has_methoxy}, Cyclopropyl: {has_cyclopropyl}"
+    )
+
+    return strategy_score >= 3

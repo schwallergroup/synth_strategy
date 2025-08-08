@@ -2,61 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthesis strategy involving oxime chemistry.
+    Detects if the synthesis route maintains a tert-butyl ester protecting group
+    throughout most of the synthesis.
     """
-    oxime_chemistry_found = False
+    tert_butyl_ester_count = 0
+    reaction_count = 0
 
     def dfs_traverse(node):
-        nonlocal oxime_chemistry_found
+        nonlocal tert_butyl_ester_count, reaction_count
 
-        if node["type"] == "reaction":
-            # Extract reactants and products
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            reaction_count += 1
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            products_smiles = rsmi.split(">")[-1]
+            product = rsmi.split(">")[-1]
 
-            # Check for oxime pattern
-            oxime_pattern = Chem.MolFromSmarts("[#6]=[#7]-[#8]")
+            # Check for tert-butyl ester in product
+            tert_butyl_ester_pattern = Chem.MolFromSmarts("C(=O)OC(C)(C)C")
 
-            reactant_mol = Chem.MolFromSmiles(reactants_smiles)
-            product_mols = [Chem.MolFromSmiles(p) for p in products_smiles.split(".")]
+            try:
+                mol = Chem.MolFromSmiles(product)
+                if mol and mol.HasSubstructMatch(tert_butyl_ester_pattern):
+                    tert_butyl_ester_count += 1
+                    print(f"Found tert-butyl ester in reaction product")
+            except:
+                pass
 
-            if oxime_pattern is not None:
-                # Check if reactant or product has oxime
-                if reactant_mol is not None and reactant_mol.HasSubstructMatch(oxime_pattern):
-                    print("Found oxime in reactants")
-                    oxime_chemistry_found = True
-
-                for p_mol in product_mols:
-                    if p_mol is not None and p_mol.HasSubstructMatch(oxime_pattern):
-                        print("Found oxime in products")
-                        oxime_chemistry_found = True
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return oxime_chemistry_found
+
+    # Check if tert-butyl ester is present in at least 70% of reactions
+    if reaction_count > 0 and tert_butyl_ester_count / reaction_count >= 0.7:
+        print(
+            f"tert-butyl ester protection strategy detected ({tert_butyl_ester_count}/{reaction_count} reactions)"
+        )
+        return True
+    return False

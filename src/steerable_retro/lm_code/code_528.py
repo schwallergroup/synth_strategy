@@ -2,62 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage amine functionalization (at depth 0 or 1).
+    This function detects if the synthetic route involves reduction of a nitro group to an amine.
     """
-    late_stage_found = False
+    has_nitro_reduction = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_found
+    def dfs_traverse(node):
+        nonlocal has_nitro_reduction
 
-        if (
-            node["type"] == "reaction"
-            and "metadata" in node
-            and "rsmi" in node["metadata"]
-            and depth <= 1
-        ):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check for amine pattern in reactants
-            amine_pattern = Chem.MolFromSmarts("[N;H]")
-            # Check for alkylated amine pattern in product
-            alkylated_amine_pattern = Chem.MolFromSmarts("[N]([#6])[#6]")
+                # Convert SMILES to molecules
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                if all(reactant_mols) and product_mol:
+                    # Check for nitro group in reactants
+                    nitro_pattern = Chem.MolFromSmarts("[#6][N+](=[O])[O-]")
+                    # Check for amine in product
+                    amine_pattern = Chem.MolFromSmarts("[#6][NH2]")
 
-            if (
-                product_mol
-                and any(r and r.HasSubstructMatch(amine_pattern) for r in reactant_mols)
-                and product_mol.HasSubstructMatch(alkylated_amine_pattern)
-            ):
-                print(f"Late-stage amine functionalization detected at depth {depth}")
-                late_stage_found = True
+                    has_nitro = any(mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols)
+                    has_amine = product_mol.HasSubstructMatch(amine_pattern)
 
+                    if has_nitro and has_amine:
+                        has_nitro_reduction = True
+                        print("Nitro reduction to amine detected")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return late_stage_found
+
+    return has_nitro_reduction

@@ -2,94 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a borylation followed by Suzuki coupling sequence.
+    Detects aromatic bromination as a key functionalization step
     """
-    borylation_detected = False
-    suzuki_detected = False
-    borylation_depth = -1
-    suzuki_depth = -1
+    found_aromatic_bromination = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal borylation_detected, suzuki_detected, borylation_depth, suzuki_depth
+    def dfs_traverse(node):
+        nonlocal found_aromatic_bromination
 
         if node["type"] == "reaction":
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            # Check for aromatic bromination pattern
+            product_mol = Chem.MolFromSmiles(product)
 
-            try:
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            if product_mol:
+                # SMARTS for aromatic bromide
+                aromatic_bromide_pattern = Chem.MolFromSmarts("[c]-[Br]")
 
-                # Check for borylation (aryl-Br to aryl-B(OR)2)
-                if product_mol is not None:
-                    boronate_pattern = Chem.MolFromSmarts("[c]-[B;X3]")
-                    if product_mol.HasSubstructMatch(boronate_pattern):
-                        halide_pattern = Chem.MolFromSmarts("[c]-[Br,I,Cl]")
-                        if any(
-                            mol is not None and mol.HasSubstructMatch(halide_pattern)
-                            for mol in reactant_mols
-                        ):
-                            borylation_detected = True
-                            borylation_depth = depth
-                            print(f"Detected borylation at depth {depth}")
+                if product_mol.HasSubstructMatch(aromatic_bromide_pattern):
+                    # Check if bromine is being added (not already present in all reactants)
+                    all_reactants_have_br = True
+                    for reactant in reactants:
+                        if "Br" not in reactant:
+                            all_reactants_have_br = False
+                            break
 
-                # Check for Suzuki coupling
-                if product_mol is not None:
-                    boronate_pattern = Chem.MolFromSmarts("[c]-[B;X3]")
-                    halide_pattern = Chem.MolFromSmarts("[c]-[Br,I,Cl]")
+                    if not all_reactants_have_br:
+                        found_aromatic_bromination = True
+                        print("Found aromatic bromination step")
 
-                    has_boronate = any(
-                        mol is not None and mol.HasSubstructMatch(boronate_pattern)
-                        for mol in reactant_mols
-                    )
-                    has_halide = any(
-                        mol is not None and mol.HasSubstructMatch(halide_pattern)
-                        for mol in reactant_mols
-                    )
-
-                    if has_boronate and has_halide:
-                        suzuki_detected = True
-                        suzuki_depth = depth
-                        print(f"Detected Suzuki coupling at depth {depth}")
-
-            except Exception as e:
-                print(f"Error in borylation-Suzuki detection: {e}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if borylation occurs before Suzuki coupling
-    sequence_detected = (
-        borylation_detected and suzuki_detected and borylation_depth > suzuki_depth
-    )  # Remember: higher depth = earlier in synthesis
-
-    return sequence_detected
+    return found_aromatic_bromination

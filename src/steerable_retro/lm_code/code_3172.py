@@ -2,77 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves Weinreb amide chemistry
-    (formation and subsequent transformation).
+    Detects if the synthesis route employs halogen chemistry as key intermediates,
+    looking for halogenation and subsequent replacement of halogens.
     """
-    weinreb_formation = False
-    weinreb_transformation = False
+    halogenation_steps = []
+    halogen_replacement_steps = []
 
-    # SMARTS pattern for Weinreb amide
-    weinreb_pattern = Chem.MolFromSmarts("[#6]-[#7](-[#8][#6])-[#6]=[#8]")
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-    def dfs_traverse(node):
-        nonlocal weinreb_formation, weinreb_transformation
+                # Patterns for halogen chemistry
+                c_x_pattern = Chem.MolFromSmarts("[#6]-[#17,#35,#53]")  # C-Cl, C-Br, C-I
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
 
-            # Check for Weinreb amide formation
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol and product_mol.HasSubstructMatch(weinreb_pattern):
-                # Check if Weinreb amide was not in reactants
-                weinreb_in_reactants = False
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(weinreb_pattern):
-                        weinreb_in_reactants = True
-                        break
+                    # Count halogen bonds in product and reactants
+                    if product_mol:
+                        product_c_x_count = len(product_mol.GetSubstructMatches(c_x_pattern))
+                        reactant_c_x_count = sum(
+                            len(mol.GetSubstructMatches(c_x_pattern))
+                            for mol in reactant_mols
+                            if mol
+                        )
 
-                if not weinreb_in_reactants:
-                    print("Weinreb amide formation detected in reaction:", rsmi)
-                    weinreb_formation = True
+                        # If product has more halogen bonds than reactants combined (halogenation)
+                        if product_c_x_count > reactant_c_x_count:
+                            print(f"Halogenation detected at depth {depth}")
+                            halogenation_steps.append(depth)
 
-            # Check for Weinreb amide transformation
-            weinreb_in_reactants = False
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(weinreb_pattern):
-                    weinreb_in_reactants = True
-                    break
+                        # If product has fewer halogen bonds than reactants combined (halogen replacement)
+                        if product_c_x_count < reactant_c_x_count:
+                            print(f"Halogen replacement detected at depth {depth}")
+                            halogen_replacement_steps.append(depth)
+                except:
+                    pass
 
-            if weinreb_in_reactants:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and not product_mol.HasSubstructMatch(weinreb_pattern):
-                    print("Weinreb amide transformation detected in reaction:", rsmi)
-                    weinreb_transformation = True
-
-        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return weinreb_formation and weinreb_transformation
+
+    # Check if we have both halogenation and subsequent replacement
+    return len(halogenation_steps) > 0 and len(halogen_replacement_steps) > 0

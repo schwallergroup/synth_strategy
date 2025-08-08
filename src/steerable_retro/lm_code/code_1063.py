@@ -2,117 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route includes an alcohol to bromide
-    transformation as part of the preparation of coupling partners.
+    This function detects if the synthetic route involves ester hydrolysis to form carboxylic acid.
     """
-    found_transformation = False
+    ester_hydrolysis_detected = False
 
     def dfs_traverse(node):
-        nonlocal found_transformation
+        nonlocal ester_hydrolysis_detected
 
         if node["type"] == "reaction":
-            try:
-                reaction_smiles = node["metadata"]["rsmi"]
-                reactants = reaction_smiles.split(">")[0].split(".")
-                product = reaction_smiles.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for alcohol to bromide transformation using specific reaction types
-                if checker.check_reaction(
-                    "PBr3 and alcohol to alkyl bromide", reaction_smiles
-                ) or checker.check_reaction("Appel reaction", reaction_smiles):
-                    print(
-                        f"Found alcohol to bromide transformation via specific reaction: {reaction_smiles}"
-                    )
-                    found_transformation = True
-                    return
+                # Check for ester in reactants
+                reactants = Chem.MolFromSmiles(reactants_smiles)
+                if reactants:
+                    ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][CH3]")
+                    if reactants.HasSubstructMatch(ester_pattern):
 
-                # Check for alcohol in reactants and bromide in product
-                alcohol_in_reactants = False
-                for reactant in reactants:
-                    if (
-                        checker.check_fg("Primary alcohol", reactant)
-                        or checker.check_fg("Secondary alcohol", reactant)
-                        or checker.check_fg("Tertiary alcohol", reactant)
-                        or checker.check_fg("Aromatic alcohol", reactant)
-                    ):
-                        alcohol_in_reactants = True
-                        print(f"Found alcohol in reactant: {reactant}")
-                        break
-
-                if alcohol_in_reactants:
-                    # Check for primary, secondary, tertiary halides that contain bromine
-                    if (
-                        checker.check_fg("Primary halide", product)
-                        or checker.check_fg("Secondary halide", product)
-                        or checker.check_fg("Tertiary halide", product)
-                        or checker.check_fg("Aromatic halide", product)
-                    ):
-
-                        # Additional check to ensure it's specifically a bromide
-                        mol = Chem.MolFromSmiles(product)
-                        if mol:
-                            for atom in mol.GetAtoms():
-                                if atom.GetSymbol() == "Br":
-                                    print(f"Found bromide in product: {product}")
-                                    found_transformation = True
-                                    return
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+                        # Check for carboxylic acid in product
+                        product = Chem.MolFromSmiles(product_smiles)
+                        if product:
+                            acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
+                            if product.HasSubstructMatch(acid_pattern):
+                                ester_hydrolysis_detected = True
+                                print(f"Detected ester hydrolysis: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return found_transformation
+    print(f"Ester hydrolysis strategy detected: {ester_hydrolysis_detected}")
+    return ester_hydrolysis_detected

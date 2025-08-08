@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,84 +54,174 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects phthalimide protection of primary amine in the synthetic route.
+    Detects if the synthesis route includes aromatization of a cyclohexadiene-like system
+    to form an aromatic ring.
     """
-    protection_detected = False
+    aromatization_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal protection_detected
+        nonlocal aromatization_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
             rsmi = node["metadata"]["rsmi"]
-            print(f"Checking reaction SMILES: {rsmi}")
+            reactants_smiles = rsmi.split(">")[0]
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if this is a phthalimide protection or deprotection reaction
-            if checker.check_reaction("Phthalic anhydride to phthalimide", rsmi):
-                print("Phthalimide formation reaction detected")
-                protection_detected = True
-                return
+            print(f"Depth {depth} - Examining reaction: {rsmi}")
 
-            if checker.check_reaction("Phthalimide deprotection", rsmi):
-                print("Phthalimide deprotection reaction detected")
-                protection_detected = True
-                return
-
-            # If not directly detected, check for the functional group transformation
             try:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-                # Check for primary amine in reactants
-                has_primary_amine = False
-                for reactant in reactants:
-                    if checker.check_fg("Primary amine", reactant):
-                        print(f"Primary amine found in reactant: {reactant}")
-                        has_primary_amine = True
-                        break
+                if reactants_mol and product_mol:
+                    # Count aromatic atoms before and after
+                    reactant_aromatic_atoms = sum(
+                        1 for atom in reactants_mol.GetAtoms() if atom.GetIsAromatic()
+                    )
+                    product_aromatic_atoms = sum(
+                        1 for atom in product_mol.GetAtoms() if atom.GetIsAromatic()
+                    )
 
-                # Check for phthalimide in product
-                if has_primary_amine:
-                    prod_mol = Chem.MolFromSmiles(product)
+                    print(
+                        f"  Aromatic atoms: Reactants={reactant_aromatic_atoms}, Product={product_aromatic_atoms}"
+                    )
 
-                    # Check for N-substituted phthalimide structure
-                    if checker.check_fg("Unsubstituted dicarboximide", product):
-                        print("Dicarboximide group found in product")
-                        protection_detected = True
-                        return
-
-                    # Check for phthalimide ring structure
-                    if prod_mol and prod_mol.HasSubstructMatch(
-                        Chem.MolFromSmarts("O=C1NC(=O)c2ccccc21")
-                    ):
-                        print("Phthalimide ring structure found in product")
-                        protection_detected = True
-                        return
-
-                # Check for phthalimide in reactants and primary amine in product (deprotection)
-                has_phthalimide = False
-                for reactant in reactants:
-                    if checker.check_fg("Unsubstituted dicarboximide", reactant) or (
-                        Chem.MolFromSmiles(reactant)
-                        and Chem.MolFromSmiles(reactant).HasSubstructMatch(
-                            Chem.MolFromSmarts("O=C1NC(=O)c2ccccc21")
+                    # Check for aromatization (forward direction)
+                    if product_aromatic_atoms > reactant_aromatic_atoms:
+                        print(
+                            f"  Increase in aromaticity detected: +{product_aromatic_atoms - reactant_aromatic_atoms} atoms"
                         )
-                    ):
-                        print(f"Phthalimide found in reactant: {reactant}")
-                        has_phthalimide = True
-                        break
 
-                if has_phthalimide and checker.check_fg("Primary amine", product):
-                    print("Primary amine found in product after phthalimide deprotection")
-                    protection_detected = True
-                    return
+                        # Check for oxidation/dehydrogenation reactions
+                        is_oxidation_or_dehydrogenation = (
+                            checker.check_reaction(
+                                "Oxidation of aldehydes to carboxylic acids", rsmi
+                            )
+                            or checker.check_reaction(
+                                "Oxidation of alcohol to carboxylic acid", rsmi
+                            )
+                            or checker.check_reaction("Dehydrogenation", rsmi)
+                            or checker.check_reaction("Arene hydrogenation", rsmi)
+                            or checker.check_reaction("Hydrogenation (double to single)", rsmi)
+                            or checker.check_reaction("Hydrogenation (triple to double)", rsmi)
+                        )
+
+                        # Check for benzene rings in product that weren't in reactants
+                        has_new_benzene = checker.check_ring(
+                            "benzene", product_smiles
+                        ) and not checker.check_ring("benzene", reactants_smiles)
+
+                        if has_new_benzene:
+                            print(f"  New benzene ring detected in product")
+
+                        # Check for cyclohexadiene or cyclohexane in reactants
+                        has_cyclohexadiene = checker.check_ring("cyclohexane", reactants_smiles)
+
+                        if has_cyclohexadiene:
+                            print(f"  Cyclohexane found in reactants")
+
+                        # Confirm aromatization
+                        if (has_new_benzene and has_cyclohexadiene) or (
+                            is_oxidation_or_dehydrogenation and has_new_benzene
+                        ):
+                            print(f"  CONFIRMED: Aromatization detected in forward direction")
+                            aromatization_detected = True
+
+                        # Check for significant increase in aromaticity
+                        elif product_aromatic_atoms - reactant_aromatic_atoms >= 6:
+                            print(
+                                f"  Significant increase in aromaticity detected: +{product_aromatic_atoms - reactant_aromatic_atoms} atoms"
+                            )
+                            aromatization_detected = True
+
+                    # Check for dearomatization (reverse direction - important for retrosynthetic traversal)
+                    elif reactant_aromatic_atoms > product_aromatic_atoms:
+                        print(
+                            f"  Decrease in aromaticity detected: -{reactant_aromatic_atoms - product_aromatic_atoms} atoms"
+                        )
+
+                        # In retrosynthetic analysis, dearomatization in forward direction = aromatization in reverse
+                        # Check for benzene rings in reactants that aren't in products
+                        has_benzene_in_reactants = checker.check_ring("benzene", reactants_smiles)
+                        has_benzene_in_products = checker.check_ring("benzene", product_smiles)
+
+                        if has_benzene_in_reactants and not has_benzene_in_products:
+                            print(f"  Benzene ring in reactants but not in products")
+
+                            # Check for cyclohexadiene or cyclohexane in products
+                            has_cyclohexane_in_products = checker.check_ring(
+                                "cyclohexane", product_smiles
+                            )
+
+                            if has_cyclohexane_in_products:
+                                print(f"  Cyclohexane found in products")
+                                print(
+                                    f"  CONFIRMED: Dearomatization detected (aromatization in retrosynthetic direction)"
+                                )
+                                aromatization_detected = True
+
+                            # Check if this is a significant dearomatization (loss of 6 or more aromatic atoms)
+                            elif reactant_aromatic_atoms - product_aromatic_atoms >= 6:
+                                print(
+                                    f"  Significant dearomatization detected: -{reactant_aromatic_atoms - product_aromatic_atoms} atoms"
+                                )
+                                print(
+                                    f"  CONFIRMED: Dearomatization detected (aromatization in retrosynthetic direction)"
+                                )
+                                aromatization_detected = True
+
+                        # Check for specific reaction types that might involve dearomatization
+                        is_dearomatization_rxn = checker.check_reaction("Arene hydrogenation", rsmi)
+
+                        if is_dearomatization_rxn and has_benzene_in_reactants:
+                            print(f"  Arene hydrogenation detected with benzene in reactants")
+                            print(
+                                f"  CONFIRMED: Dearomatization detected (aromatization in retrosynthetic direction)"
+                            )
+                            aromatization_detected = True
+
+                    # Check for specific reaction types that might involve aromatization
+                    if not aromatization_detected:
+                        aromatization_rxn_types = [
+                            "Dehydrogenation",
+                            "Arene hydrogenation",
+                            "Oxidation of alcohol to carboxylic acid",
+                            "Hydrogenation (double to single)",
+                            "Hydrogenation (triple to double)",
+                        ]
+
+                        for rxn_type in aromatization_rxn_types:
+                            if checker.check_reaction(rxn_type, rsmi):
+                                print(
+                                    f"  Potential aromatization reaction type detected: {rxn_type}"
+                                )
+
+                                # For Arene hydrogenation, we need to check in reverse direction
+                                if rxn_type == "Arene hydrogenation":
+                                    if checker.check_ring(
+                                        "benzene", reactants_smiles
+                                    ) and checker.check_ring("cyclohexane", product_smiles):
+                                        print(
+                                            f"  Arene hydrogenation converts benzene to cyclohexane (aromatization in reverse)"
+                                        )
+                                        aromatization_detected = True
+                                        break
+                                # For other reactions, check if benzene is involved
+                                elif checker.check_ring(
+                                    "benzene", product_smiles
+                                ) or checker.check_ring("benzene", reactants_smiles):
+                                    print(f"  Benzene ring involved in {rxn_type} reaction")
+                                    aromatization_detected = True
+                                    break
 
             except Exception as e:
-                print(f"Error analyzing reaction: {e}")
+                print(f"Error processing SMILES for aromatization detection: {e}")
 
         # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if not aromatization_detected:  # Stop traversal if we've already found aromatization
+                dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    print(f"Protection detected: {protection_detected}")
-    return protection_detected
+    print(f"Final result: aromatization_detected = {aromatization_detected}")
+    return aromatization_detected

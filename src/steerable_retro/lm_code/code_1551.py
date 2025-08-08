@@ -2,62 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes that use late-stage amide coupling as a key strategy.
+    This function detects early-stage aromatic hydroxylation.
     """
-    found_late_amide_coupling = False
-    max_depth = 0
+    hydroxylation_depth = None
+    max_depth = -1
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_late_amide_coupling, max_depth
+        nonlocal hydroxylation_depth, max_depth
 
-        # Track maximum depth to determine what's "late-stage"
         max_depth = max(max_depth, depth)
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for amide coupling
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+            # Check for hydroxylation
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                phenol_pattern = Chem.MolFromSmarts("[c][OH]")
+                if product_mol.HasSubstructMatch(phenol_pattern):
+                    # Check if any reactant doesn't have the hydroxyl
+                    hydroxyl_in_all_reactants = True
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if not reactant_mol.HasSubstructMatch(phenol_pattern):
+                                hydroxyl_in_all_reactants = False
+                                break
 
-            if all(reactant_mols) and product_mol:
-                # Look for carboxylic acid in reactants
-                acid_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#8;H1]")
-                amine_pattern = Chem.MolFromSmarts("[#7;!$(N=*);!$(NC=O)]")
-                amide_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#7]")
-
-                has_acid = any(mol.HasSubstructMatch(acid_pattern) for mol in reactant_mols)
-                has_amine = any(mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols)
-                has_amide_product = product_mol.HasSubstructMatch(amide_pattern)
-
-                if (
-                    has_acid and has_amine and has_amide_product and depth <= 1
-                ):  # Depth <= 1 means late-stage
-                    found_late_amide_coupling = True
-                    print(f"Found late-stage amide coupling at depth {depth}")
+                    if not hydroxyl_in_all_reactants:
+                        # This reaction forms a phenol
+                        if hydroxylation_depth is None or depth > hydroxylation_depth:
+                            hydroxylation_depth = depth
+                            print(f"Hydroxylation detected at depth {depth} in reaction: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -66,5 +70,11 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Late-stage amide coupling strategy detected: {found_late_amide_coupling}")
-    return found_late_amide_coupling
+    # Consider it early-stage if it's in the second half of the synthesis
+    # (remember higher depth is earlier in the synthesis)
+    if hydroxylation_depth is not None and hydroxylation_depth > max_depth / 2:
+        print(
+            f"Early-stage hydroxylation detected at depth {hydroxylation_depth} (max depth: {max_depth})"
+        )
+        return True
+    return False

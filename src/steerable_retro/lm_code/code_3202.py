@@ -2,78 +2,129 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving N-alkylation of a heterocyclic nitrogen.
+    This function detects if the synthesis follows the specific sequence:
+    Reduction → Disconnection → Deprotection → Coupling
     """
-    has_n_alkylation = False
+    # Initialize flags for each transformation
+    found_reduction = False
+    found_disconnection = False
+    found_deprotection = False
+    found_coupling = False
 
-    def is_n_alkylation(reactants, product):
-        # Check if one reactant has NH and another has alkyl halide
-        has_nh = False
-        has_alkyl_halide = False
+    # Initialize depths for each transformation
+    reduction_depth = -1
+    disconnection_depth = -1
+    deprotection_depth = -1
+    coupling_depth = -1
 
-        nh_pattern = Chem.MolFromSmarts("[nH,NH]")
-        alkyl_halide_pattern = Chem.MolFromSmarts("C-[#35,#53,#17]")
-
-        for reactant in reactants:
-            reactant_mol = Chem.MolFromSmiles(reactant)
-            if reactant_mol:
-                if reactant_mol.HasSubstructMatch(nh_pattern):
-                    has_nh = True
-                if reactant_mol.HasSubstructMatch(alkyl_halide_pattern):
-                    has_alkyl_halide = True
-
-        # Check if product has N-alkyl bond
-        product_mol = Chem.MolFromSmiles(product)
-        n_alkyl_pattern = Chem.MolFromSmarts("[n,N]-C")
-
-        if product_mol and product_mol.HasSubstructMatch(n_alkyl_pattern):
-            return has_nh and has_alkyl_halide
-
-        return False
-
-    def dfs_traverse(node):
-        nonlocal has_n_alkylation
+    def dfs_traverse(node, depth=0):
+        nonlocal found_reduction, found_disconnection, found_deprotection, found_coupling
+        nonlocal reduction_depth, disconnection_depth, deprotection_depth, coupling_depth
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if rsmi:
-                parts = rsmi.split(">")
-                if len(parts) >= 3:
-                    reactants = parts[0].split(".")
-                    product = parts[2]
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                    # Check for N-alkylation
-                    if is_n_alkylation(reactants, product):
-                        print("Found N-alkylation reaction")
-                        has_n_alkylation = True
+                product_mol = Chem.MolFromSmiles(product)
 
-        # Traverse children
+                # Check for reduction (C=O to CH2-OH)
+                carbonyl_pattern = Chem.MolFromSmarts("[#6]=O")
+                alcohol_pattern = Chem.MolFromSmarts("[#6][OH]")
+
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if (
+                        product_mol
+                        and reactant_mol
+                        and product_mol.HasSubstructMatch(carbonyl_pattern)
+                        and reactant_mol.HasSubstructMatch(alcohol_pattern)
+                    ):
+                        found_reduction = True
+                        reduction_depth = depth
+                        print(f"Found reduction at depth {depth}")
+
+                # Check for alkene disconnection
+                alkene_pattern = Chem.MolFromSmarts("[#6]=[#6]")
+                alkyne_pattern = Chem.MolFromSmarts("[#6]#[#6]")
+
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if (
+                        product_mol
+                        and reactant_mol
+                        and product_mol.HasSubstructMatch(alkene_pattern)
+                        and reactant_mol.HasSubstructMatch(alkyne_pattern)
+                    ):
+                        found_disconnection = True
+                        disconnection_depth = depth
+                        print(f"Found disconnection at depth {depth}")
+
+                # Check for ester hydrolysis (deprotection)
+                carboxylic_acid_pattern = Chem.MolFromSmarts("[#6](=O)[OH]")
+                methyl_ester_pattern = Chem.MolFromSmarts("[#6](=O)[O][CH3]")
+
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if (
+                        product_mol
+                        and reactant_mol
+                        and product_mol.HasSubstructMatch(carboxylic_acid_pattern)
+                        and reactant_mol.HasSubstructMatch(methyl_ester_pattern)
+                    ):
+                        found_deprotection = True
+                        deprotection_depth = depth
+                        print(f"Found deprotection at depth {depth}")
+
+                # Check for sulfonamide coupling
+                if len(reactants) > 1:
+                    sulfonamide_pattern = Chem.MolFromSmarts("[NH2][S](=O)(=O)[#6]")
+
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(sulfonamide_pattern):
+                            found_coupling = True
+                            coupling_depth = depth
+                            print(f"Found coupling at depth {depth}")
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return has_n_alkylation
+    # Check if all transformations were found and in the correct sequence
+    correct_sequence = (
+        found_reduction
+        and found_disconnection
+        and found_deprotection
+        and found_coupling
+        and reduction_depth > disconnection_depth > deprotection_depth > coupling_depth
+    )
+
+    return correct_sequence

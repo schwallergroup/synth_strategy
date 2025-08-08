@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,85 +54,88 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis route involves aromatic cyanation
-    (replacement of aryl halide with nitrile).
+    This function detects the incorporation of multiple heterocyclic fragments
+    in the synthesis.
     """
-    has_aromatic_cyanation = False
+    # List of heterocycles to check for
+    heterocycle_types = [
+        "pyrimidine",
+        "pyrazole",
+        "pyridine",
+        "pyrrole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "triazole",
+        "tetrazole",
+        "furan",
+        "thiophene",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+    ]
+
+    # Track which heterocycles have been found
+    found_heterocycles = set()
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_aromatic_cyanation
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            # Check if this molecule contains any of our target heterocycles
+            for heterocycle in heterocycle_types:
+                if heterocycle not in found_heterocycles and checker.check_ring(
+                    heterocycle, mol_smiles
+                ):
+                    found_heterocycles.add(heterocycle)
+                    print(f"Detected {heterocycle} heterocycle at depth {depth}")
 
-        if node["type"] == "reaction":
+        elif node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                try:
+                    # Extract reactants and product
+                    reactants_part = rsmi.split(">")[0]
+                    product_part = rsmi.split(">")[-1]
 
-                # Check if any reactant has an aromatic halide
-                has_aryl_halide = False
-                has_cyanide_source = False
-
-                for reactant in reactants:
-                    if checker.check_fg("Aromatic halide", reactant):
-                        has_aryl_halide = True
-                        print(f"Found aromatic halide in reactant: {reactant}")
-
-                    # Check for potential cyanide sources - look for CN, metal cyanides, etc.
-                    if (
-                        "CN" in reactant
-                        or "C#N" in reactant
-                        or "N#C" in reactant
-                        or "[N-]" in reactant
-                    ):
-                        has_cyanide_source = True
-                        print(f"Found potential cyanide source: {reactant}")
-
-                # Check for nitrile in product
-                has_nitrile_product = checker.check_fg("Nitrile", product)
-                if has_nitrile_product:
-                    print(f"Found nitrile in product: {product}")
-
-                    # Verify this is a cyanation reaction
-                    if has_aryl_halide and has_cyanide_source:
-                        print("Found both aromatic halide and cyanide source")
-
-                        # Try to check if this is a known reaction type
-                        if checker.check_reaction("Aromatic dehalogenation", rsmi):
-                            print(f"Detected aromatic dehalogenation at depth {depth}")
-                            has_aromatic_cyanation = True
-                        else:
-                            # Perform additional checks to confirm cyanation
-                            product_mol = Chem.MolFromSmiles(product)
-
-                            # Check if the product has an aromatic ring with a nitrile attached
-                            if product_mol:
-                                aryl_nitrile_pattern = Chem.MolFromSmarts("c-C#N")
-                                if product_mol.HasSubstructMatch(aryl_nitrile_pattern):
-                                    print(f"Found aryl-nitrile pattern in product")
-
-                                    # If we have an aromatic ring with nitrile and had aryl halide in reactants
-                                    # plus a cyanide source, it's likely an aromatic cyanation
-                                    has_aromatic_cyanation = True
-                                    print(
-                                        f"Detected aromatic cyanation based on structural analysis at depth {depth}"
-                                    )
-
-                    # Even if we don't have explicit cyanide source in reactants, check the transformation
-                    elif has_aryl_halide and has_nitrile_product:
-                        # Check if the product has an aromatic ring with a nitrile attached
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol:
-                            aryl_nitrile_pattern = Chem.MolFromSmarts("c-C#N")
-                            if product_mol.HasSubstructMatch(aryl_nitrile_pattern):
+                    # Check reactants for heterocycles
+                    for reactant_smiles in reactants_part.split("."):
+                        for heterocycle in heterocycle_types:
+                            if heterocycle not in found_heterocycles and checker.check_ring(
+                                heterocycle, reactant_smiles
+                            ):
+                                found_heterocycles.add(heterocycle)
                                 print(
-                                    f"Found aryl-nitrile pattern in product with aromatic halide in reactants"
+                                    f"Detected {heterocycle} heterocycle in reactant at depth {depth}"
                                 )
-                                # This is likely a cyanation even if we don't see the cyanide source
-                                has_aromatic_cyanation = True
-                                print(f"Detected probable aromatic cyanation at depth {depth}")
 
+                    # Check product for heterocycles that might have been formed
+                    for heterocycle in heterocycle_types:
+                        if heterocycle not in found_heterocycles and checker.check_ring(
+                            heterocycle, product_part
+                        ):
+                            # Verify this heterocycle wasn't in any of the reactants
+                            reactant_has_heterocycle = any(
+                                checker.check_ring(heterocycle, r)
+                                for r in reactants_part.split(".")
+                            )
+                            if not reactant_has_heterocycle:
+                                found_heterocycles.add(heterocycle)
+                                print(
+                                    f"Detected {heterocycle} heterocycle formation in product at depth {depth}"
+                                )
+
+                except Exception as e:
+                    print(f"Error processing reaction SMILES at depth {depth}: {e}")
+
+        # Process children (depth-first)
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_aromatic_cyanation
+
+    # Return True if at least 2 different heterocycles are incorporated
+    print(f"Total unique heterocycles found: {len(found_heterocycles)}")
+    print(f"Heterocycles found: {found_heterocycles}")
+    return len(found_heterocycles) >= 2

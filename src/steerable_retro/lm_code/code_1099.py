@@ -2,64 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes a nitro reduction to amine.
+    Detects if the synthesis involves an amide bond disconnection.
     """
-    nitro_reduction_found = False
+    amide_disconnection_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal nitro_reduction_found
+        nonlocal amide_disconnection_detected
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if this is a nitro reduction reaction
-                nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
+            product_mol = Chem.MolFromSmiles(product)
 
-                # Check if nitro group in reactant and amine in product
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                # Check for amide pattern in product
+                amide_pattern = Chem.MolFromSmarts("[NH][C](=[O])")
+                if product_mol.HasSubstructMatch(amide_pattern):
+                    # Check if reactants contain acid/acid derivative and amine
+                    acid_pattern = Chem.MolFromSmarts("[C](=[O])[O,Cl,Br,I]")
+                    amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-                    if (
-                        reactant_mol
-                        and product_mol
-                        and reactant_mol.HasSubstructMatch(nitro_pattern)
-                        and product_mol.HasSubstructMatch(amine_pattern)
-                        and not product_mol.HasSubstructMatch(nitro_pattern)
-                    ):
-                        nitro_reduction_found = True
-                        print(f"Nitro reduction found at depth {depth}")
-                        break
+                    has_acid = any(
+                        Chem.MolFromSmiles(r)
+                        and Chem.MolFromSmiles(r).HasSubstructMatch(acid_pattern)
+                        for r in reactants
+                        if r
+                    )
+                    has_amine = any(
+                        Chem.MolFromSmiles(r)
+                        and Chem.MolFromSmiles(r).HasSubstructMatch(amine_pattern)
+                        for r in reactants
+                        if r
+                    )
 
-        # Continue traversing
+                    if has_acid and has_amine:
+                        amide_disconnection_detected = True
+                        print(f"Amide disconnection detected at depth {depth}")
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return nitro_reduction_found
+    return amide_disconnection_detected

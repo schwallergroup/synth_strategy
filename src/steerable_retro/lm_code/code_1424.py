@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,253 +54,187 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a linear synthesis strategy that builds heterocycles
-    through sequential functional group transformations and ring formations.
+    This function detects a synthetic strategy where a halogen (chlorine, bromine, iodine, or fluorine)
+    is retained throughout the synthesis without being introduced or removed.
     """
-    # Track key transformations
-    functional_group_mods = []
-    heterocycle_formations = []
-    reaction_count = 0
+    # Find the target molecule (root of the tree)
+    target_mol = route
 
-    # List of common heterocycles to check
-    heterocycles = [
-        "furan",
-        "pyran",
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "piperazine",
-        "morpholine",
-        "thiomorpholine",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
-        "thiophene",
-        "triazole",
-        "tetrazole",
-        "oxadiazole",
-        "thiadiazole",
-        "isoxazole",
-        "isothiazole",
-        "benzotriazole",
-        "tetrahydrofuran",
-        "tetrahydropyran",
-        "pyrrolidine",
-        "piperidine",
-    ]
+    # Check if target molecule has a halogen
+    target_has_halogen = False
+    target_halogen_type = None
 
-    # List of functional group transformations to check
-    fg_transformations = [
-        ("Ether", "Phenol", "O-demethylation"),
-        ("Nitro group", "Primary amine", "Nitro reduction"),
-        ("Ester", "Carboxylic acid", "Ester hydrolysis"),
-        ("Nitrile", "Primary amide", "Nitrile hydration"),
-        ("Nitrile", "Primary amine", "Nitrile reduction"),
-        ("Carboxylic acid", "Ester", "Esterification"),
-        ("Carboxylic acid", "Primary amide", "Amidation"),
-        ("Acyl halide", "Primary amide", "Amidation"),
-        ("Aldehyde", "Primary alcohol", "Aldehyde reduction"),
-        ("Ketone", "Secondary alcohol", "Ketone reduction"),
-        ("Alkyne", "Alkene", "Alkyne reduction"),
-        ("Primary halide", "Primary alcohol", "Halide hydrolysis"),
-        ("Primary halide", "Primary amine", "Amination"),
-        ("Azide", "Primary amine", "Azide reduction"),
-    ]
+    if target_mol["type"] == "mol" and "smiles" in target_mol:
+        target_smiles = target_mol["smiles"]
+        print(f"Target molecule: {target_smiles}")
 
-    # List of ring-forming reactions
-    ring_forming_reactions = [
-        "Formation of NOS Heterocycles",
-        "Paal-Knorr pyrrole synthesis",
-        "benzimidazole_derivatives_carboxylic-acid/ester",
-        "benzimidazole_derivatives_aldehyde",
-        "benzothiazole",
-        "benzoxazole_arom-aldehyde",
-        "benzoxazole_carboxylic-acid",
-        "thiazole",
-        "tetrazole_terminal",
-        "tetrazole_connect_regioisomere_1",
-        "tetrazole_connect_regioisomere_2",
-        "Huisgen_Cu-catalyzed_1,4-subst",
-        "Huisgen_Ru-catalyzed_1,5_subst",
-        "Huisgen_disubst-alkyne",
-        "1,2,4-triazole_acetohydrazide",
-        "1,2,4-triazole_carboxylic-acid/ester",
-        "pyrazole",
-        "Fischer indole",
-        "Friedlaender chinoline",
-        "benzofuran",
-        "benzothiophene",
-        "indole",
-        "oxadiazole",
-        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-        "Huisgen 1,3 dipolar cycloaddition",
-        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-        "Pyrazole formation",
-        "Azide-nitrile click cycloaddition to tetrazole",
-        "Azide-nitrile click cycloaddition to triazole",
-        "Intramolecular amination of azidobiphenyls (heterocycle formation)",
-        "Intramolecular amination (heterocycle formation)",
-    ]
+        # Check for different types of halides
+        halide_types = [
+            "Aromatic halide",
+            "Primary halide",
+            "Secondary halide",
+            "Tertiary halide",
+            "Alkenyl halide",
+            "Haloalkyne",
+        ]
+
+        for halide_type in halide_types:
+            if checker.check_fg(halide_type, target_smiles):
+                target_has_halogen = True
+                print(f"Target has {halide_type}")
+
+                # Determine which halogen is present
+                mol = Chem.MolFromSmiles(target_smiles)
+                if mol:
+                    for atom in mol.GetAtoms():
+                        if atom.GetSymbol() in ["Cl", "Br", "I", "F"]:
+                            target_halogen_type = atom.GetSymbol()
+                            print(f"Halogen type in target: {target_halogen_type}")
+                            break
+                break
+
+    if not target_has_halogen:
+        print("Target molecule does not contain a halogen")
+        return False
+
+    # Track if we find any reactions that introduce or remove halogens
+    halogen_introduced_or_removed = False
+    starting_materials = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal functional_group_mods, heterocycle_formations, reaction_count
+        nonlocal halogen_introduced_or_removed, starting_materials
 
-        if node["type"] == "reaction":
-            reaction_count += 1
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+        # Check if this is a starting material (leaf node)
+        if node["type"] == "mol" and node.get("in_stock", False) and "smiles" in node:
+            starting_materials.append(node["smiles"])
+            print(f"Found starting material: {node['smiles']}")
+
+        # If this is a reaction node, check if it introduces or removes halogens
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Checking reaction: {rsmi}")
+
+            # Extract reactants and product
+            try:
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
-
-                # Check for ring formation
-                reactant_ring_counts = []
-                reactant_has_heterocycle = False
-                reactant_heterocycles = set()
-
+                # Check if reactants have halogens and which type
+                reactants_have_halogen = False
+                reactant_halogen_types = set()
                 for reactant in reactants:
-                    if not reactant:
-                        continue
+                    for halide_type in [
+                        "Aromatic halide",
+                        "Primary halide",
+                        "Secondary halide",
+                        "Tertiary halide",
+                        "Alkenyl halide",
+                        "Haloalkyne",
+                    ]:
+                        if checker.check_fg(halide_type, reactant):
+                            reactants_have_halogen = True
+                            # Determine which halogen is present
+                            mol = Chem.MolFromSmiles(reactant)
+                            if mol:
+                                for atom in mol.GetAtoms():
+                                    if atom.GetSymbol() in ["Cl", "Br", "I", "F"]:
+                                        reactant_halogen_types.add(atom.GetSymbol())
 
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        # Count rings in reactant
-                        ring_count = reactant_mol.GetRingInfo().NumRings()
-                        reactant_ring_counts.append(ring_count)
-                        print(f"  Reactant {reactant} has {ring_count} rings")
+                # Check if product has halogen and which type
+                product_has_halogen = False
+                product_halogen_types = set()
+                for halide_type in [
+                    "Aromatic halide",
+                    "Primary halide",
+                    "Secondary halide",
+                    "Tertiary halide",
+                    "Alkenyl halide",
+                    "Haloalkyne",
+                ]:
+                    if checker.check_fg(halide_type, product):
+                        product_has_halogen = True
+                        # Determine which halogen is present
+                        mol = Chem.MolFromSmiles(product)
+                        if mol:
+                            for atom in mol.GetAtoms():
+                                if atom.GetSymbol() in ["Cl", "Br", "I", "F"]:
+                                    product_halogen_types.add(atom.GetSymbol())
 
-                        # Check if reactant already has a heterocycle
-                        for heterocycle in heterocycles:
-                            if checker.check_ring(heterocycle, reactant):
-                                reactant_has_heterocycle = True
-                                reactant_heterocycles.add(heterocycle)
-                                print(f"  Reactant contains heterocycle: {heterocycle}")
+                # Check for halogen introduction or removal
+                if not reactants_have_halogen and product_has_halogen:
+                    print(f"Halogen introduced in reaction: {rsmi}")
+                    halogen_introduced_or_removed = True
+                elif reactants_have_halogen and not product_has_halogen:
+                    print(f"Halogen removed in reaction: {rsmi}")
+                    halogen_introduced_or_removed = True
 
-                # Check product rings and heterocycles
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    product_ring_count = product_mol.GetRingInfo().NumRings()
-                    product_heterocycles = set()
-
-                    print(f"  Product {product} has {product_ring_count} rings")
-
-                    for heterocycle in heterocycles:
-                        if checker.check_ring(heterocycle, product):
-                            product_heterocycles.add(heterocycle)
-                            print(f"  Product contains heterocycle: {heterocycle}")
-
-                    # Detect heterocycle formation
-                    new_heterocycles = product_heterocycles - reactant_heterocycles
-                    if new_heterocycles:
-                        print(f"  New heterocycle(s) formed: {', '.join(new_heterocycles)}")
-                        heterocycle_formations.append((depth, list(new_heterocycles)))
-
-                    # Detect ring formation (even if not heterocycle)
-                    max_reactant_rings = max(reactant_ring_counts) if reactant_ring_counts else 0
-                    if product_ring_count > max_reactant_rings:
+                # Check if the halogen type changes
+                if reactants_have_halogen and product_has_halogen:
+                    # Check if target halogen is in both reactants and products
+                    if (
+                        target_halogen_type not in reactant_halogen_types
+                        or target_halogen_type not in product_halogen_types
+                    ):
+                        print(f"Halogen type changed in reaction: {rsmi}")
                         print(
-                            f"  Ring formation detected: {max_reactant_rings} → {product_ring_count}"
+                            f"Reactant halogens: {reactant_halogen_types}, Product halogens: {product_halogen_types}"
                         )
-                        heterocycle_formations.append((depth, ["ring_formation"]))
+                        halogen_introduced_or_removed = True
 
-                # Check for functional group modifications
-                for start_fg, end_fg, name in fg_transformations:
-                    reactant_has_start_fg = any(
-                        checker.check_fg(start_fg, r) for r in reactants if r
-                    )
-                    product_has_end_fg = checker.check_fg(end_fg, product)
+                    # Check for halogen exchange reactions
+                    halogen_exchange_reactions = [
+                        "Aromatic fluorination",
+                        "Aromatic chlorination",
+                        "Aromatic bromination",
+                        "Aromatic iodination",
+                        "Chlorination",
+                        "Fluorination",
+                        "Iodination",
+                        "Bromination",
+                        "Aromatic substitution of bromine by chlorine",
+                        "Finkelstein reaction",
+                    ]
 
-                    if reactant_has_start_fg and product_has_end_fg:
-                        print(
-                            f"  Functional group transformation detected: {name} ({start_fg} → {end_fg})"
-                        )
-                        functional_group_mods.append((name, depth))
+                    for rxn_type in halogen_exchange_reactions:
+                        if checker.check_reaction(rxn_type, rsmi):
+                            print(f"Halogen exchange reaction detected: {rxn_type}")
+                            halogen_introduced_or_removed = True
+                            break
+            except Exception as e:
+                print(f"Error analyzing reaction: {e}")
 
-                # Specifically check for O-demethylation (methoxy to hydroxyl conversion)
-                for reactant in reactants:
-                    if not reactant:
-                        continue
-                    if checker.check_fg("Ether", reactant) and checker.check_fg("Phenol", product):
-                        print(
-                            f"  Functional group transformation detected: O-demethylation (Methoxy → Hydroxyl)"
-                        )
-                        functional_group_mods.append(("O-demethylation", depth))
-                        break
-
-                # Check for specific reactions
-                for reaction_type in ring_forming_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"  Reaction detected: {reaction_type}")
-                        heterocycle_formations.append((depth, [reaction_type]))
-                        functional_group_mods.append((reaction_type, depth))
-
-                # Check for other common reactions that modify functional groups
-                common_reactions = [
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
-                    "Esterification of Carboxylic Acids",
-                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
-                    "Reduction of nitro groups to amines",
-                    "Reduction of nitrile to amine",
-                    "Reduction of primary amides to amines",
-                    "Reduction of secondary amides to amines",
-                    "Reduction of tertiary amides to amines",
-                    "Reduction of ester to primary alcohol",
-                    "Reduction of ketone to secondary alcohol",
-                    "Reduction of carboxylic acid to primary alcohol",
-                    "Oxidation of aldehydes to carboxylic acids",
-                    "Oxidation of alcohol to carboxylic acid",
-                    "Oxidation of nitrile to carboxylic acid",
-                    "Oxidation of amide to carboxylic acid",
-                    "Cleavage of methoxy ethers to alcohols",
-                    "Ether cleavage to primary alcohol",
-                ]
-
-                for reaction_type in common_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"  Reaction detected: {reaction_type}")
-                        functional_group_mods.append((reaction_type, depth))
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Remove duplicates while preserving order
-    unique_fg_mods = []
-    seen_fg_mods = set()
-    for mod, depth in functional_group_mods:
-        if mod not in seen_fg_mods:
-            unique_fg_mods.append((mod, depth))
-            seen_fg_mods.add(mod)
+    # Check if at least one starting material has the target halogen type
+    at_least_one_starting_material_has_halogen = False
+    for sm_smiles in starting_materials:
+        has_target_halogen = False
+        mol = Chem.MolFromSmiles(sm_smiles)
+        if mol:
+            for atom in mol.GetAtoms():
+                if atom.GetSymbol() == target_halogen_type:
+                    has_target_halogen = True
+                    at_least_one_starting_material_has_halogen = True
+                    print(f"Starting material with target halogen: {sm_smiles}")
+                    break
 
-    unique_heterocycle_formations = []
-    seen_heterocycle_formations = set()
-    for depth, formations in heterocycle_formations:
-        for formation in formations:
-            if formation not in seen_heterocycle_formations:
-                unique_heterocycle_formations.append((formation, depth))
-                seen_heterocycle_formations.add(formation)
+    if not at_least_one_starting_material_has_halogen:
+        print(f"No starting material has the target halogen: {target_halogen_type}")
 
-    # Check if we have a linear synthesis with heterocycle construction
-    has_functional_group_mods = len(unique_fg_mods) >= 1
-    has_heterocycle_formation = len(unique_heterocycle_formations) >= 1
-    is_linear = reaction_count >= 3  # At least 3 reactions in sequence
+    # A true halogen retention strategy should:
+    # 1. Have halogen in the target molecule
+    # 2. Not introduce or remove halogens in any reaction
+    # 3. Have at least one starting material with the target halogen
 
-    print(
-        f"FG mods: {len(unique_fg_mods)}, Heterocycle formations: {len(unique_heterocycle_formations)}, Reactions: {reaction_count}"
+    result = (
+        target_has_halogen
+        and not halogen_introduced_or_removed
+        and at_least_one_starting_material_has_halogen
     )
-    print(f"Functional group modifications: {unique_fg_mods}")
-    print(f"Heterocycle formations: {unique_heterocycle_formations}")
-
-    return has_functional_group_mods and has_heterocycle_formation and is_linear
+    print(f"Halogen retention strategy detected: {result}")
+    return result

@@ -2,73 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route employs ester hydrolysis to form a carboxylic acid.
+    Detects if the synthesis uses a strategy of combining multiple fragments (3 or more)
+    throughout the synthesis route.
     """
-    # Flag to track if we found ester hydrolysis
-    found_ester_hydrolysis = False
+    fragment_combination_count = 0
 
     def dfs_traverse(node):
-        nonlocal found_ester_hydrolysis
+        nonlocal fragment_combination_count
 
-        # Check if this is a reaction node
         if node["type"] == "reaction":
-            # Get the reaction SMILES
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                try:
-                    # Create RDKit mol objects
-                    product_mol = Chem.MolFromSmiles(product)
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            reactants_part = rsmi.split(">")[0]
+            reactants = reactants_part.split(".")
 
-                    # Check for ester in reactants
-                    ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][C]")
+            # If we have 2 or more reactants, this is a fragment combination
+            if len(reactants) >= 2:
+                fragment_combination_count += 1
+                print(
+                    f"Detected fragment combination at depth {node.get('metadata', {}).get('depth', -1)}"
+                )
 
-                    # Check for carboxylic acid in product
-                    carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
-
-                    # Check conditions for ester hydrolysis
-                    has_ester = any(
-                        mol and mol.HasSubstructMatch(ester_pattern) for mol in reactant_mols
-                    )
-                    has_carboxylic_acid = product_mol and product_mol.HasSubstructMatch(
-                        carboxylic_acid_pattern
-                    )
-
-                    if has_ester and has_carboxylic_acid:
-                        print("Found ester hydrolysis to form carboxylic acid")
-                        found_ester_hydrolysis = True
-                except:
-                    print("Error processing reaction SMILES")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    return found_ester_hydrolysis
+    # Return True if we have 3 or more fragment combinations
+    return fragment_combination_count >= 3

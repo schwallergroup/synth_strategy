@@ -2,63 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving multiple C-N bond formations throughout the synthesis.
+    Detects a synthetic strategy involving halogenation of aromatic rings.
     """
-    cn_bond_formations = 0
+    halogenation_detected = False
 
     def dfs_traverse(node):
-        nonlocal cn_bond_formations
+        nonlocal halogenation_detected
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
-                product_mol = Chem.MolFromSmiles(product_part)
+            # Check for halogenation pattern
+            aryl_halide_pattern = Chem.MolFromSmarts("c1ccccc1[I,Br,Cl]")
 
-                if product_mol:
-                    # Check for C-N bonds in product that aren't in reactants
-                    cn_bond_pattern = Chem.MolFromSmarts("[#6]-[#7]")
-                    product_cn_matches = product_mol.GetSubstructMatches(cn_bond_pattern)
+            # Check if product contains aryl halide but reactants don't
+            if (
+                product
+                and Chem.MolFromSmiles(product)
+                and Chem.MolFromSmiles(product).HasSubstructMatch(aryl_halide_pattern)
+            ):
+                reactants_have_halide = False
+                for reactant in reactants:
+                    if Chem.MolFromSmiles(reactant) and Chem.MolFromSmiles(
+                        reactant
+                    ).HasSubstructMatch(aryl_halide_pattern):
+                        reactants_have_halide = True
+                        break
 
-                    # Count C-N bonds in reactants
-                    reactant_cn_count = 0
-                    for r_mol in reactants_mols:
-                        if r_mol:
-                            reactant_cn_count += len(r_mol.GetSubstructMatches(cn_bond_pattern))
-
-                    # If product has more C-N bonds than reactants combined, a C-N bond was formed
-                    if len(product_cn_matches) > reactant_cn_count:
-                        cn_bond_formations += 1
-                        print(f"Found C-N bond formation")
+                if not reactants_have_halide:
+                    halogenation_detected = True
+                    print("Aromatic halogenation detected")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # If at least 2 C-N bond formations are detected
-    return cn_bond_formations >= 2
+    return halogenation_detected

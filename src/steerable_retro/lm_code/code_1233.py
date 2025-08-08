@@ -2,60 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects heterocycle formation via ring closure.
+    Detects if the synthesis includes reduction of a nitro group to an aniline.
     """
-    heterocycle_formation_detected = False
+    # Track if we found the transformation
+    found_nitro_reduction = False
 
-    def dfs_traverse(node):
-        nonlocal heterocycle_formation_detected
+    # SMARTS patterns
+    nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")  # Nitro group
+    aniline_pattern = Chem.MolFromSmarts("[#6]-[NH2]")  # Aniline group
 
-        if node["type"] == "reaction" and "children" in node:
-            # Get reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal found_nitro_reduction
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            if all(reactant_mols) and product_mol:
-                # Count rings in reactants and product
-                reactant_ring_count = sum(
-                    len(mol.GetRingInfo().AtomRings()) for mol in reactant_mols
+                # Check for nitro reduction
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+                product_mol = Chem.MolFromSmiles(product)
+
+                # Look for nitro in reactants and aniline in product
+                has_nitro_reactant = any(
+                    mol and mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols
                 )
-                product_ring_count = len(product_mol.GetRingInfo().AtomRings())
+                has_aniline_product = product_mol and product_mol.HasSubstructMatch(aniline_pattern)
 
-                # Check if product has more rings than reactants
-                if product_ring_count > reactant_ring_count:
-                    print(f"Heterocycle formation detected: {rsmi}")
-                    heterocycle_formation_detected = True
+                if has_nitro_reactant and has_aniline_product:
+                    found_nitro_reduction = True
+                    print(f"Found nitro reduction at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    return heterocycle_formation_detected
+
+    return found_nitro_reduction

@@ -2,74 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves formation of a heterocyclic ring system
-    (particularly pyridine) in the early stages of the synthesis.
+    This function detects if the synthesis route includes a sulfonamide formation step
+    from an amine and sulfonyl chloride.
     """
-    heterocycle_formation_detected = False
+    sulfonamide_formation_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal heterocycle_formation_detected
+    def dfs_traverse(node):
+        nonlocal sulfonamide_formation_found
 
-        if node["type"] == "reaction" and depth >= 4:  # Early stage (high depth)
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Count rings in reactants and product
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            try:
+                # Convert to RDKit molecules
                 product_mol = Chem.MolFromSmiles(product)
 
-                if product_mol and all(reactant_mols):
-                    # Count nitrogen-containing rings in reactants
-                    reactant_n_rings = 0
-                    for mol in reactant_mols:
-                        for ring in Chem.GetSSSR(mol):
-                            ring_atoms = set(ring)
-                            for atom_idx in ring_atoms:
-                                atom = mol.GetAtomWithIdx(atom_idx)
-                                if atom.GetAtomicNum() == 7:  # Nitrogen
-                                    reactant_n_rings += 1
-                                    break
+                # Check for sulfonamide pattern in product
+                sulfonamide_pattern = Chem.MolFromSmarts("[N][S](=[O])(=[O])")
+                sulfonyl_chloride_pattern = Chem.MolFromSmarts("[S](=[O])(=[O])[Cl]")
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-                    # Count nitrogen-containing rings in product
-                    product_n_rings = 0
-                    for ring in Chem.GetSSSR(product_mol):
-                        ring_atoms = set(ring)
-                        for atom_idx in ring_atoms:
-                            atom = product_mol.GetAtomWithIdx(atom_idx)
-                            if atom.GetAtomicNum() == 7:  # Nitrogen
-                                product_n_rings += 1
-                                break
+                if (
+                    product_mol
+                    and sulfonamide_pattern
+                    and product_mol.HasSubstructMatch(sulfonamide_pattern)
+                ):
+                    # Check if reactants include sulfonyl chloride and amine
+                    has_sulfonyl_chloride = False
+                    has_amine = False
 
-                    # If product has more nitrogen rings than reactants combined, it's a heterocycle formation
-                    if product_n_rings > reactant_n_rings:
-                        print(f"Heterocycle formation detected at depth {depth}")
-                        heterocycle_formation_detected = True
+                    for r in reactants:
+                        r_mol = Chem.MolFromSmiles(r)
+                        if r_mol:
+                            if sulfonyl_chloride_pattern and r_mol.HasSubstructMatch(
+                                sulfonyl_chloride_pattern
+                            ):
+                                has_sulfonyl_chloride = True
+                            if amine_pattern and r_mol.HasSubstructMatch(amine_pattern):
+                                has_amine = True
 
+                    if has_sulfonyl_chloride and has_amine:
+                        sulfonamide_formation_found = True
+                        print("Sulfonamide formation detected")
+
+            except Exception as e:
+                print(f"Error in sulfonamide detection: {e}")
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return heterocycle_formation_detected
+    return sulfonamide_formation_found

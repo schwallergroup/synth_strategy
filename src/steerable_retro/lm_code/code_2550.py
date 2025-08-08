@@ -2,71 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects Suzuki coupling reactions in the synthetic route.
-    Looks for aryl-aryl bond formation between aryl halide and boronic acid.
+    This function detects a synthesis strategy involving oxime chemistry.
     """
-    suzuki_detected = False
+    oxime_chemistry_found = False
 
     def dfs_traverse(node):
-        nonlocal suzuki_detected
+        nonlocal oxime_chemistry_found
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and products
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0]
+            products_smiles = rsmi.split(">")[-1]
 
-                # Check for boronic acid pattern in reactants
-                boronic_acid_pattern = Chem.MolFromSmarts("[c;H0]-[B]([O])([O])")
-                aryl_halide_pattern = Chem.MolFromSmarts("[c;H0]-[Cl,Br,I]")
+            # Check for oxime pattern
+            oxime_pattern = Chem.MolFromSmarts("[#6]=[#7]-[#8]")
 
-                has_boronic_acid = False
-                has_aryl_halide = False
+            reactant_mol = Chem.MolFromSmiles(reactants_smiles)
+            product_mols = [Chem.MolFromSmiles(p) for p in products_smiles.split(".")]
 
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(boronic_acid_pattern):
-                            has_boronic_acid = True
-                        if mol and mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
-                    except:
-                        continue
+            if oxime_pattern is not None:
+                # Check if reactant or product has oxime
+                if reactant_mol is not None and reactant_mol.HasSubstructMatch(oxime_pattern):
+                    print("Found oxime in reactants")
+                    oxime_chemistry_found = True
 
-                # If both patterns are found in reactants, check for biaryl in product
-                if has_boronic_acid and has_aryl_halide:
-                    try:
-                        prod_mol = Chem.MolFromSmiles(product)
-                        # Biaryl formation is likely if Suzuki conditions are present
-                        if prod_mol:
-                            print("Potential Suzuki coupling detected")
-                            suzuki_detected = True
-                    except:
-                        pass
+                for p_mol in product_mols:
+                    if p_mol is not None and p_mol.HasSubstructMatch(oxime_pattern):
+                        print("Found oxime in products")
+                        oxime_chemistry_found = True
 
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return suzuki_detected
+    return oxime_chemistry_found

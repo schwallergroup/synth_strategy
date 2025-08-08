@@ -2,82 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a reduction pathway from oxime to amine.
+    This function detects a strategy involving transformation of carbonyl groups to oxime ethers.
     """
-    oxime_reduction_found = False
-    oxime_depths = []
-    amine_formation_depths = []
+    carbonyl_to_oxime_count = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal oxime_reduction_found, oxime_depths, amine_formation_depths
+    def dfs_traverse(node):
+        nonlocal carbonyl_to_oxime_count
 
         if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for oxime pattern in reactants
-            oxime_pattern = Chem.MolFromSmarts("[CX3]=[NX2][OX2H]")
+            # Check for carbonyl to oxime transformation
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-            # Check for amine formation
-            amine_pattern = Chem.MolFromSmarts("[CX4][NX3]")
+            if None not in reactant_mols and product_mol is not None:
+                # Check if any reactant has C=O group
+                carbonyl_pattern = Chem.MolFromSmarts("[C]=O")
+                has_carbonyl = any(mol.HasSubstructMatch(carbonyl_pattern) for mol in reactant_mols)
 
-            product_mol = Chem.MolFromSmiles(product)
+                # Check if product has C=N-OCH3 group
+                oxime_ether_pattern = Chem.MolFromSmarts("[C]=[N]-O[CH3]")
+                has_oxime_ether = product_mol.HasSubstructMatch(oxime_ether_pattern)
 
-            # Check if reactants contain oxime and product contains new amine
-            reactants_have_oxime = False
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(oxime_pattern):
-                    reactants_have_oxime = True
-                    oxime_depths.append(depth)
-                    print(f"Oxime detected in reactant at depth {depth}")
-                    break
+                # Check if any reactant has methoxyamine
+                methoxyamine_pattern = Chem.MolFromSmarts("[CH3]O[NH2]")
+                has_methoxyamine = any(
+                    mol.HasSubstructMatch(methoxyamine_pattern)
+                    for mol in reactant_mols
+                    if mol is not None
+                )
 
-            if (
-                reactants_have_oxime
-                and product_mol
-                and product_mol.HasSubstructMatch(amine_pattern)
-            ):
-                amine_formation_depths.append(depth)
-                print(f"Amine formation from oxime detected at depth {depth}")
+                if has_carbonyl and has_oxime_ether and has_methoxyamine:
+                    carbonyl_to_oxime_count += 1
+                    print(f"Detected carbonyl to oxime transformation in reaction: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from root
     dfs_traverse(route)
 
-    # Check if we have both oxime and subsequent amine formation
-    if oxime_depths and amine_formation_depths:
-        # Check if there's a sequential relationship
-        for oxime_depth in oxime_depths:
-            for amine_depth in amine_formation_depths:
-                if amine_depth <= oxime_depth:  # Remember lower depth means later in synthesis
-                    oxime_reduction_found = True
-                    print(
-                        f"Oxime to amine reduction pathway detected: oxime at depth {oxime_depth}, amine at depth {amine_depth}"
-                    )
-
-    return oxime_reduction_found
+    # Return True if carbonyl to oxime transformations are detected
+    result = carbonyl_to_oxime_count >= 1
+    print(f"Total carbonyl to oxime transformations: {carbonyl_to_oxime_count}")
+    return result

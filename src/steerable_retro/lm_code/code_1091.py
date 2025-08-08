@@ -2,116 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves borylation chemistry
-    (formation of C-B bonds from C-X precursors).
+    This function detects a strategy involving both indole and piperazine scaffolds
+    in the final product.
     """
-    borylation_found = False
+    has_indole = False
+    has_piperazine = False
 
     def dfs_traverse(node):
-        nonlocal borylation_found
+        nonlocal has_indole, has_piperazine
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
-            rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "mol" and node.get("smiles"):
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for indole scaffold
+                indole_pattern = Chem.MolFromSmarts("c1ccc2[nH]ccc2c1")
+                if mol.HasSubstructMatch(indole_pattern):
+                    has_indole = True
+                    print("Indole scaffold detected")
 
-            # Check for specific borylation reactions using the checker functions
-            borylation_reactions = [
-                "Preparation of boronic acids",
-                "Preparation of boronic acids without boronic ether",
-                "Preparation of boronic acids from trifluoroborates",
-                "Preparation of boronic ethers",
-                "Suzuki coupling with boronic acids",
-                "Suzuki coupling with boronic esters",
-            ]
+                # Check for piperazine scaffold
+                piperazine_pattern = Chem.MolFromSmarts("N1CCN([#6])CC1")
+                if mol.HasSubstructMatch(piperazine_pattern):
+                    has_piperazine = True
+                    print("Piperazine scaffold detected")
 
-            for reaction_type in borylation_reactions:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Borylation reaction detected: {reaction_type} in {rsmi}")
-                    borylation_found = True
-                    break
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child)
 
-            # If no specific reaction type matched, check for boronic groups and halogens
-            if not borylation_found:
-                try:
-                    reactants = rsmi.split(">")[0].split(".")
-                    product = rsmi.split(">")[-1]
-
-                    # Check if product contains boronic acid or ester
-                    product_has_boronic = checker.check_fg(
-                        "Boronic acid", product
-                    ) or checker.check_fg("Boronic ester", product)
-
-                    # Check if any reactant has a halogen
-                    reactants_have_halogen = any(
-                        checker.check_fg("Aromatic halide", r)
-                        or checker.check_fg("Primary halide", r)
-                        or checker.check_fg("Secondary halide", r)
-                        or checker.check_fg("Tertiary halide", r)
-                        or checker.check_fg("Alkenyl halide", r)
-                        for r in reactants
-                        if r
-                    )
-
-                    # If product has boronic group and reactants have halogen, likely borylation
-                    if product_has_boronic and reactants_have_halogen:
-                        print(f"Borylation pattern detected in reaction: {rsmi}")
-                        borylation_found = True
-                except Exception as e:
-                    print(f"Error processing reaction SMILES: {rsmi}, Error: {str(e)}")
-
-        # Process children
-        if not borylation_found:  # Optimization: stop traversal if already found
-            for child in node.get("children", []):
-                dfs_traverse(child)
-
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    return borylation_found
+
+    # Return True if both scaffolds are present
+    return has_indole and has_piperazine

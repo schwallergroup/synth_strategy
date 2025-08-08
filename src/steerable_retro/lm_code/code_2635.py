@@ -2,64 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects aminonitrile formation from a ketone.
+    Detects if the final product contains an isoxazole heterocycle.
     """
-    found_aminonitrile_formation = False
+    has_isoxazole = False
 
-    def dfs_traverse(node):
-        nonlocal found_aminonitrile_formation
+    def dfs_traverse(node, depth=0):
+        nonlocal has_isoxazole
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol" and depth == 0:  # Final product
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if not mol:
+                return
 
-            # Check for aminonitrile formation
-            for reactant in reactants_smiles:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            # Check for isoxazole pattern
+            isoxazole_pattern = Chem.MolFromSmarts("c1oncc1")
+            if mol.HasSubstructMatch(isoxazole_pattern):
+                has_isoxazole = True
+                print("Detected isoxazole in final product")
 
-                if reactant_mol is not None and product_mol is not None:
-                    # Check for ketone in reactant
-                    ketone_pattern = Chem.MolFromSmarts("[C](=[O])[C]")
-                    # Check for aminonitrile in product
-                    aminonitrile_pattern = Chem.MolFromSmarts("[C]([N])([C]#[N])")
-
-                    if (
-                        reactant_mol.HasSubstructMatch(ketone_pattern)
-                        and product_mol.HasSubstructMatch(aminonitrile_pattern)
-                        and not reactant_mol.HasSubstructMatch(aminonitrile_pattern)
-                    ):
-                        print("Found aminonitrile formation from ketone")
-                        found_aminonitrile_formation = True
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return found_aminonitrile_formation
+    print(f"Isoxazole detected: {has_isoxazole}")
+    return has_isoxazole

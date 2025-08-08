@@ -2,68 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves lactam formation via a hydroxamic acid intermediate.
+    This function detects if the synthetic route involves pyrazole ring formation.
     """
-    hydroxamic_acid_found = False
-    lactam_from_hydroxamic_acid = False
+    pyrazole_formed = False
 
     def dfs_traverse(node):
-        nonlocal hydroxamic_acid_found, lactam_from_hydroxamic_acid
+        nonlocal pyrazole_formed
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check for hydroxamic acid pattern
-            hydroxamic_acid_pattern = Chem.MolFromSmarts("[OH][N]=C")
+                # Check if reactants contain hydrazine derivative and product contains pyrazole
+                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            # Check for lactam pattern
-            lactam_pattern = Chem.MolFromSmarts("[N]C=O")
+                if product_mol:
+                    # SMARTS for pyrazole
+                    pyrazole_pattern = Chem.MolFromSmarts("[n]1[n][c][c][c]1")
 
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                    # Check if product contains pyrazole
+                    if product_mol.HasSubstructMatch(pyrazole_pattern):
+                        # Check if any reactant has hydrazine pattern
+                        hydrazine_pattern = Chem.MolFromSmarts("[NH][NH2]")
+                        for reactant in reactants_mols:
+                            if reactant and reactant.HasSubstructMatch(hydrazine_pattern):
+                                print("Detected pyrazole formation from hydrazine derivative")
+                                pyrazole_formed = True
+                                break
 
-            # Check if product has hydroxamic acid pattern
-            if product_mol and product_mol.HasSubstructMatch(hydroxamic_acid_pattern):
-                print("Found hydroxamic acid formation")
-                hydroxamic_acid_found = True
-
-            # Check if reactant has hydroxamic acid and product has lactam
-            if product_mol and product_mol.HasSubstructMatch(lactam_pattern):
-                for r in reactants:
-                    if r:
-                        r_mol = Chem.MolFromSmiles(r)
-                        if r_mol and r_mol.HasSubstructMatch(hydroxamic_acid_pattern):
-                            print("Found lactam formation from hydroxamic acid")
-                            lactam_from_hydroxamic_acid = True
-                            break
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-
-    return lactam_from_hydroxamic_acid
+    return pyrazole_formed

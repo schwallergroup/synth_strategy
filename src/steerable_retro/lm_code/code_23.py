@@ -2,65 +2,92 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a late-stage SNAr reaction.
-    Looks for aryl halide and amine coupling in the final steps of the synthesis.
+    Detects if the synthesis includes nitrogen protection (specifically Boc protection)
+    in the middle of the synthesis route.
     """
-    snar_detected = False
+    has_n_protection = False
+    total_depth = 0
+    protection_depth = -1
 
+    # First pass to determine total depth
+    def get_max_depth(node, current_depth=0):
+        nonlocal total_depth
+        total_depth = max(total_depth, current_depth)
+
+        for child in node.get("children", []):
+            get_max_depth(child, current_depth + 1)
+
+    # Second pass to check for protection
     def dfs_traverse(node, depth=0):
-        nonlocal snar_detected
+        nonlocal has_n_protection, protection_depth
 
-        if (
-            node["type"] == "reaction" and depth <= 1
-        ):  # Only check reactions at depth 0 or 1 (late stage)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Extract reactants and products
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for aryl halide in reactants
-                reactants = Chem.MolFromSmiles(reactants_smiles)
-                if reactants:
-                    aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Br,Cl,F,I]")
-                    amine_pattern = Chem.MolFromSmarts("[NH]")
+            # Create RDKit molecules
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-                    if reactants.HasSubstructMatch(
-                        aryl_halide_pattern
-                    ) and reactants.HasSubstructMatch(amine_pattern):
+            if not reactant_mols or not product_mol:
+                return
 
-                        # Check for C-N bond formation in product
-                        product = Chem.MolFromSmiles(product_smiles)
-                        if product:
-                            c_n_bond_pattern = Chem.MolFromSmarts("[c]-[N]")
-                            if product.HasSubstructMatch(c_n_bond_pattern):
-                                snar_detected = True
-                                print(f"Detected late-stage SNAr reaction: {rsmi}")
+            # Check for N-Boc protection
+            nh_pattern = Chem.MolFromSmarts("[NH]")
+            nboc_pattern = Chem.MolFromSmarts("[N][C](=[O])[O][C]([CH3])([CH3])[CH3]")
 
-        # Traverse children
+            if any(
+                mol.HasSubstructMatch(nh_pattern) for mol in reactant_mols
+            ) and product_mol.HasSubstructMatch(nboc_pattern):
+                has_n_protection = True
+                protection_depth = depth
+                print(f"Found N-Boc protection at depth {depth}")
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Run both passes
+    get_max_depth(route)
     dfs_traverse(route)
-    print(f"Late-stage SNAr strategy detected: {snar_detected}")
-    return snar_detected
+
+    # Check if protection is in the middle third of the synthesis
+    is_mid_synthesis = False
+    if has_n_protection and total_depth > 0:
+        # Consider "middle" as between 25% and 75% of the total depth
+        lower_bound = total_depth * 0.25
+        upper_bound = total_depth * 0.75
+        is_mid_synthesis = lower_bound <= protection_depth <= upper_bound
+        print(f"Protection depth: {protection_depth}, Total depth: {total_depth}")
+        print(f"Middle synthesis bounds: {lower_bound} to {upper_bound}")
+
+    result = has_n_protection and is_mid_synthesis
+    print(f"Mid-synthesis nitrogen protection detection result: {result}")
+    return result

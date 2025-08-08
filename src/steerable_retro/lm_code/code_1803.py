@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,13 +54,15 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects an alcohol-to-bromide activation strategy for nucleophilic substitution.
+    This function detects if the synthetic route involves sequential nitrogen functionalization steps.
     """
-    # Track if we found alcohol to bromide conversion
-    alcohol_to_bromide_found = False
+    # Track molecules that have undergone N-functionalization
+    n_functionalized_molecules = {}
+    # Track sequential steps
+    sequential_steps = False
 
-    def dfs_traverse(node):
-        nonlocal alcohol_to_bromide_found
+    def dfs_traverse(node, depth=0):
+        nonlocal sequential_steps
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
@@ -65,90 +70,131 @@ def main(route):
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for specific alcohol to bromide reactions directly
-                specific_reactions = [
-                    "PBr3 and alcohol to alkyl bromide",
-                    "Appel reaction",
-                    "Wohl-Ziegler bromination benzyl primary",
-                    "Wohl-Ziegler bromination benzyl secondary",
-                    "Wohl-Ziegler bromination benzyl tertiary",
-                    "Wohl-Ziegler bromination allyl primary",
-                    "Wohl-Ziegler bromination allyl secondary",
-                    "Wohl-Ziegler bromination allyl tertiary",
-                    "Alcohol to bromide_Other",
-                ]
+                # Check for N-functionalization reactions
+                is_n_functionalization = False
 
-                for rxn_type in specific_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        print(f"Found specific reaction {rxn_type}: {rsmi}")
-                        alcohol_to_bromide_found = True
-                        return
-
-                # Check for forward direction (alcohol → bromide)
-                alcohol_in_reactants = False
-                alcohol_reactant = None
-                for reactant in reactants:
-                    if (
-                        checker.check_fg("Primary alcohol", reactant)
-                        or checker.check_fg("Secondary alcohol", reactant)
-                        or checker.check_fg("Tertiary alcohol", reactant)
-                    ):
-                        alcohol_in_reactants = True
-                        alcohol_reactant = reactant
-                        print(f"Found alcohol in reactant: {reactant}")
-                        break
-
-                bromide_in_product = False
+                # Check for common N-functionalization reactions
                 if (
-                    checker.check_fg("Primary halide", product)
-                    or checker.check_fg("Secondary halide", product)
-                    or checker.check_fg("Tertiary halide", product)
+                    checker.check_reaction(
+                        "N-alkylation of primary amines with alkyl halides", rsmi
+                    )
+                    or checker.check_reaction(
+                        "N-alkylation of secondary amines with alkyl halides", rsmi
+                    )
+                    or checker.check_reaction(
+                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
+                    )
+                    or checker.check_reaction(
+                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
+                    )
+                    or checker.check_reaction("Acylation of primary amines", rsmi)
+                    or checker.check_reaction("Acylation of secondary amines", rsmi)
+                    or checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                        rsmi,
+                    )
+                    or checker.check_reaction("Reductive amination with aldehyde", rsmi)
+                    or checker.check_reaction("Reductive amination with ketone", rsmi)
+                    or checker.check_reaction(
+                        "Urea synthesis via isocyanate and primary amine", rsmi
+                    )
+                    or checker.check_reaction(
+                        "Urea synthesis via isocyanate and secondary amine", rsmi
+                    )
+                    or checker.check_reaction(
+                        "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+                    )
+                    or checker.check_reaction(
+                        "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
+                    )
                 ):
-                    # Verify it's specifically a bromide
+
+                    is_n_functionalization = True
+                    print(f"Found N-functionalization reaction: {rsmi}")
+
+                # If not detected by reaction type, check for amine reactants and N-containing products
+                if not is_n_functionalization:
+                    has_amine = any(
+                        checker.check_fg("Primary amine", r)
+                        or checker.check_fg("Secondary amine", r)
+                        or checker.check_fg("Aniline", r)
+                        for r in reactants
+                    )
+
+                    if has_amine and (
+                        checker.check_fg("Secondary amide", product)
+                        or checker.check_fg("Tertiary amide", product)
+                        or checker.check_fg("Secondary amine", product)
+                        or checker.check_fg("Tertiary amine", product)
+                        or checker.check_fg("Sulfonamide", product)
+                        or checker.check_fg("Urea", product)
+                        or checker.check_fg("Thiourea", product)
+                        or checker.check_fg("Carbamic ester", product)
+                    ):
+                        is_n_functionalization = True
+                        print(f"Found N-functionalization by FG analysis: {rsmi}")
+
+                # If this is an N-functionalization, track the product
+                if is_n_functionalization:
+                    # Store the product as having undergone N-functionalization
+                    # Convert to canonical SMILES for consistent comparison
                     product_mol = Chem.MolFromSmiles(product)
                     if product_mol:
-                        for atom in product_mol.GetAtoms():
-                            if atom.GetSymbol() == "Br":
-                                bromide_in_product = True
-                                print(f"Found bromide in product: {product}")
-                                break
+                        canonical_product = Chem.MolToSmiles(product_mol)
+                        n_functionalized_molecules[canonical_product] = depth
+                    else:
+                        n_functionalized_molecules[product] = depth
 
-                # Check for retrosynthetic direction (bromide → alcohol)
-                bromide_in_reactants = False
-                bromide_reactant = None
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        for atom in reactant_mol.GetAtoms():
-                            if atom.GetSymbol() == "Br":
-                                bromide_in_reactants = True
-                                bromide_reactant = reactant
-                                print(f"Found bromide in reactant: {reactant}")
-                                break
-                        if bromide_in_reactants:
-                            break
+                    # Check if any reactant has previously undergone N-functionalization
+                    for reactant in reactants:
+                        # Convert reactant to canonical SMILES
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            canonical_reactant = Chem.MolToSmiles(reactant_mol)
+                            # Check if this reactant is in our tracked molecules
+                            if canonical_reactant in n_functionalized_molecules:
+                                print(
+                                    f"Sequential N-functionalization detected! Previous at depth {n_functionalized_molecules[canonical_reactant]}, current at depth {depth}"
+                                )
+                                sequential_steps = True
+                            else:
+                                # Also check by substructure match for atom-mapped molecules
+                                for (
+                                    processed_smiles,
+                                    processed_depth,
+                                ) in n_functionalized_molecules.items():
+                                    processed_mol = Chem.MolFromSmiles(processed_smiles)
+                                    if processed_mol and (
+                                        Chem.MolFromSmiles(reactant).HasSubstructMatch(
+                                            processed_mol
+                                        )
+                                        or processed_mol.HasSubstructMatch(
+                                            Chem.MolFromSmiles(reactant)
+                                        )
+                                    ):
+                                        print(
+                                            f"Sequential N-functionalization detected via substructure! Previous at depth {processed_depth}, current at depth {depth}"
+                                        )
+                                        sequential_steps = True
+                                        break
+                        else:
+                            # Fallback to direct string comparison if SMILES parsing fails
+                            if reactant in n_functionalized_molecules:
+                                print(
+                                    f"Sequential N-functionalization detected (direct match)! Previous at depth {n_functionalized_molecules[reactant]}, current at depth {depth}"
+                                )
+                                sequential_steps = True
 
-                alcohol_in_product = False
-                if (
-                    checker.check_fg("Primary alcohol", product)
-                    or checker.check_fg("Secondary alcohol", product)
-                    or checker.check_fg("Tertiary alcohol", product)
-                ):
-                    alcohol_in_product = True
-                    print(f"Found alcohol in product: {product}")
-
-                # Confirm transformation in either direction
-                if (alcohol_in_reactants and bromide_in_product) or (
-                    bromide_in_reactants and alcohol_in_product
-                ):
-                    print(f"Confirmed alcohol-bromide interconversion: {rsmi}")
-                    alcohol_to_bromide_found = True
-
-        # Traverse children
+        # Process children (going backward in synthesis)
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return alcohol_to_bromide_found
+    # Count the number of N-functionalized molecules
+    n_functionalization_steps = len(n_functionalized_molecules)
+    print(f"Total N-functionalization steps: {n_functionalization_steps}")
+    print(f"Sequential steps detected: {sequential_steps}")
+
+    # Return True if we have at least 2 N-functionalization steps and they're sequential
+    return n_functionalization_steps >= 2 and sequential_steps

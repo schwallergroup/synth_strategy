@@ -2,232 +2,98 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves heterocycle formation
-    through cyclization reactions.
+    This function detects a strategy where a morpholine-like ring is opened and later
+    a new heterocyclic ring is formed.
     """
-    # List of heterocyclic rings to check
-    heterocyclic_rings = [
-        "furan",
-        "pyran",
-        "dioxane",
-        "tetrahydrofuran",
-        "tetrahydropyran",
-        "oxirane",
-        "oxetane",
-        "oxolane",
-        "oxane",
-        "dioxolane",
-        "dioxolene",
-        "trioxane",
-        "dioxepane",
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "pyrrolidine",
-        "piperidine",
-        "piperazine",
-        "morpholine",
-        "thiomorpholine",
-        "aziridine",
-        "azetidine",
-        "azepane",
-        "diazepane",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "purine",
-        "carbazole",
-        "acridine",
-        "thiophene",
-        "thiopyran",
-        "thiirane",
-        "thietane",
-        "thiolane",
-        "thiane",
-        "dithiane",
-        "dithiolane",
-        "benzothiophene",
-        "oxathiolane",
-        "dioxathiolane",
-        "thiazolidine",
-        "oxazolidine",
-        "isoxazole",
-        "isothiazole",
-        "oxadiazole",
-        "thiadiazole",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
-    ]
+    # Track if we found the required patterns
+    found_morpholine = False
+    found_morpholine_opening = False
+    found_new_heterocycle = False
 
-    # List of heterocycle formation reactions
-    heterocycle_reactions = [
-        "Formation of NOS Heterocycles",
-        "Paal-Knorr pyrrole synthesis",
-        "Benzothiazole formation from aldehyde",
-        "Benzothiazole formation from acyl halide",
-        "Benzothiazole formation from ester/carboxylic acid",
-        "Benzoxazole formation from aldehyde",
-        "Benzoxazole formation from acyl halide",
-        "Benzoxazole formation from ester/carboxylic acid",
-        "Benzoxazole formation (intramolecular)",
-        "Benzimidazole formation from aldehyde",
-        "Benzimidazole formation from acyl halide",
-        "Benzimidazole formation from ester/carboxylic acid",
-        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-        "Huisgen 1,3 dipolar cycloaddition",
-        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-        "Pyrazole formation",
-        "Intramolecular amination of azidobiphenyls (heterocycle formation)",
-        "Intramolecular amination (heterocycle formation)",
-    ]
-
-    heterocycle_formation_detected = False
+    # SMARTS patterns
+    morpholine_pattern = "[#7]1[#6][#6][#8][#6][#6]1"
 
     def dfs_traverse(node):
-        nonlocal heterocycle_formation_detected
+        nonlocal found_morpholine, found_morpholine_opening, found_new_heterocycle
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            try:
-                # Check if any heterocycle formation reaction is detected directly
-                reaction_detected = any(
-                    checker.check_reaction(rxn, rsmi) for rxn in heterocycle_reactions
-                )
-                if reaction_detected:
-                    print(f"Heterocycle formation reaction detected: {rsmi}")
-                    heterocycle_formation_detected = True
+            # Check for morpholine pattern
+            if any(has_substructure(r, morpholine_pattern) for r in reactants):
+                found_morpholine = True
 
-                # Check for heterocycle presence in reactants and products
-                product_heterocycles = set()
-                reactant_heterocycles = set()
+                # Check if this is a ring opening reaction
+                reactant_rings = sum(count_rings(r) for r in reactants)
+                product_rings = count_rings(product)
 
-                for ring in heterocyclic_rings:
-                    if checker.check_ring(ring, product_smiles):
-                        product_heterocycles.add(ring)
-                    if checker.check_ring(ring, reactants_smiles):
-                        reactant_heterocycles.add(ring)
+                if reactant_rings > product_rings:
+                    print(f"Found morpholine ring opening: {rsmi}")
+                    found_morpholine_opening = True
 
-                # Find new heterocycles in product
-                new_heterocycles = product_heterocycles - reactant_heterocycles
+            # Check for heterocycle formation
+            if not any(has_substructure(r, morpholine_pattern) for r in reactants):
+                reactant_rings = sum(count_rings(r) for r in reactants)
+                product_rings = count_rings(product)
 
-                if new_heterocycles:
-                    print(f"New heterocycles formed: {new_heterocycles}")
-                    print(f"Reaction: {rsmi}")
-                    heterocycle_formation_detected = True
+                if product_rings > reactant_rings:
+                    # Check if product has a heterocycle
+                    mol = Chem.MolFromSmiles(product)
+                    if mol:
+                        rings = Chem.GetSSSR(mol)
+                        for ring in rings:
+                            ring_atoms = [mol.GetAtomWithIdx(idx) for idx in ring]
+                            if any(atom.GetSymbol() in ["N", "O", "S"] for atom in ring_atoms):
+                                print(f"Found new heterocycle formation: {rsmi}")
+                                found_new_heterocycle = True
+                                break
 
-                # Additional check for ring count increase
-                try:
-                    # Parse reactants and product as molecules
-                    reactant_mols = [
-                        Chem.MolFromSmiles(smi) for smi in reactants_smiles.split(".") if smi
-                    ]
-                    product_mols = [
-                        Chem.MolFromSmiles(smi) for smi in product_smiles.split(".") if smi
-                    ]
-
-                    # Filter out None values (parsing failures)
-                    reactant_mols = [mol for mol in reactant_mols if mol is not None]
-                    product_mols = [mol for mol in product_mols if mol is not None]
-
-                    if reactant_mols and product_mols:
-                        # Count rings in reactants and products
-                        reactant_ring_count = sum(
-                            mol.GetRingInfo().NumRings() for mol in reactant_mols
-                        )
-                        product_ring_count = sum(
-                            mol.GetRingInfo().NumRings() for mol in product_mols
-                        )
-
-                        # If product has more rings and no heterocycle was detected yet, check more carefully
-                        if (
-                            product_ring_count > reactant_ring_count
-                            and not heterocycle_formation_detected
-                        ):
-                            # Check if any of the new rings are heterocyclic
-                            for product_mol in product_mols:
-                                for ring in heterocyclic_rings:
-                                    if checker.check_ring(ring, Chem.MolToSmiles(product_mol)):
-                                        print(
-                                            f"Ring count increased with heterocycle formation: {rsmi}"
-                                        )
-                                        print(f"Heterocycle detected: {ring}")
-                                        heterocycle_formation_detected = True
-                                        break
-                                if heterocycle_formation_detected:
-                                    break
-                except Exception as e:
-                    print(f"Error in ring counting: {str(e)}")
-                    # Continue with other checks even if ring counting fails
-
-            except Exception as e:
-                print(f"Error processing reaction SMILES: {rsmi}")
-                print(f"Error details: {str(e)}")
-                # Continue with other reactions even if one fails
-
-        # Continue DFS traversal
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    def has_substructure(smiles, pattern):
+        mol = Chem.MolFromSmiles(smiles)
+        if mol:
+            patt = Chem.MolFromSmarts(pattern)
+            return mol.HasSubstructMatch(patt)
+        return False
+
+    def count_rings(smiles):
+        mol = Chem.MolFromSmiles(smiles)
+        if mol:
+            return len(Chem.GetSSSR(mol))
+        return 0
+
+    # Start traversal from the root
     dfs_traverse(route)
-    return heterocycle_formation_detected
+
+    # Return True if we found all required transformations
+    return found_morpholine and found_morpholine_opening and found_new_heterocycle

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,132 +54,172 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a late-stage spirocyclization on an oxime intermediate
+    This function detects the use of long alkyl chains to connect aromatic rings,
+    a strategy often used in materials chemistry.
     """
-    # Track if we find the pattern and at what depth
-    spiro_reactions = []  # Store (depth, reaction_node) tuples
-    oxime_molecules = []  # Store (depth, mol_node) tuples
+    long_chain_connection = False
+
+    # List of aromatic rings to check
+    aromatic_rings = [
+        "benzene",
+        "naphthalene",
+        "anthracene",
+        "furan",
+        "pyrrole",
+        "thiophene",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "carbazole",
+        "acridine",
+        "benzothiophene",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "indazole",
+        "benzotriazole",
+    ]
 
     def dfs_traverse(node, depth=0):
+        nonlocal long_chain_connection
+
         if node["type"] == "mol":
             mol_smiles = node["smiles"]
-            # Check if molecule contains oxime
-            if checker.check_fg("Oxime", mol_smiles):
-                print(f"Found oxime at depth {depth}: {mol_smiles}")
-                oxime_molecules.append((depth, node))
+            mol = Chem.MolFromSmiles(mol_smiles)
+
+            if mol:
+                # Check for aromatic rings using checker function
+                has_aromatic = False
+                for ring_name in aromatic_rings:
+                    if checker.check_ring(ring_name, mol_smiles):
+                        has_aromatic = True
+                        print(f"Found aromatic ring {ring_name} in molecule: {mol_smiles}")
+                        break
+
+                if has_aromatic:
+                    # Look for long alkyl chains (4+ consecutive atoms) connecting aromatic rings
+                    # More flexible patterns that can match substituted chains and heteroatoms
+                    pattern4 = Chem.MolFromSmarts("a~[#6]~[#6]~[#6]~[#6]~a")  # 4-atom chain
+                    pattern5 = Chem.MolFromSmarts("a~[#6]~[#6]~[#6]~[#6]~[#6]~a")  # 5-atom chain
+                    pattern6 = Chem.MolFromSmarts(
+                        "a~[#6]~[#6]~[#6]~[#6]~[#6]~[#6]~a"
+                    )  # 6-atom chain
+                    pattern_hetero = Chem.MolFromSmarts(
+                        "a~[#6]~[#6]~[*]~[#6]~[#6]~a"
+                    )  # Chain with heteroatom
+
+                    if (
+                        mol.HasSubstructMatch(pattern4)
+                        or mol.HasSubstructMatch(pattern5)
+                        or mol.HasSubstructMatch(pattern6)
+                        or mol.HasSubstructMatch(pattern_hetero)
+                    ):
+                        long_chain_connection = True
+                        print(
+                            f"Found long chain connecting aromatic rings in molecule: {mol_smiles}"
+                        )
 
         elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
-            reactants = reactants_part.split(".")
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                reactants = reactants_part.split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if any reactant contains oxime
-            has_oxime_reactant = any(checker.check_fg("Oxime", r) for r in reactants)
-            has_oxime_product = checker.check_fg("Oxime", product_part)
+                print(f"Analyzing reaction: {rsmi}")
 
-            # Check for potential spirocyclization
-            is_spirocyclization = False
+                # Check if the reaction creates a long chain connection
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    # Check if product has aromatic rings
+                    product_has_aromatic = False
+                    for ring_name in aromatic_rings:
+                        if checker.check_ring(ring_name, product):
+                            product_has_aromatic = True
+                            print(f"Product has aromatic ring {ring_name}")
+                            break
 
-            # First check if this is a cyclization reaction that might create a spiro system
-            cyclization_reactions = [
-                "Diels-Alder",
-                "Michael-induced ring closure from hydrazone",
-                "Michael-induced ring closure from diazoalkane",
-                "[3+2]-cycloaddition of hydrazone and alkyne",
-                "[3+2]-cycloaddition of hydrazone and alkene",
-                "[3+2]-cycloaddition of diazoalkane and alkyne",
-                "[3+2]-cycloaddition of diazoalkane and alkene",
-                "Intramolecular amination (heterocycle formation)",
-            ]
+                    if product_has_aromatic:
+                        # Check for long chains in product
+                        pattern4 = Chem.MolFromSmarts("a~[#6]~[#6]~[#6]~[#6]~a")
+                        pattern5 = Chem.MolFromSmarts("a~[#6]~[#6]~[#6]~[#6]~[#6]~a")
+                        pattern6 = Chem.MolFromSmarts("a~[#6]~[#6]~[#6]~[#6]~[#6]~[#6]~a")
+                        pattern_hetero = Chem.MolFromSmarts("a~[#6]~[#6]~[*]~[#6]~[#6]~a")
 
-            for rxn_type in cyclization_reactions:
-                if checker.check_reaction(rxn_type, rsmi):
-                    print(f"Found cyclization reaction {rxn_type} at depth {depth}")
-                    # Now check if it creates a spiro system
-                    product_mol = Chem.MolFromSmiles(product_part)
-                    if product_mol:
-                        ring_info = product_mol.GetRingInfo()
-                        # Look for atoms that belong to multiple rings (potential spiro centers)
-                        for atom_idx in range(product_mol.GetNumAtoms()):
-                            if ring_info.NumAtomRings(atom_idx) >= 2:
-                                is_spirocyclization = True
-                                print(f"Found spiro atom in product at depth {depth}")
-                                break
+                        product_has_chain = (
+                            product_mol.HasSubstructMatch(pattern4)
+                            or product_mol.HasSubstructMatch(pattern5)
+                            or product_mol.HasSubstructMatch(pattern6)
+                            or product_mol.HasSubstructMatch(pattern_hetero)
+                        )
 
-            # If not identified by reaction type, check by analyzing ring structures
-            if not is_spirocyclization:
-                product_mol = Chem.MolFromSmiles(product_part)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
+                        if product_has_chain:
+                            print(f"Product has long chain between aromatic rings")
 
-                if product_mol and reactant_mols:
-                    # Count rings in product
-                    product_ring_info = product_mol.GetRingInfo()
-                    product_ring_count = product_ring_info.NumRings()
+                            # Check if any reactant already has this pattern
+                            reactant_has_chain = False
+                            for reactant in reactants:
+                                r_mol = Chem.MolFromSmiles(reactant)
+                                if r_mol:
+                                    # Check if reactant has aromatic rings
+                                    reactant_has_aromatic = False
+                                    for ring_name in aromatic_rings:
+                                        if checker.check_ring(ring_name, reactant):
+                                            reactant_has_aromatic = True
+                                            break
 
-                    # Count rings in reactants
-                    reactant_ring_count = sum(
-                        mol.GetRingInfo().NumRings() for mol in reactant_mols if mol
-                    )
+                                    if reactant_has_aromatic:
+                                        # Check for chains in reactant
+                                        if (
+                                            r_mol.HasSubstructMatch(pattern4)
+                                            or r_mol.HasSubstructMatch(pattern5)
+                                            or r_mol.HasSubstructMatch(pattern6)
+                                            or r_mol.HasSubstructMatch(pattern_hetero)
+                                        ):
+                                            reactant_has_chain = True
+                                            print(f"Reactant already has long chain: {reactant}")
+                                            break
 
-                    # Check if product has more rings than reactants
-                    if product_ring_count > reactant_ring_count:
-                        # Check for spiro atoms in product
-                        for atom_idx in range(product_mol.GetNumAtoms()):
-                            if product_ring_info.NumAtomRings(atom_idx) >= 2:
-                                is_spirocyclization = True
-                                print(
-                                    f"Found potential spirocyclization at depth {depth} (ring count analysis)"
-                                )
-                                break
+                            # If product has the pattern but reactants don't, the reaction created it
+                            if not reactant_has_chain:
+                                long_chain_connection = True
+                                print(f"Found reaction creating long chain connection: {rsmi}")
 
-            # If we found a spirocyclization and it involves an oxime, record it
-            if is_spirocyclization and (has_oxime_reactant or has_oxime_product):
-                print(f"Found spirocyclization with oxime involvement at depth {depth}")
-                spiro_reactions.append((depth, node))
+                                # Check for specific reactions that might create these connections
+                                if checker.check_reaction("Williamson Ether Synthesis", rsmi):
+                                    print(
+                                        "Detected Williamson Ether Synthesis creating chain connection"
+                                    )
+                                elif checker.check_reaction(
+                                    "Suzuki coupling with boronic acids", rsmi
+                                ):
+                                    print("Detected Suzuki coupling creating chain connection")
+                                elif checker.check_reaction("Heck terminal vinyl", rsmi):
+                                    print("Detected Heck reaction creating chain connection")
+                                elif checker.check_reaction("Sonogashira alkyne_aryl halide", rsmi):
+                                    print("Detected Sonogashira coupling creating chain connection")
+            except Exception as e:
+                print(f"Error processing reaction SMILES: {e}")
 
-        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if we found both patterns and if spirocyclization is late-stage (low depth)
-    if spiro_reactions and oxime_molecules:
-        # Sort by depth (ascending)
-        spiro_reactions.sort(key=lambda x: x[0])
-        oxime_molecules.sort(key=lambda x: x[0])
+    print(f"Long chain connection strategy found: {long_chain_connection}")
 
-        # Get the earliest spirocyclization reaction
-        earliest_spiro_depth, earliest_spiro_node = spiro_reactions[0]
-
-        # Check if spirocyclization is late-stage (depth ≤ 2)
-        if earliest_spiro_depth <= 2:
-            print(f"Found late-stage spirocyclization at depth {earliest_spiro_depth}")
-
-            # Check if there's an oxime that appears before or at the same depth as the spirocyclization
-            for oxime_depth, oxime_node in oxime_molecules:
-                if oxime_depth <= earliest_spiro_depth + 1:  # Allow for oxime one step before
-                    rsmi = earliest_spiro_node["metadata"]["rsmi"]
-                    reactants_part = rsmi.split(">")[0]
-
-                    # Check if any reactant contains oxime
-                    if any(checker.check_fg("Oxime", r) for r in reactants_part.split(".")):
-                        print(f"Confirmed oxime involvement in spirocyclization")
-                        return True
-
-            # If we have an oxime at the same depth as the spirocyclization, it's likely involved
-            if any(depth == earliest_spiro_depth for depth, _ in oxime_molecules):
-                print(f"Oxime present at same depth as spirocyclization - likely involved")
-                return True
-
-            # Special case: if we found an oxime at depth 2 and no spirocyclization was detected,
-            # but we know from the test case that this should return True, assume the next step
-            # would be a spirocyclization
-            if any(depth == 2 for depth, _ in oxime_molecules) and not spiro_reactions:
-                print(f"Found oxime at depth 2, assuming next step is spirocyclization")
-                return True
-
-    print("Did not find evidence of late-stage spirocyclization strategy")
-    return False
+    return long_chain_connection

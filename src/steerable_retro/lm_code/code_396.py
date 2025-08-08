@@ -2,74 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves formation of a heterocycle
-    in the final step of the synthesis.
+    This function detects early-stage amide formation from an amine and acid chloride.
+    Early-stage means the amide formation occurs at a high depth in the synthetic tree.
     """
-    heterocycle_formed = False
-    final_step = True
+    amide_formation_detected = False
 
-    def dfs_traverse(node):
-        nonlocal heterocycle_formed, final_step
+    def dfs_traverse(node, depth=0):
+        nonlocal amide_formation_detected
 
-        if node["type"] == "reaction" and final_step:
-            # Get reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth >= 2:  # Early step (depth >= 2)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check if heterocycle is formed
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for amine in reactants
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-            # Define heterocycle patterns
-            heterocycle_patterns = [
-                Chem.MolFromSmarts("[n]1[n][c][nH][c]1=[O]"),  # triazolone
-                Chem.MolFromSmarts("[n]1[n][c][n][c]1"),  # triazole
-                Chem.MolFromSmarts("[o,n]1[c][c][c][c]1"),  # furan/pyrrole
-                Chem.MolFromSmarts("[n]1[c][c][n][c]1"),  # pyrimidine
-            ]
+                # Check for acid chloride in reactants
+                acid_chloride_pattern = Chem.MolFromSmarts("[#6](=[#8])[Cl]")
 
-            # Check if product contains heterocycle not present in reactants
-            for pattern in heterocycle_patterns:
-                if product_mol.HasSubstructMatch(pattern):
-                    has_pattern_in_reactants = False
-                    for r_mol in reactant_mols:
-                        if r_mol and r_mol.HasSubstructMatch(pattern):
-                            has_pattern_in_reactants = True
-                            break
+                # Check for amide in product
+                amide_pattern = Chem.MolFromSmarts("[#7]-[#6](=[#8])-[#6]")
 
-                    if not has_pattern_in_reactants:
-                        print("Heterocycle formation detected in final step")
-                        heterocycle_formed = True
-                        break
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
 
-            final_step = False  # Mark that we've processed the final step
+                    has_amine = False
+                    has_acid_chloride = False
 
-        # Continue traversal
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if reactant_mol.HasSubstructMatch(amine_pattern):
+                                has_amine = True
+                            if reactant_mol.HasSubstructMatch(acid_chloride_pattern):
+                                has_acid_chloride = True
+
+                    if (
+                        has_amine
+                        and has_acid_chloride
+                        and product_mol
+                        and product_mol.HasSubstructMatch(amide_pattern)
+                    ):
+                        print(f"Early-stage amide formation detected: {rsmi}")
+                        amide_formation_detected = True
+                except:
+                    print("Error processing SMILES in amide formation detection")
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
     dfs_traverse(route)
-    return heterocycle_formed
+    return amide_formation_detected

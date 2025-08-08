@@ -2,109 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects convergent synthesis with fragment coupling via ether formation.
-    Specifically looking for reactions where two complex fragments are joined via C-O-C bond formation.
+    This function detects a linear build-up strategy where complexity is added
+    sequentially rather than through convergent synthesis.
     """
-    convergent_synthesis_detected = False
+    reaction_depths = []
+    max_reactants_per_step = 0
 
-    def dfs_traverse(node):
-        nonlocal convergent_synthesis_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal reaction_depths, max_reactants_per_step
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            reaction_depths.append(depth)
+
+            # Extract reactants
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # Check if this is a convergent step (multiple reactants)
-            reactants = reactants_part.split(".")
+            # Count number of reactants
+            num_reactants = len(reactants_smiles)
+            max_reactants_per_step = max(max_reactants_per_step, num_reactants)
 
-            if len(reactants) >= 2:
-                try:
-                    # Check if this is an ether formation reaction
-                    is_williamson = checker.check_reaction("Williamson Ether Synthesis", rsmi)
-                    is_mitsunobu = checker.check_reaction("Mitsunobu aryl ether", rsmi)
-
-                    # Check if product has ether bonds
-                    has_ether_product = checker.check_fg("Ether", product_part)
-
-                    # Check if reactants have ether bonds at the same position
-                    ether_in_all_reactants = all(checker.check_fg("Ether", r) for r in reactants)
-
-                    # Check complexity of reactants (at least one ring or 10+ atoms)
-                    complex_reactants = 0
-                    for reactant in reactants:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            # Count as complex if it has rings or at least 10 atoms
-                            ring_info = mol.GetRingInfo()
-                            if ring_info.NumRings() > 0 or mol.GetNumAtoms() >= 10:
-                                complex_reactants += 1
-
-                    # Convergent synthesis requires at least 2 complex reactants
-                    if (
-                        has_ether_product and not ether_in_all_reactants and complex_reactants >= 2
-                    ) or ((is_williamson or is_mitsunobu) and complex_reactants >= 2):
-                        print("Detected convergent synthesis with ether formation")
-                        print(f"Reaction SMILES: {rsmi}")
-                        print(f"Is Williamson: {is_williamson}, Is Mitsunobu: {is_mitsunobu}")
-                        print(f"Complex reactants: {complex_reactants}")
-                        convergent_synthesis_detected = True
-                except Exception as e:
-                    print(f"Error analyzing reaction: {e}")
-
-        # Continue traversing
+        # Continue traversing children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-    return convergent_synthesis_detected
+
+    # Check if we have a linear build-up (consecutive depths, limited reactants per step)
+    is_linear = len(reaction_depths) >= 3 and max_reactants_per_step <= 2
+
+    if is_linear:
+        print("Detected linear build-up strategy")
+
+    return is_linear

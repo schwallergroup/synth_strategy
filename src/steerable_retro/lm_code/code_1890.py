@@ -2,59 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves a late-stage coupling of complex fragments.
-    Specifically looks for amide formation in the first or second reaction.
+    This function detects if the synthetic route follows a linear synthesis strategy
+    without convergent steps.
     """
-    late_coupling_found = False
+    # Track the maximum number of reactants in any step
+    max_reactants = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_coupling_found
+    def dfs_traverse(node):
+        nonlocal max_reactants
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}) and depth <= 1:
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
 
-            # Check if this is an amide coupling reaction
-            if len(reactants) >= 2:  # Need at least two reactants for coupling
-                product_mol = Chem.MolFromSmiles(product)
-                amide_pattern = Chem.MolFromSmarts("[#7][#6](=[#8])")
+            # Count the number of reactants
+            num_reactants = len(reactants)
+            max_reactants = max(max_reactants, num_reactants)
 
-                if product_mol and product_mol.HasSubstructMatch(amide_pattern):
-                    # Check if reactants are complex (have more than 15 atoms)
-                    complex_reactants = 0
-                    for r in reactants:
-                        mol = Chem.MolFromSmiles(r)
-                        if mol and mol.GetNumAtoms() > 15:
-                            complex_reactants += 1
-
-                    if complex_reactants >= 1:
-                        print(f"Found late-stage coupling at depth {depth}")
-                        late_coupling_found = True
-
+        # Recursively traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return late_coupling_found
+
+    # If max_reactants is consistently low (≤2), it's likely a linear synthesis
+    is_linear = max_reactants <= 2
+    if is_linear:
+        print(
+            "Detected linear synthesis strategy with maximum", max_reactants, "reactants per step"
+        )
+    else:
+        print("Detected convergent synthesis with", max_reactants, "reactants in at least one step")
+
+    return is_linear

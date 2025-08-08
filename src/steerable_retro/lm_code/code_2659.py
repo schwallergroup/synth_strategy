@@ -2,72 +2,120 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves late-stage sulfonamide formation.
+    Detects if the synthesis route involves a urea disconnection strategy.
     """
-    found_late_stage_sulfonamide = False
+    urea_disconnection_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_late_stage_sulfonamide
+    def dfs_traverse(node):
+        nonlocal urea_disconnection_found
 
-        if (
-            node["type"] == "reaction" and depth <= 1
-        ):  # Check only late-stage reactions (depth 0 or 1)
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
+
+            # Check if this is a urea synthesis reaction directly
+            urea_reactions = [
+                "Urea synthesis via isocyanate and primary amine",
+                "Urea synthesis via isocyanate and secondary amine",
+                "Urea synthesis via isocyanate and diazo",
+                "Urea synthesis via isocyanate and sulfonamide",
+                "urea",
+            ]
+
+            for reaction_type in urea_reactions:
+                if checker.check_reaction(reaction_type, rsmi):
+                    print(f"Found urea disconnection strategy: {reaction_type}")
+                    urea_disconnection_found = True
+                    return
+
+            # If no direct reaction match, check for the pattern manually
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if this forms a sulfonamide
-            try:
-                product_mol = Chem.MolFromSmiles(product)
+            # Check for urea or thiourea in product
+            product_has_urea = checker.check_fg("Urea", product)
+            product_has_thiourea = checker.check_fg("Thiourea", product)
 
-                # Check if product contains sulfonamide group
-                if product_mol and product_mol.HasSubstructMatch(
-                    Chem.MolFromSmarts("[N;!$(NC=O)]-[S;$(S(=O)(=O))]")
-                ):
-                    # Check if reactants don't have sulfonamide
-                    has_sulfonamide_in_reactants = False
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(
-                            Chem.MolFromSmarts("[N;!$(NC=O)]-[S;$(S(=O)(=O))]")
-                        ):
-                            has_sulfonamide_in_reactants = True
-                            break
+            if product_has_urea or product_has_thiourea:
+                # Check for isocyanate/isothiocyanate and amine in reactants
+                isocyanate_found = False
+                amine_found = False
 
-                    if not has_sulfonamide_in_reactants:
-                        found_late_stage_sulfonamide = True
-                        print(f"Detected late-stage sulfonamide formation at depth {depth}: {rsmi}")
-            except:
-                print(f"Error in processing molecules for sulfonamide check: {rsmi}")
+                for reactant in reactants:
+                    if checker.check_fg("Isocyanate", reactant):
+                        isocyanate_found = True
+                    elif checker.check_fg("Isothiocyanate", reactant):
+                        isocyanate_found = True
 
-        # Process children
+                    # Check for various types of amines
+                    if (
+                        checker.check_fg("Primary amine", reactant)
+                        or checker.check_fg("Secondary amine", reactant)
+                        or checker.check_fg("Aniline", reactant)
+                    ):
+                        amine_found = True
+
+                if isocyanate_found and amine_found:
+                    fg_type = "Urea" if product_has_urea else "Thiourea"
+                    print(f"Found {fg_type} disconnection strategy through pattern matching")
+                    urea_disconnection_found = True
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Call dfs_traverse on the root node
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Late-stage sulfonamide formation: {found_late_stage_sulfonamide}")
-    return found_late_stage_sulfonamide
+    return urea_disconnection_found

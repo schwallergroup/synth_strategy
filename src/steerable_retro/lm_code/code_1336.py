@@ -2,86 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a convergent synthesis strategy using Friedel-Crafts acylation
-    to combine two complex fragments, followed by ketone reduction.
+    Detects reduction of nitro group to amine in the synthesis.
     """
-    # Track if we found the key reactions
-    found_friedel_crafts = False
-    found_ketone_reduction = False
+    found_nitro_reduction = False
 
     def dfs_traverse(node):
-        nonlocal found_friedel_crafts, found_ketone_reduction
+        nonlocal found_nitro_reduction
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for Friedel-Crafts acylation
-                if len(reactants) == 2:
-                    acid_chloride_pattern = Chem.MolFromSmarts("[C](=O)[Cl]")
-                    aromatic_pattern = Chem.MolFromSmarts("[c]")
-                    ketone_pattern = Chem.MolFromSmarts("[c][C](=O)[c]")
+            try:
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product = Chem.MolFromSmiles(product_smiles)
 
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-                    product_mol = Chem.MolFromSmiles(product)
+                if product:
+                    # Check for nitro pattern in reactants
+                    nitro_pattern = Chem.MolFromSmarts("[#6][N+](=[O])[O-]")
+                    has_nitro = any(
+                        mol.HasSubstructMatch(nitro_pattern) for mol in reactants if mol
+                    )
 
-                    if (
-                        product_mol
-                        and any(
-                            m and m.HasSubstructMatch(acid_chloride_pattern) for m in reactant_mols
-                        )
-                        and any(m and m.HasSubstructMatch(aromatic_pattern) for m in reactant_mols)
-                        and product_mol.HasSubstructMatch(ketone_pattern)
-                    ):
-                        print("Found Friedel-Crafts acylation")
-                        found_friedel_crafts = True
+                    # Check for amine pattern in product
+                    amine_pattern = Chem.MolFromSmarts("[#6][NH2]")
+                    has_amine = product.HasSubstructMatch(amine_pattern)
 
-                # Check for ketone reduction
-                ketone_pattern = Chem.MolFromSmarts("[c][C](=O)[c]")
-                methylene_pattern = Chem.MolFromSmarts("[c][CH2][c]")
+                    if has_nitro and has_amine:
+                        print("Found nitro to amine reduction")
+                        found_nitro_reduction = True
+            except:
+                print("Error processing reaction SMILES for nitro reduction detection")
 
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-
-                # In forward direction, this would be a ketone reduction
-                # In retrosynthetic direction (as shown), this is an oxidation
-                if (
-                    product_mol
-                    and any(m and m.HasSubstructMatch(ketone_pattern) for m in reactant_mols)
-                    and product_mol.HasSubstructMatch(methylene_pattern)
-                ):
-                    print("Found ketone reduction (in forward direction)")
-                    found_ketone_reduction = True
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-
-    # Return True if both key reactions are found
-    return found_friedel_crafts and found_ketone_reduction
+    return found_nitro_reduction

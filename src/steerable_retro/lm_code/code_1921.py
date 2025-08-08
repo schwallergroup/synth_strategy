@@ -2,69 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes a nitro group reduction to amine.
+    Detects if the synthesis route employs a ketone formation strategy via acylation,
+    where a C-C bond is formed creating a ketone between aromatic rings.
     """
-    contains_nitro_reduction = False
+    ketone_formation_detected = False
 
-    def dfs_traverse(node):
-        nonlocal contains_nitro_reduction
+    def dfs_traverse(node, depth=0):
+        nonlocal ketone_formation_detected
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for nitro pattern in reactants
-            nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
+                # Check for carboxylic acid in reactants
+                carboxylic_acid_pattern = Chem.MolFromSmarts("[#6][C](=[O])[O;H1]")
+                # Check for ketone between aromatics in product
+                ketone_pattern = Chem.MolFromSmarts("[#6;a][C](=[O])[#6;a]")
 
-            # Check for amine pattern in product
-            amine_pattern = Chem.MolFromSmarts("[#6]-[NH2]")
+                carboxylic_acid_present = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(carboxylic_acid_pattern):
+                        carboxylic_acid_present = True
+                        break
 
-            # Check if reactant contains nitro group
-            has_nitro = False
-            for reactant in reactants_smiles:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(nitro_pattern):
-                    has_nitro = True
-                    break
+                product_mol = Chem.MolFromSmiles(product)
+                if (
+                    carboxylic_acid_present
+                    and product_mol
+                    and product_mol.HasSubstructMatch(ketone_pattern)
+                ):
+                    print(f"Ketone formation via acylation detected at depth {depth}")
+                    ketone_formation_detected = True
 
-            # Check if product contains amine
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            has_amine = False
-            if product_mol and product_mol.HasSubstructMatch(amine_pattern):
-                has_amine = True
-
-            # If both conditions are met, this is a nitro reduction
-            if has_nitro and has_amine:
-                contains_nitro_reduction = True
-                print("Detected nitro to amine reduction strategy")
-
-        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return contains_nitro_reduction
+    return ketone_formation_detected

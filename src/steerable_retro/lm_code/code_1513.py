@@ -2,76 +2,105 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis maintains chlorinated aromatic rings throughout.
+    Detects if the synthesis route includes an ester reduction to alcohol step.
     """
-    has_chlorinated_aromatics = False
-    all_steps_have_chlorinated_aromatics = True
-    step_count = 0
+    found_ester_reduction = False
 
-    def dfs_traverse(node):
-        nonlocal has_chlorinated_aromatics, all_steps_have_chlorinated_aromatics, step_count
+    def dfs_traverse(node, depth=0):
+        nonlocal found_ester_reduction
 
-        if node["type"] == "reaction":
-            step_count += 1
-            # Extract reactants and products
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            products_smiles = rsmi.split(">")[-1]
+            try:
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
+                reactants = reactants_part.split(".")
+                product = product_part
 
-            # Check for chlorinated aromatic pattern
-            chloro_aromatic_pattern = Chem.MolFromSmarts("c[Cl]")
+                # Check if this is a reduction of ester to primary alcohol reaction
+                if checker.check_reaction("Reduction of ester to primary alcohol", rsmi):
+                    print(f"Found ester reduction to alcohol at depth {depth}")
+                    print(f"Reaction SMILES: {rsmi}")
+                    found_ester_reduction = True
+                    return
 
-            reactant_mol = Chem.MolFromSmiles(reactants_smiles)
-            product_mol = Chem.MolFromSmiles(products_smiles)
+                # Fallback check: verify ester in reactants and primary alcohol in product
+                reactant_has_ester = any(
+                    checker.check_fg("Ester", reactant) for reactant in reactants
+                )
+                product_has_alcohol = checker.check_fg("Primary alcohol", product)
 
-            if chloro_aromatic_pattern is not None:
-                step_has_chloro = False
+                if reactant_has_ester and product_has_alcohol:
+                    # Additional check to ensure it's a reduction reaction
+                    # Look for patterns consistent with ester reduction
+                    reactant_mol = Chem.MolFromSmiles(reactants[0])
+                    product_mol = Chem.MolFromSmiles(product)
 
-                if reactant_mol is not None and reactant_mol.HasSubstructMatch(
-                    chloro_aromatic_pattern
-                ):
-                    has_chlorinated_aromatics = True
-                    step_has_chloro = True
+                    if reactant_mol and product_mol:
+                        # Check if carbon count is preserved (no carbon-carbon bond breaking)
+                        if reactant_mol.GetNumAtoms(onlyExplicit=True) >= product_mol.GetNumAtoms(
+                            onlyExplicit=True
+                        ):
+                            print(f"Found potential ester reduction to alcohol at depth {depth}")
+                            print(f"Reaction SMILES: {rsmi}")
+                            found_ester_reduction = True
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
-                if product_mol is not None and product_mol.HasSubstructMatch(
-                    chloro_aromatic_pattern
-                ):
-                    has_chlorinated_aromatics = True
-                    step_has_chloro = True
-
-                if not step_has_chloro:
-                    all_steps_have_chlorinated_aromatics = False
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Only return true if we have chlorinated aromatics and they appear in all steps
-    result = has_chlorinated_aromatics and all_steps_have_chlorinated_aromatics and step_count > 0
-    if result:
-        print(f"Found chlorinated aromatics maintained throughout {step_count} steps")
-    return result
+    return found_ester_reduction

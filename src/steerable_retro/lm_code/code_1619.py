@@ -2,103 +2,222 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the route follows a "build-couple-pair" strategy,
-    where a complex scaffold is built through sequential coupling reactions,
-    with functional group manipulations in late stages.
+    This function detects a synthetic strategy featuring mid-stage heterocycle formation
+    followed by functional group interconversions with late-stage amide coupling.
     """
-    # We need to check for:
-    # 1. At least two coupling reactions (e.g., Suzuki)
-    # 2. Late-stage functional group manipulations
-    # 3. Increasing ring count throughout the synthesis
+    # Initialize tracking variables
+    heterocycle_formation_depth = None
+    ester_hydrolysis_depth = None
+    amide_coupling_depth = None
+    reaction_sequence = []
 
-    coupling_reactions = 0
-    late_stage_fg_manipulation = False
+    # List of common heterocycles to check
+    heterocycles = [
+        "imidazole",
+        "pyrrole",
+        "pyrazole",
+        "triazole",
+        "tetrazole",
+        "oxazole",
+        "thiazole",
+        "isoxazole",
+        "isothiazole",
+        "pyridine",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "benzimidazole",
+        "indole",
+        "benzoxazole",
+        "benzothiazole",
+        "furan",
+        "thiophene",
+        "oxadiazole",
+        "thiadiazole",
+    ]
 
-    def dfs_traverse(node):
-        nonlocal coupling_reactions, late_stage_fg_manipulation
+    def dfs_traverse(node, depth=0):
+        nonlocal heterocycle_formation_depth, ester_hydrolysis_depth, amide_coupling_depth
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-            depth = node.get("metadata", {}).get("depth", -1)
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for coupling reaction (simplified)
-            has_boron = False
-            has_halide = False
+            # Store reaction information
+            reaction_info = {
+                "depth": depth,
+                "rsmi": rsmi,
+                "product_smiles": product_smiles,
+                "reactants_smiles": reactants_smiles,
+            }
+            reaction_sequence.append(reaction_info)
 
-            for reactant in reactants:
-                if reactant:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(
-                            Chem.MolFromSmarts("[#6]-[#5](-[#8])-[#8]")
-                        ) or mol.HasSubstructMatch(Chem.MolFromSmarts("[#6]-[#5](-[#8;R])-[#8;R]")):
-                            has_boron = True
+            print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                        if mol.HasSubstructMatch(Chem.MolFromSmarts("[#6;a]-[#35,#53,#17]")):
-                            has_halide = True
+            # Check for heterocycle formation
+            heterocycle_in_product = False
+            heterocycle_in_reactants = False
+            detected_heterocycle = None
 
-            if has_boron and has_halide:
-                coupling_reactions += 1
-                print(f"Found coupling reaction at depth {depth}: {rsmi}")
+            for heterocycle in heterocycles:
+                if checker.check_ring(heterocycle, product_smiles):
+                    heterocycle_in_product = True
+                    detected_heterocycle = heterocycle
+                    print(f"Found {heterocycle} in product at depth {depth}")
 
-            # Check for late-stage functional group manipulation
-            if depth <= 1:  # Late stage
-                # Check for functional group changes (simplified)
-                if any(
-                    Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts("[#6]-[#9]"))
-                    for r in reactants
-                    if r
-                ) and Chem.MolFromSmiles(product).HasSubstructMatch(
-                    Chem.MolFromSmarts("[#6]-[#8]-[#6]")
-                ):
-                    late_stage_fg_manipulation = True
-                    print(f"Found late-stage FG manipulation: {rsmi}")
+                    # Check if heterocycle was already in reactants
+                    for reactant in reactants_smiles:
+                        if checker.check_ring(heterocycle, reactant):
+                            heterocycle_in_reactants = True
+                            print(f"Found {heterocycle} in reactant at depth {depth}")
+                            break
 
-                # Check for deprotection
-                if any(
-                    Chem.MolFromSmiles(r).HasSubstructMatch(
-                        Chem.MolFromSmarts("[#14]([#6])([#6])([#6])[#8]-[#6]")
-                    )
-                    for r in reactants
-                    if r
-                ) and Chem.MolFromSmiles(product).HasSubstructMatch(
-                    Chem.MolFromSmarts("[#8;H1]-[#6]")
-                ):
-                    late_stage_fg_manipulation = True
-                    print(f"Found late-stage deprotection: {rsmi}")
+                    if not heterocycle_in_reactants:
+                        print(f"Detected {heterocycle} formation at depth {depth}")
+                        heterocycle_formation_depth = depth
+                        break
 
-        # Traverse children
+            # Check for ester hydrolysis or similar carboxylic acid formation
+            if (
+                checker.check_reaction("Ester saponification (methyl deprotection)", rsmi)
+                or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
+                or checker.check_reaction(
+                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+                )
+                or checker.check_reaction("COOH ethyl deprotection", rsmi)
+            ):
+                print(f"Detected ester hydrolysis at depth {depth}")
+                ester_hydrolysis_depth = depth
+            # Additional check for ester to carboxylic acid conversion
+            elif any(
+                checker.check_fg("Ester", reactant) for reactant in reactants_smiles
+            ) and checker.check_fg("Carboxylic acid", product_smiles):
+                print(f"Detected ester to carboxylic acid conversion at depth {depth}")
+                ester_hydrolysis_depth = depth
+
+            # Check for amide coupling
+            if (
+                checker.check_reaction(
+                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                )
+                or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
+                or checker.check_reaction(
+                    "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+                )
+                or checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi)
+                or checker.check_reaction("Ester with primary amine to amide", rsmi)
+                or checker.check_reaction("Ester with secondary amine to amide", rsmi)
+                or checker.check_reaction("{Schotten-Baumann_amide}", rsmi)
+            ):
+                print(f"Detected amide coupling at depth {depth}")
+                amide_coupling_depth = depth
+            # Additional check for amide formation
+            elif not any(
+                checker.check_fg("Primary amide", reactant)
+                or checker.check_fg("Secondary amide", reactant)
+                for reactant in reactants_smiles
+            ) and (
+                checker.check_fg("Primary amide", product_smiles)
+                or checker.check_fg("Secondary amide", product_smiles)
+            ):
+                print(f"Detected amide formation at depth {depth}")
+                amide_coupling_depth = depth
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    build_couple_pair = coupling_reactions >= 2 and late_stage_fg_manipulation
-    print(
-        f"Build-couple-pair strategy: {build_couple_pair} (Couplings: {coupling_reactions}, Late-stage FG: {late_stage_fg_manipulation})"
+    # Check if all required reactions were found
+    all_reactions_found = (
+        heterocycle_formation_depth is not None
+        and ester_hydrolysis_depth is not None
+        and amide_coupling_depth is not None
     )
-    return build_couple_pair
+
+    # Check if the reactions are in the correct order
+    correct_order = False
+    if all_reactions_found:
+        # Amide coupling should be late-stage (lowest depth)
+        # Ester hydrolysis and heterocycle formation can be in either order
+        # as long as amide coupling is the latest stage
+        correct_order = (
+            amide_coupling_depth < ester_hydrolysis_depth
+            and amide_coupling_depth < heterocycle_formation_depth
+        )
+
+        print(
+            f"Reaction depths - Amide coupling: {amide_coupling_depth}, "
+            f"Ester hydrolysis: {ester_hydrolysis_depth}, "
+            f"Heterocycle formation: {heterocycle_formation_depth}"
+        )
+        print(f"Correct order: {correct_order}")
+
+    # Strategy is present if all reactions are found and in the correct order
+    strategy_present = all_reactions_found and correct_order
+
+    if strategy_present:
+        print("Detected heterocycle-centered linear synthesis with late-stage amide coupling")
+    else:
+        if not all_reactions_found:
+            print("Not all required reactions were found")
+        elif not correct_order:
+            print("Reactions were not in the correct order")
+
+    return strategy_present

@@ -2,151 +2,110 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a linear synthesis on a pyridine scaffold with late-stage thioether formation.
+    Detects if the synthesis involves a sequence of functional group interconversions,
+    specifically methyl → carboxylic acid → ester transformations.
     """
-    # Track if we found a pyridine scaffold
-    has_pyridine = False
-    # Track if we found a late-stage thioether formation
-    has_late_stage_thioether = False
+    # Initialize tracking variables
+    methyl_to_acid = False
+    acid_to_ester = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal has_pyridine, has_late_stage_thioether
+        nonlocal methyl_to_acid, acid_to_ester
 
-        if node["type"] == "mol":
-            # Check if molecule contains pyridine
-            if node.get("smiles"):
-                # Use checker function to detect pyridine ring
-                if checker.check_ring("pyridine", node["smiles"]):
-                    has_pyridine = True
-                    print(f"Found pyridine scaffold in molecule: {node['smiles']}")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        elif node["type"] == "reaction" and depth <= 2:  # Late stage (depth 0-2)
-            # Check for thioether formation in late-stage reactions
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Check for methyl to carboxylic acid transformation
+            methyl_pattern = Chem.MolFromSmarts("[#6]-[#6;H3]")
+            carboxylic_acid_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#8;H1]")
 
-                print(f"Examining reaction at depth {depth}: {rsmi}")
+            has_methyl_reactant = False
+            has_acid_product = False
 
-                # Check if product contains thioether (monosulfide) and pyridine
-                if checker.check_fg("Monosulfide", product) and checker.check_ring(
-                    "pyridine", product
-                ):
-                    print(f"Product contains thioether and pyridine: {product}")
+            # Check reactants for methyl
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(methyl_pattern):
+                        has_methyl_reactant = True
+                except:
+                    continue
 
-                    # Check if any reactant contains thiol
-                    has_thiol_reactant = any(
-                        checker.check_fg("Aliphatic thiol", reactant)
-                        or checker.check_fg("Aromatic thiol", reactant)
-                        for reactant in reactants
-                    )
+            # Check product for carboxylic acid
+            try:
+                prod_mol = Chem.MolFromSmiles(product)
+                if prod_mol and prod_mol.HasSubstructMatch(carboxylic_acid_pattern):
+                    has_acid_product = True
+            except:
+                pass
 
-                    # Check if this is a thioether formation reaction
-                    is_thioether_formation = (
-                        checker.check_reaction("S-alkylation of thiols", rsmi)
-                        or checker.check_reaction("S-alkylation of thiols (ethyl)", rsmi)
-                        or checker.check_reaction("S-alkylation of thiols with alcohols", rsmi)
-                        or checker.check_reaction(
-                            "S-alkylation of thiols with alcohols (ethyl)", rsmi
-                        )
-                        or checker.check_reaction("thia-Michael addition", rsmi)
-                    )
+            if has_methyl_reactant and has_acid_product:
+                methyl_to_acid = True
+                print(f"Detected methyl to carboxylic acid transformation at depth {depth}")
 
-                    if is_thioether_formation:
-                        print(f"Confirmed thioether formation reaction: {rsmi}")
+            # Check for carboxylic acid to ester transformation
+            ester_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#8]-[#6]")
 
-                    # Check if thioether is newly formed (not present in all reactants)
-                    all_reactants_have_thioether = all(
-                        checker.check_fg("Monosulfide", reactant) for reactant in reactants
-                    )
+            has_acid_reactant = False
+            has_ester_product = False
 
-                    # If we have a thiol reactant, a thioether formation reaction type, and not all reactants
-                    # already have thioether, then this is a late-stage thioether formation
-                    if (
-                        has_thiol_reactant
-                        and is_thioether_formation
-                        and not all_reactants_have_thioether
-                    ):
-                        has_late_stage_thioether = True
-                        print(f"Confirmed late-stage thioether formation at depth {depth}")
+            # Check reactants for carboxylic acid
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(carboxylic_acid_pattern):
+                        has_acid_reactant = True
+                except:
+                    continue
 
-                    # Alternative detection: if product has thioether but not all reactants do
-                    elif not all_reactants_have_thioether:
-                        # Check if any reactant has thiol
-                        if has_thiol_reactant:
-                            print(
-                                f"Detected thioether formation by thiol reactant at depth {depth}"
-                            )
-                            has_late_stage_thioether = True
-                        # Check for nucleophilic substitution with thiol
-                        elif any(
-                            checker.check_fg("Primary halide", reactant)
-                            or checker.check_fg("Secondary halide", reactant)
-                            or checker.check_fg("Tertiary halide", reactant)
-                            or checker.check_fg("Aromatic halide", reactant)
-                            for reactant in reactants
-                        ):
-                            print(
-                                f"Detected thioether formation by nucleophilic substitution at depth {depth}"
-                            )
-                            has_late_stage_thioether = True
+            # Check product for ester
+            try:
+                prod_mol = Chem.MolFromSmiles(product)
+                if prod_mol and prod_mol.HasSubstructMatch(ester_pattern):
+                    has_ester_product = True
+            except:
+                pass
+
+            if has_acid_reactant and has_ester_product:
+                acid_to_ester = True
+                print(f"Detected carboxylic acid to ester transformation at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    print(f"Pyridine scaffold: {has_pyridine}, Late-stage thioether: {has_late_stage_thioether}")
-    return has_pyridine and has_late_stage_thioether
+    # Return True if both transformations are present
+    strategy_present = methyl_to_acid and acid_to_ester
+    print(f"Functional group interconversion strategy detected: {strategy_present}")
+    return strategy_present

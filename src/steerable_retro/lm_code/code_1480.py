@@ -2,111 +2,90 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving sequential functional group
-    interconversions at a benzylic position (carboxylic acid → alcohol →
-    chloride → ether) combined with aromatic substitution.
+    Detects if the synthesis route contains a thiazole ring formation reaction.
     """
-    # Track if we've found each transformation
-    found_carboxylic_acid_reduction = False
-    found_alcohol_to_chloride = False
-    found_chloride_to_ether = False
-    found_aryl_halide_to_nitrile = False
+    has_thiazole_formation = False
 
-    def dfs_traverse(node):
-        nonlocal found_carboxylic_acid_reduction, found_alcohol_to_chloride
-        nonlocal found_chloride_to_ether, found_aryl_halide_to_nitrile
+    def dfs(node, depth=0):
+        nonlocal has_thiazole_formation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        # Check if this is a molecule node with a thiazole ring
+        if node["type"] == "mol" and node["smiles"]:
+            if checker.check_ring("thiazole", node["smiles"]):
+                # Check if this molecule is a product of a reaction
+                if not node.get("in_stock", False) and node.get("children", []):
+                    for child in node["children"]:
+                        if (
+                            child["type"] == "reaction"
+                            and "metadata" in child
+                            and "rsmi" in child["metadata"]
+                        ):
+                            rxn_smiles = child["metadata"]["rsmi"]
+                            product = rxn_smiles.split(">")[-1]
+                            reactants = rxn_smiles.split(">")[0].split(".")
 
-            # Check for carboxylic acid reduction to alcohol
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[c][C](=O)[OH]")
-            benzylic_alcohol_pattern = Chem.MolFromSmarts("[c][C][OH]")
+                            # Check if thiazole is formed in this reaction (not present in reactants)
+                            thiazole_in_reactants = any(
+                                checker.check_ring("thiazole", r) for r in reactants
+                            )
+                            if not thiazole_in_reactants:
+                                has_thiazole_formation = True
+                                print(f"Found thiazole formation reaction: {rxn_smiles}")
 
-            # Check for alcohol to chloride conversion
-            benzylic_chloride_pattern = Chem.MolFromSmarts("[c][C][Cl]")
-
-            # Check for chloride to ether conversion
-            benzylic_ether_pattern = Chem.MolFromSmarts("[c][C][O][C]")
-
-            # Check for aryl halide to nitrile conversion
-            aryl_bromide_pattern = Chem.MolFromSmarts("[c][Br]")
-            aryl_nitrile_pattern = Chem.MolFromSmarts("[c][C]#[N]")
-
-            # Process product molecule
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol:
-                # Check reactants
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
-
-                # Check for carboxylic acid reduction
-                if any(
-                    mol.HasSubstructMatch(carboxylic_acid_pattern) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(benzylic_alcohol_pattern):
-                    found_carboxylic_acid_reduction = True
-                    print("Found carboxylic acid reduction to benzylic alcohol")
-
-                # Check for alcohol to chloride conversion
-                if any(
-                    mol.HasSubstructMatch(benzylic_alcohol_pattern) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(benzylic_chloride_pattern):
-                    found_alcohol_to_chloride = True
-                    print("Found benzylic alcohol to chloride conversion")
-
-                # Check for chloride to ether conversion
-                if any(
-                    mol.HasSubstructMatch(benzylic_chloride_pattern) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(benzylic_ether_pattern):
-                    found_chloride_to_ether = True
-                    print("Found benzylic chloride to ether conversion")
-
-                # Check for aryl halide to nitrile conversion
-                if any(
-                    mol.HasSubstructMatch(aryl_bromide_pattern) for mol in reactant_mols
-                ) and product_mol.HasSubstructMatch(aryl_nitrile_pattern):
-                    found_aryl_halide_to_nitrile = True
-                    print("Found aryl halide to nitrile conversion")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs(child, depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
-
-    # Strategy is present if we found at least 3 of the 4 transformations
-    transformations_found = sum(
-        [
-            found_carboxylic_acid_reduction,
-            found_alcohol_to_chloride,
-            found_chloride_to_ether,
-            found_aryl_halide_to_nitrile,
-        ]
-    )
-
-    result = transformations_found >= 3
-    print(f"Benzylic functional group interconversion strategy detected: {result}")
-    return result
+    dfs(route)
+    return has_thiazole_formation

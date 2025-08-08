@@ -2,73 +2,87 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects preservation of key functional groups (cyano, chloro)
-    throughout the synthetic route.
+    Detects if the synthetic route involves N-arylation of an indazole core.
     """
-    # Track if we find the functional groups in the final product
-    cyano_preserved = False
-    chloro_preserved = False
+    n_arylation_found = False
 
     def dfs_traverse(node):
-        nonlocal cyano_preserved, chloro_preserved
+        nonlocal n_arylation_found
 
-        if node["type"] == "mol" and node.get("in_stock", False) == False:
-            # This is likely the final product
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for cyano group
-                cyano_pattern = Chem.MolFromSmarts("[C]#[N]")
-                if mol.HasSubstructMatch(cyano_pattern):
-                    print("Found cyano group in final product")
-                    cyano_preserved = True
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for chloro group on aromatic
-                chloro_pattern = Chem.MolFromSmarts("[c][Cl]")
-                if mol.HasSubstructMatch(chloro_pattern):
-                    print("Found chloro group in final product")
-                    chloro_preserved = True
+            try:
+                product_mol = Chem.MolFromSmiles(product)
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
 
-        # Check if functional groups are present in starting materials
-        if node["type"] == "mol" and node.get("in_stock", False) == True:
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for cyano group in starting materials
-                cyano_pattern = Chem.MolFromSmarts("[C]#[N]")
-                if mol.HasSubstructMatch(cyano_pattern):
-                    print("Found cyano group in starting material")
+                # Pattern for N-arylated indazole
+                n_arylated_indazole = Chem.MolFromSmarts(
+                    "[c]1[c][c][c]([c][c]1)-[n]1[n][c][c]2[c]1[c][c][c][c]2"
+                )
 
-                # Check for chloro group in starting materials
-                chloro_pattern = Chem.MolFromSmarts("[c][Cl]")
-                if mol.HasSubstructMatch(chloro_pattern):
-                    print("Found chloro group in starting material")
+                # Pattern for NH-indazole
+                nh_indazole = Chem.MolFromSmarts("[nH]1[n][c][c]2[c]1[c][c][c][c]2")
 
-        # Traverse children
+                # Pattern for aryl boronic acid or halide
+                aryl_coupling_partner = Chem.MolFromSmarts("[c][B,Br,I,Cl,Sn]")
+
+                if (
+                    product_mol
+                    and n_arylated_indazole
+                    and product_mol.HasSubstructMatch(n_arylated_indazole)
+                ):
+                    # Check if reactants contain NH-indazole and aryl coupling partner
+                    has_nh_indazole = False
+                    has_aryl_partner = False
+
+                    for r_mol in reactant_mols:
+                        if r_mol:
+                            if nh_indazole and r_mol.HasSubstructMatch(nh_indazole):
+                                has_nh_indazole = True
+                            if aryl_coupling_partner and r_mol.HasSubstructMatch(
+                                aryl_coupling_partner
+                            ):
+                                has_aryl_partner = True
+
+                    if has_nh_indazole and has_aryl_partner:
+                        n_arylation_found = True
+                        print(f"Found N-arylation of indazole: {rsmi}")
+            except:
+                print(f"Error processing reaction SMILES: {rsmi}")
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if both functional groups are preserved
-    return cyano_preserved and chloro_preserved
+    return n_arylation_found

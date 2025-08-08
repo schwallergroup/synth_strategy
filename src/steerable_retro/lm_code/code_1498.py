@@ -2,79 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving N-alkylation of a lactam, specifically
-    the reaction of a bromomethyl compound with a lactam to form an N-alkylated product.
+    Detects if the synthesis involves multiple C-N bond formations.
     """
-    n_alkylation_detected = False
+    cn_bond_formations = 0
 
-    def dfs_traverse(node):
-        nonlocal n_alkylation_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal cn_bond_formations
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Extract reactants and product
-            parts = rsmi.split(">")
-            if len(parts) >= 3:
-                reactants = parts[0].split(".")
-                product = parts[2]
+                try:
+                    # This is a simplified approach - in practice would need reaction mapping
+                    product_mol = Chem.MolFromSmiles(product)
+                    cn_bonds_product = 0
+                    if product_mol:
+                        cn_pattern = Chem.MolFromSmarts("[#6]-[#7]")
+                        cn_bonds_product = len(product_mol.GetSubstructMatches(cn_pattern))
 
-                # Check for bromomethyl compound
-                bromomethyl_pattern = Chem.MolFromSmarts("[c]-[CH2][Br]")
+                    total_cn_bonds_reactants = 0
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            cn_pattern = Chem.MolFromSmarts("[#6]-[#7]")
+                            total_cn_bonds_reactants += len(
+                                reactant_mol.GetSubstructMatches(cn_pattern)
+                            )
 
-                # Check for lactam pattern
-                lactam_pattern = Chem.MolFromSmarts("[NH]-[C](=[O])-[C]")
+                    # If product has more C-N bonds than reactants combined, C-N bond formation occurred
+                    if cn_bonds_product > total_cn_bonds_reactants:
+                        cn_bond_formations += 1
+                        print(f"Found C-N bond formation at depth {depth}")
+                except:
+                    pass
 
-                # Check for N-alkylated lactam pattern
-                n_alkylated_pattern = Chem.MolFromSmarts("[N](-[CH2][c])-[C](=[O])-[C]")
-
-                has_bromomethyl = False
-                has_lactam = False
-
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        if reactant_mol.HasSubstructMatch(bromomethyl_pattern):
-                            has_bromomethyl = True
-                        if reactant_mol.HasSubstructMatch(lactam_pattern):
-                            has_lactam = True
-
-                product_mol = Chem.MolFromSmiles(product)
-                has_n_alkylated = False
-                if product_mol:
-                    has_n_alkylated = product_mol.HasSubstructMatch(n_alkylated_pattern)
-
-                # If all conditions are met, it's an N-alkylation of lactam
-                if has_bromomethyl and has_lactam and has_n_alkylated:
-                    print("Detected N-alkylation of lactam")
-                    n_alkylation_detected = True
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    return n_alkylation_detected
+    return cn_bond_formations >= 3  # Return True if at least 3 C-N bonds are formed

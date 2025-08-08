@@ -2,106 +2,217 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a strategy involving alcohol activation (via mesylation) followed by N-alkylation,
-    with preceding functional group transformations from carboxylic acid to alcohol via ester.
+    Detects a synthetic strategy involving a late-stage Suzuki coupling
+    with convergent fragment assembly.
     """
-    # Track if we've found each step in the strategy
-    found_esterification = False
-    found_ester_reduction = False
-    found_mesylation = False
-    found_n_alkylation = False
+    suzuki_coupling_found = False
+    borylation_found = False
+    snar_count = 0
+    nitro_reduction_found = False
 
-    def dfs_traverse(node):
-        nonlocal found_esterification, found_ester_reduction, found_mesylation, found_n_alkylation
+    def dfs_traverse(node, depth=0):
+        nonlocal suzuki_coupling_found, borylation_found, snar_count, nitro_reduction_found
 
         if node["type"] == "reaction":
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
-                product = Chem.MolFromSmiles(product_str) if product_str else None
+                # Check for Suzuki coupling (depth 0, 1, or 2 = late stage)
+                if depth <= 2:
+                    if (
+                        checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
+                        or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
+                        or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
+                        or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
+                        or checker.check_reaction("Suzuki coupling with sulfonic esters", rsmi)
+                        or checker.check_reaction("{Suzuki}", rsmi)
+                        or checker.check_reaction("Suzuki", rsmi)
+                    ):
+                        suzuki_coupling_found = True
+                        print(f"Found late-stage Suzuki coupling at depth {depth}")
 
-                if product and all(r for r in reactants):
-                    # Check for esterification (carboxylic acid + alcohol → ester)
-                    acid_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#8;H1]")
-                    ester_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#8]-[#6]")
-                    methanol_pattern = Chem.MolFromSmarts("[#8;H1]-[#6;H3]")
-
-                    has_acid = any(r.HasSubstructMatch(acid_pattern) for r in reactants)
-                    has_methanol = any(r.HasSubstructMatch(methanol_pattern) for r in reactants)
-                    has_ester_product = product.HasSubstructMatch(ester_pattern)
-
-                    if has_acid and has_methanol and has_ester_product:
-                        print("Found esterification step")
-                        found_esterification = True
-
-                    # Check for ester reduction (ester → alcohol)
-                    if any(r.HasSubstructMatch(ester_pattern) for r in reactants):
-                        alcohol_pattern = Chem.MolFromSmarts("[#6]-[#6]-[#8;H1]")
-                        if product.HasSubstructMatch(alcohol_pattern):
-                            print("Found ester reduction step")
-                            found_ester_reduction = True
-
-                    # Check for mesylation (alcohol → mesylate)
-                    alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
-                    mesylate_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#16](=[#8])(=[#8])-[#6]")
-                    mesyl_chloride_pattern = Chem.MolFromSmarts("[Cl]-[#16](=[#8])(=[#8])-[#6]")
-
-                    has_alcohol = any(r.HasSubstructMatch(alcohol_pattern) for r in reactants)
-                    has_mesyl_chloride = any(
-                        r.HasSubstructMatch(mesyl_chloride_pattern) for r in reactants
+                # Check for borylation
+                if (
+                    checker.check_reaction("Preparation of boronic acids", rsmi)
+                    or checker.check_reaction("Preparation of boronic ethers", rsmi)
+                    or checker.check_reaction(
+                        "Preparation of boronic acids from trifluoroborates", rsmi
                     )
-                    has_mesylate_product = product.HasSubstructMatch(mesylate_pattern)
+                    or checker.check_reaction(
+                        "Preparation of boronic acids without boronic ether", rsmi
+                    )
+                    or checker.check_reaction("Synthesis of boronic acids", rsmi)
+                ):
+                    borylation_found = True
+                    print("Found borylation reaction")
 
-                    if has_alcohol and has_mesyl_chloride and has_mesylate_product:
-                        print("Found mesylation step")
-                        found_mesylation = True
+                # Check for SNAr (nucleophilic aromatic substitution)
+                if (
+                    checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
+                    or checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
+                    or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
+                    or checker.check_reaction("Ullmann condensation", rsmi)
+                    or checker.check_reaction("Ullmann-Goldberg Substitution amine", rsmi)
+                    or checker.check_reaction("Ullmann-Goldberg Substitution thiol", rsmi)
+                    or checker.check_reaction("Ullmann-Goldberg Substitution aryl alcohol", rsmi)
+                ):
+                    snar_count += 1
+                    print(f"Found SNAr or Ullmann-type reaction (count: {snar_count})")
 
-                    # Check for N-alkylation (secondary amine + mesylate → tertiary amine)
-                    sec_amine_pattern = Chem.MolFromSmarts("[#6]-[#7;H1]-[#6]")
-                    tert_amine_pattern = Chem.MolFromSmarts("[#6]-[#7](-[#6])-[#6]")
+                # Additional check for N-arylation which can be similar to SNAr
+                if (
+                    checker.check_reaction("N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi)
+                    or checker.check_reaction(
+                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine", rsmi
+                    )
+                    or checker.check_reaction(
+                        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine", rsmi
+                    )
+                    or checker.check_reaction("N-arylation_heterocycles", rsmi)
+                    or checker.check_reaction("{N-arylation_heterocycles}", rsmi)
+                    or checker.check_reaction("{Buchwald-Hartwig}", rsmi)
+                ):
+                    snar_count += 1
+                    print(f"Found N-arylation reaction (count: {snar_count})")
 
-                    has_sec_amine = any(r.HasSubstructMatch(sec_amine_pattern) for r in reactants)
-                    has_mesylate = any(r.HasSubstructMatch(mesylate_pattern) for r in reactants)
-                    has_tert_amine_product = product.HasSubstructMatch(tert_amine_pattern)
+                # Check for nitro reduction
+                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                    nitro_reduction_found = True
+                    print("Found nitro reduction")
 
-                    if has_sec_amine and has_mesylate and has_tert_amine_product:
-                        print("Found N-alkylation step")
-                        found_n_alkylation = True
+                # Fallback checks if specific reaction types aren't detected
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        # Continue traversing
+                # Fallback for Suzuki coupling at late stage
+                if depth <= 2 and not suzuki_coupling_found:
+                    has_boronic = any(
+                        checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
+                        for r in reactants
+                    )
+                    has_aryl_halide = any(checker.check_fg("Aromatic halide", r) for r in reactants)
+
+                    if has_boronic and has_aryl_halide:
+                        # Check if product has a new C-C bond between aromatic rings
+                        product_mol = Chem.MolFromSmiles(product)
+                        if product_mol:
+                            # More comprehensive biaryl patterns
+                            biaryl_pattern1 = Chem.MolFromSmarts("c:c-c:c")
+                            biaryl_pattern2 = Chem.MolFromSmarts("c-!:c:c")
+                            biaryl_pattern3 = Chem.MolFromSmarts("c:c-c")
+
+                            if (
+                                product_mol.HasSubstructMatch(biaryl_pattern1)
+                                or product_mol.HasSubstructMatch(biaryl_pattern2)
+                                or product_mol.HasSubstructMatch(biaryl_pattern3)
+                            ):
+                                suzuki_coupling_found = True
+                                print(
+                                    f"Found late-stage Suzuki coupling (fallback) at depth {depth}"
+                                )
+
+                # Fallback for nitro reduction
+                if not nitro_reduction_found:
+                    has_nitro = any(checker.check_fg("Nitro group", r) for r in reactants)
+                    has_amine_product = (
+                        checker.check_fg("Primary amine", product)
+                        or checker.check_fg("Aniline", product)
+                        or checker.check_fg("Secondary amine", product)
+                    )
+
+                    if has_nitro and has_amine_product:
+                        nitro_reduction_found = True
+                        print("Found nitro reduction (fallback)")
+
+                # Additional check for Suzuki-like C-C bond formation
+                if depth <= 2 and not suzuki_coupling_found:
+                    # Check if any reactant has a boronic acid/ester and if the product has a biaryl motif
+                    reactant_mols = [
+                        Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)
+                    ]
+                    product_mol = Chem.MolFromSmiles(product)
+
+                    if product_mol and reactant_mols:
+                        # Check for biaryl formation
+                        biaryl_pattern = Chem.MolFromSmarts("c:c-c:c")
+                        if product_mol.HasSubstructMatch(biaryl_pattern):
+                            # Check if this is likely a Suzuki coupling
+                            if any(
+                                checker.check_fg("Boronic acid", r)
+                                or checker.check_fg("Boronic ester", r)
+                                for r in reactants
+                            ):
+                                suzuki_coupling_found = True
+                                print(f"Found late-stage Suzuki-like coupling at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # The strategy is present if we found all the key steps
-    strategy_present = (
-        found_esterification and found_ester_reduction and found_mesylation and found_n_alkylation
+    # Check if the strategy is present
+    # Consider either a Suzuki coupling alone or a combination of borylation with other components
+    strategy_present = suzuki_coupling_found or (
+        borylation_found and (snar_count >= 1 or nitro_reduction_found)
     )
-    print(f"Alcohol activation N-alkylation strategy detected: {strategy_present}")
+
+    print(
+        f"Strategy components found: Suzuki={suzuki_coupling_found}, Borylation={borylation_found}, SNAr count={snar_count}, Nitro reduction={nitro_reduction_found}"
+    )
+    print(f"Strategy present: {strategy_present}")
+
     return strategy_present

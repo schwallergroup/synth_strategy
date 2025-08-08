@@ -2,61 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the strategy of forming a tetrazole ring from a nitrile group.
+    Detects if the synthesis includes preparation of boronic acid for subsequent coupling.
     """
-    tetrazole_formed = False
+    boronic_acid_prep_detected = False
 
-    def dfs_traverse(node):
-        nonlocal tetrazole_formed
+    def dfs_traverse(node, depth=0):
+        nonlocal boronic_acid_prep_detected
 
         if node["type"] == "reaction":
-            # Check if this is a reaction node with metadata
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for nitrile in reactants
-                nitrile_pattern = Chem.MolFromSmarts("[#6]#[#7]")
-                for reactant in reactants:
-                    if reactant:
-                        try:
-                            mol = Chem.MolFromSmiles(reactant)
-                            if mol and mol.HasSubstructMatch(nitrile_pattern):
-                                # Check for tetrazole in product
-                                tetrazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#7][#7][#7]1")
-                                product_mol = Chem.MolFromSmiles(product)
-                                if product_mol and product_mol.HasSubstructMatch(tetrazole_pattern):
-                                    print("Detected tetrazole formation from nitrile")
-                                    tetrazole_formed = True
-                        except:
-                            continue
+            # Check for aryl halide in reactants
+            aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
 
-        # Traverse children
+            # Check for boronic acid in product
+            boronic_acid_pattern = Chem.MolFromSmarts("[c][B]([OH])[OH]")
+
+            has_aryl_halide = False
+            for reactant in reactants_smiles:
+                mol = Chem.MolFromSmiles(reactant)
+                if mol and mol.HasSubstructMatch(aryl_halide_pattern):
+                    has_aryl_halide = True
+                    break
+
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            has_boronic_acid = product_mol and product_mol.HasSubstructMatch(boronic_acid_pattern)
+
+            if has_aryl_halide and has_boronic_acid:
+                print(f"Boronic acid preparation detected at depth {depth}")
+                boronic_acid_prep_detected = True
+
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-    return tetrazole_formed
+    return boronic_acid_prep_detected

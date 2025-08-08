@@ -2,68 +2,82 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects SNAr reaction forming aryl ether using fluoronitrobenzene.
+    Detects if the route contains a cyclopropane ring formation reaction in retrosynthesis.
     """
-    snar_detected = False
 
-    def dfs_traverse(node):
-        nonlocal snar_detected
+    def dfs(node, depth=0):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rxn_smiles = node["metadata"]["rsmi"]
 
-        if node["type"] == "reaction":
-            # Extract reactants and products
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            # Check if this is a ring formation reaction involving cyclopropane
+            reactants = rxn_smiles.split(">")[0].split(".")
+            product = rxn_smiles.split(">")[-1]
 
-            # Check for fluoronitrobenzene in reactants
-            fluoro_nitro_pattern = Chem.MolFromSmarts("c1(F)ccc(cc1)[N+](=O)[O-]")
-            phenol_pattern = Chem.MolFromSmarts("c1(O)ccccc1")
-            aryl_ether_pattern = Chem.MolFromSmarts("c1(Oc2ccccc2)ccc(cc1)[N+](=O)[O-]")
+            # In retrosynthesis, we're looking for cyclopropane formation
+            # So the product should have cyclopropane and reactants should not
+            if checker.check_ring("cyclopropane", product) and not any(
+                checker.check_ring("cyclopropane", reactant) for reactant in reactants
+            ):
+                print(f"Found cyclopropane ring formation at depth {depth}")
+                return True
 
-            fluoro_nitro_present = False
-            phenol_present = False
-
-            for reactant in reactants_smiles:
-                r_mol = Chem.MolFromSmiles(reactant)
-                if r_mol:
-                    if r_mol.HasSubstructMatch(fluoro_nitro_pattern):
-                        fluoro_nitro_present = True
-                    if r_mol.HasSubstructMatch(phenol_pattern):
-                        phenol_present = True
-
-            # Check for aryl ether in product
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if product_mol and product_mol.HasSubstructMatch(aryl_ether_pattern):
-                if fluoro_nitro_present and phenol_present:
-                    snar_detected = True
-
-        # Process children
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            if dfs(child, depth + 1):
+                return True
 
-    # Start traversal
-    dfs_traverse(route)
+        return False
 
-    print(f"SNAr aryl ether formation detected: {snar_detected}")
-    return snar_detected
+    return dfs(route)

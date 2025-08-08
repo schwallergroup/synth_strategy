@@ -2,68 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis uses a convergent strategy with
-    amide coupling to join two complex fragments.
+    Detects if the synthetic route involves nucleophilic aromatic substitution
+    with thiocyanate as a leaving group.
     """
-    has_convergent_amide_coupling = False
+    found_snar_with_thiocyanate = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_convergent_amide_coupling
+    def dfs_traverse(node):
+        nonlocal found_snar_with_thiocyanate
 
-        if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check if this is an amide formation
-                product_mol = Chem.MolFromSmiles(product)
-                amide_pattern = Chem.MolFromSmarts("[#7]-[#6](=[#8])-[#6]")
-
-                # Check if this is a convergent step (has multiple complex reactants)
-                if (
-                    product_mol
-                    and product_mol.HasSubstructMatch(amide_pattern)
-                    and len(reactants) >= 2
-                ):
-                    # Check complexity of reactants (both should have aromatic rings)
-                    complex_reactants = 0
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            aromatic_pattern = Chem.MolFromSmarts("a")
-                            if reactant_mol.HasSubstructMatch(aromatic_pattern):
-                                complex_reactants += 1
-
-                    if complex_reactants >= 2:
-                        print(f"Found convergent amide coupling at depth {depth}")
-                        has_convergent_amide_coupling = True
+            # Check if any reactant contains thiocyanate group
+            thiocyanate_pattern = Chem.MolFromSmarts("[#6]-[#16]-[#6]#[#7]")
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(thiocyanate_pattern):
+                        # Check if the product doesn't have the thiocyanate or has it in a different position
+                        prod_mol = Chem.MolFromSmiles(product)
+                        if prod_mol:
+                            # If product doesn't have thiocyanate or has fewer thiocyanate groups
+                            if not prod_mol.HasSubstructMatch(thiocyanate_pattern) or len(
+                                prod_mol.GetSubstructMatches(thiocyanate_pattern)
+                            ) < len(mol.GetSubstructMatches(thiocyanate_pattern)):
+                                # Check if the reaction involves an aromatic ring
+                                aromatic_pattern = Chem.MolFromSmarts("a")
+                                if mol.HasSubstructMatch(aromatic_pattern):
+                                    print("Found SNAr with thiocyanate leaving group")
+                                    found_snar_with_thiocyanate = True
+                except:
+                    continue
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_convergent_amide_coupling
+    return found_snar_with_thiocyanate

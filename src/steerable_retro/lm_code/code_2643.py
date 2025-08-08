@@ -2,76 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving elaboration of a pyridine core
-    while preserving a nitro group throughout the synthesis.
+    This function detects a linear synthesis strategy where each reaction
+    typically has one main building block added to a growing molecule.
     """
-    # Track presence of nitro group through reactions
-    reactions_with_nitro = 0
-    total_reactions = 0
+    linear_steps = 0
+    total_steps = 0
 
-    # SMARTS patterns
-    pyridine_pattern = Chem.MolFromSmarts("[n;r6]1ccccc1")
-    nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
-
-    def dfs_traverse(node):
-        nonlocal reactions_with_nitro, total_reactions
+    def dfs_traverse(node, depth=0):
+        nonlocal linear_steps, total_steps
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                total_reactions += 1
+            total_steps += 1
+
+            # Check number of reactants
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
-                product = Chem.MolFromSmiles(product_str) if product_str else None
-
-                if product and any(reactant for reactant in reactants):
-                    # Check if both reactant and product have nitro group
-                    reactant_has_nitro = any(
-                        reactant and reactant.HasSubstructMatch(nitro_pattern)
-                        for reactant in reactants
-                    )
-                    product_has_nitro = product and product.HasSubstructMatch(nitro_pattern)
-
-                    if reactant_has_nitro and product_has_nitro:
-                        reactions_with_nitro += 1
-                        print(
-                            f"Detected reaction preserving nitro group (total: {reactions_with_nitro})"
-                        )
+                # Linear steps typically have 1-2 reactants
+                if len(reactants) <= 2:
+                    linear_steps += 1
+                    print(f"Linear step detected at depth {depth} with {len(reactants)} reactants")
 
         # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Determine if the strategy is present (nitro preserved in at least 3 reactions)
-    strategy_present = reactions_with_nitro >= 3 and reactions_with_nitro == total_reactions
-
-    print(f"Pyridine elaboration with preserved nitro strategy detected: {strategy_present}")
-    print(f"- Reactions with nitro preservation: {reactions_with_nitro}/{total_reactions}")
-
-    return strategy_present
+    # Check if most steps are linear (at least 75%)
+    if total_steps > 0 and linear_steps / total_steps >= 0.75:
+        print(f"Linear synthesis strategy detected: {linear_steps}/{total_steps} steps are linear")
+        return True
+    return False

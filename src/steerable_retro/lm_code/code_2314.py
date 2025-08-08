@@ -2,72 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes a C-C bond formation between two heterocyclic systems.
+    This function detects if the synthesis involves N-alkylation of a piperazine scaffold.
     """
-    heterocycle_coupling_detected = False
+    n_alkylation_detected = False
+
+    # SMARTS pattern for piperazine
+    piperazine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#7][#6][#6]1")
 
     def dfs_traverse(node):
-        nonlocal heterocycle_coupling_detected
+        nonlocal n_alkylation_detected
 
         if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check if we have at least two reactants (potential for coupling)
-            if len(reactants) >= 2:
-                # Check if both reactants contain heterocycles
-                heterocycle_patterns = [
-                    Chem.MolFromSmarts("[#6]1:[#7]:[#6]:[#6]:[#6]:[#6]:1"),  # pyridine
-                    Chem.MolFromSmarts("[#6]1:[#7]:[#6]:[#7]:[#6]:1"),  # pyrimidine
-                    Chem.MolFromSmarts("[#6]1:[#7]:[#6]:[#6]:[#7]:1"),  # pyrazine
-                    Chem.MolFromSmarts("[#6]1:[#7]:[#7]:[#6]:[#6]:1"),  # pyridazine
-                    Chem.MolFromSmarts("[#6]1:[#7]:[#6]:[#6]:[#6]:[#7]:1"),  # quinoxaline
-                ]
+            reactants = reactants_part.split(".")
+            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants]
+            product_mol = Chem.MolFromSmiles(product_part)
 
-                heterocycle_count = 0
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
+            if product_mol and product_mol.HasSubstructMatch(piperazine_pattern):
+                # Check for alkyl halide in reactants
+                alkyl_halide_pattern = Chem.MolFromSmarts("[#6][Cl,Br,I]")
+                piperazine_in_reactants = False
+                alkyl_halide_in_reactants = False
 
-                    for pattern in heterocycle_patterns:
-                        if reactant_mol.HasSubstructMatch(pattern):
-                            heterocycle_count += 1
-                            break
+                for r_mol in reactants_mols:
+                    if r_mol:
+                        if r_mol.HasSubstructMatch(piperazine_pattern):
+                            piperazine_in_reactants = True
+                        if r_mol.HasSubstructMatch(alkyl_halide_pattern):
+                            alkyl_halide_in_reactants = True
 
-                product_mol = Chem.MolFromSmiles(product)
-                if heterocycle_count >= 2 and product_mol:
-                    # Check if product has a more complex heterocyclic system
-                    for pattern in heterocycle_patterns:
-                        if product_mol.HasSubstructMatch(pattern):
-                            heterocycle_coupling_detected = True
-                            print("Detected heterocycle coupling")
-                            break
+                if piperazine_in_reactants and alkyl_halide_in_reactants:
+                    n_alkylation_detected = True
+                    print(f"N-alkylation of piperazine detected in: {rsmi}")
 
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return heterocycle_coupling_detected
+    print(f"N-alkylation piperazine strategy: {n_alkylation_detected}")
+    return n_alkylation_detected

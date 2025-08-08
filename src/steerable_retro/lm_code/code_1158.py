@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,125 +54,101 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves late-stage coupling of major fragments.
+    This function detects if the synthesis involves the convergent assembly
+    of three key fragments: methylphenyl core, piperidine scaffold, and cyano-pyridine.
     """
-    fragment_paths = []
-    max_depth = 0
+    # Track fragments and their positions in the synthesis
+    fragment_paths = {"methylphenyl": [], "piperidine": [], "cyanopyridine": []}
 
-    def dfs_traverse(node, path=None, depth=0):
-        nonlocal fragment_paths, max_depth
+    # Track depth of each node to identify convergent steps
+    node_depths = {}
 
-        if path is None:
-            path = []
+    def identify_fragments(mol_smiles):
+        """Identify which fragments are present in a molecule"""
+        fragments = set()
 
-        if depth > max_depth:
-            max_depth = depth
+        # Check for methylphenyl core (phenyl with methyl or connected to triazole/imidazole)
+        if checker.check_ring("benzene", mol_smiles) and any(
+            [
+                "cnn" in mol_smiles,  # Triazole-like structure
+                checker.check_ring("triazole", mol_smiles),
+                checker.check_ring("imidazole", mol_smiles),
+                checker.check_fg("Methyl", mol_smiles),
+            ]
+        ):
+            fragments.add("methylphenyl")
 
-        # Create a copy of the current path
-        current_path = path.copy()
+        # Check for piperidine scaffold
+        if checker.check_ring("piperidine", mol_smiles):
+            fragments.add("piperidine")
 
-        # Add current node to path
-        current_path.append((node, depth))
+        # Check for cyano-pyridine
+        if checker.check_ring("pyridine", mol_smiles) and checker.check_fg("Nitrile", mol_smiles):
+            fragments.add("cyanopyridine")
 
-        # If this is a leaf node (starting material)
-        if node.get("type") == "mol" and node.get("in_stock", False):
-            fragment_paths.append(current_path)
-            return
+        return fragments
 
-        # Traverse children
+    def dfs_traverse(node, depth=0):
+        # Store the depth of this node
+        node_id = id(node)
+        node_depths[node_id] = depth
+
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            fragments = identify_fragments(mol_smiles)
+
+            # Record which fragments are found at this node
+            for fragment in fragments:
+                fragment_paths[fragment].append((node_id, depth))
+
+            # Check if this is a starting material
+            if node.get("in_stock", False):
+                print(f"Found starting material with fragments: {fragments}, SMILES: {mol_smiles}")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, current_path, depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Traverse the route to identify fragments
     dfs_traverse(route)
 
-    # Find coupling reactions
-    coupling_reactions = []
+    # Count how many unique fragments were found
+    fragments_found = sum(1 for paths in fragment_paths.values() if paths)
+    print(f"Found {fragments_found} unique fragments")
 
-    for i in range(len(fragment_paths)):
-        for j in range(i + 1, len(fragment_paths)):
-            path1 = fragment_paths[i]
-            path2 = fragment_paths[j]
-
-            # Find common reaction nodes
-            common_reactions = []
-            for node1, depth1 in path1:
-                for node2, depth2 in path2:
-                    if node1 is node2 and node1.get("type") == "reaction":
-                        common_reactions.append((node1, depth1))
-
-            if common_reactions:
-                # Sort by depth (descending) to find the deepest common reaction
-                common_reactions.sort(key=lambda x: x[1], reverse=True)
-                deepest_common = common_reactions[0]
-
-                # Check if it's a coupling reaction
-                reaction_node = deepest_common[0]
-                if "metadata" in reaction_node and "rsmi" in reaction_node["metadata"]:
-                    rsmi = reaction_node["metadata"]["rsmi"]
-
-                    # Check if it's a known coupling reaction
-                    is_coupling = False
-                    coupling_rxn_types = [
-                        "Suzuki",
-                        "Negishi",
-                        "Stille",
-                        "Heck",
-                        "Sonogashira",
-                        "Buchwald-Hartwig",
-                        "Ullmann",
-                        "N-arylation",
-                        "Kumada",
-                        "Hiyama-Denmark",
-                        "decarboxylative_coupling",
-                        "Catellani",
-                        "Aryllithium cross-coupling",
-                    ]
-
-                    for rxn_type in coupling_rxn_types:
-                        if checker.check_reaction(rxn_type, rsmi):
-                            is_coupling = True
-                            print(f"Found coupling reaction: {rxn_type}")
-                            break
-
-                    # If it's not a named coupling, check for C-C bond formation
-                    if not is_coupling:
-                        # Extract reactants and product
-                        try:
-                            reactants = rsmi.split(">")[0].split(".")
-                            product = rsmi.split(">")[-1]
-
-                            # Check if both reactants are substantial fragments
-                            # (at least 8 atoms each is a reasonable threshold)
-                            substantial_fragments = True
-                            for reactant in reactants:
-                                mol = Chem.MolFromSmiles(reactant)
-                                if mol and mol.GetNumAtoms() < 8:
-                                    substantial_fragments = False
-
-                            if substantial_fragments:
-                                is_coupling = True
-                                print("Found coupling of substantial fragments")
-                        except Exception as e:
-                            print(f"Error analyzing reactants: {e}")
-
-                    if is_coupling:
-                        coupling_reactions.append(deepest_common)
-
-    # Sort coupling reactions by depth (ascending)
-    coupling_reactions.sort(key=lambda x: x[1])
-
-    # Check if we have coupling reactions
-    if not coupling_reactions:
-        print("No fragment coupling reactions found")
+    # Check if we have all three fragments
+    if fragments_found < 3:
+        # Try to identify the missing fragment from the starting materials
+        missing_fragments = [f for f, paths in fragment_paths.items() if not paths]
+        print(f"Missing fragments: {missing_fragments}")
         return False
 
-    # Check if the first coupling reaction is in the second half of the synthesis
-    # (lower depth values correspond to later stages in synthesis)
-    first_coupling = coupling_reactions[0]
-    is_late_stage = first_coupling[1] <= (max_depth / 2)
+    # Analyze if the synthesis is convergent by checking depths
+    # For convergent synthesis, fragments should be introduced early (higher depth)
+    # and combined later (lower depth)
 
-    print(f"First fragment coupling occurs at depth {first_coupling[1]} (max depth: {max_depth})")
-    print(f"Late-stage coupling: {is_late_stage}")
+    # Get the earliest (highest depth) appearance of each fragment
+    earliest_appearances = {}
+    for fragment, paths in fragment_paths.items():
+        if paths:
+            # Sort by depth in descending order (highest depth first)
+            sorted_paths = sorted(paths, key=lambda x: x[1], reverse=True)
+            earliest_appearances[fragment] = sorted_paths[0]
 
-    return is_late_stage
+    # Check if fragments appear at different branches (different node IDs)
+    unique_nodes = len(set(node_id for node_id, _ in earliest_appearances.values()))
+
+    print(f"Fragments appear at {unique_nodes} different branches")
+    print(f"Earliest appearances: {earliest_appearances}")
+
+    # For convergent synthesis:
+    # 1. We need all three fragments
+    # 2. They should appear at different branches (at least 2 different branches)
+    # 3. They should be combined later in the synthesis
+
+    is_convergent = fragments_found >= 3 and unique_nodes >= 2
+
+    if is_convergent:
+        print("Found convergent assembly of three fragments")
+
+    return is_convergent

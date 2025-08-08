@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,157 +54,103 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a synthetic strategy involving aromatic halogenation followed by
-    metal-catalyzed coupling.
+    This function detects if the synthetic route involves construction of a purine scaffold.
+    It looks for reactions where a purine ring system is formed from non-purine precursors.
     """
-    halogenation_found = False
-    halogenation_depth = -1
-    coupling_found = False
-    coupling_depth = -1
-    halogenated_products = set()  # Track halogenated products
+    purine_formed = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal halogenation_found, halogenation_depth, coupling_found, coupling_depth
+        nonlocal purine_formed
 
         if node["type"] == "reaction":
             if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for aromatic halogenation reactions
-                halogenation_reactions = [
-                    "Aromatic fluorination",
-                    "Aromatic chlorination",
-                    "Aromatic bromination",
-                    "Aromatic iodination",
-                ]
+                print(f"Depth {depth}: Checking reaction: {rsmi}")
 
-                # Check for metal-catalyzed coupling reactions
-                coupling_reactions = [
-                    "Suzuki coupling with boronic acids",
-                    "Suzuki coupling with boronic esters",
-                    "Suzuki coupling with boronic acids OTf",
-                    "Suzuki coupling with boronic esters OTf",
-                    "Negishi coupling",
-                    "Stille reaction_aryl",
-                    "Stille reaction_vinyl",
-                    "Hiyama-Denmark Coupling",
-                    "Kumada cross-coupling",
-                    "Sonogashira alkyne_aryl halide",
-                    "Sonogashira acetylene_aryl halide",
-                    "Buchwald-Hartwig",
-                    "N-arylation",
-                    "Ullmann-Goldberg Substitution amine",
-                    "Goldberg coupling",
-                    "Heck terminal vinyl",
-                    "Heck_terminal_vinyl",
-                ]
+                # Check if product contains purine-like structure
+                from rdkit import Chem
+                from rdkit.Chem import rdFMCS
 
-                # Check if this is a halogenation reaction
-                is_halogenation = False
-                for rxn_type in halogenation_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        is_halogenation = True
-                        halogenation_found = True
-                        halogenation_depth = depth
-                        print(f"Found {rxn_type} at depth {depth}")
-                        # Add the product to our tracked halogenated products
-                        halogenated_products.add(product)
-                        break
+                # First try the standard check
+                product_has_purine = checker.check_ring("purine", product_smiles)
 
-                # If not a known halogenation reaction, check for pattern
-                if not is_halogenation:
-                    # Check if product has aromatic halide but reactants don't
-                    product_has_aromatic_halide = checker.check_fg("Aromatic halide", product)
-                    reactants_have_aromatic_halide = any(
-                        checker.check_fg("Aromatic halide", r) for r in reactants
-                    )
-                    reactants_have_aromatic = any(
-                        checker.check_ring("benzene", r) for r in reactants
-                    )
+                # If standard check fails, try more detailed analysis
+                if not product_has_purine:
+                    # Define purine pattern
+                    purine_pattern = "c1nc2ncnc2n1"
+                    purine_mol = Chem.MolFromSmiles(purine_pattern)
 
-                    if (
-                        product_has_aromatic_halide
-                        and reactants_have_aromatic
-                        and not reactants_have_aromatic_halide
-                    ):
-                        halogenation_found = True
-                        halogenation_depth = depth
-                        print(f"Found aromatic halogenation pattern at depth {depth}")
-                        halogenated_products.add(product)
+                    # Clean product SMILES by removing atom mapping
+                    clean_product = product_smiles
+                    for i in range(30):  # Assuming max 30 atom mappings
+                        clean_product = clean_product.replace(f":{i}]", "]")
 
-                # Check if this is a coupling reaction
-                is_coupling = False
-                for rxn_type in coupling_reactions:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        is_coupling = True
-                        coupling_found = True
-                        coupling_depth = depth
-                        print(f"Found {rxn_type} at depth {depth}")
-                        break
+                    product_mol = Chem.MolFromSmiles(clean_product)
 
-                # If not a known coupling reaction, check for pattern
-                if not is_coupling:
-                    # Check if any reactant has aromatic halide
-                    reactant_with_aromatic_halide = False
-                    for r in reactants:
-                        if checker.check_fg("Aromatic halide", r):
-                            reactant_with_aromatic_halide = True
+                    if product_mol:
+                        # Try to find purine substructure
+                        if product_mol.HasSubstructMatch(purine_mol):
+                            product_has_purine = True
+                        else:
+                            # Check for fused bicyclic system with correct number of nitrogens
+                            ring_info = product_mol.GetRingInfo()
+                            ring_atoms = ring_info.AtomRings()
+
+                            # Look for atoms that are in multiple rings
+                            atoms_in_multiple_rings = set()
+                            for atom_idx in range(product_mol.GetNumAtoms()):
+                                if ring_info.NumAtomRings(atom_idx) >= 2:
+                                    atoms_in_multiple_rings.add(atom_idx)
+
+                            # Check if we have a fused ring system with at least 4 nitrogens
+                            if len(atoms_in_multiple_rings) >= 2:
+                                n_count = 0
+                                for ring in ring_atoms:
+                                    for atom_idx in ring:
+                                        if product_mol.GetAtomWithIdx(atom_idx).GetSymbol() == "N":
+                                            n_count += 1
+
+                                if n_count >= 4:  # Purine has 4 nitrogens
+                                    product_has_purine = True
+
+                print(f"Product contains purine: {product_has_purine}")
+
+                if product_has_purine:
+                    # Check if any reactant has purine
+                    reactant_list = reactants_smiles.split(".")
+                    reactants_have_purine = False
+
+                    for r in reactant_list:
+                        if checker.check_ring("purine", r):
+                            reactants_have_purine = True
+                            print(f"Reactant contains purine: {r}")
                             break
 
-                    # Check if product doesn't have aromatic halide
-                    product_has_no_aromatic_halide = not checker.check_fg(
-                        "Aromatic halide", product
-                    )
+                        # If standard check fails, try more detailed analysis
+                        if not reactants_have_purine:
+                            # Clean reactant SMILES
+                            clean_reactant = r
+                            for i in range(30):
+                                clean_reactant = clean_reactant.replace(f":{i}]", "]")
 
-                    # Check for coupling pattern: reactant has aromatic halide, product doesn't
-                    if reactant_with_aromatic_halide and product_has_no_aromatic_halide:
-                        # Additional check: product should have an aromatic ring
-                        if checker.check_ring("benzene", product) or any(
-                            checker.check_ring(ring, product)
-                            for ring in [
-                                "pyridine",
-                                "pyrimidine",
-                                "pyrazine",
-                                "pyridazine",
-                                "naphthalene",
-                                "quinoline",
-                                "isoquinoline",
-                            ]
-                        ):
-                            coupling_found = True
-                            coupling_depth = depth
-                            print(f"Found potential coupling pattern at depth {depth}")
+                            reactant_mol = Chem.MolFromSmiles(clean_reactant)
+
+                            if reactant_mol and reactant_mol.HasSubstructMatch(purine_mol):
+                                reactants_have_purine = True
+                                print(f"Reactant contains purine (substructure): {r}")
+                                break
+
+                    if not reactants_have_purine:
+                        print(f"Purine scaffold construction detected at depth {depth}")
+                        purine_formed = True
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if the strategy is present
-    # In retrosynthesis, higher depth means earlier stage in forward synthesis
-    strategy_present = (
-        halogenation_found
-        and coupling_found
-        and halogenation_depth
-        > coupling_depth  # In retrosynthesis, halogenation appears after coupling
-    )
-
-    if strategy_present:
-        print("Found aromatic halogenation followed by coupling strategy")
-    else:
-        if halogenation_found and coupling_found:
-            print(
-                f"Found both reactions but in wrong order: halogenation at {halogenation_depth}, coupling at {coupling_depth}"
-            )
-        elif halogenation_found:
-            print("Found only halogenation, no coupling")
-        elif coupling_found:
-            print("Found only coupling, no halogenation")
-        else:
-            print("Neither halogenation nor coupling found")
-
-    return strategy_present
+    print(f"Final result: purine_formed = {purine_formed}")
+    return purine_formed

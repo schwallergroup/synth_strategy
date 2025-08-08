@@ -2,95 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects phthalimide protection strategy in the synthetic route.
+    This function detects a synthetic strategy involving nitro reduction to amine.
     """
-    phthalimide_found = False
+    nitro_reduction_detected = False
 
-    def dfs(node, depth=0):
-        nonlocal phthalimide_found
+    def dfs_traverse(node):
+        nonlocal nitro_reduction_detected
 
-        if phthalimide_found:
-            return
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        if node["type"] == "mol":
-            # Check if molecule contains phthalimide group
-            if checker.check_fg("Unsubstituted dicarboximide", node["smiles"]) or checker.check_fg(
-                "Substituted dicarboximide", node["smiles"]
-            ):
-                print(f"Found phthalimide group in molecule: {node['smiles']}")
-                phthalimide_found = True
+            # Check for nitro group in reactants
+            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
+            amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-        elif node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Look for a reactant with nitro group
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
+                    # Check if product has amine where nitro was
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol and product_mol.HasSubstructMatch(amine_pattern):
+                        nitro_reduction_detected = True
+                        print(f"Detected nitro reduction at depth {node.get('depth', 'unknown')}")
 
-                # Check for phthalimide protection reaction
-                if checker.check_reaction("Phthalic anhydride to phthalimide", rsmi):
-                    print(f"Found phthalimide protection reaction: {rsmi}")
-                    phthalimide_found = True
-
-                # Also check for phthalimide deprotection
-                if checker.check_reaction("Phthalimide deprotection", rsmi):
-                    print(f"Found phthalimide deprotection reaction: {rsmi}")
-                    phthalimide_found = True
-            except Exception as e:
-                print(f"Error in phthalimide check: {e}")
-
-        # Continue DFS traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs(child, depth + 1)
+            dfs_traverse(child)
 
-    dfs(route)
-    print(f"Phthalimide protection strategy detected: {phthalimide_found}")
-    return phthalimide_found
+    # Start traversal
+    dfs_traverse(route)
+
+    print(f"Nitro reduction detected: {nitro_reduction_detected}")
+    return nitro_reduction_detected

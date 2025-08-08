@@ -2,67 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
-    """
-    Detects late-stage Suzuki coupling connecting two heterocyclic fragments.
-    Late stage is defined as occurring in the first half of the synthesis (lower depth).
-    """
-    max_depth = 0
-    suzuki_depths = []
+    """Check if the route incorporates a trifluoromethyl group."""
+    trifluoromethyl_found = False
 
-    # First pass to find max depth
-    def find_max_depth(node, current_depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, current_depth)
+    def dfs(node, depth=0):
+        nonlocal trifluoromethyl_found
 
-        for child in node.get("children", []):
-            find_max_depth(child, current_depth + 1)
+        if trifluoromethyl_found:
+            return
 
-    # Second pass to find Suzuki couplings
-    def find_suzuki_couplings(node, current_depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check for boronic acid/ester pattern in reactants
-            boronic_pattern = Chem.MolFromSmarts("[#6]-[#5](-[#8])-[#8]")
-
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(boronic_pattern):
-                    suzuki_depths.append(current_depth)
-                    print(f"Found Suzuki coupling at depth {current_depth}")
-                    break
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            mol_smiles = node["smiles"]
+            # Check if the molecule contains a trifluoromethyl group
+            if checker.check_fg("Trifluoro group", mol_smiles):
+                trifluoromethyl_found = True
+                print(f"Found trifluoromethyl group: {mol_smiles}")
+                return
 
         for child in node.get("children", []):
-            find_suzuki_couplings(child, current_depth + 1)
+            dfs(child, depth + 1)
 
-    find_max_depth(route)
-    find_suzuki_couplings(route)
-
-    # Check if any Suzuki couplings occur in the first half of the synthesis
-    for depth in suzuki_depths:
-        if depth <= max_depth / 2:
-            return True
-
-    return False
+    dfs(route)
+    return trifluoromethyl_found

@@ -2,78 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes formation of a pyrazole ring
-    from a dicarbonyl compound and hydrazine.
+    Detects if the synthesis involves reduction of a nitro group to an amine.
     """
-    found_pyrazole_formation = False
+    has_nitro_reduction = False
 
     def dfs_traverse(node):
-        nonlocal found_pyrazole_formation
+        nonlocal has_nitro_reduction
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for hydrazine pattern in reactants
-            hydrazine_pattern = Chem.MolFromSmarts("[N][N]")
-            dicarbonyl_pattern = Chem.MolFromSmarts("[C](=[O])[C][C](=[O])")
+            # Create molecules
+            product_mol = Chem.MolFromSmiles(product)
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
 
-            # Check for pyrazole pattern in product
-            pyrazole_pattern = Chem.MolFromSmarts("[n]1[n][c][c][c]1")
+            if product_mol and all(reactant_mols):
+                # Check for nitro reduction pattern
+                nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
+                amine_pattern = Chem.MolFromSmarts("[#6]-[NH2]")
 
-            has_hydrazine = False
-            has_dicarbonyl = False
-            forms_pyrazole = False
+                has_nitro = False
+                for r_mol in reactant_mols:
+                    if r_mol.HasSubstructMatch(nitro_pattern):
+                        has_nitro = True
+                        break
 
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(hydrazine_pattern):
-                        has_hydrazine = True
-                    if mol and mol.HasSubstructMatch(dicarbonyl_pattern):
-                        has_dicarbonyl = True
-                except:
-                    continue
+                has_amine = product_mol.HasSubstructMatch(amine_pattern)
 
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(pyrazole_pattern):
-                    forms_pyrazole = True
-            except:
-                pass
+                # If we have a nitro group as reactant and an amine as product,
+                # it's likely a nitro reduction
+                if has_nitro and has_amine:
+                    has_nitro_reduction = True
+                    print(f"Nitro reduction detected: {rsmi}")
 
-            if has_hydrazine and has_dicarbonyl and forms_pyrazole:
-                print("Found pyrazole formation from hydrazine and dicarbonyl")
-                found_pyrazole_formation = True
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    if found_pyrazole_formation:
-        print("Detected pyrazole formation strategy")
-
-    return found_pyrazole_formation
+    return has_nitro_reduction

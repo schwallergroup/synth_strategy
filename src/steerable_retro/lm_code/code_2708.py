@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,140 +54,96 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route uses a late-stage amide coupling as the final step.
-    This looks for a reaction at depth 0 that forms an amide bond.
+    This function detects a synthetic strategy where the final step (depth 0)
+    involves the reduction of an amide to an amine.
     """
-    result = False
-    min_depth_amide_coupling = float("inf")
+    final_step_is_amide_reduction = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal result, min_depth_amide_coupling
+        nonlocal final_step_is_amide_reduction
 
-        print(f"Traversing node type: {node['type']}, depth: {depth}")
+        # For the root node (final product in retrosynthesis)
+        if depth == 0 and node["type"] == "mol":
+            print(f"Examining final product: {node['smiles']}")
 
-        if node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Check immediate children for the final reaction step
+            for child in node.get("children", []):
+                if (
+                    child["type"] == "reaction"
+                    and "metadata" in child
+                    and "rsmi" in child["metadata"]
+                ):
+                    rsmi = child["metadata"]["rsmi"]
+                    print(f"Examining final step reaction: {rsmi}")
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
-
-                # Check for all amide coupling reaction types
-                amide_coupling_reactions = [
-                    "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
-                    "Carboxylic acid with primary amine to amide",
-                    "Ester with primary amine to amide",
-                    "Ester with secondary amine to amide",
-                    "Ester with ammonia to amide",
-                    "Acyl chloride with primary amine to amide (Schotten-Baumann)",
-                    "Acyl chloride with secondary amine to amide",
-                    "Acyl chloride with ammonia to amide",
-                    "Schotten-Baumann to ester",
-                    "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
-                ]
-
-                is_amide_coupling = False
-                for reaction_type in amide_coupling_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Detected amide coupling reaction at depth {depth}: {reaction_type}")
-                        is_amide_coupling = True
-                        if depth < min_depth_amide_coupling:
-                            min_depth_amide_coupling = depth
-                        break
-
-                # If not identified by reaction type, check by functional groups
-                if not is_amide_coupling:
-                    # Alternative check: look for carboxylic acid and amine reactants
-                    # and formation of a new amide bond
-                    has_carboxylic_acid = False
-                    has_amine = False
-                    has_acyl_halide = False
-                    has_ester = False
-
-                    for reactant in reactants_smiles:
-                        if checker.check_fg("Carboxylic acid", reactant):
-                            has_carboxylic_acid = True
-                            print(f"Found carboxylic acid in reactant: {reactant}")
-
-                        if checker.check_fg("Primary amine", reactant) or checker.check_fg(
-                            "Secondary amine", reactant
-                        ):
-                            has_amine = True
-                            print(f"Found amine in reactant: {reactant}")
-
-                        if checker.check_fg("Acyl halide", reactant):
-                            has_acyl_halide = True
-                            print(f"Found acyl halide in reactant: {reactant}")
-
-                        if checker.check_fg("Ester", reactant):
-                            has_ester = True
-                            print(f"Found ester in reactant: {reactant}")
-
-                    # Count amide groups in reactants and product
-                    reactant_amide_count = 0
-                    for reactant in reactants_smiles:
-                        if checker.check_fg("Primary amide", reactant):
-                            reactant_amide_count += 1
-                            print(f"Found primary amide in reactant: {reactant}")
-                        if checker.check_fg("Secondary amide", reactant):
-                            reactant_amide_count += 1
-                            print(f"Found secondary amide in reactant: {reactant}")
-                        if checker.check_fg("Tertiary amide", reactant):
-                            reactant_amide_count += 1
-                            print(f"Found tertiary amide in reactant: {reactant}")
-
-                    product_amide_count = 0
-                    if checker.check_fg("Primary amide", product_smiles):
-                        product_amide_count += 1
-                        print(f"Found primary amide in product: {product_smiles}")
-                    if checker.check_fg("Secondary amide", product_smiles):
-                        product_amide_count += 1
-                        print(f"Found secondary amide in product: {product_smiles}")
-                    if checker.check_fg("Tertiary amide", product_smiles):
-                        product_amide_count += 1
-                        print(f"Found tertiary amide in product: {product_smiles}")
-
-                    print(
-                        f"Product amide count: {product_amide_count}, Reactant amide count: {reactant_amide_count}"
+                    # Check if this is an amide reduction reaction using reaction checkers
+                    is_amide_reduction = (
+                        checker.check_reaction("Reduction of primary amides to amines", rsmi)
+                        or checker.check_reaction("Reduction of secondary amides to amines", rsmi)
+                        or checker.check_reaction("Reduction of tertiary amides to amines", rsmi)
+                        or checker.check_reaction(
+                            "Hydrogenolysis of amides/imides/carbamates", rsmi
+                        )
                     )
 
-                    # Check if a new amide bond was formed
-                    if product_amide_count > reactant_amide_count:
+                    if is_amide_reduction:
+                        print("Detected amide reduction reaction in final step")
+                        final_step_is_amide_reduction = True
+                        return
+
+                    # Fallback: Check if reactants have amides and product has amines
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
+
+                    # Check reactants for amides
+                    for reactant in reactants:
                         if (
-                            (has_carboxylic_acid and has_amine)
-                            or (has_acyl_halide and has_amine)
-                            or (has_ester and has_amine)
+                            checker.check_fg("Primary amide", reactant)
+                            or checker.check_fg("Secondary amide", reactant)
+                            or checker.check_fg("Tertiary amide", reactant)
                         ):
-                            print(
-                                f"Detected amide coupling at depth {depth} based on functional group analysis"
+                            print(f"Found amide in reactant: {reactant}")
+
+                            # Check if product has amine but no amide
+                            product_has_amine = (
+                                checker.check_fg("Primary amine", product)
+                                or checker.check_fg("Secondary amine", product)
+                                or checker.check_fg("Tertiary amine", product)
                             )
-                            is_amide_coupling = True
-                            if depth < min_depth_amide_coupling:
-                                min_depth_amide_coupling = depth
 
-                # If this is the final reaction (depth 0) and it's an amide coupling
-                if depth == 0 and is_amide_coupling:
-                    result = True
+                            product_has_amide = (
+                                checker.check_fg("Primary amide", product)
+                                or checker.check_fg("Secondary amide", product)
+                                or checker.check_fg("Tertiary amide", product)
+                            )
 
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
+                            # Verify this is likely an amide reduction
+                            if product_has_amine and not product_has_amide:
+                                # Try to verify the transformation using atom mapping if available
+                                try:
+                                    # Check if the reaction involves amide to amine conversion
+                                    # by looking at the overall transformation
+                                    reactant_mol = Chem.MolFromSmiles(reactant)
+                                    product_mol = Chem.MolFromSmiles(product)
 
-        # Continue traversal
+                                    if reactant_mol and product_mol:
+                                        # If we have atom mapping, we could check more precisely
+                                        # But for now, we'll use the presence of amide and amine
+                                        # along with the absence of other major transformations
+                                        print(
+                                            "Product has amine but no amide - likely an amide reduction"
+                                        )
+                                        final_step_is_amide_reduction = True
+                                        return
+                                except Exception as e:
+                                    print(f"Error in detailed analysis: {e}")
+
+        # Continue traversal for other nodes
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    print("Starting traversal")
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Min depth amide coupling: {min_depth_amide_coupling}")
 
-    # If we didn't find an amide coupling at depth 0 but found one at depth 1,
-    # we'll still consider it as late-stage
-    if not result and min_depth_amide_coupling <= 1:
-        print(
-            f"Found amide coupling at depth {min_depth_amide_coupling}, considering it late-stage"
-        )
-        result = True
-
-    print(f"Final result: {result}")
-    return result
+    print(f"Final result: {final_step_is_amide_reduction}")
+    return final_step_is_amide_reduction

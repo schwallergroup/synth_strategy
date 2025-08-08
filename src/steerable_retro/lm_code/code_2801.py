@@ -2,90 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a specific sequence of
-    aromatic functional group transformations: nitro → amine → halogen → biaryl.
+    This function detects if the synthesis involves a nucleophilic substitution
+    between a thiol and a benzyl chloride.
     """
-    # Track if we've seen each transformation in the correct order
-    transformations_seen = []
+    thiol_benzyl_cl_coupling = False
 
     def dfs_traverse(node):
-        nonlocal transformations_seen
+        nonlocal thiol_benzyl_cl_coupling
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            products_part = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            try:
-                reactant_mol = Chem.MolFromSmiles(reactants_part)
-                product_mol = Chem.MolFromSmiles(products_part)
+            # Check for thiol pattern in reactants
+            thiol_pattern = Chem.MolFromSmarts("[SH]")
+            benzyl_cl_pattern = Chem.MolFromSmarts("[#6][CH2]Cl")
 
-                if reactant_mol and product_mol:
-                    # Check for nitro to amine transformation
-                    nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
-                    amine_pattern = Chem.MolFromSmarts("[#6]-[NH2]")
-                    halogen_pattern = Chem.MolFromSmarts("[#6]-[#9,#17,#35,#53]")
+            thiol_present = False
+            benzyl_cl_present = False
 
-                    # Detect nitro to amine
-                    if reactant_mol.HasSubstructMatch(
-                        nitro_pattern
-                    ) and product_mol.HasSubstructMatch(amine_pattern):
-                        transformations_seen.append("nitro_to_amine")
-                        print("Nitro to amine transformation detected")
+            for r_smi in reactants_smiles:
+                try:
+                    r_mol = Chem.MolFromSmiles(r_smi)
+                    if r_mol:
+                        if r_mol.HasSubstructMatch(thiol_pattern):
+                            thiol_present = True
+                        if r_mol.HasSubstructMatch(benzyl_cl_pattern):
+                            benzyl_cl_present = True
+                except:
+                    continue
 
-                    # Detect amine to halogen
-                    elif reactant_mol.HasSubstructMatch(
-                        amine_pattern
-                    ) and product_mol.HasSubstructMatch(halogen_pattern):
-                        transformations_seen.append("amine_to_halogen")
-                        print("Amine to halogen transformation detected")
-
-                    # Detect biaryl coupling (simplified check)
-                    elif len(reactants_part.split(".")) >= 2:
-                        # If we have multiple reactants and one product, it might be a coupling
-                        if "." not in products_part:
-                            transformations_seen.append("biaryl_coupling")
-                            print("Potential biaryl coupling detected")
-            except:
-                pass
+            # Check if product has C-S bond where the thiol and benzyl chloride connected
+            if thiol_present and benzyl_cl_present:
+                try:
+                    p_mol = Chem.MolFromSmiles(product_smiles)
+                    cs_bond_pattern = Chem.MolFromSmarts("[#6][CH2][S][#6]")
+                    if p_mol and p_mol.HasSubstructMatch(cs_bond_pattern):
+                        thiol_benzyl_cl_coupling = True
+                        print("Detected thiol-benzyl chloride coupling")
+                except:
+                    pass
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Check if we have the correct sequence
-    correct_sequence = ["biaryl_coupling", "amine_to_halogen", "nitro_to_amine"]
-
-    # Check if all elements of correct_sequence appear in transformations_seen in the right order
-    last_index = -1
-    for item in correct_sequence:
-        if item not in transformations_seen:
-            return False
-        current_index = transformations_seen.index(item)
-        if current_index <= last_index:
-            return False
-        last_index = current_index
-
-    return True
+    return thiol_benzyl_cl_coupling

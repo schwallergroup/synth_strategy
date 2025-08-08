@@ -2,69 +2,82 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route uses reductive amination
-    as a late-stage coupling strategy (at depth 0-1).
+    This function detects if an early step in the synthesis involves
+    halogenation of an aromatic ring.
     """
-    late_stage_reductive_amination_found = False
+    # Track depth of aromatic halogenation
+    halogenation_depth = None
+    max_depth = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_reductive_amination_found
+        nonlocal halogenation_depth, max_depth
 
-        if node["type"] == "reaction" and depth <= 1:  # Only check at depths 0-1
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        max_depth = max(max_depth, depth)
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for reductive amination pattern
-            # Look for aldehyde in reactants
-            aldehyde_pattern = Chem.MolFromSmarts("[#6]=O")
-            # Look for amine in reactants
-            amine_pattern = Chem.MolFromSmarts("[#7;H2]")
-            # Look for secondary amine in product
-            sec_amine_pattern = Chem.MolFromSmarts("[#6]-[#7;H1]-[#6]")
+                # Convert to RDKit molecules
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [
+                        Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)
+                    ]
 
-            if (
-                product
-                and any(r for r in reactants if r and r.HasSubstructMatch(aldehyde_pattern))
-                and any(r for r in reactants if r and r.HasSubstructMatch(amine_pattern))
-                and product.HasSubstructMatch(sec_amine_pattern)
-            ):
-                late_stage_reductive_amination_found = True
-                print(f"Late-stage reductive amination detected at depth {depth}")
+                    if product_mol and reactant_mols:
+                        # Check for aromatic halogenation
+                        aromatic_halogen_pattern = Chem.MolFromSmarts("[c][Br,Cl,I,F]")
 
-        # Traverse children with increased depth
+                        # Check if product has aromatic halogen that wasn't in reactants
+                        if product_mol.HasSubstructMatch(aromatic_halogen_pattern):
+                            # Check if this is a new halogenation
+                            reactant_has_pattern = any(
+                                mol.HasSubstructMatch(aromatic_halogen_pattern)
+                                for mol in reactant_mols
+                            )
+
+                            if not reactant_has_pattern:
+                                halogenation_depth = depth
+                except:
+                    print("Error processing molecule in early_aromatic_halogenation")
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
 
-    print(
-        f"Late-stage reductive amination strategy detected: {late_stage_reductive_amination_found}"
-    )
-    return late_stage_reductive_amination_found
+    # Check if halogenation is in the first 30% of steps
+    if halogenation_depth is not None and halogenation_depth >= max_depth * 0.7:
+        print(f"Detected early aromatic halogenation at depth {halogenation_depth} of {max_depth}")
+        return True
+    return False

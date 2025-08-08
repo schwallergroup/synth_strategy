@@ -2,88 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a 1,3-dichloroaromatic motif is preserved throughout the synthesis.
+    This function detects if the synthesis involves sequential aromatic coupling reactions.
     """
-    all_intermediates_have_dichloro = True
+    coupling_depths = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal all_intermediates_have_dichloro
+        nonlocal coupling_depths
 
-        if node["type"] == "mol" and node.get("smiles"):
-            # Skip checking starting materials (in_stock)
-            if not node.get("in_stock", False):
-                # Check if the molecule has a 1,3-dichloroaromatic pattern
-                mol_smiles = node["smiles"]
-                # Use a more accurate pattern for 1,3-dichloroaromatic motif
-                has_dichloro = False
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for 1,3-dichlorobenzene pattern
-                if checker.check_fg("Aromatic halide", mol_smiles):
-                    mol = Chem.MolFromSmiles(mol_smiles)
+            # Check for boronic acid/ester pattern in reactants
+            boronic_pattern = Chem.MolFromSmarts("[c][B]([O])[O]")
+            boronic_ester_pattern = Chem.MolFromSmarts("[c][B]1[O][C]([C])([C])[C]([C])([C])[O]1")
+
+            # Check for aryl halide pattern in reactants
+            aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
+
+            # Check for biaryl formation in product
+            biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
+
+            has_boronic = False
+            has_aryl_halide = False
+
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
                     if mol:
-                        # Check specifically for 1,3-dichloro pattern on aromatic ring
-                        dichloro_pattern = Chem.MolFromSmarts("c1(Cl)cc(Cl)ccc1")
-                        if mol.HasSubstructMatch(dichloro_pattern):
-                            has_dichloro = True
+                        if mol.HasSubstructMatch(boronic_pattern) or mol.HasSubstructMatch(
+                            boronic_ester_pattern
+                        ):
+                            has_boronic = True
+                        if mol.HasSubstructMatch(aryl_halide_pattern):
+                            has_aryl_halide = True
+                except:
+                    continue
 
-                if not has_dichloro:
-                    all_intermediates_have_dichloro = False
-                    print(f"Intermediate/product without 1,3-dichloro pattern found: {mol_smiles}")
+            try:
+                product_mol = Chem.MolFromSmiles(product)
+                has_biaryl = product_mol and product_mol.HasSubstructMatch(biaryl_pattern)
+            except:
+                has_biaryl = False
 
-        # Traverse children
+            if has_boronic and has_aryl_halide and has_biaryl:
+                print(f"Found aromatic coupling at depth {depth}: {rsmi}")
+                coupling_depths.append(depth)
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return all_intermediates_have_dichloro
+    # Check if there are at least 2 coupling reactions with different depths
+    sequential = len(set(coupling_depths)) >= 2
+    print(f"Sequential aromatic couplings found: {sequential} at depths {coupling_depths}")
+    return sequential

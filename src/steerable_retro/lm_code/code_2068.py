@@ -2,65 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a benzylic alcohol motif is maintained
-    throughout most of the synthesis.
+    Detects if the synthesis includes an epoxide opening reaction.
     """
-    reactions_with_benzylic_alcohol = 0
-    total_reactions = 0
+    found_epoxide_opening = False
 
     def dfs_traverse(node):
-        nonlocal reactions_with_benzylic_alcohol, total_reactions
+        nonlocal found_epoxide_opening
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                total_reactions += 1
-                rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for benzylic alcohol pattern
-                benzylic_alcohol_pattern = Chem.MolFromSmarts("[c]-[CH](-[OH])-[#6]")
-                product_mol = Chem.MolFromSmiles(product)
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                if product_mol and product_mol.HasSubstructMatch(benzylic_alcohol_pattern):
-                    reactions_with_benzylic_alcohol += 1
-                    print("Benzylic alcohol detected in reaction product")
+            # Check for epoxide opening
+            epoxide_pattern = Chem.MolFromSmarts("[C]1[O][C]1")
+            opened_pattern = Chem.MolFromSmarts("[C][C][O]")
+
+            if any(
+                r.HasSubstructMatch(epoxide_pattern) for r in reactants
+            ) and product.HasSubstructMatch(opened_pattern):
+                found_epoxide_opening = True
+                print("Found epoxide opening")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
 
-    # If benzylic alcohol is present in at least 60% of reactions
-    has_benzylic_alcohol_throughout = (
-        total_reactions > 0 and (reactions_with_benzylic_alcohol / total_reactions) >= 0.6
-    )
-
-    if has_benzylic_alcohol_throughout:
-        print(
-            f"Benzylic alcohol maintained throughout synthesis: {reactions_with_benzylic_alcohol}/{total_reactions} reactions"
-        )
-
-    return has_benzylic_alcohol_throughout
+    return found_epoxide_opening

@@ -2,121 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves preservation of fluorinated aromatic groups
-    throughout the synthesis.
+    Detects if the synthesis route involves a halogen to nitrile conversion
+    on an aromatic or heterocyclic system.
     """
-    # Track fluorinated molecules at each depth
-    fluorinated_at_depth = {}
+    found_conversion = False
 
-    def dfs_traverse(node, depth=0):
-        # Process molecule nodes
-        if node["type"] == "mol" and "smiles" in node:
-            mol_smiles = node["smiles"]
+    def dfs_traverse(node):
+        nonlocal found_conversion
 
-            # Check for fluorinated aromatics (either aryl-F or CF3)
-            has_aryl_f = checker.check_fg("Aromatic halide", mol_smiles) or checker.check_fg(
-                "Trifluoro group", mol_smiles
-            )
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_str = rsmi.split(">")[0]
+                product_str = rsmi.split(">")[-1]
 
-            if has_aryl_f:
-                print(f"Detected fluorinated aryl at depth {depth}, SMILES: {mol_smiles}")
-                if depth not in fluorinated_at_depth:
-                    fluorinated_at_depth[depth] = []
-                fluorinated_at_depth[depth].append(mol_smiles)
+                # Halogen on aromatic/heterocyclic pattern
+                halo_pattern = Chem.MolFromSmarts("[c,n]-[Cl,Br,I,F]")
+                # Nitrile pattern
+                nitrile_pattern = Chem.MolFromSmarts("[c,n]-[C]#[N]")
 
-        # Process reaction nodes
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            product = rsmi.split(">")[-1]
-            reactants = rsmi.split(">")[0].split(".")
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".")]
+                product = Chem.MolFromSmiles(product_str)
 
-            # Check if fluorinated groups are preserved in this reaction
-            product_has_fluorine = checker.check_fg("Aromatic halide", product) or checker.check_fg(
-                "Trifluoro group", product
-            )
-            reactants_have_fluorine = any(
-                checker.check_fg("Aromatic halide", r) or checker.check_fg("Trifluoro group", r)
-                for r in reactants
-            )
-
-            if product_has_fluorine and reactants_have_fluorine:
-                print(f"Fluorinated group preserved in reaction at depth {depth}, RSMI: {rsmi}")
-
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
-
-    # Start traversal
-    dfs_traverse(route)
-
-    # Check if we have fluorinated groups at multiple depths
-    if len(fluorinated_at_depth) >= 2:
-        depths = sorted(fluorinated_at_depth.keys())
-        depth_range = max(depths) - min(depths)
-
-        # Check if the depth range is significant (at least 2 levels)
-        if depth_range >= 2:
-            print(
-                f"Found fluorinated groups preserved across multiple depths: {min(depths)}-{max(depths)}"
-            )
-
-            # Check if we have fluorinated groups at both early and late stages
-            early_stage = max(depths)
-            late_stage = min(depths)
-
-            if early_stage - late_stage >= 2:
-                print(
-                    f"Fluorinated groups preserved from early stage (depth {early_stage}) to late stage (depth {late_stage})"
+                # Check if reactants contain halogenated aromatic/heterocycle
+                has_halo = any(
+                    r is not None and r.HasSubstructMatch(halo_pattern) for r in reactants
                 )
-                return True
 
-    return False
+                # Check if product contains nitrile on aromatic/heterocycle
+                has_nitrile = product is not None and product.HasSubstructMatch(nitrile_pattern)
+
+                if has_halo and has_nitrile:
+                    print("Found halogen to nitrile conversion")
+                    found_conversion = True
+
+        # Continue traversal
+        for child in node.get("children", []):
+            dfs_traverse(child)
+
+    dfs_traverse(route)
+    return found_conversion

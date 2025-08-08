@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,100 +54,95 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a functional group interconversion sequence:
-    methyl → aldehyde → hydrazone
+    This function detects a strategy involving multiple ester protections
+    with different protecting groups (methyl and tert-butyl).
     """
-    # Track the sequence of transformations
-    transformation_sequence = []
+    methyl_ester_found = False
+    tbutyl_ester_found = False
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "mol":
+        nonlocal methyl_ester_found, tbutyl_ester_found
+
+        indent = "  " * depth
+        print(f"{indent}Traversing node of type: {node['type']}")
+
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0]
+                product = rsmi.split(">")[-1]
+
+                print(f"{indent}Checking reaction: {rsmi}")
+
+                # Check for esterification reactions (protection)
+                if checker.check_fg("Carboxylic acid", reactants) and checker.check_fg(
+                    "Ester", product
+                ):
+                    print(f"{indent}Found potential ester formation from carboxylic acid")
+
+                    # Check for methyl ester
+                    if "COC(=O)" in product:
+                        print(f"{indent}Found methyl ester")
+                        methyl_ester_found = True
+
+                    # Check for tert-butyl ester
+                    if "CC(C)(C)OC(=O)" in product or "OC(=O)C(C)(C)C" in product:
+                        print(f"{indent}Found tert-butyl ester")
+                        tbutyl_ester_found = True
+
+                # Check for ester deprotection reactions
+                elif checker.check_fg("Ester", reactants) and checker.check_fg(
+                    "Carboxylic acid", product
+                ):
+                    print(f"{indent}Found potential ester deprotection to carboxylic acid")
+
+                    # Check for methyl ester in reactants
+                    if "COC(=O)" in reactants:
+                        print(f"{indent}Found methyl ester deprotection")
+                        methyl_ester_found = True
+
+                    # Check for tert-butyl ester in reactants
+                    if "CC(C)(C)OC(=O)" in reactants or "OC(=O)C(C)(C)C" in reactants:
+                        print(f"{indent}Found tert-butyl ester deprotection")
+                        tbutyl_ester_found = True
+
+                # Also check for transesterification reactions
+                elif checker.check_reaction("Transesterification", rsmi):
+                    print(f"{indent}Found transesterification reaction")
+
+                    # Check for methyl ester in product
+                    if "COC(=O)" in product:
+                        print(f"{indent}Found methyl ester in transesterification")
+                        methyl_ester_found = True
+
+                    # Check for tert-butyl ester in product
+                    if "CC(C)(C)OC(=O)" in product or "OC(=O)C(C)(C)C" in product:
+                        print(f"{indent}Found tert-butyl ester in transesterification")
+                        tbutyl_ester_found = True
+
+        # Process molecule nodes to check for esters directly
+        elif node["type"] == "mol" and node.get("smiles"):
             mol_smiles = node["smiles"]
-            # Check for functional groups in the molecule
-            if checker.check_fg("Hydrazone", mol_smiles):
-                transformation_sequence.append(("hydrazone", depth))
-                print(f"Detected hydrazone at depth {depth}: {mol_smiles}")
 
-            if checker.check_fg("Aldehyde", mol_smiles):
-                transformation_sequence.append(("aldehyde", depth))
-                print(f"Detected aldehyde at depth {depth}: {mol_smiles}")
+            # Check for methyl ester in molecule
+            if checker.check_fg("Ester", mol_smiles) and "COC(=O)" in mol_smiles:
+                print(f"{indent}Found methyl ester in molecule: {mol_smiles}")
+                methyl_ester_found = True
 
-            # For methyl, we need to check if it's attached to an aromatic carbon
-            # Since there's no direct "methyl" functional group in the checker
-            if mol_smiles and "C" in mol_smiles:
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if mol:
-                    methyl_pattern = Chem.MolFromSmarts("c-C")
-                    if mol.HasSubstructMatch(methyl_pattern):
-                        transformation_sequence.append(("methyl", depth))
-                        print(f"Detected methyl group at depth {depth}: {mol_smiles}")
+            # Check for tert-butyl ester in molecule
+            if checker.check_fg("Ester", mol_smiles) and (
+                "CC(C)(C)OC(=O)" in mol_smiles or "OC(=O)C(C)(C)C" in mol_smiles
+            ):
+                print(f"{indent}Found tert-butyl ester in molecule: {mol_smiles}")
+                tbutyl_ester_found = True
 
-        elif node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
-
-            # Check for oxidation of methyl to aldehyde
-            if any(checker.check_fg("Aldehyde", product) for _ in [1]):
-                for reactant in reactants:
-                    if Chem.MolFromSmiles(reactant) and Chem.MolFromSmiles(
-                        reactant
-                    ).HasSubstructMatch(Chem.MolFromSmarts("c-C")):
-                        print(f"Detected methyl to aldehyde transformation: {rsmi}")
-                        transformation_sequence.append(("methyl_to_aldehyde", depth))
-
-            # Check for aldehyde to hydrazone transformation
-            if checker.check_fg("Hydrazone", product):
-                for reactant in reactants:
-                    if checker.check_fg("Aldehyde", reactant):
-                        print(f"Detected aldehyde to hydrazone transformation: {rsmi}")
-                        transformation_sequence.append(("aldehyde_to_hydrazone", depth))
-
-        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have the required transformations in the correct sequence
-    has_methyl = any(t[0] == "methyl" for t in transformation_sequence)
-    has_aldehyde = any(t[0] == "aldehyde" for t in transformation_sequence)
-    has_hydrazone = any(t[0] == "hydrazone" for t in transformation_sequence)
+    print(f"Methyl ester found: {methyl_ester_found}")
+    print(f"tert-Butyl ester found: {tbutyl_ester_found}")
 
-    # Check for the specific transformations
-    has_methyl_to_aldehyde = any(t[0] == "methyl_to_aldehyde" for t in transformation_sequence)
-    has_aldehyde_to_hydrazone = any(
-        t[0] == "aldehyde_to_hydrazone" for t in transformation_sequence
-    )
-
-    print(f"Transformation sequence: {transformation_sequence}")
-    print(f"Has methyl: {has_methyl}, Has aldehyde: {has_aldehyde}, Has hydrazone: {has_hydrazone}")
-    print(
-        f"Has methyl→aldehyde: {has_methyl_to_aldehyde}, Has aldehyde→hydrazone: {has_aldehyde_to_hydrazone}"
-    )
-
-    # Verify the sequence is correct by checking depths
-    # In retrosynthetic direction, hydrazone should be at lower depth than aldehyde, which should be lower than methyl
-    if has_methyl and has_aldehyde and has_hydrazone:
-        methyl_depths = [t[1] for t in transformation_sequence if t[0] == "methyl"]
-        aldehyde_depths = [t[1] for t in transformation_sequence if t[0] == "aldehyde"]
-        hydrazone_depths = [t[1] for t in transformation_sequence if t[0] == "hydrazone"]
-
-        if methyl_depths and aldehyde_depths and hydrazone_depths:
-            min_methyl_depth = min(methyl_depths)
-            min_aldehyde_depth = min(aldehyde_depths)
-            min_hydrazone_depth = min(hydrazone_depths)
-
-            # In retrosynthetic direction, hydrazone (final product) should be at lower depth
-            # than aldehyde (intermediate), which should be lower than methyl (starting material)
-            if min_hydrazone_depth < min_aldehyde_depth < min_methyl_depth:
-                print("Correct sequence detected: methyl → aldehyde → hydrazone")
-                return True
-
-    # Alternative check: look for the specific transformations
-    if has_methyl_to_aldehyde and has_aldehyde_to_hydrazone:
-        print("Detected both transformation steps: methyl→aldehyde and aldehyde→hydrazone")
-        return True
-
-    return False
+    # Strategy is present if both types of esters are found
+    return methyl_ester_found and tbutyl_ester_found

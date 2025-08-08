@@ -2,74 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
-def main(route, min_interconversions=2):
+def main(route):
     """
-    Detects if the synthesis route includes multiple interconversions between
-    carboxylic acids and esters (protection/deprotection)
+    Detects if the synthesis follows a linear approach rather than convergent,
+    by checking if each reaction typically has 2 reactants.
     """
-    interconversion_count = 0
+    is_linear = True
+    reaction_count = 0
 
     def dfs_traverse(node):
-        nonlocal interconversion_count
+        nonlocal is_linear, reaction_count
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            reaction_count += 1
+            # Extract reactants
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
 
-                # Create RDKit mol objects
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            # In linear synthesis, we typically have 2 reactants
+            # If we have more than 3 reactants, it's likely not linear
+            if len(reactants) > 3:
+                is_linear = False
+                print(f"Found non-linear step with {len(reactants)} reactants")
 
-                if product_mol and all(reactant_mols):
-                    # SMARTS for carboxylic acid
-                    acid_pattern = Chem.MolFromSmarts("[#6][C](=[O])[OH]")
-
-                    # SMARTS for ester
-                    ester_pattern = Chem.MolFromSmarts("[#6][C](=[O])[O][#6]")
-
-                    # Check for acid to ester conversion
-                    has_acid_in_reactants = any(
-                        r.HasSubstructMatch(acid_pattern) for r in reactant_mols
-                    )
-                    has_ester_in_product = product_mol.HasSubstructMatch(ester_pattern)
-
-                    # Check for ester to acid conversion
-                    has_ester_in_reactants = any(
-                        r.HasSubstructMatch(ester_pattern) for r in reactant_mols
-                    )
-                    has_acid_in_product = product_mol.HasSubstructMatch(acid_pattern)
-
-                    if (has_acid_in_reactants and has_ester_in_product) or (
-                        has_ester_in_reactants and has_acid_in_product
-                    ):
-                        interconversion_count += 1
-                        print(f"Found acid/ester interconversion, total: {interconversion_count}")
-
-        # Continue traversal
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return interconversion_count >= min_interconversions
+
+    # Only consider it linear if we have at least 2 reactions
+    return is_linear and reaction_count >= 2

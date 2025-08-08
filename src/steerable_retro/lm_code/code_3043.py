@@ -2,95 +2,138 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving orthogonal modifications of
-    different functional groups (side chain vs. aromatic substituents).
+    This function detects a late-stage ketone reduction strategy where a ketone (C=O)
+    is reduced to a methylene (CH2) group in one of the final synthetic steps.
     """
-    side_chain_modifications = 0
-    aromatic_modifications = 0
+    found_ketone_reduction = False
 
-    def dfs_traverse(node):
-        nonlocal side_chain_modifications, aromatic_modifications
+    def dfs_traverse(node, depth=0):
+        nonlocal found_ketone_reduction
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 3:  # Focus on late-stage reactions
+            print(f"Examining reaction at depth {depth}")
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                print(f"Reaction SMILES: {rsmi}")
+                reactants_part = rsmi.split(">")[0]
+                product = rsmi.split(">")[-1]
+                reactants = reactants_part.split(".")
 
-            # Check for side chain modifications (alcohol/aldehyde/acid)
-            aldehyde_pattern = Chem.MolFromSmarts("[C;H1](=O)")
-            alcohol_pattern = Chem.MolFromSmarts("[C;H1,H2]([OH])")
-            carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
+                # Check for ketone in reactants
+                ketone_found = False
+                for reactant_smiles in reactants:
+                    if checker.check_fg("Ketone", reactant_smiles):
+                        ketone_found = True
+                        ketone_reactant = reactant_smiles
+                        print(f"Found ketone in reactant: {reactant_smiles}")
+                        break
 
-            # Check for aromatic substituent modifications
-            aryl_halide_pattern = Chem.MolFromSmarts("[c]-[#9,#17,#35,#53]")
-            aniline_pattern = Chem.MolFromSmarts("[c]-[N;H2]")
-            nitro_pattern = Chem.MolFromSmarts("[c]-[N+](=O)[O-]")
+                if ketone_found:
+                    # Check for various ketone reduction reactions
+                    if checker.check_reaction("Reduction of ketone to secondary alcohol", rsmi):
+                        print("Detected 'Reduction of ketone to secondary alcohol' reaction")
+                        if checker.check_fg("Secondary alcohol", product) and not checker.check_fg(
+                            "Ketone", product
+                        ):
+                            print(f"Found late-stage ketone reduction to alcohol at depth {depth}")
+                            found_ketone_reduction = True
 
-            r_mol = Chem.MolFromSmiles(reactants[0])
-            p_mol = Chem.MolFromSmiles(product)
+                    elif checker.check_reaction(
+                        "Reduction of aldehydes and ketones to alcohols", rsmi
+                    ):
+                        print("Detected 'Reduction of aldehydes and ketones to alcohols' reaction")
+                        if checker.check_fg("Secondary alcohol", product) and not checker.check_fg(
+                            "Ketone", product
+                        ):
+                            print(f"Found late-stage ketone reduction to alcohol at depth {depth}")
+                            found_ketone_reduction = True
 
-            if r_mol and p_mol:
-                # Check side chain modifications
-                r_has_aldehyde = r_mol.HasSubstructMatch(aldehyde_pattern)
-                r_has_alcohol = r_mol.HasSubstructMatch(alcohol_pattern)
-                r_has_acid = r_mol.HasSubstructMatch(carboxylic_acid_pattern)
+                    # Check for complete reduction reactions (ketone to methylene)
+                    elif checker.check_reaction(
+                        "Wolff-Kishner reduction", rsmi
+                    ) or checker.check_reaction("Clemmensen reduction", rsmi):
+                        print("Detected Wolff-Kishner or Clemmensen reduction")
+                        if not checker.check_fg("Ketone", product) and not checker.check_fg(
+                            "Secondary alcohol", product
+                        ):
+                            print(f"Found late-stage complete ketone reduction at depth {depth}")
+                            found_ketone_reduction = True
 
-                p_has_aldehyde = p_mol.HasSubstructMatch(aldehyde_pattern)
-                p_has_alcohol = p_mol.HasSubstructMatch(alcohol_pattern)
-                p_has_acid = p_mol.HasSubstructMatch(carboxylic_acid_pattern)
+                    # Generic reduction check
+                    elif not checker.check_fg("Ketone", product):
+                        # If ketone is gone but no specific reaction was identified
+                        if checker.check_fg("Secondary alcohol", product):
+                            print(
+                                f"Found generic late-stage ketone reduction to alcohol at depth {depth}"
+                            )
+                            found_ketone_reduction = True
+                        elif not checker.check_fg("Secondary alcohol", product):
+                            # Look for other indicators of reduction
+                            if (
+                                "reduction" in rsmi.lower()
+                                or "hydride" in rsmi.lower()
+                                or "H2" in rsmi
+                            ):
+                                print(
+                                    f"Found generic late-stage complete ketone reduction at depth {depth}"
+                                )
+                                found_ketone_reduction = True
 
-                if (
-                    r_has_aldehyde != p_has_aldehyde
-                    or r_has_alcohol != p_has_alcohol
-                    or r_has_acid != p_has_acid
-                ):
-                    side_chain_modifications += 1
-                    print(f"Detected side chain modification: {reactants[0]} -> {product}")
-
-                # Check aromatic modifications
-                r_has_halide = r_mol.HasSubstructMatch(aryl_halide_pattern)
-                r_has_amine = r_mol.HasSubstructMatch(aniline_pattern)
-                r_has_nitro = r_mol.HasSubstructMatch(nitro_pattern)
-
-                p_has_halide = p_mol.HasSubstructMatch(aryl_halide_pattern)
-                p_has_amine = p_mol.HasSubstructMatch(aniline_pattern)
-                p_has_nitro = p_mol.HasSubstructMatch(nitro_pattern)
-
-                if (
-                    r_has_halide != p_has_halide
-                    or r_has_amine != p_has_amine
-                    or r_has_nitro != p_has_nitro
-                ):
-                    aromatic_modifications += 1
-                    print(f"Detected aromatic modification: {reactants[0]} -> {product}")
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Return True if both side chain and aromatic modifications are present
-    return side_chain_modifications > 0 and aromatic_modifications > 0
+    print(f"Final result: {found_ketone_reduction}")
+    return found_ketone_reduction

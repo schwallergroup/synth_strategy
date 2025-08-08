@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,142 +54,47 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a strategy involving modification of a heterocyclic ring
-    (e.g., dehydrogenation of piperidine, oxidation of heterocycles, ring opening/closing).
+    This function detects if the synthetic route involves Boc protection of an amine.
     """
-    has_heterocycle_modification = False
+    boc_protection_found = False
 
-    # Define heterocycles to check
-    heterocycles = [
-        "piperidine",
-        "pyrrolidine",
-        "morpholine",
-        "thiomorpholine",
-        "pyrrole",
-        "furan",
-        "thiophene",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "piperazine",
-        "tetrahydrofuran",
-        "tetrahydropyran",
-        "oxirane",
-        "aziridine",
-        "azetidine",
-        "indole",
-        "quinoline",
-        "isoquinoline",
-        "benzoxazole",
-        "benzothiazole",
-        "benzimidazole",
-    ]
+    def dfs_traverse(node):
+        nonlocal boc_protection_found
 
-    # Define reaction types that could modify heterocycles
-    modification_reactions = [
-        "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones",
-        "Hydrogenation (double to single)",
-        "Hydrogenation (triple to double)",
-        "Arene hydrogenation",
-        "Aromatic hydroxylation",
-        "Oxidation of alcohol to carboxylic acid",
-        "Oxidation of alkene to carboxylic acid",
-        "Oxidation of ketone to carboxylic acid",
-        "Oxidation of nitrile to carboxylic acid",
-        "Reduction of ester to primary alcohol",
-        "Reduction of ketone to secondary alcohol",
-        "Reduction of carboxylic acid to primary alcohol",
-    ]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_heterocycle_modification
-
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+            # Check if this is a Boc protection reaction using the checker function
+            if (
+                checker.check_reaction("Boc amine protection", rsmi)
+                or checker.check_reaction("Boc amine protection explicit", rsmi)
+                or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
+                or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
+                or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
+                or checker.check_reaction("Boc amine protection of primary amine", rsmi)
+            ):
+                print(f"Boc protection reaction detected: {rsmi}")
+                boc_protection_found = True
+            else:
+                # Fallback check by examining functional groups
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Method 1: Check for heterocycle transformation (one heterocycle to another)
-                for reactant in reactants:
-                    for heterocycle in heterocycles:
-                        if checker.check_ring(heterocycle, reactant):
-                            # Check if product contains a different heterocycle
-                            if any(
-                                checker.check_ring(h, product) for h in heterocycles
-                            ) and not checker.check_ring(heterocycle, product):
-                                has_heterocycle_modification = True
-                                print(
-                                    f"Found heterocycle transformation from {heterocycle} at depth {depth}"
-                                )
-                                break
+                # Check if reactants contain an amine and product contains a Boc group
+                has_primary_amine = any(
+                    checker.check_fg("Primary amine", r) for r in reactants if r
+                )
+                has_secondary_amine = any(
+                    checker.check_fg("Secondary amine", r) for r in reactants if r
+                )
+                has_boc_protected_amine = checker.check_fg("Boc", product) if product else False
 
-                # Method 2: Check for specific reaction types that modify heterocycles
-                for reaction_type in modification_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        # Verify that a heterocycle is involved in the reaction
-                        for reactant in reactants:
-                            if any(
-                                checker.check_ring(heterocycle, reactant)
-                                for heterocycle in heterocycles
-                            ):
-                                has_heterocycle_modification = True
-                                print(
-                                    f"Found heterocycle modification via {reaction_type} at depth {depth}"
-                                )
-                                break
-
-                # Method 3: Check for ring opening/closing reactions
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    product_mol = Chem.MolFromSmiles(product)
-
-                    if reactant_mol and product_mol:
-                        # Check if number of rings changed
-                        reactant_rings = reactant_mol.GetRingInfo().NumRings()
-                        product_rings = product_mol.GetRingInfo().NumRings()
-
-                        if reactant_rings != product_rings:
-                            # Verify that a heterocycle is involved
-                            if any(
-                                checker.check_ring(heterocycle, reactant)
-                                for heterocycle in heterocycles
-                            ) or any(
-                                checker.check_ring(heterocycle, product)
-                                for heterocycle in heterocycles
-                            ):
-                                has_heterocycle_modification = True
-                                print(f"Found heterocycle ring opening/closing at depth {depth}")
-
-                # Method 4: Check for dehydrogenation of saturated heterocycles
-                saturated_heterocycles = [
-                    "piperidine",
-                    "pyrrolidine",
-                    "morpholine",
-                    "thiomorpholine",
-                    "tetrahydrofuran",
-                    "tetrahydropyran",
-                ]
-                unsaturated_heterocycles = ["pyridine", "pyrrole", "furan", "thiophene"]
-
-                for i, reactant in enumerate(reactants):
-                    for sat_heterocycle in saturated_heterocycles:
-                        if checker.check_ring(sat_heterocycle, reactant):
-                            for unsat_heterocycle in unsaturated_heterocycles:
-                                if checker.check_ring(unsat_heterocycle, product):
-                                    has_heterocycle_modification = True
-                                    print(
-                                        f"Found heterocycle dehydrogenation from {sat_heterocycle} to {unsat_heterocycle} at depth {depth}"
-                                    )
+                if (has_primary_amine or has_secondary_amine) and has_boc_protected_amine:
+                    print(f"Boc protection detected by functional group analysis: {rsmi}")
+                    boc_protection_found = True
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    if has_heterocycle_modification:
-        print("Detected heterocycle modification strategy")
-
-    return has_heterocycle_modification
+    return boc_protection_found

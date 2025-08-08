@@ -2,60 +2,95 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves aromatic fluorination.
+    Detects a sequence where an ester is hydrolyzed to a carboxylic acid,
+    which is then used in an amide coupling reaction.
     """
-    found_fluorination = False
+    # Track key steps
+    ester_hydrolysis_depth = None
+    amide_coupling_depth = None
 
-    def dfs_traverse(node):
-        nonlocal found_fluorination
+    # SMARTS patterns
+    ester_pattern = "[#6](=[#8])-[#8]-[#6]"
+    carboxylic_acid_pattern = "[#6](=[#8])-[#8;H1]"
+    amide_pattern = "[#6](=[#8])-[#7]"
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node, depth=0):
+        nonlocal ester_hydrolysis_depth, amide_coupling_depth
 
-            # Check for fluorination pattern
-            aryl_fluoride_pattern = Chem.MolFromSmarts("[c]-[F]")
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                # Check for ester hydrolysis
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(
+                    Chem.MolFromSmarts(carboxylic_acid_pattern)
+                ):
+                    # Check if reactants contain ester
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(
+                            Chem.MolFromSmarts(ester_pattern)
+                        ):
+                            ester_hydrolysis_depth = depth
+                            print(f"Detected ester hydrolysis at depth {depth}")
 
-            # Count fluorine atoms in reactants and product
-            if product_mol:
-                product_f_count = len(product_mol.GetSubstructMatches(aryl_fluoride_pattern))
-                reactant_f_count = sum(
-                    len(mol.GetSubstructMatches(aryl_fluoride_pattern))
-                    for mol in reactant_mols
-                    if mol
-                )
+                # Check for amide coupling
+                if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts(amide_pattern)):
+                    # Check if reactants contain carboxylic acid
+                    has_acid = any(
+                        Chem.MolFromSmiles(r).HasSubstructMatch(
+                            Chem.MolFromSmarts(carboxylic_acid_pattern)
+                        )
+                        for r in reactants
+                        if Chem.MolFromSmiles(r)
+                    )
+                    if has_acid:
+                        amide_coupling_depth = depth
+                        print(f"Detected amide coupling at depth {depth}")
 
-                if product_f_count > reactant_f_count:
-                    found_fluorination = True
-                    print("Found aromatic fluorination step")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return found_fluorination
+
+    # Check if the sequence is present (ester hydrolysis followed by amide coupling)
+    has_sequence = (
+        ester_hydrolysis_depth is not None
+        and amide_coupling_depth is not None
+        and ester_hydrolysis_depth > amide_coupling_depth
+    )  # Remember: higher depth = earlier in synthesis
+
+    if has_sequence:
+        print("Detected ester hydrolysis followed by amide coupling sequence")
+
+    return has_sequence

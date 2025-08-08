@@ -2,57 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy where each step builds upon the previous.
+    Detects a strategy involving late-stage disconnection of an ether bond between aromatic fragments.
+    Looks for an ether cleavage reaction at a shallow depth (late in the synthesis).
     """
-    # Track the maximum branching factor in the synthesis tree
-    max_branching = 0
+    found_late_stage_ether_disconnection = False
 
-    def dfs_traverse(node):
-        nonlocal max_branching
+    def dfs_traverse(node, depth=0):
+        nonlocal found_late_stage_ether_disconnection
 
-        if node["type"] == "reaction":
-            # Count number of non-in_stock children (reactants)
-            non_stock_children = 0
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    non_stock_children += 1
+        if (
+            node["type"] == "reaction" and depth <= 1
+        ):  # Only consider late-stage reactions (depth 0 or 1)
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Update max branching factor
-            max_branching = max(max_branching, non_stock_children)
+                # Check for ether bond between aromatic systems
+                ether_pattern = Chem.MolFromSmarts("[c]-[O]-[CH2]-[c]")
 
-        # Traverse children
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+
+                    # Check if product has the ether bond but at least one reactant doesn't
+                    if (
+                        product_mol
+                        and product_mol.HasSubstructMatch(ether_pattern)
+                        and any(
+                            mol and not mol.HasSubstructMatch(ether_pattern)
+                            for mol in reactant_mols
+                        )
+                    ):
+                        found_late_stage_ether_disconnection = True
+                        print(f"Found late-stage ether disconnection at depth {depth}: {rsmi}")
+                except:
+                    pass
+
+        # Traverse children with increased depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # If max_branching <= 1, it's a linear synthesis
-    is_linear = max_branching <= 1
-    if is_linear:
-        print("Detected linear synthesis strategy")
-    else:
-        print(f"Detected branched synthesis with max branching factor {max_branching}")
-
-    return is_linear
+    return found_late_stage_ether_disconnection

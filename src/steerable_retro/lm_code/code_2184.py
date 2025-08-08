@@ -2,113 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects tetrazole ring formation via azide-isocyanate cycloaddition.
+    This function detects if N-benzylation of indole occurs in the synthesis.
     """
-    tetrazole_found = False
-    azide_isocyanate_reaction = False
+    n_benzylation_detected = False
 
     def dfs_traverse(node):
-        nonlocal tetrazole_found, azide_isocyanate_reaction
-
+        nonlocal n_benzylation_detected
         if node["type"] == "reaction":
-            # Check if this reaction forms a tetrazole
-            if "rsmi" in node["metadata"]:
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check if product contains tetrazole
-                if checker.check_ring("tetrazole", product):
-                    print(f"Found tetrazole in product: {product}")
-                    tetrazole_found = True
+                # Check for indole N-H in reactants
+                indole_nh_pattern = Chem.MolFromSmarts("[#6]1[#6][#7H][#6]2[#6][#6][#6][#6][#6]12")
+                # Check for N-benzylated indole in product
+                n_benzyl_indole_pattern = Chem.MolFromSmarts(
+                    "[#6]1[#6][#7]([#6][#6]2[#6][#6][#6][#6][#6]2)[#6]3[#6][#6][#6][#6][#6]13"
+                )
 
-                    # Check if reactants contain azide and isocyanate
-                    has_azide = False
-                    has_isocyanate = False
+                reactant_has_indole_nh = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(indole_nh_pattern):
+                        reactant_has_indole_nh = True
+                        break
 
-                    for reactant in reactants:
-                        if checker.check_fg("Azide", reactant):
-                            print(f"Found azide in reactant: {reactant}")
-                            has_azide = True
-                        if checker.check_fg("Isocyanate", reactant):
-                            print(f"Found isocyanate in reactant: {reactant}")
-                            has_isocyanate = True
+                product_mol = Chem.MolFromSmiles(product)
+                product_has_n_benzyl = product_mol and product_mol.HasSubstructMatch(
+                    n_benzyl_indole_pattern
+                )
 
-                    # Check if this is a Huisgen cycloaddition reaction
-                    if (
-                        checker.check_reaction("Huisgen 1,3 dipolar cycloaddition", rsmi)
-                        or checker.check_reaction(
-                            "Huisgen alkyne-azide 1,3 dipolar cycloaddition", rsmi
-                        )
-                        or checker.check_reaction(
-                            "Azide-nitrile click cycloaddition to tetrazole", rsmi
-                        )
-                    ):
-                        print(f"Confirmed cycloaddition reaction: {rsmi}")
-                        azide_isocyanate_reaction = True
-                    elif has_azide and has_isocyanate:
-                        print(
-                            f"Found azide and isocyanate in reactants for tetrazole formation: {rsmi}"
-                        )
-                        azide_isocyanate_reaction = True
+                if reactant_has_indole_nh and product_has_n_benzyl:
+                    n_benzylation_detected = True
+                    print(f"N-benzylation detected in reaction: {rsmi}")
 
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(
-        f"tetrazole_found: {tetrazole_found}, azide_isocyanate_reaction: {azide_isocyanate_reaction}"
-    )
-    return tetrazole_found and azide_isocyanate_reaction
+    print(f"N-benzylation of indole detected: {n_benzylation_detected}")
+    return n_benzylation_detected

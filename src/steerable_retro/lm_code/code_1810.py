@@ -2,67 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the use of a nitrile-containing reagent
-    for heterocyclic ring formation.
+    This function detects a synthetic strategy involving late-stage epoxide formation
+    (in the final or penultimate step of the synthesis).
     """
-    # SMARTS patterns
-    nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
+    epoxide_formation_found = False
+    epoxide_formation_depth = float("inf")
 
     def dfs_traverse(node, depth=0):
+        nonlocal epoxide_formation_found, epoxide_formation_depth
+
         if node["type"] == "reaction":
             # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            # Check for epoxide formation
             product_mol = Chem.MolFromSmiles(product_smiles)
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
 
-            # Check if any reactant has a nitrile group
-            nitrile_in_reactants = any(
-                r and len(r.GetSubstructMatches(nitrile_pattern)) > 0 for r in reactant_mols
-            )
+            # Epoxide pattern
+            epoxide_pattern = Chem.MolFromSmarts("[C]1[O][C]1")
 
-            if nitrile_in_reactants:
-                # Check if product has a new ring
-                reactants_ring_count = sum(
-                    r.GetRingInfo().NumRings() if r else 0 for r in reactant_mols
+            if product_mol.HasSubstructMatch(epoxide_pattern):
+                # Check if epoxide is newly formed (not present in reactants)
+                epoxide_in_reactants = any(
+                    r.HasSubstructMatch(epoxide_pattern) for r in reactant_mols if r is not None
                 )
-                product_ring_count = product_mol.GetRingInfo().NumRings() if product_mol else 0
 
-                if product_ring_count > reactants_ring_count:
-                    print(f"Nitrile-based cyclization detected at depth {depth}")
-                    return True
+                if not epoxide_in_reactants:
+                    epoxide_formation_found = True
+                    epoxide_formation_depth = min(epoxide_formation_depth, depth)
+                    print(f"Epoxide formation detected at depth {depth}")
 
         # Traverse children
-        result = False
         for child in node.get("children", []):
-            if dfs_traverse(child, depth + 1):
-                result = True
-
-        return result
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
-    return dfs_traverse(route)
+    dfs_traverse(route)
+
+    # Check if epoxide formation is late-stage (depth 0 or 1)
+    late_stage = epoxide_formation_found and epoxide_formation_depth <= 1
+
+    if late_stage:
+        print("Late-stage epoxide formation strategy detected")
+
+    return late_stage

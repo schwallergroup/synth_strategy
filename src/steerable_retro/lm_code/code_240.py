@@ -2,161 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows the strategy of early Grignard reaction for tertiary alcohol
-    formation followed by late-stage aryl halide to ester conversion.
+    Detects if the synthesis involves a Wittig-type olefination connecting two aromatic rings
     """
-    print(f"Analyzing route for early Grignard, late ester strategy...")
-    grignard_depths = []
-    ester_conversion_depths = []
+    wittig_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal grignard_depths, ester_conversion_depths
+    def dfs_traverse(node):
+        nonlocal wittig_detected
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            print(f"Analyzing reaction at depth {depth}: {rsmi}")
+            # Check for phosphonate pattern in reactants
+            phosphonate_pattern = Chem.MolFromSmarts("[P](=[O])([O])[CH2][c]")
+            # Check for aldehyde pattern in reactants
+            aldehyde_pattern = Chem.MolFromSmarts("[CH]=[O]")
 
-            # Check for any Grignard reaction
-            grignard_reaction_types = [
-                "Grignard from ketone to alcohol",
-                "Grignard from aldehyde to alcohol",
-                "Grignard with CO2 to carboxylic acid",
-                "Olefination of ketones with Grignard reagents",
-                "Olefination of aldehydes with Grignard reagents",
-                "Formation of Grignard reagents",
-            ]
+            # Check for olefin connecting two aromatic rings in product
+            olefin_pattern = Chem.MolFromSmarts("[c]/[CH]=[CH]/[c]")
 
-            # Check if any reactant contains "Mg" (indicating Grignard reagent)
-            has_grignard_reagent = any("Mg" in r for r in reactants)
+            has_phosphonate = False
+            has_aldehyde = False
 
-            if has_grignard_reagent or any(
-                checker.check_reaction(rxn, rsmi) for rxn in grignard_reaction_types
-            ):
-                # Verify alcohol formation by checking product
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(phosphonate_pattern):
+                        has_phosphonate = True
+                    if mol and mol.HasSubstructMatch(aldehyde_pattern):
+                        has_aldehyde = True
+                except:
+                    continue
+
+            try:
+                prod_mol = Chem.MolFromSmiles(product)
                 if (
-                    checker.check_fg("Tertiary alcohol", product)
-                    or (
-                        checker.check_fg("Secondary alcohol", product)
-                        and not any(checker.check_fg("Secondary alcohol", r) for r in reactants)
-                    )
-                    or (
-                        checker.check_fg("Primary alcohol", product)
-                        and not any(checker.check_fg("Primary alcohol", r) for r in reactants)
-                    )
+                    has_phosphonate
+                    and has_aldehyde
+                    and prod_mol
+                    and prod_mol.HasSubstructMatch(olefin_pattern)
                 ):
-                    grignard_depths.append(depth)
-                    print(f"Grignard reaction forming alcohol found at depth {depth}, rsmi: {rsmi}")
+                    print("Wittig-type olefination detected")
+                    wittig_detected = True
+            except:
+                pass
 
-            # Check for aryl halide or carboxylic acid to ester conversion
-            if (
-                (
-                    any(checker.check_fg("Aromatic halide", r) for r in reactants)
-                    or any(checker.check_fg("Carboxylic acid", r) for r in reactants)
-                )
-                and checker.check_fg("Ester", product)
-                and not any(checker.check_fg("Ester", r) for r in reactants)
-            ):
-
-                # Check for specific reactions that convert to esters
-                ester_reaction_types = [
-                    "Carbonylation with aryl formates",
-                    "Oxidative esterification of primary alcohols",
-                    "Esterification of Carboxylic Acids",
-                    "Suzuki coupling",
-                    "Heck reaction with vinyl ester",
-                    "Oxidative Heck reaction with vinyl ester",
-                    "Schotten-Baumann to ester",
-                    "O-alkylation of carboxylic acids with diazo compounds",
-                    "Transesterification",
-                    "Acetic anhydride and alcohol to ester",
-                ]
-
-                if any(checker.check_reaction(rxn, rsmi) for rxn in ester_reaction_types):
-                    ester_conversion_depths.append(depth)
-                    print(f"Conversion to ester found at depth {depth}, rsmi: {rsmi}")
-                else:
-                    # If no specific reaction type matches, but we have ester formation, still count it
-                    ester_conversion_depths.append(depth)
-                    print(f"Generic ester formation found at depth {depth}, rsmi: {rsmi}")
-
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-
-    # Check if any Grignard happens early (higher depth) and any ester conversion happens late (lower depth)
-    if grignard_depths and ester_conversion_depths:
-        early_grignard = max(grignard_depths)  # Highest depth = earliest stage
-        late_ester = min(ester_conversion_depths)  # Lowest depth = latest stage
-
-        print(f"Found Grignard reactions at depths: {grignard_depths}")
-        print(f"Found ester conversions at depths: {ester_conversion_depths}")
-
-        if early_grignard > late_ester:
-            print(
-                f"Early Grignard (depth {early_grignard}), late ester conversion (depth {late_ester}) strategy detected"
-            )
-            return True
-        else:
-            print(
-                f"Strategy not detected: Grignard at depth {early_grignard} is not earlier than ester conversion at depth {late_ester}"
-            )
-    else:
-        if not grignard_depths:
-            print("No Grignard reactions forming alcohols found")
-        if not ester_conversion_depths:
-            print("No conversions to esters found")
-
-    return False
+    return wittig_detected

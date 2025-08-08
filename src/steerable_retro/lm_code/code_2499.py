@@ -2,174 +2,113 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if stereochemistry is preserved throughout the synthesis.
-
-    This function tracks stereocenters through the synthesis route using atom mapping
-    in reaction SMILES. It verifies that existing stereocenters maintain their
-    configuration throughout the synthesis process.
+    Detects a synthetic strategy with early biaryl formation (Suzuki coupling)
+    and late-stage amide formation.
     """
-    # Track stereocenters through the synthesis
-    stereo_tracking = {}  # Maps (depth, atom_map) to stereochemistry
-
-    def get_chiral_atoms_with_mapping(mol):
-        """Extract chiral atoms with their mapping IDs"""
-        chiral_atoms = {}
-        if not mol:
-            return chiral_atoms
-
-        # Find all chiral centers
-        chiral_centers = Chem.FindMolChiralCenters(mol, includeUnassigned=True)
-
-        # Get atom mapping for each chiral center
-        for atom_idx, chirality in chiral_centers:
-            atom = mol.GetAtomWithIdx(atom_idx)
-            map_num = atom.GetAtomMapNum()
-
-            if map_num > 0:  # Valid atom mapping
-                # Store the chiral tag (R or S configuration)
-                chiral_tag = atom.GetChiralTag()
-                chiral_atoms[map_num] = (atom_idx, chiral_tag)
-                print(
-                    f"Found chiral atom with map {map_num}, chirality: {chirality}, tag: {chiral_tag}"
-                )
-
-        return chiral_atoms
+    # Initialize tracking variables
+    has_biaryl_formation = False
+    has_amide_formation = False
+    biaryl_depth = -1
+    amide_formation_depth = -1
 
     def dfs_traverse(node, depth=0):
-        nonlocal stereo_tracking
+        nonlocal has_biaryl_formation, has_amide_formation
+        nonlocal biaryl_depth, amide_formation_depth
 
-        if node["type"] == "mol" and "smiles" in node:
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"], sanitize=True)
-                if mol:
-                    # Get chiral atoms with their mapping
-                    chiral_atoms = get_chiral_atoms_with_mapping(mol)
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                    # Store stereochemistry information at this depth
-                    for map_num, (atom_idx, chiral_tag) in chiral_atoms.items():
-                        stereo_tracking[(depth, map_num)] = chiral_tag
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-                    print(
-                        f"Depth {depth}, SMILES: {node['smiles']}, Chiral atoms: {len(chiral_atoms)}"
+            if product_mol and len(reactant_mols) >= 1:
+                # Check for Suzuki coupling (biaryl formation)
+                if len(reactant_mols) >= 2:
+                    # Look for boronic acid/ester and aryl halide patterns
+                    boronic_acid_pattern = Chem.MolFromSmarts("[c]-[B]")
+                    aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Cl,Br,I,F]")
+
+                    has_boronic_acid = any(
+                        mol.HasSubstructMatch(boronic_acid_pattern) for mol in reactant_mols if mol
                     )
-            except Exception as e:
-                print(f"Error processing SMILES in stereochemistry detection: {e}")
-
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            try:
-                # Extract reactants and products with atom mapping
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                products_smiles = rsmi.split(">")[-1]
-
-                # Process reactants to find stereocenters
-                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-                if reactants_mol:
-                    reactant_chiral_atoms = get_chiral_atoms_with_mapping(reactants_mol)
-                    print(
-                        f"Depth {depth}, Reaction, Reactant chiral atoms: {len(reactant_chiral_atoms)}"
+                    has_aryl_halide = any(
+                        mol.HasSubstructMatch(aryl_halide_pattern) for mol in reactant_mols if mol
                     )
 
-                # Process products to find stereocenters
-                products_mol = Chem.MolFromSmiles(products_smiles)
-                if products_mol:
-                    product_chiral_atoms = get_chiral_atoms_with_mapping(products_mol)
-                    print(
-                        f"Depth {depth}, Reaction, Product chiral atoms: {len(product_chiral_atoms)}"
-                    )
+                    # Check if product has new biaryl bond
+                    biaryl_pattern = Chem.MolFromSmarts("c-c")
 
-                    # Check if stereocenters are preserved in this reaction
-                    for map_num in reactant_chiral_atoms:
-                        if map_num in product_chiral_atoms:
-                            # If the atom is still chiral in the product, check if configuration is preserved
-                            reactant_chiral_tag = reactant_chiral_atoms[map_num][1]
-                            product_chiral_tag = product_chiral_atoms[map_num][1]
+                    if (
+                        has_boronic_acid
+                        and has_aryl_halide
+                        and product_mol.HasSubstructMatch(biaryl_pattern)
+                    ):
+                        has_biaryl_formation = True
+                        biaryl_depth = depth
+                        print(f"Detected biaryl formation at depth {depth}")
 
-                            # Store product stereochemistry
-                            stereo_tracking[(depth + 1, map_num)] = product_chiral_tag
+                # Check for amide formation
+                carboxylic_acid_pattern = Chem.MolFromSmarts("[#6]-[#6](=[O])-[#8]")
+                amine_pattern = Chem.MolFromSmarts("[#6]-[#7](-[#6])-[#1]")
+                amide_pattern = Chem.MolFromSmarts("[#6]-[#6](=[O])-[#7](-[#6])-[#6]")
 
-                            # Check if stereochemistry changed
-                            if (
-                                reactant_chiral_tag != product_chiral_tag
-                                and reactant_chiral_tag != Chem.ChiralType.CHI_UNSPECIFIED
-                                and product_chiral_tag != Chem.ChiralType.CHI_UNSPECIFIED
-                            ):
-                                print(
-                                    f"Stereochemistry changed for atom map {map_num} at depth {depth}"
-                                )
-                        else:
-                            # Stereocenter was lost
-                            print(f"Stereocenter with map {map_num} was lost at depth {depth}")
-            except Exception as e:
-                print(f"Error processing reaction SMILES: {e}")
+                has_acid_reactant = any(
+                    mol.HasSubstructMatch(carboxylic_acid_pattern) for mol in reactant_mols if mol
+                )
+                has_amine_reactant = any(
+                    mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols if mol
+                )
+                has_amide_product = product_mol and product_mol.HasSubstructMatch(amide_pattern)
+
+                if (has_acid_reactant or has_amine_reactant) and has_amide_product:
+                    has_amide_formation = True
+                    amide_formation_depth = depth
+                    print(f"Detected amide formation at depth {depth}")
 
         # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if any stereocenters exist in the synthesis route
-    all_stereocenters = stereo_tracking.keys()
+    # Check if the strategy is present - early biaryl (higher depth) and late amide (lower depth)
+    strategy_present = (
+        has_biaryl_formation
+        and has_amide_formation
+        and biaryl_depth > amide_formation_depth
+        and amide_formation_depth <= 1  # Ensure amide formation is late-stage
+    )
 
-    # Check if stereocenters are preserved throughout the synthesis
-    preserved = True
+    if strategy_present:
+        print("Detected strategy: Early biaryl formation with late-stage amide coupling")
 
-    # Get all unique atom mappings that appear as stereocenters
-    all_atom_maps = set(map_num for _, map_num in all_stereocenters)
-
-    for map_num in all_atom_maps:
-        # Get all depths where this atom map appears
-        depths = sorted([d for d, m in stereo_tracking.keys() if m == map_num])
-
-        if len(depths) > 1:  # This stereocenter appears in multiple steps
-            # Check if stereochemistry is consistent
-            first_tag = None
-            for d in depths:
-                if (d, map_num) in stereo_tracking:
-                    current_tag = stereo_tracking[(d, map_num)]
-                    if first_tag is None:
-                        first_tag = current_tag
-                    elif (
-                        current_tag != first_tag
-                        and current_tag != Chem.ChiralType.CHI_UNSPECIFIED
-                        and first_tag != Chem.ChiralType.CHI_UNSPECIFIED
-                    ):
-                        preserved = False
-                        print(
-                            f"Stereochemistry not preserved for atom map {map_num} across depths {depths}"
-                        )
-                        break
-
-    # Final check: if we have stereocenters and they're preserved
-    if preserved and all_atom_maps:
-        print("Stereochemistry is preserved throughout synthesis")
-        return True
-    elif not all_atom_maps:
-        print("No stereocenters found in the synthesis route")
-        return False
-    else:
-        print("Stereochemistry is not preserved")
-        return False
+    return strategy_present

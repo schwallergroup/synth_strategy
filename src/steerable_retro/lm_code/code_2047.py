@@ -2,100 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves an early-stage conversion of
-    a primary amine to an azide group (typically depth > 1).
-
-    Note: In retrosynthesis, we're looking for azide → amine transformations
-    in the reaction SMILES (which are in forward direction).
+    This function detects a strategy involving multiple phenol O-functionalization steps
+    (both O-methylation and O-alkylation).
     """
-    found_amine_to_azide = False
+    # Track phenol functionalizations
+    o_methylation = False
+    o_alkylation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_amine_to_azide
+    def dfs_traverse(node):
+        nonlocal o_methylation, o_alkylation
 
-        if node["type"] == "reaction" and depth > 1:  # Early stage (depth > 1)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                # In retrosynthesis, we're looking at forward reactions
-                # where azide is in reactants and amine is in product
+            if product and all(r for r in reactants):
+                # Check for phenol in reactants
+                phenol_pattern = Chem.MolFromSmarts("[OH]c1ccccc1")
 
-                # Check if this is an "Amine to azide" reaction
-                if checker.check_reaction("Amine to azide", rsmi):
-                    print(f"Found 'Amine to azide' reaction at depth {depth}")
-                    found_amine_to_azide = True
-                else:
-                    # Alternative check: verify azide in reactants and primary amine in product
-                    has_azide = any(checker.check_fg("Azide", r) for r in reactants if r)
-                    has_primary_amine = checker.check_fg("Primary amine", product)
+                # Check for O-methylation
+                methoxy_pattern = Chem.MolFromSmarts("c1ccccc1OC")
+                if product.HasSubstructMatch(methoxy_pattern):
+                    if any(r.HasSubstructMatch(phenol_pattern) for r in reactants):
+                        print("Detected O-methylation of phenol")
+                        o_methylation = True
 
-                    print(
-                        f"Azide in reactants: {has_azide}, Primary amine in product: {has_primary_amine}"
-                    )
+                # Check for O-alkylation (non-methyl)
+                alkoxy_pattern = Chem.MolFromSmarts("c1ccccc1OCC")
+                if product.HasSubstructMatch(alkoxy_pattern):
+                    if any(r.HasSubstructMatch(phenol_pattern) for r in reactants):
+                        print("Detected O-alkylation of phenol")
+                        o_alkylation = True
 
-                    if has_azide and has_primary_amine:
-                        print(
-                            f"Found azide in reactants and primary amine in product at depth {depth}"
-                        )
-                        found_amine_to_azide = True
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return found_amine_to_azide
+
+    # Check if both types of phenol functionalization are present
+    strategy_present = o_methylation and o_alkylation
+    print(f"Phenol functionalization strategy detection result: {strategy_present}")
+    return strategy_present

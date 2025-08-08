@@ -2,78 +2,95 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves isoxazole formation via cycloaddition.
+    Detects a synthetic strategy involving nitro reduction followed by amide coupling
+    in a linear synthesis pathway.
     """
-    result = False
+    # Track transformations and their depths
+    nitro_reduction_depth = None
+    amide_formation_depth = None
 
-    def dfs_traverse(node):
-        nonlocal result
+    def dfs_traverse(node, depth=0):
+        nonlocal nitro_reduction_depth, amide_formation_depth
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product from reaction SMILES
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
+            # Convert to RDKit molecules
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-                # Check for isoxazole pattern in product
-                isoxazole_pattern = Chem.MolFromSmarts("[c]1[n][o][c][c]1")
-                if product_mol and product_mol.HasSubstructMatch(isoxazole_pattern):
-                    # Check if isoxazole is newly formed
-                    isoxazole_exists_in_reactants = False
-                    for r_mol in reactant_mols:
-                        if r_mol and r_mol.HasSubstructMatch(isoxazole_pattern):
-                            isoxazole_exists_in_reactants = True
-                            break
+            if not product_mol or not all(reactant_mols):
+                print("Warning: Could not parse some molecules in reaction")
+                return
 
-                    if not isoxazole_exists_in_reactants:
-                        # Check if one reactant has an alkyne and another has an oxime
-                        has_alkyne = False
-                        has_oxime = False
+            # Check for nitro reduction
+            nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
+            amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-                        alkyne_pattern = Chem.MolFromSmarts("[C]#[C]")
-                        oxime_pattern = Chem.MolFromSmarts("[C]=[N][OH]")
+            if any(
+                mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols
+            ) and product_mol.HasSubstructMatch(amine_pattern):
+                nitro_reduction_depth = depth
+                print(f"Found nitro reduction at depth {depth}")
 
-                        for r_mol in reactant_mols:
-                            if r_mol:
-                                if r_mol.HasSubstructMatch(alkyne_pattern):
-                                    has_alkyne = True
-                                if r_mol.HasSubstructMatch(oxime_pattern):
-                                    has_oxime = True
+            # Check for amide formation
+            amine_reactant = any(mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols)
+            amide_pattern = Chem.MolFromSmarts("[NH]C(=O)")
+            acyl_halide_pattern = Chem.MolFromSmarts("C(=O)[Cl,Br,I]")
 
-                        if has_alkyne and has_oxime:
-                            print("Detected isoxazole formation via cycloaddition")
-                            result = True
-            except:
-                pass
+            acyl_halide_present = any(
+                mol.HasSubstructMatch(acyl_halide_pattern) for mol in reactant_mols
+            )
 
-        # Continue traversing
+            if (
+                amine_reactant
+                and acyl_halide_present
+                and product_mol.HasSubstructMatch(amide_pattern)
+            ):
+                amide_formation_depth = depth
+                print(f"Found amide formation at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return result
+
+    # Check if we found both transformations and if nitro reduction comes before amide formation
+    strategy_present = (
+        nitro_reduction_depth is not None
+        and amide_formation_depth is not None
+        and nitro_reduction_depth > amide_formation_depth
+    )  # Higher depth means earlier in synthesis
+
+    print(f"Strategy detection result: {strategy_present}")
+    return strategy_present

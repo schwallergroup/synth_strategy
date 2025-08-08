@@ -2,77 +2,115 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects synthesis strategy involving reduction of a nitro group to an amine,
-    particularly in the context of preparing an aminophenol for further reactions.
+    This function detects if the synthesis route involves Boc protection/deprotection.
     """
-    # Track if we found the pattern
-    found_pattern = False
+    boc_strategy_found = False
 
     def dfs_traverse(node):
-        nonlocal found_pattern
+        nonlocal boc_strategy_found
 
-        if node["type"] == "reaction":
-            # Check if this is a reaction node with metadata
-            if "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            try:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for nitro pattern in reactants
-                nitro_pattern = Chem.MolFromSmarts("[#7](=[#8])[#8]")
+                # Check for Boc protection reaction
+                if (
+                    checker.check_reaction("Boc amine protection", rsmi)
+                    or checker.check_reaction("Boc amine protection explicit", rsmi)
+                    or checker.check_reaction("Boc amine protection with Boc anhydride", rsmi)
+                    or checker.check_reaction("Boc amine protection (ethyl Boc)", rsmi)
+                    or checker.check_reaction("Boc amine protection of secondary amine", rsmi)
+                    or checker.check_reaction("Boc amine protection of primary amine", rsmi)
+                ):
+                    print(f"Boc protection reaction detected: {rsmi}")
+                    boc_strategy_found = True
 
-                # Check for amine pattern in product
-                amine_pattern = Chem.MolFromSmarts("[#7;H2]-[#6]")
+                # Check for Boc deprotection reaction
+                elif (
+                    checker.check_reaction("Boc amine deprotection", rsmi)
+                    or checker.check_reaction("Boc amine deprotection of guanidine", rsmi)
+                    or checker.check_reaction("Boc amine deprotection to NH-NH2", rsmi)
+                    or checker.check_reaction("Tert-butyl deprotection of amine", rsmi)
+                ):
+                    print(f"Boc deprotection reaction detected: {rsmi}")
+                    boc_strategy_found = True
 
-                nitro_found = False
+                # Alternative check: look for appearance/disappearance of Boc group
+                else:
+                    # Check if product has Boc group but reactants don't (protection)
+                    product_has_boc = checker.check_fg("Boc", product)
+                    reactants_with_boc = sum(1 for r in reactants if checker.check_fg("Boc", r))
 
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(nitro_pattern):
-                            nitro_found = True
-                            print("Found nitro group in reactant")
-                    except:
-                        continue
+                    if product_has_boc and reactants_with_boc == 0:
+                        print(f"Boc group appears in product but not in reactants: {rsmi}")
+                        boc_strategy_found = True
 
-                # Check if product has amine group
-                try:
-                    prod_mol = Chem.MolFromSmiles(product)
-                    if prod_mol and prod_mol.HasSubstructMatch(amine_pattern) and nitro_found:
-                        found_pattern = True
-                        print("Found nitro reduction to amine")
-                except:
-                    pass
+                    # Check if reactants have Boc group but product doesn't (deprotection)
+                    elif not product_has_boc and reactants_with_boc > 0:
+                        print(f"Boc group present in reactants but not in product: {rsmi}")
+                        boc_strategy_found = True
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
-        # Recursively process children
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
 
-    if found_pattern:
-        print("Detected nitro reduction to amine strategy")
-
-    return found_pattern
+    return boc_strategy_found

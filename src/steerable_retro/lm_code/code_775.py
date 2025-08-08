@@ -2,56 +2,88 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves a tosylated pyrazole fragment.
+    This function detects modifications to heterocyclic systems.
     """
-    found_tosylated_pyrazole = False
+    heterocycle_modifications = 0
 
     def dfs_traverse(node):
-        nonlocal found_tosylated_pyrazole
+        nonlocal heterocycle_modifications
 
-        if node["type"] == "mol" and "smiles" in node:
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Patterns for common heterocycles
+            heterocycle_patterns = [
+                Chem.MolFromSmarts("c1ncccc1"),  # pyridine
+                Chem.MolFromSmarts("c1ncncc1"),  # pyrimidine
+                Chem.MolFromSmarts("c1nccnc1"),  # pyrazine
+                Chem.MolFromSmarts("c1nnccc1"),  # pyridazine
+                Chem.MolFromSmarts("c1ccncc1"),  # pyrrole
+                Chem.MolFromSmarts("c1nsncc1"),  # thiazole
+                Chem.MolFromSmarts("c1ncocc1"),  # oxazole
+                Chem.MolFromSmarts("c1nnn[nH]1"),  # tetrazole
+                Chem.MolFromSmarts("c1nn[nH]c1"),  # triazole
+                Chem.MolFromSmarts("c1nc2ccccc2[nH]1"),  # benzimidazole
+            ]
+
+            # Check if heterocycles are present in reactants and product
+            heterocycle_in_reactants = False
+            heterocycle_in_product = False
+
+            for reactant in reactants:
+                mol = Chem.MolFromSmiles(reactant)
                 if mol:
-                    # Pattern for tosyl group
-                    tosyl_pattern = Chem.MolFromSmarts(
-                        "[#16](=[#8])(=[#8])-[#6]1:[#6]:[#6]:[#6](-[#6]):[#6]:[#6]:1"
-                    )
-                    # Pattern for pyrazole
-                    pyrazole_pattern = Chem.MolFromSmarts("[#7]1:[#6]:[#7]:[#6]:[#6]:1")
+                    for pattern in heterocycle_patterns:
+                        if mol.HasSubstructMatch(pattern):
+                            heterocycle_in_reactants = True
+                            print(f"Found heterocycle in reactant: {reactant}")
+                            break
 
-                    if mol.HasSubstructMatch(tosyl_pattern) and mol.HasSubstructMatch(
-                        pyrazole_pattern
-                    ):
-                        found_tosylated_pyrazole = True
-                        print("Found tosylated pyrazole fragment")
-            except:
-                pass
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                for pattern in heterocycle_patterns:
+                    if product_mol.HasSubstructMatch(pattern):
+                        heterocycle_in_product = True
+                        print(f"Found heterocycle in product: {product}")
+                        break
 
-        # Continue traversing
+            # If heterocycles are present in both reactants and product,
+            # and they're different, count as a modification
+            if heterocycle_in_reactants and heterocycle_in_product:
+                # This is a simplification - ideally we would check if the heterocycles
+                # are actually different, but that's more complex
+                heterocycle_modifications += 1
+                print("Heterocycle modification detected!")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return found_tosylated_pyrazole
+    return heterocycle_modifications > 0

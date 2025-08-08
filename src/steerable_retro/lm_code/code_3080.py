@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,82 +54,90 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route contains multiple cross-coupling reactions
-    (Suzuki, Stille, etc.) for C-C bond formation between aromatic rings.
+    Detects a synthetic strategy involving sequential SNAr reactions
+    on a halogenated heterocycle.
     """
-    cross_coupling_count = 0
-    cross_coupling_reactions = [
-        "Suzuki coupling with boronic acids",
-        "Suzuki coupling with boronic acids OTf",
-        "Suzuki coupling with sulfonic esters",
-        "Suzuki coupling with boronic esters OTf",
-        "Suzuki coupling with boronic esters",
-        "Stille reaction_vinyl",
-        "Stille reaction_aryl",
-        "Stille reaction_benzyl",
-        "Stille reaction_allyl",
-        "Stille reaction_vinyl OTf",
-        "Stille reaction_aryl OTf",
-        "Stille reaction_benzyl OTf",
-        "Stille reaction_allyl OTf",
-        "Stille reaction_other",
-        "Stille reaction_other OTf",
-        "Negishi coupling",
-        "Hiyama-Denmark Coupling",
-        "Kumada cross-coupling",
-        "Aryllithium cross-coupling",
-        "decarboxylative_coupling",
-    ]
+    snar_reactions = []
+    pyrimidine_molecules = []
 
-    def is_cross_coupling(rsmi):
-        try:
-            # Check if the reaction is any of the known cross-coupling types
-            for rxn_type in cross_coupling_reactions:
-                if checker.check_reaction(rxn_type, rsmi):
-                    print(f"Found {rxn_type} reaction: {rsmi}")
-                    return True
+    def dfs_traverse(node, depth=0):
+        nonlocal snar_reactions, pyrimidine_molecules
 
-            # If no specific reaction type matched, check for characteristic patterns
+        if node["type"] == "mol":
+            # Check for pyrimidine core
+            if checker.check_ring("pyrimidine", node["smiles"]):
+                pyrimidine_molecules.append((node["smiles"], depth))
+                print(f"Found pyrimidine at depth {depth}: {node['smiles']}")
+
+        elif node["type"] == "reaction":
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
+
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Create RDKit molecules from SMILES
-            reactant_mols = []
-            for r in reactants:
-                mol = Chem.MolFromSmiles(r)
-                if mol:
-                    reactant_mols.append(mol)
+            # Check for SNAr reaction
+            is_snar = False
 
-            # Check for presence of boron or tin reagents (Suzuki or Stille)
-            boron_pattern = Chem.MolFromSmarts("[c,C][B]([O,OH])[O,OH]")
-            tin_pattern = Chem.MolFromSmarts("[c,C][Sn]")
-            halogen_pattern = Chem.MolFromSmarts("[c,C][Cl,Br,I]")
+            # Check for nucleophilic aromatic substitution reactions
+            if (
+                checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
+                or checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
+                or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
+            ):
+                is_snar = True
 
-            has_boron = any(mol.HasSubstructMatch(boron_pattern) for mol in reactant_mols if mol)
-            has_tin = any(mol.HasSubstructMatch(tin_pattern) for mol in reactant_mols if mol)
-            has_halogen = any(
-                mol.HasSubstructMatch(halogen_pattern) for mol in reactant_mols if mol
-            )
+            # If not found in reaction dictionary, check for characteristic patterns
+            if not is_snar:
+                # Check if any reactant has a pyrimidine ring
+                has_pyrimidine_reactant = any(
+                    checker.check_ring("pyrimidine", r) for r in reactants
+                )
 
-            # If we have both a halogen compound and either boron or tin, likely a cross-coupling
-            return has_halogen and (has_boron or has_tin)
-        except Exception as e:
-            print(f"Error in is_cross_coupling: {e}")
-            return False
+                # Check if any reactant has an aromatic halide
+                has_aromatic_halide = any(checker.check_fg("Aromatic halide", r) for r in reactants)
 
-    def dfs_traverse(node):
-        nonlocal cross_coupling_count
+                # Check for nucleophiles (amine or alcohol)
+                has_nucleophile = any(
+                    checker.check_fg("Primary amine", r)
+                    or checker.check_fg("Secondary amine", r)
+                    or checker.check_fg("Phenol", r)
+                    or checker.check_fg("Primary alcohol", r)
+                    or checker.check_fg("Secondary alcohol", r)
+                    for r in reactants
+                )
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                if is_cross_coupling(rsmi):
-                    cross_coupling_count += 1
-                    print(f"Cross-coupling reaction count: {cross_coupling_count}")
+                # Check if product has a pyrimidine ring
+                has_pyrimidine_product = checker.check_ring("pyrimidine", product)
 
+                # If all conditions are met, it's likely an SNAr reaction
+                if (
+                    has_pyrimidine_reactant
+                    and has_aromatic_halide
+                    and has_nucleophile
+                    and has_pyrimidine_product
+                ):
+                    is_snar = True
+
+            if is_snar:
+                snar_reactions.append(depth)
+                print(f"Detected SNAr reaction at depth {depth}: {rsmi}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Total cross-coupling reactions found: {cross_coupling_count}")
-    return cross_coupling_count >= 2
+
+    # Check if the strategy is present (at least 2 SNAr reactions and pyrimidine core)
+    has_pyrimidine = len(pyrimidine_molecules) > 0
+    strategy_present = has_pyrimidine and len(snar_reactions) >= 2
+
+    print(f"Sequential SNAr strategy detection:")
+    print(f"  Pyrimidine present: {has_pyrimidine}")
+    print(f"  SNAr reactions: {len(snar_reactions)} at depths {snar_reactions}")
+    print(f"  Strategy present: {strategy_present}")
+
+    return strategy_present

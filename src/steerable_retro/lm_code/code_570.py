@@ -2,120 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the final step in the synthesis is a Boc deprotection.
-    In a retrosynthetic tree, the final synthetic step would be at the leaf reaction nodes.
+    Detects a synthetic strategy involving the formation of a heterocyclic ring
+    in the final step of the synthesis.
     """
-    # Define Boc deprotection reaction types
-    boc_deprotection_types = [
-        "Boc amine deprotection",
-        "Boc amine deprotection of guanidine",
-        "Boc amine deprotection to NH-NH2",
-        "Tert-butyl deprotection of amine",
-    ]
+    # Flag to track if heterocycle formation occurs in the final step
+    final_step_heterocycle_formation = False
 
-    # Helper function to check if a reaction is a Boc deprotection
-    def is_boc_deprotection(reaction_node):
-        if not reaction_node.get("metadata", {}).get("rsmi"):
-            return False
+    # Common heterocycle SMARTS patterns
+    triazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#7][#6][#6]1")
 
-        rsmi = reaction_node["metadata"]["rsmi"]
+    def dfs_traverse(node):
+        nonlocal final_step_heterocycle_formation
 
-        # Check if the reaction is a Boc deprotection using the checker function
-        for boc_type in boc_deprotection_types:
-            if checker.check_reaction(boc_type, rsmi):
-                print(f"Found {boc_type} as final step: {rsmi}")
-                return True
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Check if this is the final step (depth 0)
+            if node.get("depth", 0) == 0:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-        # If none of the specific Boc deprotection reactions match,
-        # check manually for Boc group removal
-        reactants = rsmi.split(">")[0].split(".")
-        product = rsmi.split(">")[-1]
+                # Check reactants and products for heterocycle patterns
+                reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-        # Check for Boc group in reactants but not in product
-        reactant_has_boc = any(checker.check_fg("Boc", r) for r in reactants if r)
-        product_has_boc = checker.check_fg("Boc", product) if product else False
+                if product_mol and reactants_mol:
+                    # Check if product has heterocycle but reactants don't
+                    if product_mol.HasSubstructMatch(
+                        triazole_pattern
+                    ) and not reactants_mol.HasSubstructMatch(triazole_pattern):
+                        final_step_heterocycle_formation = True
+                        print("Detected heterocycle formation in final step")
 
-        if reactant_has_boc and not product_has_boc:
-            print(f"Found Boc deprotection as final step (manual check): {rsmi}")
-            return True
-
-        return False
-
-    # Find all leaf reaction nodes (final steps in forward synthesis)
-    found_boc_deprotection = [False]  # Using list to allow modification in nested function
-
-    def find_leaf_reactions(node, is_child_of_reaction=False):
-        if node["type"] == "reaction":
-            # Check if this reaction node has only molecule children (leaf reaction)
-            all_children_are_mols = all(
-                child["type"] == "mol" for child in node.get("children", [])
-            )
-
-            if all_children_are_mols:
-                # This is a leaf reaction node (final step in forward synthesis)
-                if is_boc_deprotection(node):
-                    found_boc_deprotection[0] = True
-                    return
-
-            # Continue traversal for non-leaf reaction nodes
-            for child in node.get("children", []):
-                find_leaf_reactions(child, True)
-
-        elif node["type"] == "mol" and not is_child_of_reaction:
-            # For molecule nodes that aren't children of reaction nodes
-            for child in node.get("children", []):
-                find_leaf_reactions(child, False)
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child)
 
     # Start traversal from the root
-    find_leaf_reactions(route)
+    dfs_traverse(route)
 
-    return found_boc_deprotection[0]
+    if final_step_heterocycle_formation:
+        print("Confirmed heterocycle formation strategy in final step")
+    else:
+        print("No heterocycle formation detected in final step")
+
+    return final_step_heterocycle_formation

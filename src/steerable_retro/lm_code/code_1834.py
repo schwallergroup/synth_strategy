@@ -2,78 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis where fragments containing heterocycles (oxazole, pyrazole)
-    are coupled in a late stage.
+    Detects a linear synthesis strategy maintaining a fluorinated aromatic system throughout.
     """
-    # Track if we found the pattern
-    found_pattern = False
-    # Track if fragments contain heterocycles
-    fragment_has_oxazole = False
-    fragment_has_pyrazole = False
-    # Track if coupling occurs late stage
-    late_stage_coupling = False
+    # Track the number of reactions and whether they're all linear
+    reaction_count = 0
+    is_linear = True
+    maintains_fluorinated_aromatic = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_pattern, fragment_has_oxazole, fragment_has_pyrazole, late_stage_coupling
+    def dfs_traverse(node):
+        nonlocal reaction_count, is_linear, maintains_fluorinated_aromatic
 
-        if node["type"] == "mol":
-            # Check molecule for heterocycles
-            if "smiles" in node:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    # Check for oxazole
-                    oxazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#6][#6][#8]1")
-                    if mol.HasSubstructMatch(oxazole_pattern):
-                        fragment_has_oxazole = True
-                        print(f"Found oxazole-containing fragment")
+        if node["type"] == "reaction":
+            reaction_count += 1
 
-                    # Check for pyrazole
-                    pyrazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#7][#6][#6]1")
-                    if mol.HasSubstructMatch(pyrazole_pattern):
-                        fragment_has_pyrazole = True
-                        print(f"Found pyrazole-containing fragment")
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        elif node["type"] == "reaction" and depth <= 1:  # Late stage reaction
-            # Check if this is a coupling reaction
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            # Check if more than one major fragment in product (non-linear)
+            # Simplistic check: if product has more than one "." separator
+            if product_smiles.count(".") > 0:
+                is_linear = False
 
-                if len(reactants) > 1:
-                    late_stage_coupling = True
-                    print(f"Found late-stage coupling at depth {depth}")
+            # Check for fluorinated aromatic system
+            product = Chem.MolFromSmiles(product_smiles)
+            fluoro_aromatic_pattern = Chem.MolFromSmarts("[c][F]")
 
-        # Process children
+            if product is not None and not product.HasSubstructMatch(fluoro_aromatic_pattern):
+                maintains_fluorinated_aromatic = False
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if we have the pattern we're looking for
-    if fragment_has_oxazole and fragment_has_pyrazole and late_stage_coupling:
-        found_pattern = True
-        print("Found coupling of heterocycle-containing fragments")
-
-    return found_pattern
+    # Return True if synthesis is linear with at least 3 steps and maintains fluorinated aromatic
+    return is_linear and reaction_count >= 3 and maintains_fluorinated_aromatic

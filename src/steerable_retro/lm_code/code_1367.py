@@ -2,82 +2,151 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving exchange between different halogenated functional groups.
+    This function detects if C-N bond formation occurs in the last step (depth 0).
     """
-    has_halogen_exchange = False
+    # List of C-N bond forming reactions
+    cn_bond_forming_reactions = [
+        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
+        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+        "Aminolysis of esters",
+        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
+        "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
+        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
+        "Reductive amination with aldehyde",
+        "Reductive amination with ketone",
+        "Reductive amination with alcohol",
+        "Alkylation of amines",
+        "N-alkylation of primary amines with alkyl halides",
+        "N-alkylation of secondary amines with alkyl halides",
+        "Ugi reaction",
+        "Goldberg coupling",
+        "Ullmann-Goldberg Substitution amine",
+    ]
 
-    # SMARTS patterns
-    chloride_pattern = Chem.MolFromSmarts("[#6]-[Cl]")
-    bromide_pattern = Chem.MolFromSmarts("[#6]-[Br]")
-    alcohol_pattern = Chem.MolFromSmarts("[#6]-[OH]")
+    # Track if we found a late-stage C-N bond formation
+    late_stage_cn_found = False
 
-    def dfs_traverse(node):
-        nonlocal has_halogen_exchange
+    def check_cn_bond_formation(reaction_node):
+        """Check if this reaction forms a C-N bond"""
+        if "metadata" not in reaction_node or "rsmi" not in reaction_node["metadata"]:
+            return False
+
+        rsmi = reaction_node["metadata"]["rsmi"]
+
+        # Check if this is a known C-N bond forming reaction
+        for reaction_type in cn_bond_forming_reactions:
+            if checker.check_reaction(reaction_type, rsmi):
+                print(f"Detected C-N bond forming reaction: {reaction_type}")
+                return True
+
+        # If not a known reaction type, check for C-N bond formation manually
+        try:
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
+
+            # Check if product has nitrogen-containing functional groups
+            product_has_n_fg = (
+                checker.check_fg("Primary amine", product_part)
+                or checker.check_fg("Secondary amine", product_part)
+                or checker.check_fg("Tertiary amine", product_part)
+                or checker.check_fg("Primary amide", product_part)
+                or checker.check_fg("Secondary amide", product_part)
+                or checker.check_fg("Tertiary amide", product_part)
+                or checker.check_fg("Aniline", product_part)
+            )
+
+            if product_has_n_fg:
+                # Split reactants and check if all have the same N-containing functional groups
+                reactants = reactants_part.split(".")
+
+                # Check if at least one reactant doesn't have N-containing functional groups
+                # This would indicate N was introduced in this step
+                for reactant in reactants:
+                    if not (
+                        checker.check_fg("Primary amine", reactant)
+                        or checker.check_fg("Secondary amine", reactant)
+                        or checker.check_fg("Tertiary amine", reactant)
+                        or checker.check_fg("Primary amide", reactant)
+                        or checker.check_fg("Secondary amide", reactant)
+                        or checker.check_fg("Tertiary amide", reactant)
+                        or checker.check_fg("Aniline", reactant)
+                    ):
+                        print("Detected C-N bond formation through functional group analysis")
+                        return True
+        except Exception as e:
+            print(f"Error analyzing reaction: {e}")
+
+        return False
+
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_cn_found
+
+        print(f"Traversing node type: {node['type']} at depth {depth}")
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            # Check if this is a late-stage reaction (depth 0 or 1)
+            if depth <= 1:
+                if check_cn_bond_formation(node):
+                    print(f"Found late-stage C-N bond formation at depth {depth}")
+                    late_stage_cn_found = True
 
-            # Convert to RDKit molecules
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
-
-            if product_mol and reactant_mols:
-                # Check for various halogen exchanges
-                reactant_has_chloride = any(
-                    r and r.HasSubstructMatch(chloride_pattern) for r in reactant_mols
-                )
-                reactant_has_bromide = any(
-                    r and r.HasSubstructMatch(bromide_pattern) for r in reactant_mols
-                )
-                reactant_has_alcohol = any(
-                    r and r.HasSubstructMatch(alcohol_pattern) for r in reactant_mols
-                )
-
-                product_has_chloride = product_mol and product_mol.HasSubstructMatch(
-                    chloride_pattern
-                )
-                product_has_bromide = product_mol and product_mol.HasSubstructMatch(bromide_pattern)
-                product_has_alcohol = product_mol and product_mol.HasSubstructMatch(alcohol_pattern)
-
-                # Check for specific exchanges
-                if (
-                    (reactant_has_chloride and (product_has_alcohol or product_has_bromide))
-                    or (reactant_has_bromide and (product_has_alcohol or product_has_chloride))
-                    or (reactant_has_alcohol and (product_has_chloride or product_has_bromide))
-                ):
-                    has_halogen_exchange = True
-                    print("Detected halogen exchange")
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-
-    print(f"Halogen exchange strategy detected: {has_halogen_exchange}")
-    return has_halogen_exchange
+    return late_stage_cn_found

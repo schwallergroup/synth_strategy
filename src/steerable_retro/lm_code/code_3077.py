@@ -2,60 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic route that includes reduction of a nitro group to an amine.
+    This function detects if the synthesis follows a linear (non-convergent) strategy.
     """
-    has_nitro_reduction = False
+    # Track the maximum branching factor in the reaction tree
+    max_branching = 0
 
     def dfs_traverse(node):
-        nonlocal has_nitro_reduction
+        nonlocal max_branching
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
 
-                # Check for nitro group in reactants
-                nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
-                aniline_pattern = Chem.MolFromSmarts("c-[NH2]")
+                # Count number of reactants (branching factor)
+                branching = len(reactants)
+                max_branching = max(max_branching, branching)
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
-                product = Chem.MolFromSmiles(product_str) if product_str else None
+                if branching > 1:
+                    print(f"Found reaction with {branching} reactants")
 
-                if product and any(
-                    r and r.HasSubstructMatch(nitro_pattern) for r in reactants if r
-                ):
-                    if product.HasSubstructMatch(aniline_pattern):
-                        has_nitro_reduction = True
-                        print("Found nitro reduction to aniline")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    print(f"Nitro reduction strategy detection result: {has_nitro_reduction}")
-    return has_nitro_reduction
+    # If max branching is 1, it's a strictly linear synthesis
+    # If max branching is 2, it's mostly linear with some convergent steps
+    # If max branching > 2, it's a more convergent synthesis
+    is_linear = max_branching <= 2
+    print(f"Maximum branching factor: {max_branching}, Linear synthesis: {is_linear}")
+    return is_linear

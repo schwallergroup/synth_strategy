@@ -2,62 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthesis that includes a nitrile reduction to form an amine.
+    This function detects if the synthesis follows a convergent approach
+    where two or more complex fragments are combined in the final step.
     """
-    has_nitrile_reduction = False
+    is_convergent = False
 
     def dfs_traverse(node):
-        nonlocal has_nitrile_reduction
+        nonlocal is_convergent
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Get depth information
+            depth = 0
+            if "depth" in node:
+                depth = node["depth"]
+            elif "metadata" in node and "depth" in node["metadata"]:
+                depth = node["metadata"]["depth"]
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+            # Check if this is the final reaction (depth 0)
+            if depth == 0:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                reactants = reactants_part.split(".")
 
-            # Check for nitrile reduction
-            nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
-            amine_pattern = Chem.MolFromSmarts("[C][N;H2]")
+                # If there are 2 or more complex reactants in the final step
+                if len(reactants) >= 2:
+                    # Check if reactants are complex (not simple reagents)
+                    complex_reactants = 0
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.GetNumAtoms() > 6:  # Arbitrary threshold for "complex"
+                            complex_reactants += 1
 
-            has_nitrile = any(
-                r is not None and r.HasSubstructMatch(nitrile_pattern) for r in reactants
-            )
-            has_amine_product = product is not None and product.HasSubstructMatch(amine_pattern)
+                    if complex_reactants >= 2:
+                        print(
+                            "Detected convergent synthesis with multiple complex fragments in final step"
+                        )
+                        is_convergent = True
 
-            if has_nitrile and has_amine_product:
-                has_nitrile_reduction = True
-                print("Detected nitrile reduction")
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal from the root
     dfs_traverse(route)
-
-    return has_nitrile_reduction
+    return is_convergent

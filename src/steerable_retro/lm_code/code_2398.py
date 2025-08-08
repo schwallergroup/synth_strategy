@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,54 +54,113 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if an indole scaffold is preserved throughout the synthesis route.
+    This function detects if the final step in the synthesis involves
+    urea formation (depth 1 in retrosynthetic analysis).
     """
-    indole_present_in_all_products = True
+    late_urea_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal indole_present_in_all_products
+        nonlocal late_urea_formation
 
-        if not indole_present_in_all_products:
-            return  # Early termination if we already found a violation
-
-        if node["type"] == "mol" and not node.get("in_stock", False):
-            # Check if this molecule contains an indole scaffold
-            mol_smiles = node["smiles"]
-            if not checker.check_ring("indole", mol_smiles):
-                indole_present_in_all_products = False
-                print(f"Molecule without indole scaffold found: {mol_smiles}")
-                return
-
+        # Debug the current node
+        if node["type"] == "mol":
+            print(f"Examining molecule at depth {depth}: {node['smiles'][:30]}...")
         elif node["type"] == "reaction":
-            # For reaction nodes, check if the indole scaffold is preserved
-            try:
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                print(f"Examining reaction at depth {depth}: {node['metadata']['rsmi'][:30]}...")
+
+        # Check if this is a reaction node at depth 1 (the reaction producing the final product)
+        if node["type"] == "reaction" and depth == 1:
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if product has indole
-                if not checker.check_ring("indole", product_smiles):
-                    indole_present_in_all_products = False
-                    print(f"Product without indole scaffold found in reaction: {product_smiles}")
-                    return
+                print(f"Checking final reaction: {rsmi[:50]}...")
 
-                # Check if at least one reactant has indole
-                # This ensures the indole scaffold is not created in this reaction
-                indole_in_reactants = any(checker.check_ring("indole", r) for r in reactants_smiles)
-                if not indole_in_reactants:
-                    indole_present_in_all_products = False
-                    print(
-                        f"No reactant with indole scaffold found in reaction. Indole was created, not preserved."
+                # Check if product contains urea or thiourea
+                has_urea = checker.check_fg("Urea", product)
+                has_thiourea = checker.check_fg("Thiourea", product)
+
+                if has_urea:
+                    print("Product contains urea")
+                if has_thiourea:
+                    print("Product contains thiourea")
+
+                if has_urea or has_thiourea:
+                    # Check if the reaction is a known urea formation reaction
+                    is_urea_reaction = (
+                        checker.check_reaction(
+                            "Urea synthesis via isocyanate and primary amine", rsmi
+                        )
+                        or checker.check_reaction(
+                            "Urea synthesis via isocyanate and secondary amine", rsmi
+                        )
+                        or checker.check_reaction("Urea synthesis via isocyanate and diazo", rsmi)
+                        or checker.check_reaction(
+                            "Urea synthesis via isocyanate and sulfonamide", rsmi
+                        )
+                        or checker.check_reaction("{urea}", rsmi)
+                        or checker.check_reaction("thiourea", rsmi)
                     )
-                    return
 
-            except (KeyError, IndexError) as e:
-                print(f"Error processing reaction node: {e}")
+                    # If standard reaction check fails, try alternative detection
+                    if not is_urea_reaction:
+                        # Check if any reactant contains isocyanate
+                        isocyanate_in_reactants = False
+                        for reactant in reactants:
+                            if checker.check_fg("Isocyanate", reactant):
+                                isocyanate_in_reactants = True
+                                print("Isocyanate found in reactants")
+                                break
 
-        # Continue traversal
+                        # If isocyanate is in reactants and urea is in product but not in reactants,
+                        # this is likely a urea formation reaction
+                        if isocyanate_in_reactants:
+                            is_urea_reaction = True
+                            print("Detected urea formation via isocyanate reactant")
+
+                    if is_urea_reaction:
+                        print("Reaction is a urea formation type")
+
+                        # Verify that urea/thiourea is formed in this reaction (not present in reactants)
+                        urea_in_reactants = False
+                        for i, reactant in enumerate(reactants):
+                            if checker.check_fg("Urea", reactant) or checker.check_fg(
+                                "Thiourea", reactant
+                            ):
+                                print(f"Urea/thiourea found in reactant {i}")
+                                urea_in_reactants = True
+                                break
+
+                        if not urea_in_reactants:
+                            print("Confirmed: Urea/thiourea is formed in this reaction")
+
+                            # Verify this reaction leads to the final product (depth 0)
+                            leads_to_final = False
+                            for child in node.get("children", []):
+                                if child["type"] == "mol" and depth == 1:
+                                    leads_to_final = True
+                                    break
+
+                            if leads_to_final:
+                                print("Detected late-stage urea formation")
+                                late_urea_formation = True
+                            else:
+                                print("Reaction doesn't lead to final product")
+                    else:
+                        print("Not a known urea formation reaction")
+                else:
+                    print("Product doesn't contain urea or thiourea")
+
+        # Traverse children with increased depth
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from root
     dfs_traverse(route)
-    print(f"Indole scaffold preservation: {indole_present_in_all_products}")
-    return indole_present_in_all_products
+
+    if not late_urea_formation:
+        print("No late-stage urea formation detected")
+
+    return late_urea_formation

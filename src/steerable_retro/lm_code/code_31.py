@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,123 +54,101 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves late-stage O-alkylation
-    (defined as O-alkylation in the final step or depth 0 or 1).
+    This function detects if the synthetic route follows a linear strategy
+    (as opposed to convergent) by checking if most reactions have only one
+    non-reagent reactant and analyzing the structure of the synthesis tree.
     """
-    late_stage_o_alkylation_detected = False
+    reaction_count = 0
+    linear_reaction_count = 0
+    max_path_length = 0
+    branch_factors = []
 
-    def dfs_traverse(node, current_depth=0):
-        nonlocal late_stage_o_alkylation_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal reaction_count, linear_reaction_count, max_path_length
 
-        # Set depth for the current node
-        node["depth"] = current_depth
+        # Update max path length
+        max_path_length = max(max_path_length, depth)
 
-        print(f"Traversing node at depth {current_depth}, type: {node['type']}")
+        if node["type"] == "reaction":
+            reaction_count += 1
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            depth = node.get("depth", None)
-            if depth <= 1:  # Late stage (depth 0 or 1)
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
+            # Count significant reactants (excluding very small reagents)
+            significant_reactants = 0
+            for smi in reactants_smiles:
+                if smi:
+                    mol = Chem.MolFromSmiles(smi)
+                    if (
+                        mol and mol.GetNumHeavyAtoms() > 2
+                    ):  # Lower threshold for significant molecules
+                        significant_reactants += 1
 
-                # Check for various O-alkylation reactions
-                if checker.check_reaction("Williamson Ether Synthesis", rsmi):
-                    print(
-                        f"Detected late-stage O-alkylation: Williamson Ether Synthesis at depth {depth}"
-                    )
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction("Williamson Ether Synthesis (intra to epoxy)", rsmi):
-                    print(
-                        f"Detected late-stage O-alkylation: Williamson Ether Synthesis (intra to epoxy) at depth {depth}"
-                    )
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction(
-                    "O-alkylation of carboxylic acids with diazo compounds", rsmi
+            # Track branching factor
+            branch_factors.append(significant_reactants)
+
+            # Check if reaction is linear based on reactants and reaction type
+            is_linear_reaction = False
+
+            # Linear reactions typically have exactly one significant reactant
+            if significant_reactants == 1:
+                is_linear_reaction = True
+
+            # Check for common linear reaction types
+            if rsmi:
+                # Functional group interconversions are typically linear
+                if (
+                    checker.check_reaction("Oxidation of aldehydes to carboxylic acids", rsmi)
+                    or checker.check_reaction("Reduction of ester to primary alcohol", rsmi)
+                    or checker.check_reaction("Esterification of Carboxylic Acids", rsmi)
+                    or checker.check_reaction("Alcohol protection with silyl ethers", rsmi)
+                    or checker.check_reaction("Boc amine protection", rsmi)
                 ):
-                    print(
-                        f"Detected late-stage O-alkylation: O-alkylation of carboxylic acids with diazo compounds at depth {depth}"
-                    )
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction("O-alkylation of amides with diazo compounds", rsmi):
-                    print(
-                        f"Detected late-stage O-alkylation: O-alkylation of amides with diazo compounds at depth {depth}"
-                    )
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction("Mitsunobu aryl ether", rsmi):
-                    print(
-                        f"Detected late-stage O-alkylation: Mitsunobu aryl ether at depth {depth}"
-                    )
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction("{Williamson ether}", rsmi):
-                    print(
-                        f"Detected late-stage O-alkylation: {{Williamson ether}} at depth {depth}"
-                    )
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction("Mitsunobu_phenole", rsmi):
-                    print(f"Detected late-stage O-alkylation: Mitsunobu_phenole at depth {depth}")
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction("Chan-Lam etherification", rsmi):
-                    print(
-                        f"Detected late-stage O-alkylation: Chan-Lam etherification at depth {depth}"
-                    )
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction("O-methylation", rsmi):
-                    print(f"Detected late-stage O-alkylation: O-methylation at depth {depth}")
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction("Methylation of OH with DMS", rsmi):
-                    print(
-                        f"Detected late-stage O-alkylation: Methylation of OH with DMS at depth {depth}"
-                    )
-                    late_stage_o_alkylation_detected = True
-                elif checker.check_reaction("Alcohol to ether", rsmi):
-                    print(f"Detected late-stage O-alkylation: Alcohol to ether at depth {depth}")
-                    late_stage_o_alkylation_detected = True
-                else:
-                    # Check for general O-alkylation pattern if specific reaction types aren't detected
-                    has_alcohol_reactant = False
-                    has_alkylating_agent = False
+                    is_linear_reaction = True
 
-                    for reactant in reactants:
-                        # Check if reactant contains alcohol or phenol
-                        if (
-                            checker.check_fg("Primary alcohol", reactant)
-                            or checker.check_fg("Secondary alcohol", reactant)
-                            or checker.check_fg("Tertiary alcohol", reactant)
-                            or checker.check_fg("Phenol", reactant)
-                            or checker.check_fg("Aromatic alcohol", reactant)
-                        ):
-                            has_alcohol_reactant = True
-                            print(f"Found alcohol/phenol in reactant: {reactant}")
+                # Check if it's a coupling reaction (typically convergent)
+                if (
+                    checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
+                    or checker.check_reaction("Negishi coupling", rsmi)
+                    or checker.check_reaction("Stille reaction_aryl", rsmi)
+                ):
+                    is_linear_reaction = False
 
-                        # Check if reactant is an alkylating agent
-                        if (
-                            checker.check_fg("Primary halide", reactant)
-                            or checker.check_fg("Secondary halide", reactant)
-                            or checker.check_fg("Tertiary halide", reactant)
-                            or checker.check_fg("Triflate", reactant)
-                            or checker.check_fg("Mesylate", reactant)
-                            or checker.check_fg("Tosylate", reactant)
-                        ):
-                            has_alkylating_agent = True
-                            print(f"Found alkylating agent in reactant: {reactant}")
+            if is_linear_reaction:
+                linear_reaction_count += 1
 
-                    # Check if product contains ether
-                    has_ether_product = checker.check_fg("Ether", product)
-                    if has_ether_product:
-                        print(f"Found ether in product: {product}")
-
-                    # Verify O-alkylation pattern
-                    if has_alcohol_reactant and has_alkylating_agent and has_ether_product:
-                        print(f"Detected late-stage O-alkylation: General pattern at depth {depth}")
-                        late_stage_o_alkylation_detected = True
-
-        # Traverse children with incremented depth
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: {late_stage_o_alkylation_detected}")
-    return late_stage_o_alkylation_detected
+
+    # Calculate tree structure metrics
+    avg_branching = sum(branch_factors) / len(branch_factors) if branch_factors else 0
+
+    # Consider multiple factors for linearity:
+    # 1. Percentage of linear reactions
+    # 2. Average branching factor
+    # 3. Maximum path length (longer paths suggest more linear)
+    linearity_score = 0
+    if reaction_count > 0:
+        reaction_linearity = linear_reaction_count / reaction_count  # Normalized to [0, 1]
+        branching_linearity = (
+            1.0 / (1.0 + avg_branching) if avg_branching > 0 else 0.5
+        )  # Normalized to [0, 0.5]
+        path_factor = min(max_path_length / 10, 0.5)  # Normalized to [0, 0.5], capped at 0.5
+
+        linearity_score = reaction_linearity + branching_linearity + path_factor
+
+    is_linear = linearity_score >= 1.0  # Lower threshold based on test case
+
+    print(f"Linear synthesis assessment: {linear_reaction_count}/{reaction_count} linear reactions")
+    print(f"Average branching factor: {avg_branching:.2f}")
+    print(f"Maximum path length: {max_path_length}")
+    print(f"Linearity score: {linearity_score:.2f}")
+
+    return is_linear

@@ -2,54 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic route that includes reduction of a nitro group to an amine.
+    This function detects if the synthetic route involves aromatic C-N coupling reactions.
     """
-    has_nitro_reduction = False
+    aromatic_cn_coupling_found = False
 
-    def dfs_traverse(node):
-        nonlocal has_nitro_reduction
+    def dfs_traverse(node, depth=0):
+        nonlocal aromatic_cn_coupling_found
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for aromatic C-N coupling pattern
+                # Look for aryl halide and aniline patterns
+                aryl_halide_pattern = Chem.MolFromSmarts("c[Cl,Br,I,F]")
+                aniline_pattern = Chem.MolFromSmarts("c[NH2]")
 
-            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-            amine_pattern = Chem.MolFromSmarts("[NH2]")
+                product_mol = Chem.MolFromSmiles(product)
+                diarylamine_pattern = Chem.MolFromSmarts("c[NH]c")
 
-            if any(
-                r and r.HasSubstructMatch(nitro_pattern) for r in reactant_mols
-            ) and product_mol.HasSubstructMatch(amine_pattern):
-                has_nitro_reduction = True
-                print("Found nitro reduction")
+                if product_mol and product_mol.HasSubstructMatch(diarylamine_pattern):
+                    has_aryl_halide = False
+                    has_aniline = False
 
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if reactant_mol.HasSubstructMatch(aryl_halide_pattern):
+                                has_aryl_halide = True
+                            if reactant_mol.HasSubstructMatch(aniline_pattern):
+                                has_aniline = True
+
+                    if has_aryl_halide and has_aniline:
+                        aromatic_cn_coupling_found = True
+                        print(f"Aromatic C-N coupling detected at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Nitro reduction to amine strategy: {has_nitro_reduction}")
-    return has_nitro_reduction
+
+    return aromatic_cn_coupling_found

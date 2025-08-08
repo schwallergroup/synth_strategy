@@ -2,82 +2,137 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects if the synthesis route involves late-stage introduction of a tertiary amine-containing group
-    (like dimethylaminoethyl) via alkylation of a hydroxyl group in the final 1-2 steps.
+    This function detects aromatic sulfonation (introduction of sulfonyl group to aromatic ring).
+    Aromatic sulfonation typically involves the introduction of a sulfonic acid (SO3H) group
+    to an aromatic ring, or related transformations involving sulfonyl groups.
     """
-    tertiary_amine_introduced = False
-    hydroxyl_alkylation = False
-    late_stage = False
+    found_sulfonation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal tertiary_amine_introduced, hydroxyl_alkylation, late_stage
+    def dfs_traverse(node):
+        nonlocal found_sulfonation
 
-        if node["type"] == "reaction" and depth <= 1:  # Only check reactions in the final 2 steps
-            late_stage = True
+        if found_sulfonation:
+            return
 
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for tertiary amine pattern in reactants
-                tertiary_amine_pattern = Chem.MolFromSmarts("[#6][#6][#7]([#6])[#6]")
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(tertiary_amine_pattern):
-                            tertiary_amine_introduced = True
-                            print(f"Found tertiary amine in reactant: {reactant}")
-                            break
-                    except:
-                        continue
+            # Check for aromatic sulfonation using the checker function
+            if checker.check_reaction("Aromatic sulfonyl chlorination", rsmi):
+                print(f"Found aromatic sulfonation via reaction check: {rsmi}")
+                found_sulfonation = True
+                return
 
-                # Check for hydroxyl alkylation
-                try:
-                    for child in node.get("children", []):
-                        if child["type"] == "mol":
-                            reactant_mol = Chem.MolFromSmiles(child["smiles"])
-                            if reactant_mol:
-                                hydroxyl_pattern = Chem.MolFromSmarts("[#8H]")
-                                if reactant_mol.HasSubstructMatch(hydroxyl_pattern):
-                                    product_mol = Chem.MolFromSmiles(product)
-                                    ether_pattern = Chem.MolFromSmarts("[#8][#6][#6]")
-                                    if product_mol and product_mol.HasSubstructMatch(ether_pattern):
-                                        hydroxyl_alkylation = True
-                                        print(
-                                            f"Found hydroxyl alkylation: {child['smiles']} -> {product}"
-                                        )
-                except:
-                    pass
+            # Check for sulfonic acid or sulfonate formation on aromatic rings
+            has_aromatic_in_reactants = any(
+                checker.check_ring("benzene", reactant) for reactant in reactants
+            )
+            has_aromatic_in_product = checker.check_ring("benzene", product)
 
-        # Continue traversing
+            # Check for sulfonic acid or sulfonate in product
+            has_sulfonic_acid_in_product = checker.check_fg(
+                "Sulfonic acid", product
+            ) or checker.check_fg("Sulfonate", product)
+
+            # Check for sulfonyl halide in reactants (could be used for sulfonation)
+            has_sulfonyl_halide_in_reactants = any(
+                checker.check_fg("Sulfonyl halide", reactant) for reactant in reactants
+            )
+
+            # Check for sulfonamide formation (a related sulfonation process)
+            has_sulfonamide_in_product = checker.check_fg("Sulfonamide", product)
+
+            # Check for sulfonate esters
+            has_sulfonate_in_product = checker.check_fg("Sulfonate", product)
+
+            # Check for SO3 or related reagents in reactants
+            has_so3_reagent = any("SO3" in reactant or "SO2" in reactant for reactant in reactants)
+
+            # Various sulfonation scenarios
+            if has_aromatic_in_reactants and has_aromatic_in_product:
+                if has_sulfonic_acid_in_product and not any(
+                    checker.check_fg("Sulfonic acid", reactant) for reactant in reactants
+                ):
+                    print(f"Found aromatic sulfonation (sulfonic acid formation): {rsmi}")
+                    found_sulfonation = True
+                    return
+
+                if has_sulfonate_in_product and not any(
+                    checker.check_fg("Sulfonate", reactant) for reactant in reactants
+                ):
+                    print(f"Found aromatic sulfonation (sulfonate formation): {rsmi}")
+                    found_sulfonation = True
+                    return
+
+                if has_sulfonyl_halide_in_reactants and has_sulfonamide_in_product:
+                    print(f"Found aromatic sulfonamide formation: {rsmi}")
+                    found_sulfonation = True
+                    return
+
+                if has_so3_reagent and (has_sulfonic_acid_in_product or has_sulfonate_in_product):
+                    print(f"Found direct aromatic sulfonation with SO3: {rsmi}")
+                    found_sulfonation = True
+                    return
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    result = tertiary_amine_introduced and hydroxyl_alkylation and late_stage
-    print(f"Late-stage tertiary amine introduction detected: {result}")
-    return result
+    return found_sulfonation

@@ -2,84 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving late-stage amide formation
-    (in the first half of the synthesis) from an ester and an amine.
+    Detects a synthetic strategy that uses tert-butyl group for protection.
     """
-    amide_formation_detected = False
+    found_tert_butyl = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_formation_detected
+    def dfs_traverse(node):
+        nonlocal found_tert_butyl
 
-        if node["type"] == "reaction" and depth <= 1:  # Late stage (low depth)
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                # Check for ester in reactants
-                ester_pattern = Chem.MolFromSmarts("C(=O)OC")
-                ester_found = False
-                for reactant in reactants:
-                    if (
-                        reactant
-                        and Chem.MolFromSmiles(reactant)
-                        and Chem.MolFromSmiles(reactant).HasSubstructMatch(ester_pattern)
-                    ):
-                        ester_found = True
-                        break
+            product = rsmi.split(">")[-1]
 
-                # Check for amine in reactants
-                amine_pattern = Chem.MolFromSmarts("[NH2]C")
-                amine_found = False
-                for reactant in reactants:
-                    if (
-                        reactant
-                        and Chem.MolFromSmiles(reactant)
-                        and Chem.MolFromSmiles(reactant).HasSubstructMatch(amine_pattern)
-                    ):
-                        amine_found = True
-                        break
+            # Check for tert-butyl ester
+            tert_butyl_pattern = Chem.MolFromSmarts("[C](=O)OC(C)(C)C")
+            product_mol = Chem.MolFromSmiles(product)
 
-                # Check for amide in product
-                amide_pattern = Chem.MolFromSmarts("C(=O)N")
-                amide_found = False
-                if (
-                    product
-                    and Chem.MolFromSmiles(product)
-                    and Chem.MolFromSmiles(product).HasSubstructMatch(amide_pattern)
-                ):
-                    amide_found = True
+            if product_mol and product_mol.HasSubstructMatch(tert_butyl_pattern):
+                print("Found tert-butyl protection")
+                found_tert_butyl = True
 
-                if ester_found and amine_found and amide_found:
-                    print("Late-stage amide formation detected at depth", depth)
-                    amide_formation_detected = True
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Call dfs_traverse on the root node
+    # Start traversal
     dfs_traverse(route)
 
-    return amide_formation_detected
+    return found_tert_butyl

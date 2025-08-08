@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,51 +54,83 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route includes Friedel-Crafts acylation.
-    Looks for addition of an acyl group to an aromatic ring.
+    This function detects if a Suzuki coupling is used in the synthesis.
+    It looks for C-C bond formation between aromatic rings with boronic acid and aryl halide reactants.
     """
-    acylation_found = False
+    suzuki_coupling_found = False
 
-    def dfs_traverse(node):
-        nonlocal acylation_found
+    def dfs_traverse(node, depth=0):
+        nonlocal suzuki_coupling_found
+
+        print(f"Traversing node at depth {depth}: {node.get('type', 'unknown')}")
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
+            print(f"Checking reaction SMILES: {rsmi}")
 
-            # Use the checker function to directly identify Friedel-Crafts acylation
-            if checker.check_reaction("Friedel-Crafts acylation", rsmi):
-                print(f"Friedel-Crafts acylation detected: {rsmi}")
-                acylation_found = True
+            # Check each Suzuki reaction type individually
+            suzuki_types = [
+                "Suzuki coupling with boronic acids",
+                "Suzuki coupling with boronic acids OTf",
+                "Suzuki coupling with boronic esters",
+                "Suzuki coupling with boronic esters OTf",
+                "Suzuki coupling with sulfonic esters",
+                "{Suzuki}",
+            ]
 
-            # As a fallback, check for the reaction components manually
-            if not acylation_found:
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            for suzuki_type in suzuki_types:
+                is_suzuki = checker.check_reaction(suzuki_type, rsmi)
+                print(f"Checking {suzuki_type}: {is_suzuki}")
+                if is_suzuki:
+                    suzuki_coupling_found = True
+                    print(f"Found Suzuki coupling: {rsmi}")
+                    break
 
-                # Check if product has a ketone attached to an aromatic ring
-                if checker.check_fg("Ketone", product) and any(
-                    checker.check_ring(ring, product)
-                    for ring in ["benzene", "naphthalene", "anthracene"]
-                ):
+            # If not detected by reaction checkers, manually check for Suzuki pattern
+            if not suzuki_coupling_found:
+                try:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-                    # Check if one reactant is an acyl halide and another is an aromatic compound
-                    has_acyl_halide = any(
-                        checker.check_fg("Acyl halide", reactant) for reactant in reactants
+                    # Check for boronic acid or ester in reactants
+                    boronic_present = any(
+                        checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
+                        for r in reactants
+                        if r
                     )
-                    has_aromatic = any(
-                        any(
-                            checker.check_ring(ring, reactant)
-                            for ring in ["benzene", "naphthalene", "anthracene"]
+
+                    # Check for aryl halide or triflate in reactants
+                    halide_present = any(
+                        checker.check_fg("Aromatic halide", r) or checker.check_fg("Triflate", r)
+                        for r in reactants
+                        if r
+                    )
+
+                    print(f"Boronic present: {boronic_present}, Halide present: {halide_present}")
+
+                    # Check for Pd catalyst in reagents
+                    reagents = rsmi.split(">")[1].split(".")
+                    pd_present = any("[Pd]" in r for r in reagents if r)
+                    phosphine_present = any("P(" in r for r in reagents if r)
+
+                    print(f"Pd present: {pd_present}, Phosphine present: {phosphine_present}")
+
+                    # If we have boronic acid/ester, aryl halide, and Pd catalyst, it's likely a Suzuki coupling
+                    if boronic_present and halide_present and (pd_present or phosphine_present):
+                        suzuki_coupling_found = True
+                        print(
+                            f"Manually identified Suzuki coupling with boronic compound and halide/triflate"
                         )
-                        for reactant in reactants
-                    )
+                except Exception as e:
+                    print(f"Error processing reaction SMILES: {e}")
 
-                    if has_acyl_halide and has_aromatic:
-                        print(f"Friedel-Crafts acylation components detected: {rsmi}")
-                        acylation_found = True
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
+    print("Starting traversal of synthesis route")
     dfs_traverse(route)
-    return acylation_found
+
+    print(f"Suzuki coupling found: {suzuki_coupling_found}")
+    return suzuki_coupling_found

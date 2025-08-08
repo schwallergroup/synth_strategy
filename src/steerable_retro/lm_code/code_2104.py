@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,80 +54,89 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthetic route builds a complex system with 4+ aromatic/heteroaromatic rings.
+    This function detects a synthetic strategy with late-stage cyanation (final step)
+    following multiple halogenation steps, starting from nitro reduction.
     """
-
-    def count_aromatic_rings(smiles):
-        mol = Chem.MolFromSmiles(smiles)
-        if not mol:
-            print(f"Failed to parse SMILES: {smiles}")
-            return 0
-
-        # Get ring information
-        ring_info = mol.GetRingInfo().AtomRings()
-        aromatic_ring_count = 0
-
-        # Common aromatic/heteroaromatic rings to check
-        aromatic_rings = [
-            "benzene",
-            "pyridine",
-            "pyrrole",
-            "furan",
-            "thiophene",
-            "imidazole",
-            "oxazole",
-            "thiazole",
-            "pyrazole",
-            "isoxazole",
-            "isothiazole",
-            "triazole",
-            "tetrazole",
-            "indole",
-            "benzofuran",
-            "benzothiophene",
-            "benzimidazole",
-            "benzoxazole",
-            "benzothiazole",
-            "quinoline",
-            "isoquinoline",
-            "naphthalene",
-            "anthracene",
-        ]
-
-        # Count rings that are aromatic
-        for ring in ring_info:
-            if all(mol.GetAtomWithIdx(idx).GetIsAromatic() for idx in ring):
-                aromatic_ring_count += 1
-                print(f"Found aromatic ring: {[idx for idx in ring]}")
-
-        # Additional check using the checker functions
-        for ring_name in aromatic_rings:
-            if checker.check_ring(ring_name, smiles):
-                print(f"Found {ring_name} ring in molecule")
-                # We don't increment the count here to avoid double counting
-
-        print(f"Total aromatic rings found in {smiles}: {aromatic_ring_count}")
-        return aromatic_ring_count
-
-    final_product_rings = 0
+    has_cyanation = False
+    has_bromination = False
+    has_nitro_reduction = False
+    cyanation_depth = None
+    bromination_depths = []
+    nitro_reduction_depth = None
 
     def dfs_traverse(node, depth=0):
-        nonlocal final_product_rings
+        nonlocal has_cyanation, has_bromination, has_nitro_reduction
+        nonlocal cyanation_depth, bromination_depths, nitro_reduction_depth
 
-        # Add depth to node for tracking
-        node["depth"] = depth
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        if node["type"] == "mol" and "smiles" in node and depth == 0:
-            # This is the final product
-            print(f"Analyzing final product: {node['smiles']}")
-            final_product_rings = count_aromatic_rings(node["smiles"])
-            print(f"Final product contains {final_product_rings} aromatic rings")
+            # Check for cyanation (halide to nitrile)
+            if any(checker.check_fg("Nitrile", product) for _ in [1]) and any(
+                checker.check_fg("Aromatic halide", r) for r in reactants
+            ):
+                has_cyanation = True
+                cyanation_depth = depth
+                print(f"Found cyanation at depth {depth}: {rsmi}")
+
+            # Check for bromination reactions
+            bromination_reactions = [
+                "Aromatic bromination",
+                "Bromination",
+                "Wohl-Ziegler bromination benzyl primary",
+                "Wohl-Ziegler bromination benzyl secondary",
+                "Wohl-Ziegler bromination benzyl tertiary",
+                "Wohl-Ziegler bromination allyl primary",
+                "Wohl-Ziegler bromination allyl secondary",
+                "Wohl-Ziegler bromination allyl tertiary",
+            ]
+
+            if any(checker.check_reaction(rxn, rsmi) for rxn in bromination_reactions) or (
+                any(checker.check_fg("Aromatic halide", product) for _ in [1])
+                and not any(checker.check_fg("Aromatic halide", r) for r in reactants)
+            ):
+                has_bromination = True
+                bromination_depths.append(depth)
+                print(f"Found bromination at depth {depth}: {rsmi}")
+
+            # Check for nitro reduction (NO2 to NH2)
+            if (
+                checker.check_reaction("Reduction of nitro groups to amines", rsmi)
+                or (
+                    any(checker.check_fg("Aniline", product) for _ in [1])
+                    and any(checker.check_fg("Nitro group", r) for r in reactants)
+                )
+                or (
+                    any(checker.check_fg("Primary amine", product) for _ in [1])
+                    and any(checker.check_fg("Nitro group", r) for r in reactants)
+                )
+            ):
+                has_nitro_reduction = True
+                nitro_reduction_depth = depth
+                print(f"Found nitro reduction at depth {depth}: {rsmi}")
 
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    print(f"Final count of aromatic rings: {final_product_rings}")
-    return final_product_rings >= 4
+    # Check if the strategy criteria are met
+    strategy_present = (
+        has_cyanation
+        and has_bromination
+        and len(bromination_depths) >= 1
+        and cyanation_depth <= 1  # Cyanation is a late-stage step (depth 0 or 1)
+    )
+
+    # If nitro reduction is present, ensure it occurs earlier than cyanation
+    if has_nitro_reduction:
+        strategy_present = strategy_present and (nitro_reduction_depth > cyanation_depth)
+
+    print(f"Strategy detection result: {strategy_present}")
+    print(f"Cyanation depth: {cyanation_depth}")
+    print(f"Bromination depths: {bromination_depths}")
+    print(f"Nitro reduction depth: {nitro_reduction_depth}")
+
+    return strategy_present

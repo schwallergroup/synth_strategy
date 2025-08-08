@@ -2,55 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy
-    (each step builds on a single previous intermediate).
+    This function detects if the synthesis involves pyrazole ring formation from
+    a phenylhydrazine and a diketone or similar precursors.
     """
-    is_linear = True
+    pyrazole_formed = False
+    hydrazine_present = False
+    diketone_present = False
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        nonlocal pyrazole_formed, hydrazine_present, diketone_present
 
         if node["type"] == "reaction":
-            # Check if this is a reaction node with metadata
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Count non-empty reactants
-                reactant_count = sum(1 for r in reactants if r.strip())
+                # Check for pyrazole formation
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    pyrazole_patt = Chem.MolFromSmarts("c1nn[c]c1")
+                    if product_mol.HasSubstructMatch(pyrazole_patt):
+                        # Check if reactants contain hydrazine and diketone patterns
+                        for reactant in reactants:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if reactant_mol:
+                                hydrazine_patt = Chem.MolFromSmarts("[NH2][NH]")
+                                diketone_patt = Chem.MolFromSmarts(
+                                    "[CX3](=[OX1])[CX4][CX3](=[OX1])"
+                                )
 
-                # If more than 2 reactants, it's likely not a linear synthesis
-                if reactant_count > 2:
-                    print(
-                        f"Found {reactant_count} reactants in a step, suggesting non-linear synthesis"
-                    )
-                    is_linear = False
+                                if reactant_mol.HasSubstructMatch(hydrazine_patt):
+                                    hydrazine_present = True
+                                if reactant_mol.HasSubstructMatch(diketone_patt):
+                                    diketone_present = True
 
-        # Traverse children
+                        if hydrazine_present and diketone_present:
+                            pyrazole_formed = True
+                            print("Detected pyrazole formation from hydrazine and diketone")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    return is_linear
+    return pyrazole_formed

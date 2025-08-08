@@ -2,71 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis uses an early-stage Sonogashira coupling
-    for C-C bond formation via alkyne coupling.
+    This function detects if the synthesis follows a linear strategy where each step
+    builds upon the previous without convergent steps.
     """
-    sonogashira_detected = False
+    # In a linear synthesis, each reaction node should have exactly one molecule child
+    # that is not a starting material
 
-    def dfs_traverse(node, depth=0):
-        nonlocal sonogashira_detected
+    is_linear = True
 
-        if node["type"] == "reaction" and depth >= 3:  # Early in synthesis (high depth)
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    def dfs_traverse(node):
+        nonlocal is_linear
 
-            # Check for patterns indicative of Sonogashira coupling
-            halogen_aromatic_pattern = Chem.MolFromSmarts("[Br,I][c,n]")
-            terminal_alkyne_pattern = Chem.MolFromSmarts("[C]#[CH]")
-            coupled_alkyne_pattern = Chem.MolFromSmarts("[c,n][C]#[C][c,n]")
+        if node["type"] == "reaction":
+            # Count non-starting material molecule children
+            non_starting_material_count = 0
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    non_starting_material_count += 1
 
-            # Check reactants for halogen-aromatic and terminal alkyne
-            has_halogen_aromatic = False
-            has_terminal_alkyne = False
+            # If more than one non-starting material, it's not linear
+            if non_starting_material_count > 1:
+                is_linear = False
+                print("Found non-linear step with multiple non-starting material children")
 
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol:
-                    if mol.HasSubstructMatch(halogen_aromatic_pattern):
-                        has_halogen_aromatic = True
-                    if mol.HasSubstructMatch(terminal_alkyne_pattern):
-                        has_terminal_alkyne = True
-
-            # Check product for coupled alkyne
-            product_mol = Chem.MolFromSmiles(product)
-            has_coupled_alkyne = product_mol and product_mol.HasSubstructMatch(
-                coupled_alkyne_pattern
-            )
-
-            if has_halogen_aromatic and has_terminal_alkyne and has_coupled_alkyne:
-                sonogashira_detected = True
-                print(f"Early-stage Sonogashira coupling detected at depth {depth}")
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return sonogashira_detected
+
+    return is_linear

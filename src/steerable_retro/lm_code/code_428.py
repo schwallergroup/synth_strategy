@@ -2,63 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving ester hydrolysis as one of the final steps.
+    This function detects if the synthetic route involves an amide bond disconnection.
     """
-    ester_hydrolysis_depth = None
+    found_disconnection = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal ester_hydrolysis_depth
+    def dfs_traverse(node):
+        nonlocal found_disconnection
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for ester in reactant
-            reactant_has_ester = False
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[C](=[O])[O][C]")):
-                    reactant_has_ester = True
-                    break
+            # Check if product contains amide bond that's broken in reactants
+            product_mol = Chem.MolFromSmiles(product)
 
-            # Check for carboxylic acid in product
-            if reactant_has_ester:
-                products = product.split(".")
-                for p in products:
-                    prod_mol = Chem.MolFromSmiles(p)
-                    if prod_mol and prod_mol.HasSubstructMatch(Chem.MolFromSmarts("[C](=[O])[OH]")):
-                        ester_hydrolysis_depth = depth
-                        print(f"Ester hydrolysis detected at depth {depth}")
+            if product_mol:
+                amide_pattern = Chem.MolFromSmarts("[NH][C](=[O])")
+                if product_mol.HasSubstructMatch(amide_pattern):
+                    # Check if we have multiple fragments in reactants
+                    if len(reactants) > 1:
+                        # Check if one fragment has carboxylic acid and another has amine
+                        has_acid = False
+                        has_amine = False
 
-        # Traverse children
+                        for r in reactants:
+                            r_mol = Chem.MolFromSmiles(r)
+                            if r_mol:
+                                if r_mol.HasSubstructMatch(Chem.MolFromSmarts("[OH][C](=[O])")):
+                                    has_acid = True
+                                if r_mol.HasSubstructMatch(Chem.MolFromSmarts("[NH2]")):
+                                    has_amine = True
+
+                        if has_acid and has_amine:
+                            print("Found amide bond disconnection")
+                            found_disconnection = True
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if ester hydrolysis is in the first two steps (late stage)
-    return ester_hydrolysis_depth is not None and ester_hydrolysis_depth <= 1
+    return found_disconnection

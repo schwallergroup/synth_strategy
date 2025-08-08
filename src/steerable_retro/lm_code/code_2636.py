@@ -2,252 +2,110 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis uses a convergent approach with late-stage ether formation
-    between two complex fragments.
+    Detects a synthetic strategy involving late-stage nucleophilic substitution
+    of a benzyl halide with a cyclic amine, following earlier nitro reduction and amide formation.
     """
-    result = False
+    # Track if we found each key transformation
+    found_nitro_reduction = False
+    found_amide_formation = False
+    found_benzyl_halide_substitution = False
 
-    def get_path_to_node(root, target_node, current_path=None):
-        """Helper function to find the path from root to a specific node"""
-        if current_path is None:
-            current_path = []
+    # Track if the benzyl halide substitution is in the late stage (low depth)
+    benzyl_halide_depth = None
 
-        # Check if this is the target node (by reference)
-        if root is target_node:
-            return current_path
+    def dfs_traverse(node, depth=0):
+        nonlocal found_nitro_reduction, found_amide_formation, found_benzyl_halide_substitution, benzyl_halide_depth
 
-        # Check children
-        for child in root.get("children", []):
-            path = get_path_to_node(child, target_node, current_path + [root])
-            if path is not None:
-                return path
-
-        return None
-
-    def calculate_depth(node):
-        """Calculate depth based on traversal from target molecule"""
-        # For the root node (target molecule)
-        if node == route:
-            return 0
-
-        # Try to find path from root to this node
-        path = get_path_to_node(route, node)
-        if path:
-            return len(path)
-
-        # Alternative: count steps from target molecule
-        depth = 0
-        current = route
-        visited = set()
-
-        def find_node_depth(current, target, current_depth=0):
-            if current is target:
-                return current_depth
-
-            if id(current) in visited:
-                return None
-
-            visited.add(id(current))
-
-            for child in current.get("children", []):
-                result = find_node_depth(child, target, current_depth + 1)
-                if result is not None:
-                    return result
-
-            return None
-
-        node_depth = find_node_depth(route, node)
-        return node_depth if node_depth is not None else 3  # Default to a reasonable depth
-
-    def dfs_traverse(node):
-        nonlocal result
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product from reaction SMILES
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Calculate depth based on position in synthesis tree
-            depth = calculate_depth(node)
-            print(f"Calculated depth: {depth}")
+            # Convert to RDKit molecules
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-            # Check if this is a late-stage reaction (depth 0, 1, 2, or 3)
-            if depth <= 3:
-                print(f"Analyzing late-stage reaction at depth {depth}")
-                print(f"Reaction SMILES: {rsmi}")
-                print(f"Number of reactants: {len(reactants)}")
+            if not product_mol or not all(reactant_mols):
+                print("Warning: Could not parse some molecules in reaction")
+                return
 
-                # Check if we have multiple reactants (convergent)
-                if len(reactants) >= 2:
-                    print("Multiple reactants detected (potential convergent synthesis)")
+            # Check for nitro reduction
+            nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
+            amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-                    # Check for ether formation using checker function
-                    product_has_ether = checker.check_fg("Ether", product)
-                    print(f"Product has ether: {product_has_ether}")
+            if any(
+                mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols
+            ) and product_mol.HasSubstructMatch(amine_pattern):
+                found_nitro_reduction = True
+                print(f"Found nitro reduction at depth {depth}")
 
-                    if product_has_ether:
-                        # Check if this is a known ether formation reaction
-                        is_ether_formation = (
-                            checker.check_reaction("Williamson Ether Synthesis", rsmi)
-                            or checker.check_reaction("Mitsunobu aryl ether", rsmi)
-                            or checker.check_reaction(
-                                "Williamson Ether Synthesis (intra to epoxy)", rsmi
-                            )
-                            or checker.check_reaction("Alcohol to ether", rsmi)
-                            or checker.check_reaction("{Williamson ether}", rsmi)
-                        )
-                        print(f"Known ether formation reaction: {is_ether_formation}")
+            # Check for amide formation
+            amine_reactant = any(mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols)
+            amide_pattern = Chem.MolFromSmarts("[NH]C(=O)")
 
-                        if not is_ether_formation:
-                            # If not a known ether formation reaction, check if ether is newly formed
-                            ether_exists_in_reactants = any(
-                                checker.check_fg("Ether", r) for r in reactants
-                            )
-                            print(f"Ether exists in reactants: {ether_exists_in_reactants}")
+            if amine_reactant and product_mol.HasSubstructMatch(amide_pattern):
+                found_amide_formation = True
+                print(f"Found amide formation at depth {depth}")
 
-                            if not ether_exists_in_reactants:
-                                # This is likely an ether formation reaction
-                                is_ether_formation = True
-                                print("Inferred ether formation based on functional group analysis")
+            # Check for benzyl halide substitution with cyclic amine
+            benzyl_halide_pattern = Chem.MolFromSmarts("[c][CH2][Cl,Br,I]")
+            cyclic_amine_pattern = Chem.MolFromSmarts("[N]1[C][C][C][C][C]1")  # Piperidine pattern
+            benzyl_amine_pattern = Chem.MolFromSmarts("[c][CH2][N]")
 
-                        # Additional check for ether formation by examining reactants and products
-                        if not is_ether_formation and product_has_ether:
-                            # Check for alcohol in reactants
-                            alcohol_in_reactants = any(
-                                checker.check_fg("Primary alcohol", r)
-                                or checker.check_fg("Secondary alcohol", r)
-                                or checker.check_fg("Tertiary alcohol", r)
-                                or checker.check_fg("Aromatic alcohol", r)
-                                or checker.check_fg("Phenol", r)
-                                for r in reactants
-                            )
+            benzyl_halide_present = any(
+                mol.HasSubstructMatch(benzyl_halide_pattern) for mol in reactant_mols
+            )
+            cyclic_amine_present = any(
+                mol.HasSubstructMatch(cyclic_amine_pattern) for mol in reactant_mols
+            )
+            benzyl_amine_in_product = product_mol.HasSubstructMatch(benzyl_amine_pattern)
 
-                            # Check for leaving groups in reactants
-                            leaving_group_in_reactants = any(
-                                checker.check_fg("Primary halide", r)
-                                or checker.check_fg("Secondary halide", r)
-                                or checker.check_fg("Tertiary halide", r)
-                                or checker.check_fg("Aromatic halide", r)
-                                or checker.check_fg("Tosylate", r)
-                                or checker.check_fg("Mesylate", r)
-                                or checker.check_fg("Triflate", r)
-                                for r in reactants
-                            )
+            if benzyl_halide_present and cyclic_amine_present and benzyl_amine_in_product:
+                found_benzyl_halide_substitution = True
+                benzyl_halide_depth = depth
+                print(f"Found benzyl halide substitution at depth {depth}")
 
-                            if alcohol_in_reactants and leaving_group_in_reactants:
-                                is_ether_formation = True
-                                print(
-                                    "Inferred ether formation based on alcohol and leaving group analysis"
-                                )
-
-                        if is_ether_formation:
-                            print("Ether formation confirmed, checking reactant complexity")
-                            # Check if reactants are complex (contain rings or have sufficient size)
-                            complex_reactants = 0
-                            for i, r in enumerate(reactants):
-                                try:
-                                    r_mol = Chem.MolFromSmiles(r)
-                                    if r_mol:
-                                        # Check if reactant has rings
-                                        has_ring = False
-                                        common_rings = [
-                                            "benzene",
-                                            "pyridine",
-                                            "furan",
-                                            "pyrrole",
-                                            "thiophene",
-                                            "cyclopentane",
-                                            "cyclohexane",
-                                            "pyran",
-                                            "dioxane",
-                                            "tetrahydrofuran",
-                                            "tetrahydropyran",
-                                            "piperidine",
-                                            "morpholine",
-                                            "indole",
-                                            "quinoline",
-                                            "naphthalene",
-                                        ]
-
-                                        for ring_name in common_rings:
-                                            if checker.check_ring(ring_name, r):
-                                                has_ring = True
-                                                print(f"Reactant {i+1} contains {ring_name} ring")
-                                                break
-
-                                        # Check if reactant has sufficient size
-                                        atom_count = r_mol.GetNumAtoms()
-                                        print(f"Reactant {i+1} has {atom_count} atoms")
-
-                                        if has_ring or atom_count >= 6:
-                                            complex_reactants += 1
-                                            print(f"Reactant {i+1} is complex")
-                                except Exception as e:
-                                    print(f"Error analyzing reactant {i+1}: {e}")
-
-                            print(f"Complex reactants count: {complex_reactants}")
-                            # If at least two complex reactants, this is a convergent synthesis
-                            if complex_reactants >= 2:
-                                print(
-                                    f"SUCCESS: Detected convergent synthesis with late-stage ether formation at depth {depth}"
-                                )
-                                print(f"Reaction SMILES: {rsmi}")
-                                result = True
-
-        # Continue traversing
+        # Traverse children
         for child in node.get("children", []):
-            if not result:  # Stop traversing if we already found a match
-                dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-    return result
+
+    # Check if we found all required transformations and if benzyl halide substitution is late-stage
+    strategy_present = (
+        found_nitro_reduction
+        and found_amide_formation
+        and found_benzyl_halide_substitution
+        and benzyl_halide_depth is not None
+        and benzyl_halide_depth <= 1
+    )  # Low depth means late-stage
+
+    print(f"Strategy detection result: {strategy_present}")
+    return strategy_present

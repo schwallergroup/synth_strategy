@@ -2,91 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis maintains a cyclohexane scaffold throughout.
-    Only checks non-stock molecules (intermediates and final product) with at least 6 atoms.
+    Detects a synthetic strategy involving sequential modifications of a piperazine scaffold.
     """
-    all_nodes_have_cyclohexane = True
+    # Initialize tracking variables
+    piperazine_present = False
+    modifications_count = 0
 
-    def dfs_traverse(node):
-        nonlocal all_nodes_have_cyclohexane
+    # SMARTS patterns
+    piperazine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#7][#6][#6]1")
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol_smiles = node["smiles"]
+    def dfs_traverse(node, depth=0):
+        nonlocal piperazine_present, modifications_count
 
-            # Skip checking in_stock molecules (starting materials/reagents)
-            if node.get("in_stock", False):
-                print(f"Skipping in_stock molecule: {mol_smiles}")
-                return
+        if node["type"] == "reaction":
+            # Extract reactants and products
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Skip very small molecules that can't contain cyclohexane
-            mol = Chem.MolFromSmiles(mol_smiles)
-            if mol and mol.GetNumAtoms() < 6:
-                print(f"Skipping small molecule (< 6 atoms): {mol_smiles}")
-                return
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            # Use the checker function to detect cyclohexane scaffold
-            has_cyclohexane = checker.check_ring("cyclohexane", mol_smiles)
+            if product and reactants:
+                # Check if piperazine is present
+                if product.HasSubstructMatch(piperazine_pattern):
+                    piperazine_present = True
 
-            if not has_cyclohexane:
-                print(f"Found molecule without cyclohexane scaffold: {mol_smiles}")
-                all_nodes_have_cyclohexane = False
-            else:
-                print(f"Molecule contains cyclohexane scaffold: {mol_smiles}")
+                    # Check if this is a modification of the piperazine scaffold
+                    reactants_with_piperazine = [
+                        r for r in reactants if r and r.HasSubstructMatch(piperazine_pattern)
+                    ]
+
+                    if reactants_with_piperazine:
+                        # This is a modification of an existing piperazine scaffold
+                        modifications_count += 1
+                        print(f"Piperazine scaffold modification detected at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    return all_nodes_have_cyclohexane
+    # Strategy is present if piperazine scaffold is present and modified at least twice
+    strategy_present = piperazine_present and modifications_count >= 2
+    print(f"Piperazine scaffold modification strategy detected: {strategy_present}")
+    return strategy_present

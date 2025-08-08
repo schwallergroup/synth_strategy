@@ -2,61 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route preserves stereocenters throughout the synthesis.
+    This function detects a synthetic strategy involving the conversion of an
+    acid chloride to a Weinreb amide.
     """
-    has_stereocenter = False
-    preserves_stereocenter = False
+    # Initialize tracking variables
+    has_acid_chloride_to_weinreb = False
 
     def dfs_traverse(node):
-        nonlocal has_stereocenter, preserves_stereocenter
+        nonlocal has_acid_chloride_to_weinreb
 
-        if node["type"] == "mol":
-            # Check if the final molecule has a stereocenter
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol and Chem.FindMolChiralCenters(mol):
-                has_stereocenter = True
-                print(f"Found stereocenter in molecule: {node['smiles']}")
-
-        elif node["type"] == "reaction":
+        if node["type"] == "reaction":
             # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
+
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            product_chiral_centers = Chem.FindMolChiralCenters(product_mol) if product_mol else []
+            # Check for acid chloride in reactants
+            acid_chloride_pattern = Chem.MolFromSmarts("[#6](=[#8])-[#17]")
+            # Check for Weinreb amide in product
+            weinreb_amide_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#7](-[#6])-[#6](=[#8])-[#6]")
 
-            if product_chiral_centers:
-                # Check if any reactant also has the same chiral center
-                for reactant in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and Chem.FindMolChiralCenters(reactant_mol):
-                        preserves_stereocenter = True
-                        print(
-                            f"Found stereocenter preservation at depth {node.get('depth', 'unknown')}"
-                        )
+            has_acid_chloride = False
+            for reactant in reactants_smiles:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(acid_chloride_pattern):
+                        has_acid_chloride = True
                         break
+                except:
+                    continue
+
+            has_weinreb = False
+            try:
+                product_mol = Chem.MolFromSmiles(product_smiles)
+                if product_mol and product_mol.HasSubstructMatch(weinreb_amide_pattern):
+                    has_weinreb = True
+            except:
+                pass
+
+            if has_acid_chloride and has_weinreb:
+                print("Found acid chloride to Weinreb amide transformation")
+                has_acid_chloride_to_weinreb = True
 
         # Traverse children
         for child in node.get("children", []):
@@ -65,7 +79,4 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if the route has stereocenters and preserves them
-    result = has_stereocenter and preserves_stereocenter
-    print(f"Stereocenter preservation strategy detected: {result}")
-    return result
+    return has_acid_chloride_to_weinreb

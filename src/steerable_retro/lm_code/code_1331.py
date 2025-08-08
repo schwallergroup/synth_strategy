@@ -2,127 +2,83 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects an alcohol oxidation strategy where:
-    A secondary alcohol is oxidized to a ketone
+    This function detects a synthetic strategy involving both oxidation and reduction steps
+    in a specific sequence (e.g., alcohol oxidation followed by oxime reduction).
     """
-    alcohol_oxidation_found = False
+    # Track oxidation and reduction reactions
+    oxidation_reactions = []
+    reduction_reactions = []
+    oxidation_depths = []
+    reduction_depths = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal alcohol_oxidation_found
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        print(f"Traversing node at depth {depth}: {node.get('type', 'unknown')}")
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            # In retrosynthesis, the product is on the left and reactants on the right
-            product = rsmi.split(">")[0]
-            reactants = rsmi.split(">")[-1].split(".")
+                if product_mol and any(r for r in reactant_mols):
+                    # Check for alcohol to aldehyde/ketone/acid oxidation
+                    if any(
+                        r and r.HasSubstructMatch(Chem.MolFromSmarts("[CH2]-[OH]"))
+                        for r in reactant_mols
+                        if r
+                    ) and (
+                        product_mol.HasSubstructMatch(Chem.MolFromSmarts("[CH]=O"))
+                        or product_mol.HasSubstructMatch(Chem.MolFromSmarts("C(=O)-O"))
+                    ):
+                        oxidation_reactions.append(rsmi)
+                        oxidation_depths.append(depth)
+                        print(f"Found oxidation reaction at depth {depth}: {rsmi}")
 
-            print(f"Checking reaction: {rsmi}")
+                    # Check for oxime/imine reduction
+                    if any(
+                        r and r.HasSubstructMatch(Chem.MolFromSmarts("[CH]=[N]"))
+                        for r in reactant_mols
+                        if r
+                    ) and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[CH2]-[N]")):
+                        reduction_reactions.append(rsmi)
+                        reduction_depths.append(depth)
+                        print(f"Found reduction reaction at depth {depth}: {rsmi}")
 
-            # Check if this is an oxidation reaction
-            is_oxidation = checker.check_reaction(
-                "Oxidation or Dehydrogenation of Alcohols to Aldehydes and Ketones", rsmi
-            )
-
-            # Also check for other oxidation reactions that might convert secondary alcohols to ketones
-            if not is_oxidation:
-                # Check if the reaction involves a secondary alcohol being oxidized to a ketone
-                has_secondary_alcohol = False
-                has_ketone = False
-
-                # Check if product has a ketone
-                has_ketone = checker.check_fg("Ketone", product) if product else False
-                if has_ketone:
-                    print(f"Found product with ketone: {product}")
-
-                # Check if any reactant has a secondary alcohol
-                for r in reactants:
-                    if not r:
-                        continue
-
-                    if checker.check_fg("Secondary alcohol", r):
-                        has_secondary_alcohol = True
-                        print(f"Found reactant with secondary alcohol: {r}")
-                        break
-
-                if has_secondary_alcohol and has_ketone:
-                    # This is likely a secondary alcohol oxidation to ketone
-                    is_oxidation = True
-
-            if is_oxidation:
-                print(f"Found potential alcohol oxidation reaction: {rsmi}")
-
-                # Check for secondary alcohol in reactants
-                has_secondary_alcohol = False
-
-                for r in reactants:
-                    if not r:
-                        continue
-
-                    if checker.check_fg("Secondary alcohol", r):
-                        has_secondary_alcohol = True
-                        print(f"Found reactant with secondary alcohol: {r}")
-
-                # Check for ketone in product
-                has_ketone = checker.check_fg("Ketone", product) if product else False
-
-                if has_ketone:
-                    print(f"Found product with ketone: {product}")
-
-                # Confirm secondary alcohol to ketone transformation
-                if has_secondary_alcohol and has_ketone:
-                    alcohol_oxidation_found = True
-                    print("Confirmed alcohol oxidation strategy: secondary alcohol to ketone")
+                    # Check for aldehyde/ketone reduction
+                    if any(
+                        r and r.HasSubstructMatch(Chem.MolFromSmarts("[CH]=O"))
+                        for r in reactant_mols
+                        if r
+                    ) and product_mol.HasSubstructMatch(Chem.MolFromSmarts("[CH2]-[OH]")):
+                        reduction_reactions.append(rsmi)
+                        reduction_depths.append(depth)
+                        print(f"Found reduction reaction at depth {depth}: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -131,4 +87,22 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    return alcohol_oxidation_found
+    # Check if we have both oxidation and reduction reactions
+    has_oxidation = len(oxidation_reactions) > 0
+    has_reduction = len(reduction_reactions) > 0
+
+    # Check if oxidation occurs before reduction in the synthetic direction
+    # (which means higher depth in retrosynthetic direction)
+    oxidation_before_reduction = False
+    if has_oxidation and has_reduction:
+        max_oxidation_depth = max(oxidation_depths) if oxidation_depths else -1
+        min_reduction_depth = min(reduction_depths) if reduction_depths else float("inf")
+        oxidation_before_reduction = max_oxidation_depth > min_reduction_depth
+
+    strategy_present = has_oxidation and has_reduction and oxidation_before_reduction
+    print(f"Oxidation-reduction sequence strategy detected: {strategy_present}")
+    print(
+        f"Found {len(oxidation_reactions)} oxidation reactions and {len(reduction_reactions)} reduction reactions"
+    )
+
+    return strategy_present

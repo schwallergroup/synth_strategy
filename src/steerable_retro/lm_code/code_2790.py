@@ -2,71 +2,108 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves multiple amide bond formations
-    (at least 2 separate reactions forming amide bonds).
+    This function detects a synthetic strategy involving tosylate formation
+    followed by ether formation via tosylate displacement.
     """
-    amide_formation_count = 0
+    # Track if we found the required reactions
+    found_tosylate_formation = False
+    found_ether_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_formation_count
+    def dfs_traverse(node):
+        nonlocal found_tosylate_formation, found_ether_formation
 
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+            # Extract reactants and product from reaction SMILES
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                # Check for amide formation
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                if product_mol:
-                    # Amide pattern
-                    amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+            # Check for tosylate formation (alcohol + sulfonyl chloride)
+            if not found_tosylate_formation:
+                alcohol_pattern = Chem.MolFromSmarts("[OH]")
+                sulfonyl_chloride_pattern = Chem.MolFromSmarts("ClS(=O)(=O)c")
+                tosylate_pattern = Chem.MolFromSmarts("OS(=O)(=O)c")
 
-                    # Count amide bonds in reactants and product
-                    reactant_amide_count = sum(
-                        [
-                            len(mol.GetSubstructMatches(amide_pattern)) if mol else 0
-                            for mol in reactant_mols
-                        ]
-                    )
-                    product_amide_count = (
-                        len(product_mol.GetSubstructMatches(amide_pattern)) if product_mol else 0
-                    )
+                has_alcohol = any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(alcohol_pattern)
+                    for r in reactants
+                    if r
+                )
+                has_sulfonyl_chloride = any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(sulfonyl_chloride_pattern)
+                    for r in reactants
+                    if r
+                )
+                product_mol = Chem.MolFromSmiles(product) if product else None
+                has_tosylate_product = product_mol and product_mol.HasSubstructMatch(
+                    tosylate_pattern
+                )
 
-                    # If product has more amide bonds than reactants combined, amide formation occurred
-                    if product_amide_count > reactant_amide_count:
-                        print(f"Found amide formation at depth {depth}")
-                        amide_formation_count += 1
+                if has_alcohol and has_sulfonyl_chloride and has_tosylate_product:
+                    found_tosylate_formation = True
+                    print("Found tosylate formation reaction")
 
-        # Continue traversal
+            # Check for ether formation via tosylate displacement
+            if not found_ether_formation:
+                phenol_pattern = Chem.MolFromSmarts("c[OH]")
+                tosylate_pattern = Chem.MolFromSmarts("OS(=O)(=O)c")
+                ether_pattern = Chem.MolFromSmarts("cO[#6]")
+
+                has_phenol = any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(phenol_pattern)
+                    for r in reactants
+                    if r
+                )
+                has_tosylate = any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(tosylate_pattern)
+                    for r in reactants
+                    if r
+                )
+                product_mol = Chem.MolFromSmiles(product) if product else None
+                has_ether_product = product_mol and product_mol.HasSubstructMatch(ether_pattern)
+
+                if has_phenol and has_tosylate and has_ether_product:
+                    found_ether_formation = True
+                    print("Found ether formation via tosylate displacement")
+
+        # Continue traversing the tree
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    # Return True if at least 2 amide formations were detected
-    return amide_formation_count >= 2
+    # Return True if both reactions were found
+    return found_tosylate_formation and found_ether_formation

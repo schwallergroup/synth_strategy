@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,88 +54,96 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a functional group transformation sequence from trifluoroacetyl to carboxylic acid to hydrazide.
-    In retrosynthetic traversal, we'll detect hydrazide first, then carboxylic acid, then trifluoroacetyl.
+    This function detects N-methylation of amines in the synthetic route.
     """
-    # Initialize tracking variables
-    transformations = []
+    has_n_methylation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal transformations
+        nonlocal has_n_methylation
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
+                print(f"Examining reaction at depth {depth}: {rsmi}")
+
+                # Check for methylation reactions directly
+                methylation_reactions = [
+                    "Eschweiler-Clarke Primary Amine Methylation",
+                    "Eschweiler-Clarke Secondary Amine Methylation",
+                    "Reductive methylation of primary amine with formaldehyde",
+                    "Parnes methylation",
+                    "N-methylation",
+                    "Methylation with MeI_primary",
+                    "Methylation with MeI_secondary",
+                    "Methylation with MeI_tertiary",
+                    "Methylation with DMS",
+                    "DMS Amine methylation",
+                    "Reductive amination with aldehyde",
+                ]
+
+                for reaction_type in methylation_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(f"Found {reaction_type} at depth {depth}")
+                        has_n_methylation = True
+                        return
+
+                # If no specific reaction type matched, check for amine methylation manually
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for hydrazide to carboxylic acid transformation (retrosynthetic)
-                if checker.check_fg("Acylhydrazine", product) and any(
-                    checker.check_fg("Carboxylic acid", r) for r in reactants
+                # Check if product has an amine
+                if (
+                    checker.check_fg("Primary amine", product)
+                    or checker.check_fg("Secondary amine", product)
+                    or checker.check_fg("Tertiary amine", product)
                 ):
-                    print(
-                        f"Depth {depth}: Detected hydrazide to carboxylic acid transformation (retrosynthetic)"
-                    )
-                    transformations.append(("hydrazide", "carboxylic_acid", depth))
 
-                # Check for carboxylic acid to trifluoroacetyl transformation (retrosynthetic)
-                if checker.check_fg("Carboxylic acid", product) and any(
-                    checker.check_fg("Trifluoro group", r) for r in reactants
-                ):
-                    print(
-                        f"Depth {depth}: Detected carboxylic acid to trifluoroacetyl transformation (retrosynthetic)"
-                    )
-                    transformations.append(("carboxylic_acid", "trifluoroacetyl", depth))
+                    # Check for formaldehyde in reactants
+                    for reactant in reactants:
+                        if checker.check_fg("Formaldehyde", reactant):
+                            print(f"Found formaldehyde in reactants at depth {depth}")
 
-        # Traverse children
+                            # Check for amine conversion
+                            for r in reactants:
+                                if checker.check_fg("Primary amine", r) and checker.check_fg(
+                                    "Secondary amine", product
+                                ):
+                                    print(
+                                        f"Found primary to secondary amine methylation at depth {depth}"
+                                    )
+                                    has_n_methylation = True
+                                    return
+                                elif checker.check_fg("Secondary amine", r) and checker.check_fg(
+                                    "Tertiary amine", product
+                                ):
+                                    print(
+                                        f"Found secondary to tertiary amine methylation at depth {depth}"
+                                    )
+                                    has_n_methylation = True
+                                    return
+
+                    # Use atom mapping to detect methylation
+                    try:
+                        # Look for a methyl group (CH3) in the reactants that gets attached to an N in the product
+                        for reactant in reactants:
+                            # Check for formaldehyde or other C1 fragments
+                            if (
+                                "[CH2:15]" in reactant
+                                or "[CH3:15]" in reactant
+                                or "O=[CH2:15]" in reactant
+                            ):
+                                # Check if this carbon is attached to nitrogen in product
+                                if "[N:14]([CH3:15])" in product or "[NH:14]([CH3:15])" in product:
+                                    print(f"Found methylation via atom mapping at depth {depth}")
+                                    has_n_methylation = True
+                                    return
+                    except Exception as e:
+                        print(f"Error in atom mapping analysis: {e}")
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-
-    # Sort transformations by depth to get the correct sequence
-    transformations.sort(key=lambda x: x[2])
-
-    # Check if we have both required transformations
-    has_hydrazide_to_acid = False
-    has_acid_to_trifluoro = False
-
-    for from_fg, to_fg, _ in transformations:
-        if from_fg == "hydrazide" and to_fg == "carboxylic_acid":
-            has_hydrazide_to_acid = True
-        if from_fg == "carboxylic_acid" and to_fg == "trifluoroacetyl":
-            has_acid_to_trifluoro = True
-
-    # Check if transformations are in the correct order
-    correct_sequence = False
-    if has_hydrazide_to_acid and has_acid_to_trifluoro:
-        # Get indices to check sequence
-        hydrazide_to_acid_idx = next(
-            (
-                i
-                for i, (from_fg, to_fg, _) in enumerate(transformations)
-                if from_fg == "hydrazide" and to_fg == "carboxylic_acid"
-            ),
-            -1,
-        )
-        acid_to_trifluoro_idx = next(
-            (
-                i
-                for i, (from_fg, to_fg, _) in enumerate(transformations)
-                if from_fg == "carboxylic_acid" and to_fg == "trifluoroacetyl"
-            ),
-            -1,
-        )
-
-        # In retrosynthetic order, hydrazide should be found before carboxylic acid
-        if (
-            hydrazide_to_acid_idx != -1
-            and acid_to_trifluoro_idx != -1
-            and hydrazide_to_acid_idx < acid_to_trifluoro_idx
-        ):
-            correct_sequence = True
-
-    print(f"Transformations: {transformations}")
-    print(f"Trifluoroacetyl → carboxylic acid → hydrazide sequence detected: {correct_sequence}")
-    return correct_sequence
+    return has_n_methylation

@@ -2,118 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects Suzuki coupling (aryl halide + boronic acid/ester) in the synthetic route.
+    Detects if a TMS-protected alkyne is maintained throughout the synthesis.
     """
-    suzuki_coupling_found = False
+    tms_alkyne_depths = []
 
-    def dfs_traverse(node):
-        nonlocal suzuki_coupling_found
+    def dfs_traverse(node, depth=0):
+        nonlocal tms_alkyne_depths
 
-        if suzuki_coupling_found:
-            return
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-
-            # Check if this is a Suzuki coupling reaction using the checker
-            suzuki_reaction_types = [
-                "Suzuki coupling with boronic acids",
-                "Suzuki coupling with boronic acids OTf",
-                "Suzuki coupling with sulfonic esters",
-                "Suzuki coupling with boronic esters OTf",
-                "Suzuki coupling with boronic esters",
-                "Suzuki",
-            ]
-
-            # First check if the reaction is explicitly a Suzuki coupling
-            for reaction_type in suzuki_reaction_types:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Suzuki coupling detected: {reaction_type} - {rsmi}")
-                    suzuki_coupling_found = True
-                    return
-
-            # If not explicitly labeled, check if it has the characteristic functional groups
+        if node["type"] == "mol":
+            smiles = node["smiles"]
             try:
-                reactants = rsmi.split(">")[0].split(".")
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    # Check for TMS-alkyne
+                    tms_alkyne_pattern = Chem.MolFromSmarts("[C]#[C][Si]([C])([C])[C]")
+                    if mol.HasSubstructMatch(tms_alkyne_pattern):
+                        tms_alkyne_depths.append(depth)
+                        print(f"Found TMS-alkyne at depth {depth}: {smiles}")
+            except:
+                pass
 
-                # Check for required functional groups in reactants
-                has_aryl_halide = False
-                has_boronic = False
-
-                for reactant in reactants:
-                    if checker.check_fg("Aromatic halide", reactant):
-                        has_aryl_halide = True
-                        print(f"Found aromatic halide in reactant: {reactant}")
-
-                    if checker.check_fg("Boronic acid", reactant) or checker.check_fg(
-                        "Boronic ester", reactant
-                    ):
-                        has_boronic = True
-                        print(f"Found boronic acid/ester in reactant: {reactant}")
-
-                # If both required functional groups are present, it's likely a Suzuki coupling
-                if has_aryl_halide and has_boronic:
-                    # Double-check if it's a C-C bond formation reaction
-                    print(
-                        f"Detected unlabeled Suzuki coupling with required functional groups: {rsmi}"
-                    )
-                    suzuki_coupling_found = True
-                    return
-            except Exception as e:
-                print(f"Error analyzing reactants: {e}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    print(f"Suzuki coupling found: {suzuki_coupling_found}")
-    return suzuki_coupling_found
+
+    # Check if TMS-alkyne appears at multiple depths (maintained throughout synthesis)
+    return len(tms_alkyne_depths) >= 2

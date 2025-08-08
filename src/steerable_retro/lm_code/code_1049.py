@@ -2,58 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis preserves a benzoxazine core structure throughout.
+    This function detects a late-stage Suzuki coupling of two complex fragments.
     """
-    benzoxazine_count = 0
-    total_reactions = 0
+    found_pattern = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal benzoxazine_count, total_reactions
+        nonlocal found_pattern
 
-        if node["type"] == "reaction":
-            total_reactions += 1
-            if "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (low depth)
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for benzoxazine core in product
+                # Check for Suzuki coupling pattern
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
                 product_mol = Chem.MolFromSmiles(product)
-                # This is a simplified pattern for benzoxazine-like core
-                benzoxazine_pattern = Chem.MolFromSmarts(
-                    "[#6]1=[#7][#6]2[#6][#6][#6][#6][#6]2[#6]1"
-                )
 
-                if product_mol and product_mol.HasSubstructMatch(benzoxazine_pattern):
-                    benzoxazine_count += 1
-                    print(f"Benzoxazine core detected in product at depth {depth}")
+                if product_mol and len(reactant_mols) >= 2:
+                    # Check for boronic acid/ester in one reactant
+                    boronic_pattern = Chem.MolFromSmarts("[c]-[B]")
+                    # Check for aryl halide in another reactant
+                    halide_pattern = Chem.MolFromSmarts("[c]-[Br,I,Cl]")
 
-        # Continue traversing the tree
+                    has_boronic = any(
+                        r and r.HasSubstructMatch(boronic_pattern) for r in reactant_mols
+                    )
+                    has_halide = any(
+                        r and r.HasSubstructMatch(halide_pattern) for r in reactant_mols
+                    )
+
+                    # Check if product has a new biaryl bond
+                    if has_boronic and has_halide:
+                        # Check if reactants are complex (>15 heavy atoms)
+                        complex_fragments = sum(
+                            1 for r in reactant_mols if r and Descriptors.HeavyAtomCount(r) > 15
+                        )
+
+                        if complex_fragments >= 1:
+                            print("Found late-stage Suzuki coupling of complex fragments")
+                            found_pattern = True
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-
-    # Return True if benzoxazine core is preserved in most reactions (>70%)
-    return total_reactions > 0 and (benzoxazine_count / total_reactions) > 0.7
+    return found_pattern

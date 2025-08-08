@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,83 +54,130 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves late-stage heterocycle formation,
-    specifically a pyrazole ring formed in the final step.
+    This function detects a late-stage functionalization strategy where a significant
+    structural modification occurs in the final synthetic steps.
     """
-    final_product_has_pyrazole = False
-    first_reaction_forms_pyrazole = False
+    # Initialize tracking variables
+    has_late_stage_functionalization = False
+
+    # List of functional groups commonly used in late-stage functionalization
+    late_stage_fg = [
+        "Isocyanate",
+        "Acyl halide",
+        "Sulfonyl halide",
+        "Triflate",
+        "Mesylate",
+        "Tosylate",
+        "Azide",
+        "Boronic acid",
+        "Boronic ester",
+        "Nitro group",
+        "Diazo",
+        "Nitrile",
+        "Aldehyde",
+        "Ketone",
+        "Carboxylic acid",
+        "Ester",
+        "Anhydride",
+        "Halide",
+    ]
+
+    # List of reaction types commonly used in late-stage functionalization
+    late_stage_reactions = [
+        "Suzuki coupling",
+        "Buchwald-Hartwig",
+        "Sonogashira",
+        "Heck",
+        "Click chemistry",
+        "Acylation of Nitrogen Nucleophiles",
+        "Aromatic fluorination",
+        "Aromatic chlorination",
+        "Aromatic bromination",
+        "Aromatic iodination",
+        "N-arylation",
+        "Friedel-Crafts acylation",
+        "Friedel-Crafts alkylation",
+        "Minisci",
+        "Chan-Lam",
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal final_product_has_pyrazole, first_reaction_forms_pyrazole
+        nonlocal has_late_stage_functionalization
 
-        if node["type"] == "mol" and depth == 0:
-            # Check if final product has pyrazole
-            if checker.check_ring("pyrazole", node["smiles"]):
-                final_product_has_pyrazole = True
-                print(f"Final product contains pyrazole ring: {node['smiles']}")
-
-        elif node["type"] == "reaction" and depth == 1:  # First reaction in retrosynthetic analysis
-            # Check if this reaction forms pyrazole
-            if "rsmi" in node["metadata"]:
+        if (
+            node["type"] == "reaction" and depth <= 2
+        ):  # Focus on final steps (low depth in retrosynthesis)
+            try:
+                # Extract reactants and products
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                print(f"Analyzing reaction: {rsmi}")
-
-                # Check if the reaction is a pyrazole formation reaction using multiple methods
-                is_pyrazole_reaction = (
-                    checker.check_reaction("pyrazole", rsmi)
-                    or checker.check_reaction("{pyrazole}", rsmi)
-                    or checker.check_reaction("Michael-induced ring closure from hydrazone", rsmi)
-                    or checker.check_reaction("[3+2]-cycloaddition of hydrazone and alkyne", rsmi)
-                    or checker.check_reaction("[3+2]-cycloaddition of hydrazone and alkene", rsmi)
-                )
-
-                if is_pyrazole_reaction:
-                    print("Reaction identified as potential pyrazole formation")
-
-                    # Verify product has pyrazole but reactants don't
-                    product_has_pyrazole = checker.check_ring("pyrazole", product)
-                    reactants_have_pyrazole = any(
-                        checker.check_ring("pyrazole", r) for r in reactants if r
-                    )
-
-                    if product_has_pyrazole and not reactants_have_pyrazole:
-                        print("Confirmed: Product has pyrazole but reactants don't")
-                        first_reaction_forms_pyrazole = True
-                else:
-                    # Manual check for pyrazole formation if reaction type check failed
-                    product_has_pyrazole = checker.check_ring("pyrazole", product)
-                    reactants_have_pyrazole = any(
-                        checker.check_ring("pyrazole", r) for r in reactants if r
-                    )
-
-                    if product_has_pyrazole and not reactants_have_pyrazole:
-                        print("Manual check: Product has pyrazole but reactants don't")
-
-                        # Check for common functional groups in pyrazole formation
-                        has_nitrile = any(checker.check_fg("Nitrile", r) for r in reactants if r)
-                        has_hydrazine_or_derivative = any(
-                            checker.check_fg("Hydrazine", r)
-                            or checker.check_fg("Hydrazone", r)
-                            or checker.check_fg("Acylhydrazine", r)
-                            or checker.check_fg("Hydrazone amide", r)
-                            for r in reactants
-                            if r
+                # Check if this is a late-stage functionalization reaction
+                for reaction_type in late_stage_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(
+                            f"Detected late-stage functionalization reaction: {reaction_type} at depth {depth}"
                         )
+                        has_late_stage_functionalization = True
+                        return
 
-                        if has_nitrile and has_hydrazine_or_derivative:
-                            print("Detected nitrile and hydrazine/derivative in reactants")
-                            first_reaction_forms_pyrazole = True
+                # Check for functional group transformations
+                for fg in late_stage_fg:
+                    # Check if any reactant has the functional group
+                    reactants_have_fg = any(checker.check_fg(fg, r) for r in reactants_smiles if r)
 
-        # Traverse children
+                    # Check if the product doesn't have the functional group (transformation occurred)
+                    # or if the product has the functional group but reactants don't (addition occurred)
+                    product_has_fg = (
+                        checker.check_fg(fg, product_smiles) if product_smiles else False
+                    )
+
+                    if (reactants_have_fg and not product_has_fg) or (
+                        product_has_fg and not reactants_have_fg
+                    ):
+                        print(f"Detected late-stage functionalization with {fg} at depth {depth}")
+                        has_late_stage_functionalization = True
+                        return
+
+                # Check for ring formations or modifications
+                common_rings = [
+                    "benzene",
+                    "pyridine",
+                    "pyrrole",
+                    "furan",
+                    "thiophene",
+                    "imidazole",
+                    "oxazole",
+                    "thiazole",
+                    "pyrazole",
+                    "triazole",
+                    "tetrazole",
+                ]
+
+                for ring in common_rings:
+                    reactants_have_ring = any(
+                        checker.check_ring(ring, r) for r in reactants_smiles if r
+                    )
+                    product_has_ring = (
+                        checker.check_ring(ring, product_smiles) if product_smiles else False
+                    )
+
+                    if (reactants_have_ring and not product_has_ring) or (
+                        product_has_ring and not reactants_have_ring
+                    ):
+                        print(f"Detected late-stage ring modification with {ring} at depth {depth}")
+                        has_late_stage_functionalization = True
+                        return
+            except Exception as e:
+                print(f"Error analyzing reaction at depth {depth}: {e}")
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    result = final_product_has_pyrazole and first_reaction_forms_pyrazole
-    print(
-        f"Final result: {result} (final_product_has_pyrazole={final_product_has_pyrazole}, first_reaction_forms_pyrazole={first_reaction_forms_pyrazole})"
-    )
-    return result
+
+    print(f"Late-stage functionalization strategy present: {has_late_stage_functionalization}")
+    return has_late_stage_functionalization

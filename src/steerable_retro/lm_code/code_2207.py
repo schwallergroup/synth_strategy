@@ -2,60 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves manipulation of a
-    thiophene-containing heterocyclic system.
+    This function detects if the synthesis follows a linear strategy (each step builds on a single precursor).
     """
-    thiophene_present = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal thiophene_present
+        nonlocal is_linear
 
-        if node["type"] == "mol" and "smiles" in node:
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    thiophene_pattern = Chem.MolFromSmarts("c1ccsc1")
-                    if mol.HasSubstructMatch(thiophene_pattern):
-                        thiophene_present = True
-                        print(f"Thiophene detected in molecule: {node['smiles']}")
-            except:
-                pass
-        elif node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
-            rsmi = node["metadata"]["rsmi"]
-            product_smiles = rsmi.split(">")[-1]
-            try:
-                mol = Chem.MolFromSmiles(product_smiles)
-                if mol:
-                    thiophene_pattern = Chem.MolFromSmarts("c1ccsc1")
-                    if mol.HasSubstructMatch(thiophene_pattern):
-                        thiophene_present = True
-                        print(f"Thiophene detected in reaction product: {product_smiles}")
-            except:
-                pass
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+
+                # Count complex reactants (more than 10 atoms)
+                complex_reactants = 0
+                for r in reactants:
+                    mol = Chem.MolFromSmiles(r)
+                    if mol is not None and mol.GetNumAtoms() > 10:
+                        complex_reactants += 1
+
+                # If more than one complex reactant, it's not a linear synthesis
+                if complex_reactants > 1:
+                    print(f"Detected non-linear step with {complex_reactants} complex reactants")
+                    is_linear = False
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return thiophene_present
+
+    if is_linear:
+        print("Detected linear synthesis strategy")
+
+    return is_linear

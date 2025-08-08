@@ -2,60 +2,71 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes a methoxy deprotection step.
+    This function detects a linear synthesis strategy involving
+    an acyl hydrazide intermediate formation.
     """
-    methoxy_deprotection_detected = False
+    # Initialize tracking variables
+    has_acyl_hydrazide = False
+    is_linear_synthesis = True
+    reaction_count = 0
 
-    def dfs_traverse(node):
-        nonlocal methoxy_deprotection_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal has_acyl_hydrazide, is_linear_synthesis, reaction_count
 
         if node["type"] == "reaction":
+            reaction_count += 1
+
+            # Extract reaction SMILES
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if reactants contain methoxy on aromatic but product has hydroxyl instead
-            methoxy_pattern = Chem.MolFromSmarts("[#6][#8][#6]:[#6]")
-            hydroxy_pattern = Chem.MolFromSmarts("[#8][#6]:[#6]")
+            # Check if this is a linear step (one product)
+            if "." in product_smiles:
+                is_linear_synthesis = False
+                print(f"Non-linear step detected at depth {depth}: multiple products")
 
-            has_methoxy_in_reactants = False
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(methoxy_pattern):
-                    has_methoxy_in_reactants = True
-                    break
+            # Convert to RDKit molecules
+            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            product_mol = Chem.MolFromSmiles(product)
-            has_hydroxy_in_product = product_mol and product_mol.HasSubstructMatch(hydroxy_pattern)
-            has_methoxy_in_product = product_mol and product_mol.HasSubstructMatch(methoxy_pattern)
+            if product:
+                # Check for acyl hydrazide formation
+                acyl_hydrazide_pattern = Chem.MolFromSmarts("[C](=[O])[N][N]")
+                if product.HasSubstructMatch(acyl_hydrazide_pattern):
+                    has_acyl_hydrazide = True
+                    print(f"Detected acyl hydrazide formation at depth {depth}")
 
-            if has_methoxy_in_reactants and has_hydroxy_in_product and not has_methoxy_in_product:
-                methoxy_deprotection_detected = True
-                print("Detected methoxy deprotection")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return methoxy_deprotection_detected
+
+    # Return True if conditions are met
+    return is_linear_synthesis and has_acyl_hydrazide and reaction_count >= 3

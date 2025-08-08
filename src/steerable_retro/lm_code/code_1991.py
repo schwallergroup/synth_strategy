@@ -2,60 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a Suzuki coupling reaction involving a nitro-containing aromatic compound.
+    Detects if the synthesis route includes a halogen exchange step
+    (bromide to iodide conversion)
     """
-    has_suzuki_with_nitro = False
+    halogen_exchange_found = False
 
     def dfs_traverse(node):
-        nonlocal has_suzuki_with_nitro
+        nonlocal halogen_exchange_found
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Look for boronic acid and halide patterns typical in Suzuki couplings
-            boronic_acid_pattern = Chem.MolFromSmarts("B(O)(O)")
-            halide_pattern = Chem.MolFromSmarts("[c,C][Br,I,Cl]")
-            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
+            # Look for C-Br pattern in reactants
+            c_br_pattern = Chem.MolFromSmarts("[C][Br]")
+            # Look for C-I pattern in product
+            c_i_pattern = Chem.MolFromSmarts("[C][I]")
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            reactant_mol = Chem.MolFromSmiles(reactants[0])
+            product_mol = Chem.MolFromSmiles(product)
 
-            # Check if reactants contain boronic acid, halide, and nitro group
-            has_boronic_acid = any(
-                mol and mol.HasSubstructMatch(boronic_acid_pattern) for mol in reactant_mols
-            )
-            has_halide = any(mol and mol.HasSubstructMatch(halide_pattern) for mol in reactant_mols)
-            has_nitro = any(mol and mol.HasSubstructMatch(nitro_pattern) for mol in reactant_mols)
+            if reactant_mol and product_mol:
+                if reactant_mol.HasSubstructMatch(c_br_pattern) and product_mol.HasSubstructMatch(
+                    c_i_pattern
+                ):
+                    print("Found halogen exchange (Br to I)")
+                    halogen_exchange_found = True
 
-            if has_boronic_acid and has_halide and has_nitro:
-                # This is likely a Suzuki coupling with a nitro-containing compound
-                has_suzuki_with_nitro = True
-                print("Detected Suzuki coupling with nitro-containing compound")
-
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return has_suzuki_with_nitro
+    return halogen_exchange_found

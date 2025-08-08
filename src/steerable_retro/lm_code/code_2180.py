@@ -2,79 +2,158 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving multiple SNAr reactions,
-    particularly focusing on late-stage SNAr on pyrimidine core.
+    Detects if the synthesis route involves SNAr reaction for heterocycle modification.
     """
-    snar_reactions_count = 0
-    late_stage_snar = False
+    # List of common nitrogen-containing heterocycles
+    nitrogen_heterocycles = [
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+        "indazole",
+        "benzotriazole",
+    ]
+
+    snar_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal snar_reactions_count, late_stage_snar
+        nonlocal snar_found
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for SNAr pattern: halogen on aromatic being replaced by O or N
-                # Look for patterns where Cl/F/Br on aromatic is replaced by O/N
-                product_mol = Chem.MolFromSmiles(product)
+            print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and product_mol:
-                        # Check for aromatic halogen in reactant
-                        ar_hal_pattern = Chem.MolFromSmarts("c-[Cl,F,Br]")
-                        if reactant_mol.HasSubstructMatch(ar_hal_pattern):
-                            # Check for O/N connection in product where halogen was
-                            ar_o_pattern = Chem.MolFromSmarts("c-[O,N]")
-                            if product_mol.HasSubstructMatch(ar_o_pattern):
-                                # Check if it's an electron-deficient ring (pyrimidine or with nitro)
-                                el_def_pattern1 = Chem.MolFromSmarts("c1ncncc1")  # pyrimidine
-                                el_def_pattern2 = Chem.MolFromSmarts("c-[N+](=[O])-[O-]")  # nitro
+            # Check if this is a nucleophilic aromatic substitution reaction using direct reaction checks
+            is_snar_direct = (
+                checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
+                or checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
+                or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
+            )
 
-                                if reactant_mol.HasSubstructMatch(
-                                    el_def_pattern1
-                                ) or reactant_mol.HasSubstructMatch(el_def_pattern2):
-                                    snar_reactions_count += 1
+            if is_snar_direct:
+                print(f"Direct SNAr reaction check passed: {rsmi}")
+                snar_found = True
+            else:
+                # Check for aryl halide in reactants (leaving group)
+                has_aryl_halide = any(checker.check_fg("Aromatic halide", r) for r in reactants)
 
-                                    # Check if it's late stage (depth 0 or 1)
-                                    if depth <= 1:
-                                        late_stage_snar = True
-                                        print(f"Late-stage SNAr detected at depth {depth}")
+                # Check for nucleophiles in reactants
+                has_nucleophile = any(
+                    checker.check_fg("Primary amine", r)
+                    or checker.check_fg("Secondary amine", r)
+                    or checker.check_fg("Aniline", r)
+                    or checker.check_fg("Primary alcohol", r)
+                    or checker.check_fg("Secondary alcohol", r)
+                    or checker.check_fg("Phenol", r)
+                    or checker.check_fg("Aliphatic thiol", r)
+                    or checker.check_fg("Aromatic thiol", r)
+                    for r in reactants
+                )
 
-        # Traverse children
+                # Check for nitrogen-containing heterocycle in reactants and product
+                has_heterocycle_reactant = any(
+                    any(checker.check_ring(ring, r) for ring in nitrogen_heterocycles)
+                    for r in reactants
+                )
+                has_heterocycle_product = any(
+                    checker.check_ring(ring, product) for ring in nitrogen_heterocycles
+                )
+
+                # Check if aromatic halide is consumed (should not be in product)
+                has_aryl_halide_product = checker.check_fg("Aromatic halide", product)
+
+                # Print diagnostic information
+                print(f"  Has aryl halide in reactants: {has_aryl_halide}")
+                print(f"  Has nucleophile in reactants: {has_nucleophile}")
+                print(f"  Has heterocycle in reactants: {has_heterocycle_reactant}")
+                print(f"  Has heterocycle in product: {has_heterocycle_product}")
+                print(f"  Has aryl halide in product: {has_aryl_halide_product}")
+
+                # SNAr pattern check: needs aryl halide and nucleophile in reactants,
+                # heterocycle in either reactants or product, and aryl halide should be consumed
+                is_snar_pattern = (
+                    has_aryl_halide
+                    and has_nucleophile
+                    and (has_heterocycle_reactant or has_heterocycle_product)
+                    and (not has_aryl_halide_product or has_aryl_halide_product != has_aryl_halide)
+                )
+
+                if is_snar_pattern:
+                    print(f"Pattern-based SNAr heterocycle modification detected: {rsmi}")
+                    snar_found = True
+
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Strategy criteria: at least 2 SNAr reactions with at least one in late stage
-    result = snar_reactions_count >= 2 and late_stage_snar
-    print(
-        f"Sequential SNAr strategy detected: {result} (count: {snar_reactions_count}, late stage: {late_stage_snar})"
-    )
-    return result
+    print(f"SNAr heterocycle modification found: {snar_found}")
+    return snar_found

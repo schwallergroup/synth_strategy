@@ -2,63 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a halogen exchange strategy (Cl to I) on a heterocycle.
+    This function detects the use of multiple protecting groups (phthalimide and Boc)
+    in the same synthetic route.
     """
-    halogen_exchange_detected = False
+    # Track presence of protecting groups
+    phthalimide_present = False
+    boc_present = False
+
+    # Define SMARTS patterns
+    phthalimide_pattern = Chem.MolFromSmarts("[#7]1C(=O)c2ccccc2C1=O")
+    boc_pattern = Chem.MolFromSmarts("[#7]C(=O)OC(C)(C)C")
 
     def dfs_traverse(node):
-        nonlocal halogen_exchange_detected
+        nonlocal phthalimide_present, boc_present
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            try:
+                mol = Chem.MolFromSmiles(node["smiles"])
+                if mol:
+                    # Check for phthalimide group
+                    if mol.GetSubstructMatches(phthalimide_pattern):
+                        phthalimide_present = True
+                        print(f"Phthalimide group found in molecule: {node['smiles']}")
 
-                # Check for chloro-heterocycle to iodo-heterocycle transformation
-                chloro_heterocycle_pattern = Chem.MolFromSmarts("c1[n]c(Cl)[n]cc1")
-                iodo_heterocycle_pattern = Chem.MolFromSmarts("c1[n]c(I)[n]cc1")
+                    # Check for Boc group
+                    if mol.GetSubstructMatches(boc_pattern):
+                        boc_present = True
+                        print(f"Boc group found in molecule: {node['smiles']}")
+            except:
+                print(f"Error processing molecule SMILES: {node['smiles']}")
 
-                try:
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(
-                            chloro_heterocycle_pattern
-                        ):
-                            product_mol = Chem.MolFromSmiles(product)
-                            if product_mol and product_mol.HasSubstructMatch(
-                                iodo_heterocycle_pattern
-                            ):
-                                halogen_exchange_detected = True
-                                print(
-                                    "Halogen exchange detected: Chloro-heterocycle -> Iodo-heterocycle"
-                                )
-                except:
-                    pass
-
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return halogen_exchange_detected
+
+    # Strategy is present if both protecting groups are used
+    strategy_present = phthalimide_present and boc_present
+
+    print(f"Multiple protecting groups strategy detected: {strategy_present}")
+    return strategy_present

@@ -2,52 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear build-up strategy where complexity
-    is added sequentially without convergent steps.
+    This function detects if the synthesis follows a linear strategy where each step
+    builds on a single product from the previous step.
     """
-    reaction_count = 0
-    max_reactants_per_step = 0
+    linear_steps = 0
+    total_steps = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal reaction_count, max_reactants_per_step
+    def dfs_traverse(node):
+        nonlocal linear_steps, total_steps
 
         if node["type"] == "reaction":
-            reaction_count += 1
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            max_reactants_per_step = max(max_reactants_per_step, len(reactants))
+            total_steps += 1
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+
+                # If there are exactly 2 reactants, it's likely a linear step
+                if len(reactants) == 2:
+                    linear_steps += 1
+                    print(f"Linear synthesis step detected at reaction: {rsmi}")
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # If we have multiple reactions but never more than 2 reactants per step,
-    # it's likely a linear build-up strategy
-    if reaction_count >= 3 and max_reactants_per_step <= 2:
-        print(f"Linear build-up strategy detected with {reaction_count} reactions")
-        print(f"Maximum reactants per step: {max_reactants_per_step}")
-        return True
-
-    return False
+    print(f"Linear steps: {linear_steps}/{total_steps}")
+    # Strategy requires that most steps (>70%) are linear
+    return total_steps > 0 and linear_steps / total_steps > 0.7

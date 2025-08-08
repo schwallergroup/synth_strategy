@@ -2,71 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves a Sonogashira coupling (aryl halide + terminal alkyne).
+    This function detects a linear synthesis with sequential heteroatom bond formations
+    (C-O, C-N) connecting aromatic fragments.
     """
-    sonogashira_found = False
+    # Track reaction count and linearity
+    reaction_count = 0
+    is_linear = True
+    heteroatom_bond_formations = 0
 
-    def dfs_traverse(node):
-        nonlocal sonogashira_found
+    def dfs_traverse(node, depth=0, parent_children_count=1):
+        nonlocal reaction_count, is_linear, heteroatom_bond_formations
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            reaction_count += 1
 
-                # Check for aryl halide and terminal alkyne in reactants
-                aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Cl,Br,I]")
-                terminal_alkyne_pattern = Chem.MolFromSmarts("[C]#[C]")
+            # Check if this is a branching point (convergent synthesis)
+            if len(node.get("children", [])) > 1:
+                # More than one reactant means potentially convergent
+                if parent_children_count > 1:
+                    is_linear = False
 
-                aryl_halide_found = False
-                terminal_alkyne_found = False
+            # Extract reactants and product
+            rsmi = node["metadata"].get("rsmi", "")
+            if rsmi:
+                parts = rsmi.split(">")
+                if len(parts) >= 3:
+                    reactants = parts[0].split(".")
+                    product = parts[2]
 
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
+                    # Check for C-O bond formation
+                    if "[O:" in rsmi and (
+                        ("[CH2:" in rsmi and "[O:" in rsmi) or ("[OH:" in rsmi and "[c:" in rsmi)
+                    ):
+                        print(f"C-O bond formation detected at depth {depth}")
+                        heteroatom_bond_formations += 1
 
-                    if reactant_mol.HasSubstructMatch(aryl_halide_pattern):
-                        aryl_halide_found = True
+                    # Check for C-N bond formation
+                    if "[NH:" in rsmi and "[c:" in rsmi:
+                        print(f"C-N bond formation detected at depth {depth}")
+                        heteroatom_bond_formations += 1
 
-                    if reactant_mol.HasSubstructMatch(terminal_alkyne_pattern):
-                        terminal_alkyne_found = True
-
-                # Check for C-C bond formation in product
-                if aryl_halide_found and terminal_alkyne_found:
-                    product_mol = Chem.MolFromSmiles(product)
-                    aryl_alkyne_pattern = Chem.MolFromSmarts("[c]-[C]#[C]")
-                    if product_mol and product_mol.HasSubstructMatch(aryl_alkyne_pattern):
-                        print("Sonogashira coupling detected")
-                        sonogashira_found = True
-
-        # Traverse children
+        # Process children
+        children_count = len(node.get("children", []))
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1, children_count)
 
     # Start traversal
     dfs_traverse(route)
 
-    return sonogashira_found
+    # Criteria for this strategy
+    result = reaction_count >= 2 and is_linear and heteroatom_bond_formations >= 2
+
+    print(f"Linear synthesis with heteroatom bonds: {result}")
+    print(f"  - Reaction count: {reaction_count}")
+    print(f"  - Is linear: {is_linear}")
+    print(f"  - Heteroatom bond formations: {heteroatom_bond_formations}")
+
+    return result

@@ -2,60 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves late-stage protection (phthalimide).
+    This function detects if the synthesis follows a linear strategy rather than a convergent one.
+    A linear synthesis has a single branch at each step.
     """
-    protection_depth = None
-    max_depth = 0
+    is_linear = True
+    max_branches = 1
 
-    def dfs_traverse(node, depth=0):
-        nonlocal protection_depth, max_depth
-
-        max_depth = max(max_depth, depth)
+    def count_branches(node):
+        nonlocal is_linear, max_branches
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
+            # Count the number of reactant branches
+            reactant_count = 0
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    reactant_count += 1
 
-                # Check for phthalimide in product
-                phthalimide_pattern = Chem.MolFromSmarts("O=C1c2ccccc2C(=O)N1[C]")
+            if reactant_count > max_branches:
+                max_branches = reactant_count
 
-                try:
-                    prod_mol = Chem.MolFromSmiles(product)
-                    if prod_mol and prod_mol.HasSubstructMatch(phthalimide_pattern):
-                        protection_depth = depth
-                        print(f"Phthalimide protection detected at depth {depth}")
-                except:
-                    pass
+            if reactant_count > 1:
+                is_linear = False
+                print(f"Found convergent step with {reactant_count} non-stock reactants")
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            count_branches(child)
 
-    dfs_traverse(route)
+    # Start traversal
+    count_branches(route)
 
-    # If protection occurs in the first half of the synthesis (lower depth numbers)
-    if protection_depth is not None and protection_depth <= max_depth / 2:
-        print(f"Late-stage protection detected (depth {protection_depth} of max {max_depth})")
-        return True
-    return False
+    print(f"Linear synthesis strategy detected: {is_linear} (max branches: {max_branches})")
+    return is_linear

@@ -2,141 +2,132 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects pyrimidine ring formation in the middle of the synthesis.
+    Detects a strategy where an aromatic ring is first functionalized (bromination, nitration)
+    followed by heterocycle formation (piperazine) and late-stage N-alkylation.
     """
-    pyrimidine_formation = False
-    formation_depth = None
+    # Track key transformations
+    has_aromatic_bromination = False
+    has_aromatic_nitration = False
+    has_nitro_reduction = False
+    has_piperazine_formation = False
+    has_late_stage_alkylation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal pyrimidine_formation, formation_depth
+        nonlocal has_aromatic_bromination, has_aromatic_nitration, has_nitro_reduction
+        nonlocal has_piperazine_formation, has_late_stage_alkylation
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+                # Check for aromatic bromination (early stage, high depth)
+                if depth >= 4 and not has_aromatic_bromination:
+                    # Check if product has aromatic bromine but reactant doesn't
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[Br]")):
+                        for reactant in reactants:
+                            react_mol = Chem.MolFromSmiles(reactant)
+                            if react_mol and not react_mol.HasSubstructMatch(
+                                Chem.MolFromSmarts("[c]-[Br]")
+                            ):
+                                has_aromatic_bromination = True
+                                print("Detected aromatic bromination at depth", depth)
+                                break
 
-                # Check if product contains pyrimidine
-                product_has_pyrimidine = checker.check_ring("pyrimidine", product)
+                # Check for aromatic nitration (early-mid stage)
+                if depth >= 3 and not has_aromatic_nitration:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts("[c]-[N+](=[O])[O-]")
+                    ):
+                        for reactant in reactants:
+                            react_mol = Chem.MolFromSmiles(reactant)
+                            if react_mol and not react_mol.HasSubstructMatch(
+                                Chem.MolFromSmarts("[c]-[N+](=[O])[O-]")
+                            ):
+                                has_aromatic_nitration = True
+                                print("Detected aromatic nitration at depth", depth)
+                                break
 
-                if product_has_pyrimidine:
-                    print(f"Product contains pyrimidine: {product}")
+                # Check for nitro reduction (mid stage)
+                if depth >= 1 and not has_nitro_reduction:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(Chem.MolFromSmarts("[c]-[NH2]")):
+                        for reactant in reactants:
+                            react_mol = Chem.MolFromSmiles(reactant)
+                            if react_mol and react_mol.HasSubstructMatch(
+                                Chem.MolFromSmarts("[c]-[N+](=[O])[O-]")
+                            ):
+                                has_nitro_reduction = True
+                                print("Detected nitro reduction at depth", depth)
+                                break
 
-                    # Check if reactants don't have pyrimidine
-                    reactants_have_pyrimidine = False
-                    for reactant in reactants:
-                        if checker.check_ring("pyrimidine", reactant):
-                            reactants_have_pyrimidine = True
-                            print(f"Reactant already contains pyrimidine: {reactant}")
-                            break
+                # Check for piperazine formation (mid stage)
+                if depth >= 0 and not has_piperazine_formation:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts("[N]1[CH2][CH2][NH][CH2][CH2]1")
+                    ):
+                        has_piperazine_formation = True
+                        print("Detected piperazine formation at depth", depth)
 
-                    if not reactants_have_pyrimidine:
-                        # This is a pyrimidine formation reaction
-                        pyrimidine_formation = True
-                        formation_depth = depth
-                        print(f"Found pyrimidine formation at depth {depth}")
-
-                        # Check for specific reactions that might form pyrimidine-like structures
-                        relevant_reactions = [
-                            "benzimidazole_derivatives_aldehyde",
-                            "benzimidazole_derivatives_carboxylic-acid/ester",
-                            "thiazole",
-                            "Niementowski_quinazoline",
-                            "tetrazole_terminal",
-                            "tetrazole_connect_regioisomere_1",
-                            "tetrazole_connect_regioisomere_2",
-                            "1,2,4-triazole_acetohydrazide",
-                            "1,2,4-triazole_carboxylic-acid/ester",
-                            "3-nitrile-pyridine",
-                            "pyrazole",
-                            "triaryl-imidazole",
-                        ]
-
-                        for reaction_type in relevant_reactions:
-                            if checker.check_reaction(reaction_type, rsmi):
-                                print(f"Detected specific reaction type: {reaction_type}")
-
-                # Special case: Check for thiourea to pyrimidine conversion (seen at depth 3)
-                if (
-                    depth == 3
-                    and "S=[C:6]1[C:2]([CH3:1])=[N:3][C:4]2([NH:5]1)" in rsmi
-                    and "[N:5]=[C:6]1[NH2:7]" in rsmi
-                ):
-                    print(f"Detected thiourea to pyrimidine conversion at depth {depth}")
-                    pyrimidine_formation = True
-                    formation_depth = depth
-
-                # Check for any reaction that might form a pyrimidine
-                for reactant in reactants:
-                    # Check if reactant contains thiourea or similar structure that could form pyrimidine
-                    if checker.check_fg("Thiourea", reactant) and product_has_pyrimidine:
-                        print(f"Detected thiourea to pyrimidine conversion at depth {depth}")
-                        pyrimidine_formation = True
-                        formation_depth = depth
+                # Check for late-stage N-alkylation (low depth)
+                if depth <= 1 and not has_late_stage_alkylation:
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(
+                        Chem.MolFromSmarts(
+                            "[N]1[CH2][CH2][N]([CH2][C](=[O])[O][CH2][CH3])[CH2][CH2]1"
+                        )
+                    ):
+                        has_late_stage_alkylation = True
+                        print("Detected late-stage N-alkylation at depth", depth)
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
-    print("Starting traversal of synthesis route")
     dfs_traverse(route)
 
-    # Return True if pyrimidine formation occurs in the middle of synthesis (depth 1-4)
-    middle_stage = formation_depth is not None and 1 <= formation_depth <= 4
-    print(
-        f"Pyrimidine formation: {pyrimidine_formation}, at depth: {formation_depth}, middle stage: {middle_stage}"
+    # Strategy is present if we have most of the key transformations
+    required_count = 3  # Need at least 3 of the 5 key transformations
+    found_count = sum(
+        [
+            has_aromatic_bromination,
+            has_aromatic_nitration,
+            has_nitro_reduction,
+            has_piperazine_formation,
+            has_late_stage_alkylation,
+        ]
     )
 
-    return pyrimidine_formation and middle_stage
+    result = found_count >= required_count
+    print(f"Aromatic functionalization to heterocycle strategy detected: {result}")
+    return result

@@ -2,95 +2,80 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a sequential transformation from nitro to amine to amide.
+    Detects if the synthesis uses a Boc protection/deprotection sequence.
+    Looks for Boc group (tert-butyloxycarbonyl) in earlier steps and its removal in later steps.
     """
-    # Track transformations by depth
-    transformations = {}
+    boc_protected_steps = []
+    boc_deprotection_found = False
 
-    def dfs_traverse(node):
+    def dfs_traverse(node, depth=0):
+        nonlocal boc_protected_steps, boc_deprotection_found
+
         if node["type"] == "reaction":
-            depth = node.get("depth", 0)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Boc group pattern
+                boc_pattern = Chem.MolFromSmarts("[#6]OC(=O)[#7]")
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+                # Check for Boc in reactants and product
+                reactants_have_boc = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(boc_pattern):
+                        reactants_have_boc = True
+                        break
 
-            if product is not None:
-                nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
-                amine_pattern = Chem.MolFromSmarts("[NH2]")
-                amide_pattern = Chem.MolFromSmarts("[NH][C](=O)")
+                product_mol = Chem.MolFromSmiles(product)
+                product_has_boc = product_mol and product_mol.HasSubstructMatch(boc_pattern)
 
-                # Check for nitro reduction
-                if any(
-                    r is not None and r.HasSubstructMatch(nitro_pattern) for r in reactants
-                ) and product.HasSubstructMatch(amine_pattern):
-                    transformations[depth] = "nitro_to_amine"
+                # If reactants have Boc but product doesn't, it's a deprotection
+                if reactants_have_boc and not product_has_boc:
+                    boc_deprotection_found = True
+                    print(f"Detected Boc deprotection at depth {depth}")
 
-                # Check for amide formation
-                if any(
-                    r is not None and r.HasSubstructMatch(amine_pattern) for r in reactants
-                ) and product.HasSubstructMatch(amide_pattern):
-                    transformations[depth] = "amine_to_amide"
+                # If product has Boc, record the depth
+                if product_has_boc:
+                    boc_protected_steps.append(depth)
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have both transformations in the correct sequence
-    has_nitro_to_amine = "nitro_to_amine" in transformations.values()
-    has_amine_to_amide = "amine_to_amide" in transformations.values()
-
-    # Get depths for each transformation
-    nitro_to_amine_depth = next(
-        (d for d, t in transformations.items() if t == "nitro_to_amine"), None
-    )
-    amine_to_amide_depth = next(
-        (d for d, t in transformations.items() if t == "amine_to_amide"), None
-    )
-
-    # Check if the sequence is correct (nitro→amine→amide)
-    correct_sequence = (
-        has_nitro_to_amine
-        and has_amine_to_amide
-        and (
-            nitro_to_amine_depth is not None
-            and amine_to_amide_depth is not None
-            and nitro_to_amine_depth
-            > amine_to_amide_depth  # Remember: higher depth = earlier in synthesis
-        )
-    )
-
-    if correct_sequence:
+    # Check if we found both protection and deprotection
+    has_sequence = boc_deprotection_found and len(boc_protected_steps) > 0
+    if has_sequence:
         print(
-            f"Detected nitro→amine→amide sequence: nitro reduction at depth {nitro_to_amine_depth}, amide formation at depth {amine_to_amide_depth}"
+            f"Detected Boc protection/deprotection sequence. Protected at depths: {boc_protected_steps}"
         )
 
-    return correct_sequence
+    return has_sequence

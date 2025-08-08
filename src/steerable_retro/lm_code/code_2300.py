@@ -2,65 +2,53 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route employs a Suzuki coupling strategy for C-C bond formation
-    between an aryl halide and a boronic acid.
+    This function detects linear fragment assembly strategy (as opposed to convergent),
+    where each reaction adds one fragment at a time.
     """
-    found_suzuki = False
+    linear_assembly = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_suzuki
+    def dfs_traverse(node):
+        nonlocal linear_assembly
 
-        if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
 
-                # Check for aryl halide and boronic acid in reactants
-                aryl_halide_pattern = Chem.MolFromSmarts("c[Br,I]")
-                boronic_acid_pattern = Chem.MolFromSmarts("cB(O)O")
+            # If any reaction has more than 2 reactants, it's not a simple linear assembly
+            if len(reactants) > 2:
+                linear_assembly = False
+                print("Found reaction with more than 2 reactants - not linear assembly")
 
-                has_aryl_halide = False
-                has_boronic_acid = False
-
-                for r in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(r)
-                        if mol:
-                            if mol.HasSubstructMatch(aryl_halide_pattern):
-                                has_aryl_halide = True
-                            if mol.HasSubstructMatch(boronic_acid_pattern):
-                                has_boronic_acid = True
-                    except:
-                        continue
-
-                if has_aryl_halide and has_boronic_acid:
-                    found_suzuki = True
-                    print(f"Found Suzuki coupling at depth {depth}")
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return found_suzuki
+
+    return linear_assembly

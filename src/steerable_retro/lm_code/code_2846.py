@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,64 +54,70 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects tetrazole ring formation from non-tetrazole precursors.
+    Detects if the synthesis route involves late-stage amide formation.
+    Late-stage means it occurs at a low depth in the synthesis tree.
     """
-    tetrazole_formed = False
+    amide_formation_depths = []
 
-    def dfs_traverse(node):
-        nonlocal tetrazole_formed
-
+    def dfs(node, depth=0):
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            try:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
 
-                # Check if tetrazole is in product
-                if checker.check_ring("tetrazole", product_smiles):
-                    # Check if tetrazole is not in any reactant
-                    tetrazole_in_reactants = False
-                    for reactant_smiles in reactants_smiles:
-                        if checker.check_ring("tetrazole", reactant_smiles):
-                            tetrazole_in_reactants = True
-                            print(f"Tetrazole already present in reactant: {reactant_smiles}")
-                            break
+                # Check for amide formation reactions
+                if (
+                    checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                        rsmi,
+                    )
+                    or checker.check_reaction(
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids", rsmi
+                    )
+                    or checker.check_reaction("Acyl chloride with ammonia to amide", rsmi)
+                    or checker.check_reaction(
+                        "Acyl chloride with primary amine to amide (Schotten-Baumann)", rsmi
+                    )
+                    or checker.check_reaction("Acyl chloride with secondary amine to amide", rsmi)
+                    or checker.check_reaction("Carboxylic acid with primary amine to amide", rsmi)
+                    or checker.check_reaction("Ester with ammonia to amide", rsmi)
+                    or checker.check_reaction("Ester with primary amine to amide", rsmi)
+                    or checker.check_reaction("Ester with secondary amine to amide", rsmi)
+                    or checker.check_reaction("Carboxylic acid to amide conversion", rsmi)
+                    or checker.check_reaction("Schotten-Baumann to ester", rsmi)
+                    or checker.check_reaction("{Schotten-Baumann_amide}", rsmi)
+                ):
 
-                    if not tetrazole_in_reactants:
-                        # Check for specific tetrazole formation reactions
-                        if (
-                            checker.check_reaction(
-                                "Azide-nitrile click cycloaddition to tetrazole", rsmi
-                            )
-                            or checker.check_reaction("{tetrazole_terminal}", rsmi)
-                            or checker.check_reaction("{tetrazole_connect_regioisomere_1}", rsmi)
-                            or checker.check_reaction("{tetrazole_connect_regioisomere_2}", rsmi)
-                        ):
-                            print(f"Tetrazole formation detected in reaction: {rsmi}")
-                            print(f"Product: {product_smiles}")
-                            print(f"Reactants: {reactants_smiles}")
-                            tetrazole_formed = True
-                        else:
-                            # Fallback check for any reaction that forms tetrazole
-                            # Check if nitrile and azide are in reactants
-                            nitrile_in_reactants = False
-                            azide_in_reactants = False
-                            for reactant_smiles in reactants_smiles:
-                                if checker.check_fg("Nitrile", reactant_smiles):
-                                    nitrile_in_reactants = True
-                                if checker.check_fg("Azide", reactant_smiles):
-                                    azide_in_reactants = True
+                    # Verify that this reaction actually forms an amide
+                    product = rsmi.split(">")[-1]
 
-                            if nitrile_in_reactants and azide_in_reactants:
-                                print(
-                                    f"Tetrazole formation detected (nitrile + azide) in reaction: {rsmi}"
-                                )
-                                print(f"Product: {product_smiles}")
-                                print(f"Reactants: {reactants_smiles}")
-                                tetrazole_formed = True
+                    # Check if product has an amide group
+                    has_amide_product = (
+                        checker.check_fg("Primary amide", product)
+                        or checker.check_fg("Secondary amide", product)
+                        or checker.check_fg("Tertiary amide", product)
+                    )
 
+                    if has_amide_product:
+                        amide_formation_depths.append(depth)
+                        print(f"Found amide formation at depth {depth}: {rsmi}")
+            except Exception as e:
+                print(f"Error processing reaction node for amide formation: {e}")
+
+        # Recursively process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs(child, depth + 1)
 
-    dfs_traverse(route)
-    return tetrazole_formed
+    # Start DFS traversal
+    dfs(route)
+
+    # Check if we found any amide formation reactions
+    if not amide_formation_depths:
+        print("No amide formation reactions found")
+        return False
+
+    # Check if at least one amide formation occurs at a late stage (low depth)
+    # We'll consider depth <= 2 as late stage
+    late_stage = any(depth <= 2 for depth in amide_formation_depths)
+
+    print(f"Late-stage amide formation: {late_stage}")
+    return late_stage

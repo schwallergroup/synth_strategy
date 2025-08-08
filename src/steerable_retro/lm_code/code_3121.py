@@ -2,93 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves formation of a nitrile from an amide,
-    which itself was formed from an acid chloride.
+    Detects a strategy involving multiple sequential dehalogenation steps
+    (removal of halogens like Br, I).
     """
-    found_amide_to_nitrile = False
-    found_acid_chloride_to_amide = False
+    dehalogenation_count = 0
 
     def dfs_traverse(node):
-        nonlocal found_amide_to_nitrile, found_acid_chloride_to_amide
+        nonlocal dehalogenation_count
 
         if node["type"] == "reaction":
             # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for amide to nitrile transformation
-            reactant_has_amide = False
-            product_has_nitrile = False
+            try:
+                product_mol = Chem.MolFromSmiles(product)
 
-            for reactant in reactants_smiles:
-                if reactant:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX3](=O)[NX3]")):
-                            reactant_has_amide = True
-                            break
-                    except:
-                        continue
+                # Find the main reactant (usually the first one)
+                main_reactant = None
+                for r in reactants:
+                    r_mol = Chem.MolFromSmiles(r)
+                    if r_mol and r_mol.GetNumHeavyAtoms() > 5:  # Assuming main reactant is larger
+                        main_reactant = r_mol
+                        break
 
-            if product_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(product_smiles)
-                    if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX2]#[NX1]")):
-                        product_has_nitrile = True
-                except:
-                    pass
+                if product_mol and main_reactant:
+                    # Check for halogen removal
+                    br_pattern = Chem.MolFromSmarts("[#6]-[Br]")
+                    i_pattern = Chem.MolFromSmarts("[#6]-[I]")
 
-            if reactant_has_amide and product_has_nitrile:
-                found_amide_to_nitrile = True
-                print("Found amide to nitrile transformation")
+                    # Check if reactant has halogen that product doesn't have
+                    if (
+                        main_reactant.HasSubstructMatch(br_pattern)
+                        and not product_mol.HasSubstructMatch(br_pattern)
+                    ) or (
+                        main_reactant.HasSubstructMatch(i_pattern)
+                        and not product_mol.HasSubstructMatch(i_pattern)
+                    ):
+                        dehalogenation_count += 1
+                        print(f"Detected dehalogenation step, total count: {dehalogenation_count}")
 
-            # Check for acid chloride to amide transformation
-            reactant_has_acid_chloride = False
-            product_has_amide = False
-
-            for reactant in reactants_smiles:
-                if reactant:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX3](=O)[Cl]")):
-                            reactant_has_acid_chloride = True
-                            break
-                    except:
-                        continue
-
-            if product_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(product_smiles)
-                    if mol and mol.HasSubstructMatch(Chem.MolFromSmarts("[CX3](=O)[NX3]")):
-                        product_has_amide = True
-                except:
-                    pass
-
-            if reactant_has_acid_chloride and product_has_amide:
-                found_acid_chloride_to_amide = True
-                print("Found acid chloride to amide transformation")
+            except Exception as e:
+                print(f"Error in SMILES processing: {e}")
 
         # Traverse children
         for child in node.get("children", []):
@@ -96,5 +77,4 @@ def main(route):
 
     # Start traversal
     dfs_traverse(route)
-
-    return found_amide_to_nitrile and found_acid_chloride_to_amide
+    return dehalogenation_count >= 2  # Return True if at least 2 dehalogenation steps

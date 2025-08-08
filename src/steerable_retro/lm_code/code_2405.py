@@ -2,93 +2,86 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a synthetic route employs a strategy where a nitrile group
-    is maintained through multiple steps and then converted to an isoxazole in the final step.
+    Detects a synthetic strategy involving exchange between different halogenated functional groups.
     """
-    nitrile_pattern = Chem.MolFromSmarts("[#6]#[#7]")
-    isoxazole_pattern = Chem.MolFromSmarts("[#6]1[#7][#8][#6][#7]1")
+    has_halogen_exchange = False
 
-    # Track if we found the pattern
-    found_pattern = False
+    # SMARTS patterns
+    chloride_pattern = Chem.MolFromSmarts("[#6]-[Cl]")
+    bromide_pattern = Chem.MolFromSmarts("[#6]-[Br]")
+    alcohol_pattern = Chem.MolFromSmarts("[#6]-[OH]")
 
-    # Track the depth where nitrile disappears
-    nitrile_disappears_at_depth = None
+    def dfs_traverse(node):
+        nonlocal has_halogen_exchange
 
-    # Track if isoxazole appears in final product
-    isoxazole_in_final_product = False
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_pattern, nitrile_disappears_at_depth, isoxazole_in_final_product
+            # Convert to RDKit molecules
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check if this is the final product (depth 0)
-                if depth == 0:
-                    if mol.HasSubstructMatch(isoxazole_pattern):
-                        isoxazole_in_final_product = True
-                        print(f"Found isoxazole in final product: {node['smiles']}")
+            if product_mol and reactant_mols:
+                # Check for various halogen exchanges
+                reactant_has_chloride = any(
+                    r and r.HasSubstructMatch(chloride_pattern) for r in reactant_mols
+                )
+                reactant_has_bromide = any(
+                    r and r.HasSubstructMatch(bromide_pattern) for r in reactant_mols
+                )
+                reactant_has_alcohol = any(
+                    r and r.HasSubstructMatch(alcohol_pattern) for r in reactant_mols
+                )
 
-                # Check for nitrile presence
-                has_nitrile = mol.HasSubstructMatch(nitrile_pattern)
+                product_has_chloride = product_mol and product_mol.HasSubstructMatch(
+                    chloride_pattern
+                )
+                product_has_bromide = product_mol and product_mol.HasSubstructMatch(bromide_pattern)
+                product_has_alcohol = product_mol and product_mol.HasSubstructMatch(alcohol_pattern)
 
-                # Process children (reactions)
-                for child in node.get("children", []):
-                    if child["type"] == "reaction":
-                        # Get the product of this reaction (which is the current molecule)
-                        product_smiles = node["smiles"]
-                        product_mol = mol
+                # Check for specific exchanges
+                if (
+                    (reactant_has_chloride and (product_has_alcohol or product_has_bromide))
+                    or (reactant_has_bromide and (product_has_alcohol or product_has_chloride))
+                    or (reactant_has_alcohol and (product_has_chloride or product_has_bromide))
+                ):
+                    has_halogen_exchange = True
+                    print("Detected halogen exchange")
 
-                        # Get reactants
-                        reactants = []
-                        for reactant_node in child.get("children", []):
-                            if reactant_node["type"] == "mol":
-                                reactant_mol = Chem.MolFromSmiles(reactant_node["smiles"])
-                                if reactant_mol:
-                                    reactants.append(reactant_mol)
-
-                        # Check if any reactant has nitrile but product doesn't
-                        if not has_nitrile:
-                            for reactant_mol in reactants:
-                                if reactant_mol.HasSubstructMatch(nitrile_pattern):
-                                    nitrile_disappears_at_depth = depth
-                                    print(f"Nitrile disappears at depth {depth}")
-                                    break
-
-                        # Continue traversal
-                        dfs_traverse(child, depth + 1)
-        else:  # node["type"] == "reaction"
-            for child in node.get("children", []):
-                dfs_traverse(child, depth + 1)
+        # Traverse children
+        for child in node.get("children", []):
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if we found the pattern: nitrile disappears in the final step (depth 0)
-    # and isoxazole appears in the final product
-    if nitrile_disappears_at_depth == 0 and isoxazole_in_final_product:
-        found_pattern = True
-        print("Found late-stage nitrile to isoxazole transformation")
-
-    return found_pattern
+    print(f"Halogen exchange strategy detected: {has_halogen_exchange}")
+    return has_halogen_exchange

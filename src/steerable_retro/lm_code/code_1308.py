@@ -2,77 +2,156 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects the use of Weinreb amide for controlled reduction to aldehyde
+    This function detects the use of orthogonal protection strategy
+    with both Boc and Cbz protecting groups in the same synthesis.
     """
-    # Define SMARTS patterns
-    weinreb_amide_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[N][OX2][#6]")
-    aldehyde_pattern = Chem.MolFromSmarts("[CX3H1](=[OX1])[#6]")
+    # Track protection and deprotection for both groups
+    has_boc_group = False
+    has_cbz_group = False
+    has_boc_protection = False
+    has_boc_deprotection = False
+    has_cbz_protection = False
+    has_cbz_deprotection = False
 
-    # Track if we find the patterns and at what depth
-    found_weinreb_depth = None
-    found_aldehyde_depth = None
+    # Create SMARTS patterns for Boc and Cbz groups
+    boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")
+    cbz_pattern = Chem.MolFromSmarts("c1ccccc1COC(=O)[N]")
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_weinreb_depth, found_aldehyde_depth
+    def dfs_traverse(node):
+        nonlocal has_boc_group, has_cbz_group, has_boc_protection, has_boc_deprotection, has_cbz_protection, has_cbz_deprotection
 
-        if node["type"] == "mol":
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                if mol.HasSubstructMatch(weinreb_amide_pattern):
-                    found_weinreb_depth = depth
-                if mol.HasSubstructMatch(aldehyde_pattern):
-                    found_aldehyde_depth = depth
+        # Check molecule nodes for protecting groups
+        if node["type"] == "mol" and node.get("smiles"):
+            mol_smiles = node["smiles"]
 
-        # Check for Weinreb amide to aldehyde transformation in reaction nodes
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            # Check for Boc and Cbz groups in molecules
+            if checker.check_fg("Carbamic ester", mol_smiles):
+                mol = Chem.MolFromSmiles(mol_smiles)
 
-            reactant_mol = Chem.MolFromSmiles(reactants[0]) if reactants else None
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                # Check for Boc group (tert-butyloxycarbonyl)
+                if mol and mol.HasSubstructMatch(boc_pattern):
+                    print(f"Found Boc protecting group in molecule: {mol_smiles}")
+                    has_boc_group = True
 
-            if reactant_mol and product_mol:
-                if reactant_mol.HasSubstructMatch(
-                    weinreb_amide_pattern
-                ) and product_mol.HasSubstructMatch(aldehyde_pattern):
-                    found_weinreb_depth = depth
-                    found_aldehyde_depth = depth - 1  # Aldehyde appears one step later in synthesis
+                # Check for Cbz group (benzyloxycarbonyl)
+                if mol and mol.HasSubstructMatch(cbz_pattern):
+                    print(f"Found Cbz protecting group in molecule: {mol_smiles}")
+                    has_cbz_group = True
 
+        # Check reaction nodes for protection/deprotection reactions
+        elif node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rxn_smiles = node["metadata"]["rsmi"]
+
+            # Check for Boc protection reactions
+            if (
+                checker.check_reaction("Boc amine protection", rxn_smiles)
+                or checker.check_reaction("Boc amine protection explicit", rxn_smiles)
+                or checker.check_reaction("Boc amine protection with Boc anhydride", rxn_smiles)
+                or checker.check_reaction("Boc amine protection (ethyl Boc)", rxn_smiles)
+                or checker.check_reaction("Boc amine protection of secondary amine", rxn_smiles)
+                or checker.check_reaction("Boc amine protection of primary amine", rxn_smiles)
+            ):
+                print(f"Found Boc protection reaction: {rxn_smiles}")
+                has_boc_protection = True
+
+            # Check for Boc deprotection reactions
+            if (
+                checker.check_reaction("Boc amine deprotection", rxn_smiles)
+                or checker.check_reaction("Boc amine deprotection of guanidine", rxn_smiles)
+                or checker.check_reaction("Boc amine deprotection to NH-NH2", rxn_smiles)
+                or checker.check_reaction("Tert-butyl deprotection of amine", rxn_smiles)
+            ):
+                print(f"Found Boc deprotection reaction: {rxn_smiles}")
+                has_boc_deprotection = True
+
+            # Check for Cbz protection/deprotection
+            reactants = rxn_smiles.split(">")[0].split(".")
+            product = rxn_smiles.split(">")[-1]
+
+            # For Cbz protection, look for reactions that form carbamic esters with benzyl groups
+            if checker.check_fg("Carbamic ester", product):
+                prod_mol = Chem.MolFromSmiles(product)
+                if prod_mol and prod_mol.HasSubstructMatch(cbz_pattern):
+                    print(f"Found Cbz protection reaction: {rxn_smiles}")
+                    has_cbz_protection = True
+
+            # For Cbz deprotection, check for hydrogenolysis of carbamic esters
+            if (
+                checker.check_reaction("Carboxyl benzyl deprotection", rxn_smiles)
+                or checker.check_reaction("Hydroxyl benzyl deprotection", rxn_smiles)
+                or checker.check_reaction("Hydrogenolysis of amides/imides/carbamates", rxn_smiles)
+            ):
+                # Verify it's specifically removing a Cbz group
+                for reactant in reactants:
+                    if reactant and checker.check_fg("Carbamic ester", reactant):
+                        react_mol = Chem.MolFromSmiles(reactant)
+                        if react_mol and react_mol.HasSubstructMatch(cbz_pattern):
+                            print(f"Found Cbz deprotection reaction: {rxn_smiles}")
+                            has_cbz_deprotection = True
+
+        # Recursively process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if we found both Weinreb amide and aldehyde in the correct sequence
-    if found_weinreb_depth is not None and found_aldehyde_depth is not None:
-        if found_weinreb_depth > found_aldehyde_depth:  # Weinreb comes before aldehyde in synthesis
-            print(
-                f"Found Weinreb amide strategy: Weinreb at depth {found_weinreb_depth}, aldehyde at depth {found_aldehyde_depth}"
-            )
-            return True
+    print(f"Boc group: {has_boc_group}, Cbz group: {has_cbz_group}")
+    print(f"Boc protection: {has_boc_protection}, Boc deprotection: {has_boc_deprotection}")
+    print(f"Cbz protection: {has_cbz_protection}, Cbz deprotection: {has_cbz_deprotection}")
 
-    print("Did not find evidence of Weinreb amide strategy")
-    return False
+    # The orthogonal protection strategy is present if both protecting groups are used
+    # We don't strictly require seeing the protection/deprotection reactions
+    return has_boc_group and has_cbz_group

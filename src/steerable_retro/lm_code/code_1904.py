@@ -2,66 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a pyrazole core with a
-    trifluoromethoxy-containing aromatic fragment throughout the synthesis.
+    This function detects preservation of key functional groups (cyano, chloro)
+    throughout the synthetic route.
     """
-    # Define SMARTS patterns
-    pyrazole_pattern = "[n]1[n][c][c][c]1"
-    trifluoromethoxy_pattern = "[O][C]([F])([F])[F]"
+    # Track if we find the functional groups in the final product
+    cyano_preserved = False
+    chloro_preserved = False
 
-    pyrazole_present = False
-    trifluoromethoxy_present = False
+    def dfs_traverse(node):
+        nonlocal cyano_preserved, chloro_preserved
 
-    def dfs_traverse(node, depth=0):
-        nonlocal pyrazole_present, trifluoromethoxy_present
+        if node["type"] == "mol" and node.get("in_stock", False) == False:
+            # This is likely the final product
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for cyano group
+                cyano_pattern = Chem.MolFromSmarts("[C]#[N]")
+                if mol.HasSubstructMatch(cyano_pattern):
+                    print("Found cyano group in final product")
+                    cyano_preserved = True
 
-        if node["type"] == "mol" and "smiles" in node:
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    # Check for pyrazole
-                    pyrazole_matcher = Chem.MolFromSmarts(pyrazole_pattern)
-                    if mol.HasSubstructMatch(pyrazole_matcher):
-                        pyrazole_present = True
-                        print(f"Found pyrazole at depth {depth}")
+                # Check for chloro group on aromatic
+                chloro_pattern = Chem.MolFromSmarts("[c][Cl]")
+                if mol.HasSubstructMatch(chloro_pattern):
+                    print("Found chloro group in final product")
+                    chloro_preserved = True
 
-                    # Check for trifluoromethoxy
-                    trifluoromethoxy_matcher = Chem.MolFromSmarts(trifluoromethoxy_pattern)
-                    if mol.HasSubstructMatch(trifluoromethoxy_matcher):
-                        trifluoromethoxy_present = True
-                        print(f"Found trifluoromethoxy at depth {depth}")
-            except Exception as e:
-                print(f"Error analyzing molecule at depth {depth}: {e}")
+        # Check if functional groups are present in starting materials
+        if node["type"] == "mol" and node.get("in_stock", False) == True:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for cyano group in starting materials
+                cyano_pattern = Chem.MolFromSmarts("[C]#[N]")
+                if mol.HasSubstructMatch(cyano_pattern):
+                    print("Found cyano group in starting material")
 
-        # Continue traversing
+                # Check for chloro group in starting materials
+                chloro_pattern = Chem.MolFromSmarts("[c][Cl]")
+                if mol.HasSubstructMatch(chloro_pattern):
+                    print("Found chloro group in starting material")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Return True if both substructures are present
-    result = pyrazole_present and trifluoromethoxy_present
-    if result:
-        print("Detected pyrazole and trifluoromethoxy-containing synthesis")
-    return result
+    # Return True if both functional groups are preserved
+    return cyano_preserved and chloro_preserved

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,89 +54,103 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves an early multicomponent reaction
-    with 3 or more components converging to form a complex intermediate.
+    This function detects a synthetic strategy involving multiple ester hydrolysis steps
+    in the same synthetic route.
     """
-    found_multicomponent = False
+    # Initialize tracking variables
+    ester_hydrolysis_steps = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_multicomponent
+        nonlocal ester_hydrolysis_steps
 
-        if found_multicomponent:
-            return  # Early return if we already found what we're looking for
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            reactants = reactants_part.split(".")
+                try:
+                    # Split reaction SMILES to get reactants and products
+                    parts = rsmi.split(">")
+                    reactants = parts[0].split(".")
+                    products = parts[2].split(".")
 
-            # Check if this is an early-stage reaction (depth 2+)
-            if depth >= 2:
-                print(
-                    f"Examining reaction at depth {depth} with {len(reactants)} reactants: {rsmi}"
-                )
+                    # Check for ester hydrolysis using multiple reaction checks
+                    is_ester_hydrolysis = False
 
-                # Check for known multicomponent reactions first
-                if (
-                    checker.check_reaction("Ugi reaction", rsmi)
-                    or checker.check_reaction("A3 coupling", rsmi)
-                    or checker.check_reaction("A3 coupling to imidazoles", rsmi)
-                    or checker.check_reaction(
-                        "Petasis reaction with amines and boronic acids", rsmi
-                    )
-                    or checker.check_reaction(
-                        "Petasis reaction with amines and boronic esters", rsmi
-                    )
-                    or checker.check_reaction(
-                        "Petasis reaction with amines aldehydes and boronic acids", rsmi
-                    )
-                ):
-                    print(f"Found known multicomponent reaction at depth {depth}")
-                    found_multicomponent = True
-                    return
-
-                # Count number of distinct reactants (at least 3 for multicomponent)
-                if len(reactants) >= 3:
-                    print(
-                        f"Found potential multicomponent reaction with {len(reactants)} components at depth {depth}"
-                    )
-
-                    # Validate reactants are chemically distinct by converting to canonical SMILES
-                    unique_reactants = set()
-                    for r in reactants:
-                        # Skip empty reactants
-                        if not r.strip():
-                            continue
-
-                        # Remove atom mapping for comparison
-                        clean_r = r
-                        for match in re.finditer(r":[0-9]+", r):
-                            clean_r = clean_r.replace(match.group(0), "")
-
-                        try:
-                            mol = Chem.MolFromSmiles(clean_r)
-                            if mol:
-                                canonical_smiles = Chem.MolToSmiles(mol)
-                                unique_reactants.add(canonical_smiles)
-                                print(f"  Unique reactant: {canonical_smiles}")
-                        except Exception as e:
-                            # Skip invalid SMILES
-                            print(f"  Error processing reactant {r}: {e}")
-                            continue
-
-                    print(f"Found {len(unique_reactants)} chemically distinct reactants")
-                    if len(unique_reactants) >= 3:
-                        print(
-                            f"Confirmed multicomponent reaction with {len(unique_reactants)} chemically distinct reactants"
+                    # Check for specific reaction types
+                    if (
+                        checker.check_reaction(
+                            "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
                         )
-                        found_multicomponent = True
-                        return
+                        or checker.check_reaction(
+                            "Ester saponification (methyl deprotection)", rsmi
+                        )
+                        or checker.check_reaction("Ester saponification (alkyl deprotection)", rsmi)
+                        or checker.check_reaction("COOH ethyl deprotection", rsmi)
+                    ):
 
-        # Continue traversing
+                        # Verify functional group transformation: ester/thioester → carboxylic acid
+                        has_ester_reactant = any(
+                            checker.check_fg("Ester", reactant) for reactant in reactants
+                        )
+                        has_thioester_reactant = any(
+                            checker.check_fg("Carbo-thioester", reactant) for reactant in reactants
+                        )
+                        has_carboxylic_product = any(
+                            checker.check_fg("Carboxylic acid", product) for product in products
+                        )
+
+                        if (
+                            has_ester_reactant or has_thioester_reactant
+                        ) and has_carboxylic_product:
+                            is_ester_hydrolysis = True
+                            print(f"Detected ester hydrolysis at depth {depth}, reaction: {rsmi}")
+                            print(f"  - Ester in reactants: {has_ester_reactant}")
+                            print(f"  - Thioester in reactants: {has_thioester_reactant}")
+                            print(f"  - Carboxylic acid in products: {has_carboxylic_product}")
+                            ester_hydrolysis_steps.append(depth)
+                        else:
+                            print(
+                                f"Reaction matches ester hydrolysis pattern but FG check failed at depth {depth}"
+                            )
+                            print(f"  - Ester in reactants: {has_ester_reactant}")
+                            print(f"  - Thioester in reactants: {has_thioester_reactant}")
+                            print(f"  - Carboxylic acid in products: {has_carboxylic_product}")
+
+                    # Additional check for other potential ester hydrolysis reactions
+                    elif any(
+                        "hydrolysis" in rxn_type.lower()
+                        for rxn_type in ["Hydrolysis of amides/imides/carbamates"]
+                    ):
+                        # Check if this might be an ester hydrolysis not captured by the standard reaction types
+                        has_ester_reactant = any(
+                            checker.check_fg("Ester", reactant) for reactant in reactants
+                        )
+                        has_carboxylic_product = any(
+                            checker.check_fg("Carboxylic acid", product) for product in products
+                        )
+
+                        if has_ester_reactant and has_carboxylic_product:
+                            is_ester_hydrolysis = True
+                            print(
+                                f"Detected alternative ester hydrolysis at depth {depth}, reaction: {rsmi}"
+                            )
+                            ester_hydrolysis_steps.append(depth)
+
+                except Exception as e:
+                    print(f"Error processing reaction SMILES: {e}")
+
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    print(f"Final result: {found_multicomponent}")
-    return found_multicomponent
+
+    # Determine if the strategy is present (at least 2 ester hydrolysis steps)
+    strategy_present = len(ester_hydrolysis_steps) >= 2
+
+    print(
+        f"Detected {len(ester_hydrolysis_steps)} ester hydrolysis steps at depths: {ester_hydrolysis_steps}"
+    )
+
+    return strategy_present

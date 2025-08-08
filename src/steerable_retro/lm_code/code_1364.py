@@ -2,78 +2,121 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthesis involves multiple C-N bond formations
-    (e.g., amide and urea).
+    This function detects Suzuki coupling (aryl halide + boronic acid/ester) in the synthetic route.
     """
-    cn_bond_formations = 0
+    suzuki_coupling_found = False
 
     def dfs_traverse(node):
-        nonlocal cn_bond_formations
+        nonlocal suzuki_coupling_found
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
+        if suzuki_coupling_found:
+            return
+
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+
+            # Check if this is a Suzuki coupling reaction using the checker
+            suzuki_reaction_types = [
+                "Suzuki coupling with boronic acids",
+                "Suzuki coupling with boronic acids OTf",
+                "Suzuki coupling with sulfonic esters",
+                "Suzuki coupling with boronic esters OTf",
+                "Suzuki coupling with boronic esters",
+                "Suzuki",
+            ]
+
+            # First check if the reaction is explicitly a Suzuki coupling
+            for reaction_type in suzuki_reaction_types:
+                if checker.check_reaction(reaction_type, rsmi):
+                    print(f"Suzuki coupling detected: {reaction_type} - {rsmi}")
+                    suzuki_coupling_found = True
+                    return
+
+            # If not explicitly labeled, check if it has the characteristic functional groups
+            try:
                 reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
 
-                # Check for amide formation
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    amide_pattern = Chem.MolFromSmarts("[#7][#6](=[#8])[#6]")
-                    urea_pattern = Chem.MolFromSmarts("[#7][#6](=[#8])[#7]")
+                # Check for required functional groups in reactants
+                has_aryl_halide = False
+                has_boronic = False
 
-                    # Count matches in product
-                    product_amide_matches = len(product_mol.GetSubstructMatches(amide_pattern))
-                    product_urea_matches = len(product_mol.GetSubstructMatches(urea_pattern))
+                for reactant in reactants:
+                    if checker.check_fg("Aromatic halide", reactant):
+                        has_aryl_halide = True
+                        print(f"Found aromatic halide in reactant: {reactant}")
 
-                    # Count matches in reactants
-                    reactant_amide_matches = 0
-                    reactant_urea_matches = 0
-
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            reactant_amide_matches += len(
-                                reactant_mol.GetSubstructMatches(amide_pattern)
-                            )
-                            reactant_urea_matches += len(
-                                reactant_mol.GetSubstructMatches(urea_pattern)
-                            )
-
-                    # If product has more amide or urea groups than reactants combined, a C-N bond was formed
-                    if (
-                        product_amide_matches > reactant_amide_matches
-                        or product_urea_matches > reactant_urea_matches
+                    if checker.check_fg("Boronic acid", reactant) or checker.check_fg(
+                        "Boronic ester", reactant
                     ):
-                        cn_bond_formations += 1
-                        print(f"Detected C-N bond formation, total count: {cn_bond_formations}")
+                        has_boronic = True
+                        print(f"Found boronic acid/ester in reactant: {reactant}")
 
-        # Traverse children
+                # If both required functional groups are present, it's likely a Suzuki coupling
+                if has_aryl_halide and has_boronic:
+                    # Double-check if it's a C-C bond formation reaction
+                    print(
+                        f"Detected unlabeled Suzuki coupling with required functional groups: {rsmi}"
+                    )
+                    suzuki_coupling_found = True
+                    return
+            except Exception as e:
+                print(f"Error analyzing reactants: {e}")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
     dfs_traverse(route)
-
-    return cn_bond_formations >= 2  # Return True if at least 2 C-N bond formations
+    print(f"Suzuki coupling found: {suzuki_coupling_found}")
+    return suzuki_coupling_found

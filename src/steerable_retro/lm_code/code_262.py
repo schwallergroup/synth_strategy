@@ -2,62 +2,101 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects ester hydrolysis to form a carboxylic acid.
+    Detects ketone to carboxylic acid transformation in the synthesis route.
     """
-    ester_hydrolysis_detected = False
+    transformation_found = False
 
     def dfs_traverse(node):
-        nonlocal ester_hydrolysis_detected
+        nonlocal transformation_found
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for ester in reactants and carboxylic acid in product
-            ester_pattern = Chem.MolFromSmarts("[C;$(C=O)][O][C]")
-            acid_pattern = Chem.MolFromSmarts("[C;$(C=O)][OH]")
+            # Check for C(=O)CH3 to C(=O)OH transformation
+            if "[C:" in product and "=[O:" in product and "[OH:" in product:
+                product_mol = Chem.MolFromSmiles(product)
 
-            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                # Look for carboxylic acid in product
+                for atom in product_mol.GetAtoms():
+                    if atom.GetSymbol() == "C":
+                        oh_neighbor = None
+                        double_o_neighbor = None
 
-            if product_mol and acid_pattern:
-                has_ester = any(
-                    r and r.HasSubstructMatch(ester_pattern) for r in reactants_mols if r
-                )
-                product_has_acid = product_mol.HasSubstructMatch(acid_pattern)
+                        for neighbor in atom.GetNeighbors():
+                            if neighbor.GetSymbol() == "O":
+                                bond = product_mol.GetBondBetweenAtoms(
+                                    atom.GetIdx(), neighbor.GetIdx()
+                                )
+                                if (
+                                    bond.GetBondType() == Chem.BondType.SINGLE
+                                    and neighbor.GetTotalNumHs() > 0
+                                ):
+                                    oh_neighbor = neighbor
+                                elif bond.GetBondType() == Chem.BondType.DOUBLE:
+                                    double_o_neighbor = neighbor
 
-                if has_ester and product_has_acid:
-                    ester_hydrolysis_detected = True
-                    print("Ester hydrolysis to carboxylic acid detected")
+                        if oh_neighbor and double_o_neighbor:
+                            # Check if there was a methyl ketone in reactants
+                            for r in reactants:
+                                if "[C:" in r and "=[O:" in r and "[CH3:" in r:
+                                    r_mol = Chem.MolFromSmiles(r)
+                                    if r_mol:
+                                        for r_atom in r_mol.GetAtoms():
+                                            if r_atom.GetSymbol() == "C":
+                                                methyl_neighbor = None
+                                                double_o_neighbor = None
 
-        # Traverse children
+                                                for neighbor in r_atom.GetNeighbors():
+                                                    if (
+                                                        neighbor.GetSymbol() == "C"
+                                                        and neighbor.GetTotalNumHs() == 3
+                                                    ):
+                                                        methyl_neighbor = neighbor
+                                                    elif (
+                                                        neighbor.GetSymbol() == "O"
+                                                        and r_mol.GetBondBetweenAtoms(
+                                                            r_atom.GetIdx(), neighbor.GetIdx()
+                                                        ).GetBondType()
+                                                        == Chem.BondType.DOUBLE
+                                                    ):
+                                                        double_o_neighbor = neighbor
+
+                                                if methyl_neighbor and double_o_neighbor:
+                                                    transformation_found = True
+                                                    print(
+                                                        "Ketone to carboxylic acid transformation detected"
+                                                    )
+                                                    return
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return ester_hydrolysis_detected
+    return transformation_found

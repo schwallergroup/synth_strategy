@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,69 +54,107 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves nitration in a late stage (low depth).
+    This function detects if the synthesis route involves a mid-stage ring formation.
+    Mid-stage is defined as depths 1-3 in the synthesis route.
     """
-    late_nitration_found = False
+    result = False
 
-    def dfs_traverse(node):
-        nonlocal late_nitration_found
+    def dfs_traverse(node, depth=0):
+        nonlocal result
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            print(f"Checking reaction: {rsmi}")
+        if node["type"] == "reaction" and 1 <= depth <= 3:  # Mid stage (expanded range)
+            # Check if this reaction forms a new ring
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
 
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                try:
+                    # Count rings in reactants
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
+                    reactant_mols = [mol for mol in reactant_mols if mol]  # Filter out None values
+                    reactant_ring_count = sum(mol.GetRingInfo().NumRings() for mol in reactant_mols)
 
-            # Extract depth information with a default value
-            depth_match = re.search(r"Depth: (\d+)", node.get("metadata", {}).get("ID", ""))
-            depth = int(depth_match.group(1)) if depth_match else 0
+                    # Count rings in product
+                    product_mol = Chem.MolFromSmiles(product_part)
+                    if product_mol:
+                        product_ring_count = product_mol.GetRingInfo().NumRings()
 
-            # Only consider late stage reactions (depth 0, 1, or 2)
-            if depth <= 2:
-                print(f"Checking late-stage reaction at depth {depth}")
+                        # If product has more rings than reactants combined, ring formation occurred
+                        if product_ring_count > reactant_ring_count:
+                            print(f"Found mid-stage ring formation at depth {depth}")
+                            print(f"Reaction SMILES: {rsmi}")
+                            print(
+                                f"Reactant ring count: {reactant_ring_count}, Product ring count: {product_ring_count}"
+                            )
 
-                # Check for nitration reactions using the checker function
-                nitration_reaction_types = [
-                    "Aromatic nitration with HNO3",
-                    "Aromatic nitration with NO3 salt",
-                    "Aromatic nitration with NO2 salt",
-                    "Aromatic nitration with alkyl NO2",
-                    "Non-aromatic nitration with HNO3",
-                ]
+                            # Check if this is a known ring-forming reaction type
+                            ring_forming_reactions = [
+                                "Diels-Alder",
+                                "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
+                                "Intramolecular amination",
+                                "Paal-Knorr pyrrole synthesis",
+                                "Benzimidazole formation",
+                                "Benzothiazole formation",
+                                "Benzoxazole formation",
+                                "Pauson-Khand reaction",
+                            ]
 
-                is_nitration = False
-                for rxn_type in nitration_reaction_types:
-                    if checker.check_reaction(rxn_type, rsmi):
-                        is_nitration = True
-                        print(f"Found nitration reaction type: {rxn_type}")
-                        break
+                            for rxn_type in ring_forming_reactions:
+                                if checker.check_reaction(rxn_type, rsmi):
+                                    print(f"Detected ring-forming reaction type: {rxn_type}")
+                                    result = True
+                                    return
 
-                # If not identified as a standard nitration reaction, check for nitro group appearance
-                if not is_nitration:
-                    # Check if nitro group appears in product but not in reactants
-                    has_nitro_in_product = checker.check_fg("Nitro group", product)
-                    has_nitro_in_reactants = any(
-                        checker.check_fg("Nitro group", reactant) for reactant in reactants
-                    )
+                            # Check for common ring types in the product that weren't in reactants
+                            common_rings = [
+                                "pyridine",
+                                "pyrrole",
+                                "furan",
+                                "thiophene",
+                                "pyrazole",
+                                "imidazole",
+                                "oxazole",
+                                "thiazole",
+                                "triazole",
+                                "tetrazole",
+                                "benzene",
+                                "indole",
+                                "benzimidazole",
+                                "benzoxazole",
+                                "benzothiazole",
+                            ]
 
-                    if has_nitro_in_product and not has_nitro_in_reactants:
-                        # Additional check to confirm this is actually a nitration reaction
-                        # and not just a reaction where a nitro group appears for other reasons
-                        is_nitration = True
-                        print(f"Found nitration by nitro group appearance at depth {depth}")
+                            for ring_type in common_rings:
+                                # Check if ring exists in product but not in all reactants
+                                if checker.check_ring(ring_type, product_part):
+                                    ring_in_reactants = False
+                                    for r in reactants_part.split("."):
+                                        if checker.check_ring(ring_type, r):
+                                            ring_in_reactants = True
+                                            break
 
-                if is_nitration:
-                    late_nitration_found = True
-                    print(f"Found late-stage nitration at depth {depth}")
+                                    if not ring_in_reactants:
+                                        print(f"Detected formation of {ring_type} ring")
+                                        result = True
+                                        return
+
+                            # If we've detected more rings but couldn't identify specific types,
+                            # still consider it a ring formation
+                            result = True
+
+                except Exception as e:
+                    print(f"Error analyzing reaction at depth {depth}: {e}")
                     print(f"Reaction SMILES: {rsmi}")
 
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    if not late_nitration_found:
-        print("No late-stage nitration found in the route")
+    if not result:
+        print("No mid-stage ring formation detected in the synthesis route")
 
-    return late_nitration_found
+    return result

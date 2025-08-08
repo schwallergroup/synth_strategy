@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,134 +54,110 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route involves late-stage heterocycle formation,
-    specifically a pyrazole ring formation in the second half of the synthesis.
+    This function detects multiple protection-deprotection sequences
+    in the synthetic route.
     """
-    heterocycle_formation_found = False
-    heterocycle_formation_depth = -1
-    max_depth = -1
+    protection_count = 0
+    deprotection_count = 0
 
-    # List of heterocycles to check
-    heterocycles = [
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "isoxazole",
-        "isothiazole",
-        "triazole",
-        "tetrazole",
-        "oxadiazole",
-        "thiadiazole",
+    # List of protection reaction types
+    protection_reactions = [
+        "Alcohol protection with silyl ethers",
+        "Protection of carboxylic acid",
+        "Boc amine protection",
+        "Boc amine protection explicit",
+        "Boc amine protection with Boc anhydride",
+        "Boc amine protection (ethyl Boc)",
+        "Boc amine protection of secondary amine",
+        "Boc amine protection of primary amine",
     ]
 
-    def dfs_traverse(node, depth=0):
-        nonlocal heterocycle_formation_found, heterocycle_formation_depth, max_depth
+    # List of deprotection reaction types
+    deprotection_reactions = [
+        "Alcohol deprotection from silyl ethers",
+        "Alcohol deprotection from silyl ethers (double)",
+        "Alcohol deprotection from silyl ethers (diol)",
+        "Deprotection of carboxylic acid",
+        "Boc amine deprotection",
+        "Boc amine deprotection of guanidine",
+        "Boc amine deprotection to NH-NH2",
+        "Ester saponification (methyl deprotection)",
+        "Ester saponification (alkyl deprotection)",
+        "Hydroxyl benzyl deprotection",
+        "Carboxyl benzyl deprotection",
+        "COOH ethyl deprotection",
+        "Tert-butyl deprotection of amine",
+        "TMS deprotection from alkyne",
+        "N-glutarimide deprotection",
+        "Phthalimide deprotection",
+    ]
 
-        # Update max depth
-        max_depth = max(max_depth, depth)
+    def dfs_traverse(node):
+        nonlocal protection_count, deprotection_count
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
 
-            print(f"Analyzing reaction at depth {depth}: {rsmi}")
+                # Check for protection reactions
+                for protection_type in protection_reactions:
+                    if checker.check_reaction(protection_type, rsmi):
+                        protection_count += 1
+                        print(f"Protection reaction detected: {protection_type} - {rsmi}")
+                        break
 
-            # Check for heterocycle formation
-            product_has_heterocycle = False
-            reactants_have_heterocycle = False
-            formed_heterocycle = None
+                # Check for deprotection reactions
+                for deprotection_type in deprotection_reactions:
+                    if checker.check_reaction(deprotection_type, rsmi):
+                        deprotection_count += 1
+                        print(f"Deprotection reaction detected: {deprotection_type} - {rsmi}")
+                        break
 
-            # Check which heterocycle is formed
-            for heterocycle in heterocycles:
-                if checker.check_ring(heterocycle, product_smiles):
-                    print(f"Product contains {heterocycle} ring")
-                    product_has_heterocycle = True
-                    formed_heterocycle = heterocycle
+                # Additional check for other protection/deprotection reactions not in the lists
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                    # Check if any reactant has the same heterocycle
-                    for reactant in reactants_smiles:
-                        if checker.check_ring(heterocycle, reactant):
-                            print(f"Reactant also contains {heterocycle} ring")
-                            reactants_have_heterocycle = True
-                            break
+                # Check for silyl protection not caught by reaction checkers
+                if any(
+                    checker.check_fg("Primary alcohol", r)
+                    or checker.check_fg("Secondary alcohol", r)
+                    or checker.check_fg("Tertiary alcohol", r)
+                    for r in reactants
+                ) and checker.check_fg("Silyl protective group", product):
+                    protection_count += 1
+                    print(f"Additional silyl protection detected: {rsmi}")
 
-                    # If heterocycle is in product but not in reactants, it's formed in this reaction
-                    if not reactants_have_heterocycle:
-                        # Check if this is a known heterocycle formation reaction
-                        reaction_is_heterocycle_formation = False
+                # Check for alcohol deprotection not caught by reaction checkers
+                if checker.check_fg("Silyl protective group", reactants[0]) and (
+                    checker.check_fg("Primary alcohol", product)
+                    or checker.check_fg("Secondary alcohol", product)
+                    or checker.check_fg("Tertiary alcohol", product)
+                ):
+                    deprotection_count += 1
+                    print(f"Additional silyl deprotection detected: {rsmi}")
 
-                        # Check for specific reaction types that form heterocycles
-                        reaction_names_to_check = [
-                            "pyrazole formation",
-                            "pyrazole",
-                            "{pyrazole}",
-                            "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
-                            "Huisgen 1,3 dipolar cycloaddition",
-                            "Huisgen alkene-azide 1,3 dipolar cycloaddition",
-                            "[3+2]-cycloaddition of hydrazone and alkyne",
-                            "[3+2]-cycloaddition of hydrazone and alkene",
-                            "[3+2]-cycloaddition of diazoalkane and alkyne",
-                            "[3+2]-cycloaddition of diazoalkane and alkene",
-                        ]
+                # Check for Boc protection not caught by reaction checkers
+                if (
+                    checker.check_fg("Primary amine", reactants[0])
+                    or checker.check_fg("Secondary amine", reactants[0])
+                ) and checker.check_fg("Boc", product):
+                    protection_count += 1
+                    print(f"Additional Boc protection detected: {rsmi}")
 
-                        for reaction_name in reaction_names_to_check:
-                            if checker.check_reaction(reaction_name, rsmi):
-                                print(f"Confirmed {reaction_name} formation reaction")
-                                reaction_is_heterocycle_formation = True
-                                break
+                # Check for Boc deprotection not caught by reaction checkers
+                if checker.check_fg("Boc", reactants[0]) and (
+                    checker.check_fg("Primary amine", product)
+                    or checker.check_fg("Secondary amine", product)
+                ):
+                    deprotection_count += 1
+                    print(f"Additional Boc deprotection detected: {rsmi}")
 
-                        # Direct check for pyrazole formation
-                        if heterocycle == "pyrazole" and not reaction_is_heterocycle_formation:
-                            # Check for hydrazine in reactants and nitrile in reactants
-                            has_hydrazine = False
-                            has_nitrile = False
-
-                            for reactant in reactants_smiles:
-                                if checker.check_fg("Hydrazine", reactant):
-                                    print("Found hydrazine in reactants")
-                                    has_hydrazine = True
-                                if checker.check_fg("Nitrile", reactant):
-                                    print("Found nitrile in reactants")
-                                    has_nitrile = True
-
-                            if has_hydrazine and has_nitrile:
-                                print("Detected pyrazole formation from hydrazine and nitrile")
-                                reaction_is_heterocycle_formation = True
-
-                        if reaction_is_heterocycle_formation:
-                            print(f"{formed_heterocycle} ring formation detected at depth {depth}")
-                            heterocycle_formation_found = True
-                            # If multiple formations are found, keep the one with the lowest depth (latest stage)
-                            if (
-                                heterocycle_formation_depth == -1
-                                or depth < heterocycle_formation_depth
-                            ):
-                                heterocycle_formation_depth = depth
-
-                    break  # Once we find a heterocycle in the product, no need to check others
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(f"Max depth: {max_depth}")
-    print(f"Heterocycle formation found: {heterocycle_formation_found}")
-    print(f"Heterocycle formation depth: {heterocycle_formation_depth}")
-
-    # Calculate the halfway point of the synthesis
-    halfway_depth = max_depth / 2
-    print(f"Halfway depth: {halfway_depth}")
-
-    # Check if heterocycle formation occurred in the second half of synthesis
-    # In retrosynthetic analysis, lower depth values correspond to later stages in synthesis
-    # So we need to check if the formation depth is less than halfway_depth
-    is_late_stage = heterocycle_formation_found and heterocycle_formation_depth < halfway_depth
-    print(f"Is late stage heterocycle formation: {is_late_stage}")
-
-    return is_late_stage
+    # Return True if we have at least 2 protection or deprotection reactions
+    has_multiple_protections = (protection_count + deprotection_count) >= 2
+    print(f"Protection count: {protection_count}, Deprotection count: {deprotection_count}")
+    return has_multiple_protections

@@ -2,57 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route follows a linear strategy
-    without convergent steps.
+    Detects if the route involves oxidation of a methyl group to a carbonyl group.
     """
-    is_linear = True
+    found_oxidation = False
 
-    def count_reactants(reaction_node):
-        rsmi = reaction_node["metadata"].get("rsmi", "")
-        if not rsmi:
-            return 0
-
-        reactants_part = rsmi.split(">")[0]
-        # Count number of distinct reactants (separated by ".")
-        return len(reactants_part.split("."))
-
-    def dfs_traverse(node):
-        nonlocal is_linear
+    def dfs_traverse(node, depth=0):
+        nonlocal found_oxidation
 
         if node["type"] == "reaction":
-            # If any reaction has more than 2 reactants, it might be convergent
-            # (allowing for 2 because many reactions have a reagent in addition to the main substrate)
-            if count_reactants(node) > 2:
-                is_linear = False
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        # Traverse children
+                # This is a simplified check - in a real implementation,
+                # we would need to track atom mappings to confirm the transformation
+                methyl_pattern = Chem.MolFromSmarts("[CH3]")
+                carbonyl_pattern = Chem.MolFromSmarts("[#6](=[#8])")
+
+                # Check if reactant has methyl group
+                has_methyl = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(methyl_pattern):
+                        has_methyl = True
+                        break
+
+                # Check if product has carbonyl group
+                product_mol = Chem.MolFromSmiles(product)
+                has_carbonyl = product_mol and product_mol.HasSubstructMatch(carbonyl_pattern)
+
+                if has_methyl and has_carbonyl:
+                    found_oxidation = True
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    if is_linear:
-        print("Linear synthesis strategy detected")
-    return is_linear
+    print(f"Methyl to carbonyl oxidation detection: {found_oxidation}")
+    return found_oxidation

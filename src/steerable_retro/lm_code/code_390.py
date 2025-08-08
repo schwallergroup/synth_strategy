@@ -2,45 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route uses azide as an intermediate.
+    Detects if the synthesis route involves conversion of a phenol (OH) to a thiol (SH).
     """
-    azide_found = False
+    conversion_found = False
 
     def dfs_traverse(node):
-        nonlocal azide_found
+        nonlocal conversion_found
 
-        if node["type"] == "mol":
-            # Check if molecule contains azide group
-            if node["smiles"] and "[N-]=[N+]=[N" in node["smiles"]:
-                azide_found = True
-                print(f"Azide intermediate found: {node['smiles']}")
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        # Traverse children
+            # Check for phenol to thiol conversion
+            phenol_pattern = Chem.MolFromSmarts("[OH][c]")
+            thiol_pattern = Chem.MolFromSmarts("[SH][c]")
+
+            for reactant in reactants_smiles:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                product_mol = Chem.MolFromSmiles(product_smiles)
+
+                if (
+                    reactant_mol
+                    and product_mol
+                    and reactant_mol.HasSubstructMatch(phenol_pattern)
+                    and product_mol.HasSubstructMatch(thiol_pattern)
+                    and not product_mol.HasSubstructMatch(phenol_pattern)
+                ):
+                    print("Found phenol to thiol conversion")
+                    conversion_found = True
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
     dfs_traverse(route)
-
-    return azide_found
+    return conversion_found

@@ -2,62 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves sulfonamide formation from sulfonyl chloride.
+    Detects synthesis strategy involving activation of benzyl alcohol to benzyl halide
+    for subsequent coupling reactions.
     """
-    sulfonamide_detected = False
+    benzyl_alcohol_to_halide = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal sulfonamide_detected
+    def dfs_traverse(node):
+        nonlocal benzyl_alcohol_to_halide
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            # Check for benzyl alcohol to benzyl halide transformation
+            benzyl_alcohol_pattern = Chem.MolFromSmarts("[c:1]-[CH2:2]-[OH:3]")
+            benzyl_halide_pattern = Chem.MolFromSmarts("[c:1]-[CH2:2]-[Br,Cl,I:3]")
 
-                # Check for sulfonyl chloride in reactants
-                sulfonyl_chloride_pattern = Chem.MolFromSmarts("[#16](=[O])(=[O])[Cl]")
-                has_sulfonyl_chloride = any(
-                    mol.HasSubstructMatch(sulfonyl_chloride_pattern) for mol in reactant_mols if mol
-                )
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.HasSubstructMatch(benzyl_alcohol_pattern):
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol and product_mol.HasSubstructMatch(benzyl_halide_pattern):
+                        print("Detected benzyl alcohol to halide activation")
+                        benzyl_alcohol_to_halide = True
 
-                # Check for sulfonamide in product
-                sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[O])(=[O])[#7]")
-                has_sulfonamide = product_mol and product_mol.HasSubstructMatch(sulfonamide_pattern)
-
-                if has_sulfonyl_chloride and has_sulfonamide:
-                    print(f"Detected sulfonamide formation at depth {depth}")
-                    sulfonamide_detected = True
-            except:
-                print("Error processing reaction SMILES")
-
-        # Process children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return sulfonamide_detected
+    return benzyl_alcohol_to_halide

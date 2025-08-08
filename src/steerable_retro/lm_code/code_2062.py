@@ -2,192 +2,89 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a sequence of nitrogen oxidation state changes:
-    nitro → amine → hydrazine → heterocycle (pyrazole)
-
-    In retrosynthetic traversal, we expect to find these in reverse order:
-    pyrazole (target) → hydrazine → amine → nitro (starting material)
+    This function detects a strategy involving activation of an alcohol as a mesylate
+    followed by nucleophilic substitution with a sulfur nucleophile.
     """
-    # Track the stages we've found
-    nitro_found = False
-    amine_found = False
-    hydrazine_found = False
-    pyrazole_found = False
+    # Initialize tracking variables
+    has_alcohol_to_mesylate = False
+    has_mesylate_displacement = False
 
-    # Track the order (depth) of transformations
-    # In retrosynthesis, lower depth = later stage (closer to target)
-    nitro_depth = -1
-    amine_depth = -1
-    hydrazine_depth = -1
-    pyrazole_depth = -1
+    # SMARTS patterns
+    alcohol_pattern = Chem.MolFromSmarts("[#6]-[#8;H1]")
+    mesylate_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#16](=[#8])(=[#8])-[#6]")
+    thiol_pattern = Chem.MolFromSmarts("[#6]-[#16;H1]")
+    thioether_pattern = Chem.MolFromSmarts("[#6]-[#16]-[#6]")
 
-    def dfs_traverse(node, depth=0):
-        nonlocal nitro_found, amine_found, hydrazine_found, pyrazole_found
-        nonlocal nitro_depth, amine_depth, hydrazine_depth, pyrazole_depth
+    def dfs_traverse(node):
+        nonlocal has_alcohol_to_mesylate, has_mesylate_displacement
 
-        if node["type"] == "mol":
-            # Check for functional groups in molecules
-            mol_smiles = node["smiles"]
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Record the occurrence of each group, updating if found at an earlier stage
-            if checker.check_fg("Nitro group", mol_smiles) and (
-                nitro_depth == -1 or depth < nitro_depth
-            ):
-                print(f"Found nitro group in molecule at depth {depth}")
-                nitro_found = True
-                nitro_depth = depth
+            try:
+                # Convert to RDKit molecules
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product_mol = Chem.MolFromSmiles(product_smiles)
 
-            if checker.check_fg("Primary amine", mol_smiles) and (
-                amine_depth == -1 or depth < amine_depth
-            ):
-                print(f"Found primary amine in molecule at depth {depth}")
-                amine_found = True
-                amine_depth = depth
+                # Check for alcohol to mesylate transformation
+                if any(
+                    mol.HasSubstructMatch(alcohol_pattern) for mol in reactant_mols
+                ) and product_mol.HasSubstructMatch(mesylate_pattern):
+                    print("Detected alcohol to mesylate transformation")
+                    has_alcohol_to_mesylate = True
 
-            if checker.check_fg("Hydrazine", mol_smiles) and (
-                hydrazine_depth == -1 or depth < hydrazine_depth
-            ):
-                print(f"Found hydrazine in molecule at depth {depth}")
-                hydrazine_found = True
-                hydrazine_depth = depth
-
-            if checker.check_ring("pyrazole", mol_smiles) and (
-                pyrazole_depth == -1 or depth < pyrazole_depth
-            ):
-                print(f"Found pyrazole in molecule at depth {depth}")
-                pyrazole_found = True
-                pyrazole_depth = depth
-
-        elif node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check for nitro reduction to amine
-                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
-                    print(f"Found nitro reduction to amine at depth {depth}")
-                    if any(
-                        checker.check_fg("Nitro group", r) for r in reactants
-                    ) and checker.check_fg("Primary amine", product):
-                        if amine_depth == -1 or depth < amine_depth:
-                            amine_found = True
-                            amine_depth = depth
-
-                # Check for amine to hydrazine transformation
-                if checker.check_reaction("Hydrazine synthesis from amine", rsmi):
-                    print(
-                        f"Found amine to hydrazine transformation (specific reaction) at depth {depth}"
-                    )
-                    if hydrazine_depth == -1 or depth < hydrazine_depth:
-                        hydrazine_found = True
-                        hydrazine_depth = depth
-
-                # Generic check for amine to hydrazine transformation
+                # Check for mesylate displacement by thiol
                 if (
-                    any(checker.check_fg("Primary amine", r) for r in reactants)
-                    and checker.check_fg("Hydrazine", product)
-                    and not any(checker.check_fg("Hydrazine", r) for r in reactants)
+                    any(mol.HasSubstructMatch(mesylate_pattern) for mol in reactant_mols)
+                    and any(mol.HasSubstructMatch(thiol_pattern) for mol in reactant_mols)
+                    and product_mol.HasSubstructMatch(thioether_pattern)
+                    and not product_mol.HasSubstructMatch(mesylate_pattern)
                 ):
-                    print(f"Found amine to hydrazine transformation at depth {depth}")
-                    if hydrazine_depth == -1 or depth < hydrazine_depth:
-                        hydrazine_found = True
-                        hydrazine_depth = depth
+                    print("Detected mesylate displacement by thiol")
+                    has_mesylate_displacement = True
 
-                # Check for hydrazine to pyrazole transformation
-                if checker.check_reaction("pyrazole", rsmi) or checker.check_reaction(
-                    "Pyrazole formation", rsmi
-                ):
-                    print(f"Found pyrazole formation reaction at depth {depth}")
-                    if any(
-                        checker.check_fg("Hydrazine", r) for r in reactants
-                    ) and checker.check_ring("pyrazole", product):
-                        if pyrazole_depth == -1 or depth < pyrazole_depth:
-                            pyrazole_found = True
-                            pyrazole_depth = depth
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
-                # Generic check for hydrazine to pyrazole transformation
-                if (
-                    any(checker.check_fg("Hydrazine", r) for r in reactants)
-                    and checker.check_ring("pyrazole", product)
-                    and not any(checker.check_ring("pyrazole", r) for r in reactants)
-                ):
-                    print(f"Found hydrazine to pyrazole transformation at depth {depth}")
-                    if pyrazole_depth == -1 or depth < pyrazole_depth:
-                        pyrazole_found = True
-                        pyrazole_depth = depth
-
-        # Traverse children
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Nitro found: {nitro_found} at depth {nitro_depth}")
-    print(f"Amine found: {amine_found} at depth {amine_depth}")
-    print(f"Hydrazine found: {hydrazine_found} at depth {hydrazine_depth}")
-    print(f"Pyrazole found: {pyrazole_found} at depth {pyrazole_depth}")
+    # Check if the strategy is present
+    strategy_present = has_alcohol_to_mesylate and has_mesylate_displacement
 
-    # Check if we found all stages in the correct order for retrosynthesis
-    # In retrosynthetic traversal, target (pyrazole) has lowest depth, starting material (nitro) has highest
-    # Allow for equal depths in case multiple functional groups are in the same molecule
-    correct_sequence = (
-        nitro_found
-        and amine_found
-        and hydrazine_found
-        and pyrazole_found
-        and pyrazole_depth <= hydrazine_depth <= amine_depth <= nitro_depth
+    print(
+        f"Mesylate activation for nucleophilic substitution strategy detected: {strategy_present}"
     )
-
-    print(f"Correct sequence: {correct_sequence}")
-    return correct_sequence
+    return strategy_present

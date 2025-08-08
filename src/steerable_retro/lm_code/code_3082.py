@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,69 +54,88 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route involves nitration of an aromatic amine.
+    This function detects if the final product contains multiple sulfonyl groups.
     """
-    has_nitration = False
+    # The final product is the root node in retrosynthetic analysis
+    final_product_smiles = None
 
-    def dfs_traverse(node):
-        nonlocal has_nitration
+    if route["type"] == "mol":
+        final_product_smiles = route["smiles"]
+        print(f"Found final product: {final_product_smiles}")
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                try:
-                    # Correctly split reaction SMILES
-                    reactants = rsmi.split(">")[0]
-                    product = rsmi.split(">")[-1]
+    result = False
+    if final_product_smiles:
+        # Count sulfonyl groups using the checker functions
+        sulfonyl_count = 0
 
-                    # Check for aromatic nitration reaction
-                    is_nitration_reaction = (
-                        checker.check_reaction("Aromatic nitration with HNO3", rsmi)
-                        or checker.check_reaction("Aromatic nitration with NO3 salt", rsmi)
-                        or checker.check_reaction("Aromatic nitration with NO2 salt", rsmi)
-                        or checker.check_reaction("Aromatic nitration with alkyl NO2", rsmi)
-                    )
+        # Debug: Print all functional groups in the molecule
+        mol = Chem.MolFromSmiles(final_product_smiles)
+        if mol:
+            print(f"Molecule has {mol.GetNumAtoms()} atoms")
 
-                    # Check for aromatic ring in reactants
-                    for reactant in reactants.split("."):
-                        # Check if reactant has an aromatic ring and an amine group
-                        has_aromatic = (
-                            checker.check_ring("benzene", reactant)
-                            or checker.check_ring("naphthalene", reactant)
-                            or checker.check_ring("anthracene", reactant)
-                            or checker.check_ring("pyridine", reactant)
-                            or checker.check_ring("pyrrole", reactant)
-                            or checker.check_ring("furan", reactant)
-                            or checker.check_ring("thiophene", reactant)
-                        )
+        # Check for sulfones
+        if checker.check_fg("Sulfone", final_product_smiles):
+            sulfone_indices = checker.get_fg_atom_indices("Sulfone", final_product_smiles)
+            if sulfone_indices:
+                sulfonyl_count += len(sulfone_indices)
+                print(f"Found {len(sulfone_indices)} sulfone groups")
 
-                        has_amine = (
-                            checker.check_fg("Primary amine", reactant)
-                            or checker.check_fg("Secondary amine", reactant)
-                            or checker.check_fg("Tertiary amine", reactant)
-                            or checker.check_fg("Aniline", reactant)
-                        )
+        # Check for sulfonamides
+        if checker.check_fg("Sulfonamide", final_product_smiles):
+            sulfonamide_indices = checker.get_fg_atom_indices("Sulfonamide", final_product_smiles)
+            if sulfonamide_indices:
+                sulfonyl_count += len(sulfonamide_indices)
+                print(f"Found {len(sulfonamide_indices)} sulfonamide groups")
 
-                        # Check if product has a nitro group
-                        has_nitro = checker.check_fg("Nitro group", product)
+        # Check for sulfonyl halides
+        if checker.check_fg("Sulfonyl halide", final_product_smiles):
+            sulfonyl_halide_indices = checker.get_fg_atom_indices(
+                "Sulfonyl halide", final_product_smiles
+            )
+            if sulfonyl_halide_indices:
+                sulfonyl_count += len(sulfonyl_halide_indices)
+                print(f"Found {len(sulfonyl_halide_indices)} sulfonyl halide groups")
 
-                        if is_nitration_reaction and has_aromatic and has_amine and has_nitro:
-                            print(f"Found nitration of aromatic amine: {rsmi}")
-                            has_nitration = True
-                            break
+        # Check for sulfonic acids
+        if checker.check_fg("Sulfonic acid", final_product_smiles):
+            sulfonic_acid_indices = checker.get_fg_atom_indices(
+                "Sulfonic acid", final_product_smiles
+            )
+            if sulfonic_acid_indices:
+                sulfonyl_count += len(sulfonic_acid_indices)
+                print(f"Found {len(sulfonic_acid_indices)} sulfonic acid groups")
 
-                        # Also check for direct transformation of amine to nitro group
-                        # This would be a different reaction than aromatic nitration
-                        if has_amine and has_nitro and not checker.check_fg("Aniline", product):
-                            print(f"Found transformation of amine to nitro group: {rsmi}")
-                            has_nitration = True
-                            break
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
+        # Check for sulfonates
+        if checker.check_fg("Sulfonate", final_product_smiles):
+            sulfonate_indices = checker.get_fg_atom_indices("Sulfonate", final_product_smiles)
+            if sulfonate_indices:
+                sulfonyl_count += len(sulfonate_indices)
+                print(f"Found {len(sulfonate_indices)} sulfonate groups")
 
-        for child in node.get("children", []):
-            dfs_traverse(child)
+        # Check for sulfoxides
+        if checker.check_fg("Sulfoxide", final_product_smiles):
+            sulfoxide_indices = checker.get_fg_atom_indices("Sulfoxide", final_product_smiles)
+            if sulfoxide_indices:
+                sulfonyl_count += len(sulfoxide_indices)
+                print(f"Found {len(sulfoxide_indices)} sulfoxide groups")
 
-    dfs_traverse(route)
-    print(f"Nitro group transformation detected: {has_nitration}")
-    return has_nitration
+        # Direct pattern matching as a fallback
+        # This is needed because the test case shows the checker might be missing some patterns
+        mol = Chem.MolFromSmiles(final_product_smiles)
+        if mol:
+            # Count S(=O)(=O) patterns directly
+            patt = Chem.MolFromSmarts("S(=O)(=O)")
+            matches = mol.GetSubstructMatches(patt)
+            direct_count = len(matches)
+            print(f"Direct S(=O)(=O) pattern matching found {direct_count} instances")
+
+            # If direct matching finds more groups than our checker functions, use that count
+            if direct_count > sulfonyl_count:
+                print(f"Using direct pattern count: {direct_count} instead of {sulfonyl_count}")
+                sulfonyl_count = direct_count
+
+        result = sulfonyl_count >= 2
+        print(f"Found {sulfonyl_count} total sulfonyl groups in final product")
+
+    print(f"Multiple sulfonyl groups in final product strategy detected: {result}")
+    return result

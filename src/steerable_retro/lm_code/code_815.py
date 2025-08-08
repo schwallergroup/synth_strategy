@@ -2,80 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a strategy involving a Suzuki coupling in the second half of the synthesis.
+    This function detects nitro group reduction to amine in the synthetic route.
     """
-    # Track if we find Suzuki coupling reactants and products
-    found_suzuki = False
-    suzuki_depth = None
-    max_depth = 0
+    nitro_reduced = False
 
-    # SMARTS patterns for Suzuki coupling components
-    boronic_acid_pattern = Chem.MolFromSmarts("[B]([O])[O]")
-    aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
+    def dfs_traverse(node):
+        nonlocal nitro_reduced
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_suzuki, suzuki_depth, max_depth
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0]
+            product_smiles = rsmi.split(">")[-1]
 
-        max_depth = max(max_depth, depth)
+            # Check if reactant has nitro and product has amine at same position
+            reactant_mol = Chem.MolFromSmiles(reactants_smiles)
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            if reactant_mol and product_mol:
+                # SMARTS for nitro group
+                nitro_pattern = Chem.MolFromSmarts("[#6]-[#7+](=[#8])[#8-]")
+                # SMARTS for amine group
+                amine_pattern = Chem.MolFromSmarts("[#6]-[#7H2]")
 
-                # Check if reactants match Suzuki coupling components
-                has_boronic_acid = False
-                has_aryl_halide = False
+                if reactant_mol.HasSubstructMatch(nitro_pattern) and product_mol.HasSubstructMatch(
+                    amine_pattern
+                ):
+                    # This is a simplified check - a more robust implementation would verify
+                    # that the nitro and amine are at the same position
+                    print("Detected nitro reduction to amine")
+                    nitro_reduced = True
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(boronic_acid_pattern):
-                            has_boronic_acid = True
-                        if mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
-
-                if has_boronic_acid and has_aryl_halide:
-                    found_suzuki = True
-                    suzuki_depth = depth
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if Suzuki coupling is in the second half of the synthesis
-    # (lower depth values are later in the synthesis)
-    is_late_stage = suzuki_depth is not None and suzuki_depth < (max_depth / 2)
-    result = found_suzuki and is_late_stage
-
-    print(f"Late-stage Suzuki coupling strategy detected: {result}")
-    print(f"  - Found Suzuki coupling: {found_suzuki}")
-    print(f"  - Suzuki depth: {suzuki_depth}")
-    print(f"  - Max depth: {max_depth}")
-    print(f"  - Is late stage: {is_late_stage}")
-
-    return result
+    return nitro_reduced

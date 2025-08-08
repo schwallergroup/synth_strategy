@@ -2,155 +2,107 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves aromatic halogenation.
+    Detects a linear synthetic strategy starting from a Weinreb amide,
+    proceeding through a ketone and α-bromoketone, to form a thiazole.
     """
-    aromatic_halogenation = False
+    # Track the sequence of transformations
+    transformations = []
 
-    def dfs_traverse(node):
-        nonlocal aromatic_halogenation
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-
-            # Check if this is an aromatic halogenation reaction using the checker
-            if (
-                checker.check_reaction("Aromatic fluorination", rsmi)
-                or checker.check_reaction("Aromatic chlorination", rsmi)
-                or checker.check_reaction("Aromatic bromination", rsmi)
-                or checker.check_reaction("Aromatic iodination", rsmi)
-            ):
-
-                print(f"Aromatic halogenation reaction detected: {rsmi}")
-                aromatic_halogenation = True
-                return
-
-            # If not directly identified, check for the transformation
-            try:
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
                 reactants_smiles = rsmi.split(">")[0].split(".")
                 product_smiles = rsmi.split(">")[-1]
 
-                # Check if product has aromatic halide
-                if checker.check_fg("Aromatic halide", product_smiles):
-                    print(f"Product has aromatic halide: {product_smiles}")
+                # Convert SMILES to RDKit molecules
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-                    # Check if reactants don't have aromatic halide (new formation)
-                    reactants_with_aromatic_halide = [
-                        r for r in reactants_smiles if checker.check_fg("Aromatic halide", r)
-                    ]
+                if product and all(reactants):
+                    # Define patterns
+                    weinreb_pattern = Chem.MolFromSmarts("C(=O)N(C)OC")
+                    ketone_pattern = Chem.MolFromSmarts("[#6]-C(=O)-[#6]")
+                    bromoketone_pattern = Chem.MolFromSmarts("[#6]-C(=O)-C-[Br]")
+                    thiazole_pattern = Chem.MolFromSmarts("c1scnc1")
 
-                    if len(reactants_with_aromatic_halide) < len(reactants_smiles):
-                        # Check for aromatic rings in reactants (something to halogenate)
-                        aromatic_rings_in_reactants = False
-                        for r_smi in reactants_smiles:
-                            if (
-                                checker.check_ring("benzene", r_smi)
-                                or checker.check_ring("pyridine", r_smi)
-                                or checker.check_ring("pyrrole", r_smi)
-                                or checker.check_ring("furan", r_smi)
-                                or checker.check_ring("thiophene", r_smi)
-                                or checker.check_ring("imidazole", r_smi)
-                                or checker.check_ring("pyrazole", r_smi)
-                                or checker.check_ring("oxazole", r_smi)
-                                or checker.check_ring("thiazole", r_smi)
-                                or checker.check_ring("indole", r_smi)
-                                or checker.check_ring("naphthalene", r_smi)
-                            ):
-                                aromatic_rings_in_reactants = True
-                                break
+                    # Check for specific transformations
+                    if any(
+                        r.HasSubstructMatch(weinreb_pattern) for r in reactants
+                    ) and product.HasSubstructMatch(ketone_pattern):
+                        transformations.append(("weinreb_to_ketone", depth))
+                        print(f"Detected Weinreb amide to ketone at depth {depth}")
 
-                        if aromatic_rings_in_reactants:
-                            # Check for halogenating agents or halogens in reactants
-                            halogen_sources = [
-                                "I2",
-                                "Br2",
-                                "Cl2",
-                                "F2",
-                                "[I][I]",
-                                "[Br][Br]",
-                                "[Cl][Cl]",
-                                "[F][F]",
-                                "NBS",
-                                "NCS",
-                                "NIS",
-                                "ICl",
-                                "IBr",
-                            ]
+                    if any(
+                        r.HasSubstructMatch(ketone_pattern) for r in reactants
+                    ) and product.HasSubstructMatch(bromoketone_pattern):
+                        transformations.append(("ketone_to_bromoketone", depth))
+                        print(f"Detected ketone to α-bromoketone at depth {depth}")
 
-                            halogen_present = False
-                            for r_smi in reactants_smiles:
-                                # Check for common halogenating agents
-                                if any(source in r_smi for source in halogen_sources):
-                                    halogen_present = True
-                                    break
+                    if any(
+                        r.HasSubstructMatch(bromoketone_pattern) for r in reactants
+                    ) and product.HasSubstructMatch(thiazole_pattern):
+                        transformations.append(("bromoketone_to_thiazole", depth))
+                        print(f"Detected α-bromoketone to thiazole at depth {depth}")
 
-                                # Check for halogen atoms in reactants
-                                mol = Chem.MolFromSmiles(r_smi)
-                                if mol:
-                                    for atom in mol.GetAtoms():
-                                        if atom.GetSymbol() in ["F", "Cl", "Br", "I"]:
-                                            halogen_present = True
-                                            break
-
-                            if halogen_present:
-                                print(f"Aromatic halogenation transformation detected: {rsmi}")
-                                aromatic_halogenation = True
-                                return
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
-
-        # Traverse children
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return aromatic_halogenation
+
+    # Check if all three transformations are present and in the correct order
+    transformation_types = [t[0] for t in transformations]
+
+    has_weinreb_to_ketone = "weinreb_to_ketone" in transformation_types
+    has_ketone_to_bromoketone = "ketone_to_bromoketone" in transformation_types
+    has_bromoketone_to_thiazole = "bromoketone_to_thiazole" in transformation_types
+
+    # Check if the transformations are in the correct order by depth
+    correct_order = True
+    if has_weinreb_to_ketone and has_ketone_to_bromoketone and has_bromoketone_to_thiazole:
+        depths = {t[0]: t[1] for t in transformations}
+        if not (
+            depths["weinreb_to_ketone"]
+            > depths["ketone_to_bromoketone"]
+            > depths["bromoketone_to_thiazole"]
+        ):
+            correct_order = False
+
+    strategy_detected = (
+        has_weinreb_to_ketone
+        and has_ketone_to_bromoketone
+        and has_bromoketone_to_thiazole
+        and correct_order
+    )
+
+    if strategy_detected:
+        print("Complete Weinreb to thiazole linear strategy detected in correct order")
+
+    return strategy_detected

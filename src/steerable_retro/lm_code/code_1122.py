@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,111 +54,75 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a strategy involving late-stage arylation via cross-coupling,
-    particularly Suzuki-type coupling with boronic acids.
+    This function detects if the synthetic route involves sequential functional group transformations
+    (nitration followed by reduction).
     """
-    late_arylation_found = False
-    depth_threshold = 2  # Consider "late stage" if depth <= 2
+    # Track reactions by depth
+    nitration_depth = None
+    reduction_depth = None
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_arylation_found
+    def dfs_traverse(node, current_depth=0):
+        nonlocal nitration_depth, reduction_depth
 
-        if node["type"] == "reaction" and depth <= depth_threshold:
-            if "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-                print(f"Examining reaction at depth {depth}: {rsmi}")
-
-                # Check if this is an arylation cross-coupling reaction
-                is_arylation = (
-                    checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                    or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                    or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
-                    or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
-                    or checker.check_reaction("Buchwald-Hartwig", rsmi)
-                    or checker.check_reaction(
-                        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
-                    )
-                    or checker.check_reaction("Heck terminal vinyl", rsmi)
-                    or checker.check_reaction("Negishi coupling", rsmi)
-                    or checker.check_reaction("Stille reaction_aryl", rsmi)
-                    or checker.check_reaction("Sonogashira alkyne_aryl halide", rsmi)
-                    or checker.check_reaction("Ullmann condensation", rsmi)
-                    or checker.check_reaction("Ullmann-Goldberg Substitution aryl alcohol", rsmi)
-                    or checker.check_reaction("Hiyama-Denmark Coupling", rsmi)
-                    or checker.check_reaction("Kumada cross-coupling", rsmi)
-                )
-
-                print(f"Is arylation cross-coupling: {is_arylation}")
-
-                # Check for coupling partners in reactants
-                coupling_partner_present = any(
-                    checker.check_fg("Boronic acid", r)
-                    or checker.check_fg("Boronic ester", r)
-                    or checker.check_fg("Aromatic halide", r)
-                    or checker.check_fg("Triflate", r)
-                    for r in reactants
-                )
-
-                print(f"Has coupling partner: {coupling_partner_present}")
-
-                # Check for aromatic rings in product
-                aromatic_rings = [
-                    "benzene",
-                    "naphthalene",
-                    "anthracene",
-                    "pyridine",
-                    "quinoline",
-                    "isoquinoline",
-                    "indole",
-                    "benzothiophene",
-                    "benzoxazole",
-                    "benzimidazole",
-                    "furan",
-                    "thiophene",
-                    "pyrazole",
-                    "imidazole",
-                    "oxazole",
-                    "thiazole",
-                    "pyrimidine",
-                ]
-
-                has_aromatic_ring = any(
-                    checker.check_ring(ring, product) for ring in aromatic_rings
-                )
-
-                print(f"Has aromatic ring in product: {has_aromatic_ring}")
-
-                # Check if a new C-C or C-N or C-O bond is formed between aromatic rings
-                # This is a heuristic check for arylation reactions that might not be captured by reaction types
-                new_aryl_bond_formed = False
-
-                # If we have aromatic halides in reactants and aromatic rings in product
-                # it's likely an arylation reaction
-                aromatic_halide_present = any(
-                    checker.check_fg("Aromatic halide", r) for r in reactants
-                )
-
-                if aromatic_halide_present and has_aromatic_ring:
-                    print("Aromatic halide present in reactants and aromatic ring in product")
-                    new_aryl_bond_formed = True
-
+                # Check for nitration reaction
                 if (
-                    is_arylation or coupling_partner_present or new_aryl_bond_formed
-                ) and has_aromatic_ring:
-                    print(f"Found late-stage arylation via cross-coupling at depth {depth}")
-                    print(
-                        f"Is arylation: {is_arylation}, Has coupling partner: {coupling_partner_present}"
+                    checker.check_reaction("Aromatic nitration with HNO3", rsmi)
+                    or checker.check_reaction("Aromatic nitration with NO3 salt", rsmi)
+                    or checker.check_reaction("Aromatic nitration with NO2 salt", rsmi)
+                    or checker.check_reaction("Aromatic nitration with alkyl NO2", rsmi)
+                ):
+                    print(f"Nitration detected at depth {current_depth}")
+                    nitration_depth = current_depth
+
+                # Check for reduction of nitro to amine
+                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                    print(f"Reduction detected at depth {current_depth}")
+                    reduction_depth = current_depth
+
+                # If specific reaction types aren't detected, check for functional group changes
+                if nitration_depth is None:
+                    # Check if any reactant doesn't have nitro group but product does
+                    product_has_nitro = checker.check_fg("Nitro group", product_smiles)
+                    reactants_all_have_nitro = all(
+                        checker.check_fg("Nitro group", r) for r in reactants_smiles
                     )
-                    late_arylation_found = True
 
-        # Traverse children
+                    if product_has_nitro and not reactants_all_have_nitro:
+                        print(f"Nitration (FG change) detected at depth {current_depth}")
+                        nitration_depth = current_depth
+
+                if reduction_depth is None:
+                    # Check if any reactant has nitro group but product has amine instead
+                    reactant_has_nitro = any(
+                        checker.check_fg("Nitro group", r) for r in reactants_smiles
+                    )
+                    product_has_amine = (
+                        checker.check_fg("Primary amine", product_smiles)
+                        or checker.check_fg("Secondary amine", product_smiles)
+                        or checker.check_fg("Tertiary amine", product_smiles)
+                        or checker.check_fg("Aniline", product_smiles)
+                    )
+
+                    if reactant_has_nitro and product_has_amine:
+                        print(f"Reduction (FG change) detected at depth {current_depth}")
+                        reduction_depth = current_depth
+
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, current_depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    return late_arylation_found
+    # Check if nitration is followed by reduction
+    if nitration_depth is not None and reduction_depth is not None:
+        # In retrosynthetic direction, higher depth is earlier in synthesis
+        if nitration_depth > reduction_depth:
+            print("Sequential nitration-reduction strategy detected")
+            return True
+
+    return False

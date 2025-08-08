@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,116 +54,144 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route involves protection and deprotection sequences.
+    This function detects a synthetic strategy involving late-stage reductive amination
+    to form a C-N bond as the final step in the synthesis.
     """
-    protection_reactions = []
-    deprotection_reactions = []
+    # Track if we found reductive amination at depth 0 or 1 (final steps)
+    found_late_stage_reductive_amination = False
 
-    def find_protection_deprotection(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
+    def dfs_traverse(node, current_depth=0):
+        nonlocal found_late_stage_reductive_amination
 
-            # Check for protection reactions
-            if (
-                checker.check_reaction("Alcohol protection with silyl ethers", rxn_smiles)
-                or checker.check_reaction("Protection of carboxylic acid", rxn_smiles)
-                or checker.check_reaction("Boc amine protection", rxn_smiles)
-                or checker.check_reaction("Boc amine protection explicit", rxn_smiles)
-                or checker.check_reaction("Boc amine protection with Boc anhydride", rxn_smiles)
-                or checker.check_reaction("Boc amine protection (ethyl Boc)", rxn_smiles)
-                or checker.check_reaction("Boc amine protection of secondary amine", rxn_smiles)
-                or checker.check_reaction("Boc amine protection of primary amine", rxn_smiles)
-                or checker.check_reaction("Acetal hydrolysis to diol", rxn_smiles)
-                or checker.check_reaction("Acetal hydrolysis to aldehyde", rxn_smiles)
-                or checker.check_reaction("Ketal hydrolysis to ketone", rxn_smiles)
-                or checker.check_reaction("Aldehyde or ketone acetalization", rxn_smiles)
-                or checker.check_reaction("Diol acetalization", rxn_smiles)
-            ):
-                protection_reactions.append((rxn_smiles, depth))
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                # Handle depth properly - use current_depth if metadata depth is not available
+                depth = current_depth
+                if "depth" in node.get("metadata", {}):
+                    depth = int(node["metadata"]["depth"])
 
-            # Check for deprotection reactions
-            if (
-                checker.check_reaction("Alcohol deprotection from silyl ethers", rxn_smiles)
-                or checker.check_reaction(
-                    "Alcohol deprotection from silyl ethers (double)", rxn_smiles
-                )
-                or checker.check_reaction(
-                    "Alcohol deprotection from silyl ethers (diol)", rxn_smiles
-                )
-                or checker.check_reaction("Deprotection of carboxylic acid", rxn_smiles)
-                or checker.check_reaction("Boc amine deprotection", rxn_smiles)
-                or checker.check_reaction("Boc amine deprotection of guanidine", rxn_smiles)
-                or checker.check_reaction("Boc amine deprotection to NH-NH2", rxn_smiles)
-                or checker.check_reaction("Ester saponification (methyl deprotection)", rxn_smiles)
-                or checker.check_reaction("Ester saponification (alkyl deprotection)", rxn_smiles)
-                or checker.check_reaction("TMS deprotection from alkyne", rxn_smiles)
-                or checker.check_reaction("Tert-butyl deprotection of amine", rxn_smiles)
-                or checker.check_reaction("Phthalimide deprotection", rxn_smiles)
-                or checker.check_reaction("N-glutarimide deprotection", rxn_smiles)
-                or checker.check_reaction("Hydroxyl benzyl deprotection", rxn_smiles)
-                or checker.check_reaction("Carboxyl benzyl deprotection", rxn_smiles)
-                or checker.check_reaction("Cleavage of methoxy ethers to alcohols", rxn_smiles)
-                or checker.check_reaction("Cleavage of alkoxy ethers to alcohols", rxn_smiles)
-                or checker.check_reaction("Ether cleavage to primary alcohol", rxn_smiles)
-            ):
-                deprotection_reactions.append((rxn_smiles, depth))
+                # Check if this is a late-stage step (depth 0, 1, or -1)
+                if depth <= 1 or depth == -1:
+                    print(f"Examining reaction at depth {depth}: {rsmi}")
 
-            # Check for functional group transformations that might indicate protection/deprotection
-            product = rxn_smiles.split(">")[-1]
-            reactants = rxn_smiles.split(">")[0].split(".")
-
-            # Check for TMS or silyl groups in reactants or products
-            if (
-                any(
-                    checker.check_fg("TMS ether protective group", r)
-                    or checker.check_fg("Silyl protective group", r)
-                    for r in reactants
-                )
-                or checker.check_fg("TMS ether protective group", product)
-                or checker.check_fg("Silyl protective group", product)
-            ):
-                if (
-                    any(
-                        checker.check_fg("Primary alcohol", r)
-                        or checker.check_fg("Secondary alcohol", r)
-                        or checker.check_fg("Tertiary alcohol", r)
-                        for r in reactants
+                    # Check if this is a reductive amination reaction
+                    is_reductive_amination_aldehyde = checker.check_reaction(
+                        "Reductive amination with aldehyde", rsmi
                     )
-                    or checker.check_fg("Primary alcohol", product)
-                    or checker.check_fg("Secondary alcohol", product)
-                    or checker.check_fg("Tertiary alcohol", product)
-                ):
-                    protection_reactions.append((rxn_smiles, depth))
-
-            # Check for Boc groups
-            if any(checker.check_fg("Boc", r) for r in reactants) or checker.check_fg(
-                "Boc", product
-            ):
-                if (
-                    any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        for r in reactants
+                    is_reductive_amination_ketone = checker.check_reaction(
+                        "Reductive amination with ketone", rsmi
                     )
-                    or checker.check_fg("Primary amine", product)
-                    or checker.check_fg("Secondary amine", product)
-                ):
-                    protection_reactions.append((rxn_smiles, depth))
+                    is_reductive_amination_alcohol = checker.check_reaction(
+                        "Reductive amination with alcohol", rsmi
+                    )
 
+                    if (
+                        is_reductive_amination_aldehyde
+                        or is_reductive_amination_ketone
+                        or is_reductive_amination_alcohol
+                    ):
+                        print(
+                            f"Detected reductive amination reaction: aldehyde={is_reductive_amination_aldehyde}, ketone={is_reductive_amination_ketone}, alcohol={is_reductive_amination_alcohol}"
+                        )
+
+                        # Get reactants and product
+                        reactants = rsmi.split(">")[0].split(".")
+                        product = rsmi.split(">")[-1]
+
+                        # Check for aldehyde/ketone/alcohol and amine in reactants
+                        has_aldehyde = False
+                        has_ketone = False
+                        has_alcohol = False
+                        has_primary_amine = False
+                        has_secondary_amine = False
+
+                        for reactant in reactants:
+                            if checker.check_fg("Aldehyde", reactant):
+                                has_aldehyde = True
+                                print(f"Found aldehyde in reactant: {reactant}")
+
+                            if checker.check_fg("Ketone", reactant):
+                                has_ketone = True
+                                print(f"Found ketone in reactant: {reactant}")
+
+                            if checker.check_fg("Primary alcohol", reactant) or checker.check_fg(
+                                "Secondary alcohol", reactant
+                            ):
+                                has_alcohol = True
+                                print(f"Found alcohol in reactant: {reactant}")
+
+                            if checker.check_fg("Primary amine", reactant):
+                                has_primary_amine = True
+                                print(f"Found primary amine in reactant: {reactant}")
+
+                            if checker.check_fg("Secondary amine", reactant):
+                                has_secondary_amine = True
+                                print(f"Found secondary amine in reactant: {reactant}")
+
+                        # Check for secondary or tertiary amine in product
+                        has_secondary_amine_product = checker.check_fg("Secondary amine", product)
+                        has_tertiary_amine_product = checker.check_fg("Tertiary amine", product)
+
+                        if has_secondary_amine_product:
+                            print(f"Found secondary amine in product: {product}")
+
+                        if has_tertiary_amine_product:
+                            print(f"Found tertiary amine in product: {product}")
+
+                        # Confirm we have the right reactants and products for reductive amination
+                        primary_to_secondary = has_primary_amine and has_secondary_amine_product
+                        secondary_to_tertiary = has_secondary_amine and has_tertiary_amine_product
+
+                        if (has_aldehyde or has_ketone or has_alcohol) and (
+                            primary_to_secondary or secondary_to_tertiary
+                        ):
+                            found_late_stage_reductive_amination = True
+                            print(
+                                f"Confirmed late-stage reductive amination strategy at depth {depth}"
+                            )
+
+                    # Additional check for reductive amination pattern if the reaction checker didn't catch it
+                    elif not found_late_stage_reductive_amination:
+                        # Get reactants and product
+                        reactants = rsmi.split(">")[0].split(".")
+                        product = rsmi.split(">")[-1]
+
+                        # Check for aldehyde/ketone and amine in reactants
+                        has_aldehyde = any(checker.check_fg("Aldehyde", r) for r in reactants)
+                        has_ketone = any(checker.check_fg("Ketone", r) for r in reactants)
+                        has_primary_amine = any(
+                            checker.check_fg("Primary amine", r) for r in reactants
+                        )
+                        has_secondary_amine = any(
+                            checker.check_fg("Secondary amine", r) for r in reactants
+                        )
+
+                        # Check for secondary or tertiary amine in product
+                        has_secondary_amine_product = checker.check_fg("Secondary amine", product)
+                        has_tertiary_amine_product = checker.check_fg("Tertiary amine", product)
+
+                        # Look for pattern where aldehyde/ketone + amine → amine product
+                        if (has_aldehyde or has_ketone) and (
+                            (has_primary_amine and has_secondary_amine_product)
+                            or (has_secondary_amine and has_tertiary_amine_product)
+                        ):
+
+                            # Check if the product has a new C-N bond that wasn't in the reactants
+                            # This is a simplified check - in a real implementation, you'd need to analyze
+                            # the atom mapping more carefully
+                            found_late_stage_reductive_amination = True
+                            print(f"Detected reductive amination pattern at depth {depth}")
+
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            find_protection_deprotection(child, depth + 1)
+            dfs_traverse(child, current_depth + 1)
 
-    find_protection_deprotection(route)
+    # Start traversal
+    dfs_traverse(route)
 
-    # Remove duplicates
-    unique_protection = set(rxn for rxn, _ in protection_reactions)
-    unique_deprotection = set(rxn for rxn, _ in deprotection_reactions)
-
-    # Consider it a protection/deprotection strategy if at least one protection and one deprotection are found
-    has_protection = len(unique_protection) > 0
-    has_deprotection = len(unique_deprotection) > 0
     print(
-        f"Protection reactions: {len(unique_protection)}, Deprotection reactions: {len(unique_deprotection)}"
+        f"Late-stage reductive amination strategy detected: {found_late_stage_reductive_amination}"
     )
 
-    return has_protection or has_deprotection  # Changed to OR to be more lenient
+    return found_late_stage_reductive_amination

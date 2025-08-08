@@ -2,74 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects Friedel-Crafts acylation on aromatic rings.
-    It looks for the introduction of an acyl group onto an aromatic ring.
+    This function detects if the synthetic route involves sequential functionalization
+    of an aromatic ring (at least 3 sequential transformations on the same ring).
     """
-    friedel_crafts_found = False
+    # Track transformations on aromatic rings
+    transformations = []
 
-    def dfs_traverse(node):
-        nonlocal friedel_crafts_found
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0]
+                product = rsmi.split(">")[-1]
 
-                try:
-                    # Check if one reactant is an acyl chloride or similar
-                    reactants = reactants_str.split(".")
-                    acyl_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-Cl")
-                    aromatic_pattern = Chem.MolFromSmarts("c1ccccc1")
+                # Check if reaction modifies an aromatic ring
+                reactant_mol = Chem.MolFromSmiles(reactants)
+                product_mol = Chem.MolFromSmiles(product)
 
-                    has_acyl = False
-                    has_aromatic = False
+                if reactant_mol and product_mol:
+                    # Patterns for common aromatic transformations
+                    patterns = [
+                        ("nitration", Chem.MolFromSmarts("c[N+](=[O])[O-]")),
+                        ("reduction", Chem.MolFromSmarts("c[NH2]")),
+                        ("alkylation", Chem.MolFromSmarts("c[O][C]")),
+                        ("halogenation", Chem.MolFromSmarts("c[F,Cl,Br,I]")),
+                        ("amination", Chem.MolFromSmarts("c[N]")),
+                    ]
 
-                    for reactant in reactants:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            if mol.HasSubstructMatch(acyl_pattern):
-                                has_acyl = True
-                            if mol.HasSubstructMatch(aromatic_pattern):
-                                has_aromatic = True
+                    for name, pattern in patterns:
+                        if product_mol.HasSubstructMatch(pattern):
+                            transformations.append((depth, name))
+                            print(f"Found {name} at depth {depth}")
+                            break
 
-                    # Check if product has aromatic ring with acyl group
-                    if has_acyl and has_aromatic:
-                        product_mol = Chem.MolFromSmiles(product_str)
-                        aromatic_acyl_pattern = Chem.MolFromSmarts("c-[#6](=[#8])-[#6]")
-
-                        if product_mol and product_mol.HasSubstructMatch(aromatic_acyl_pattern):
-                            print("Friedel-Crafts acylation detected")
-                            friedel_crafts_found = True
-                except:
-                    pass
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal from root
     dfs_traverse(route)
 
-    return friedel_crafts_found
+    # Sort transformations by depth (ascending order - early to late in synthesis)
+    transformations.sort(key=lambda x: x[0], reverse=True)
+
+    # Check if we have at least 3 sequential transformations
+    return len(transformations) >= 3

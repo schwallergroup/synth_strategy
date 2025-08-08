@@ -2,69 +2,94 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis uses an olefination disconnection strategy
-    (breaking α,β-unsaturated carbonyl to ketone/aldehyde).
+    This function detects if the synthetic route involves a carboxylic acid → acid chloride → amide
+    functional group transformation sequence.
     """
-    olefination_detected = False
+    # Flags to track if we found each step in the sequence
+    found_acid_to_acid_chloride = False
+    found_acid_chloride_to_amide = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal olefination_detected
+    def dfs_traverse(node):
+        nonlocal found_acid_to_acid_chloride, found_acid_chloride_to_amide
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        # Only process reaction nodes
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Get reaction SMILES
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
 
-            # Check for olefination disconnection pattern
-            unsaturated_carbonyl_pattern = Chem.MolFromSmarts("[C;$(C=CC=O)]")
-            carbonyl_pattern = Chem.MolFromSmarts("[C;$(C=O);!$(C=OO)]")
-            phosphonate_pattern = Chem.MolFromSmarts("[P;$(P(=O)(O)(O))]")
+            # Extract reactants and products
+            reactants_str = rsmi.split(">")[0]
+            product_str = rsmi.split(">")[-1]
 
-            # Check if product has α,β-unsaturated carbonyl
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if product_mol and product_mol.HasSubstructMatch(unsaturated_carbonyl_pattern):
-                # Check if reactants have carbonyl and phosphonate
-                has_carbonyl = False
-                has_phosphonate = False
+            # Parse reactants and product
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
+            product = Chem.MolFromSmiles(product_str)
 
-                for r_smiles in reactants_smiles:
-                    r_mol = Chem.MolFromSmiles(r_smiles)
-                    if r_mol:
-                        if r_mol.HasSubstructMatch(carbonyl_pattern):
-                            has_carbonyl = True
-                        if r_mol.HasSubstructMatch(phosphonate_pattern):
-                            has_phosphonate = True
+            if product and all(r for r in reactants):
+                # Check for carboxylic acid pattern in reactants
+                acid_pattern = Chem.MolFromSmarts("[#6](=O)[OH]")
+                has_acid = any(r.HasSubstructMatch(acid_pattern) for r in reactants if r)
 
-                if has_carbonyl and has_phosphonate:
-                    olefination_detected = True
-                    print(f"Olefination disconnection detected at depth {depth}")
+                # Check for acid chloride pattern in product
+                acid_chloride_pattern = Chem.MolFromSmarts("[#6](=O)[Cl]")
+                has_acid_chloride_product = (
+                    product.HasSubstructMatch(acid_chloride_pattern) if product else False
+                )
 
-        # Traverse children
+                # Check for acid chloride pattern in reactants
+                has_acid_chloride_reactant = any(
+                    r.HasSubstructMatch(acid_chloride_pattern) for r in reactants if r
+                )
+
+                # Check for amine pattern in reactants
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                has_amine = any(r.HasSubstructMatch(amine_pattern) for r in reactants if r)
+
+                # Check for amide pattern in product
+                amide_pattern = Chem.MolFromSmarts("[#6](=O)[#7]")
+                has_amide_product = product.HasSubstructMatch(amide_pattern) if product else False
+
+                # Check for acid to acid chloride conversion
+                if has_acid and has_acid_chloride_product:
+                    print("Found carboxylic acid to acid chloride conversion")
+                    found_acid_to_acid_chloride = True
+
+                # Check for acid chloride to amide conversion
+                if has_acid_chloride_reactant and has_amine and has_amide_product:
+                    print("Found acid chloride to amide conversion")
+                    found_acid_chloride_to_amide = True
+
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
-    return olefination_detected
+
+    # Return True only if we found the complete sequence
+    return found_acid_to_acid_chloride and found_acid_chloride_to_amide

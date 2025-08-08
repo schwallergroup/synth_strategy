@@ -2,117 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves incorporation of a terminal alkene-containing fragment.
-    Terminal alkenes include vinyl (C=CH2) and allyl (CH2=CH-CH2-) groups.
+    This function detects nitro group reduction to amine.
     """
-    terminal_alkene_incorporated = False
+    nitro_reduction_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal terminal_alkene_incorporated
+    def dfs_traverse(node):
+        nonlocal nitro_reduction_found
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
-            reactants = reactants_part.split(".")
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for terminal alkene in reactants
-            terminal_alkene_reactant = None
-            for r in reactants:
-                if checker.check_fg("Vinyl", r) or checker.check_fg("Allyl", r):
-                    print(f"Terminal alkene found in reactant at depth {depth}: {r}")
-                    terminal_alkene_reactant = r
-                    break
+            # Check for nitro pattern in reactants
+            nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
+            # Check for amine pattern in product
+            amine_pattern = Chem.MolFromSmarts("[N;H2]")
 
-            # If terminal alkene found in reactants, check if it's incorporated
-            if terminal_alkene_reactant:
-                # Check if the reaction is a known alkene incorporation reaction
-                if (
-                    checker.check_reaction("Diels-Alder", rsmi)
-                    or checker.check_reaction("Heck terminal vinyl", rsmi)
-                    or checker.check_reaction("Heck_terminal_vinyl", rsmi)
-                    or checker.check_reaction("thiol-ene reaction", rsmi)
-                    or checker.check_reaction("Michael addition", rsmi)
-                    or checker.check_reaction("aza-Michael addition primary", rsmi)
-                    or checker.check_reaction("aza-Michael addition secondary", rsmi)
-                    or checker.check_reaction("aza-Michael addition aromatic", rsmi)
-                    or checker.check_reaction("thia-Michael addition", rsmi)
-                    or checker.check_reaction("oxa-Michael addition", rsmi)
-                ):
-                    print(f"Terminal alkene incorporation reaction detected at depth {depth}")
-                    terminal_alkene_incorporated = True
-                else:
-                    # Check if product no longer has the terminal alkene
-                    # This indicates the alkene was incorporated/consumed
-                    product_has_terminal_alkene = checker.check_fg(
-                        "Vinyl", product_part
-                    ) or checker.check_fg("Allyl", product_part)
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-                    # If there are multiple reactants and the product doesn't have a terminal alkene,
-                    # it's likely the terminal alkene was incorporated
-                    if len(reactants) > 1 and not product_has_terminal_alkene:
-                        print(
-                            f"Terminal alkene incorporation detected at depth {depth} - alkene consumed"
-                        )
-                        terminal_alkene_incorporated = True
-                    # If there's only one reactant with terminal alkene and the product structure changed
-                    elif len(reactants) == 1 and not product_has_terminal_alkene:
-                        print(f"Terminal alkene transformation detected at depth {depth}")
-                        terminal_alkene_incorporated = True
+            if (
+                product_mol
+                and any(r and r.HasSubstructMatch(nitro_pattern) for r in reactant_mols)
+                and product_mol.HasSubstructMatch(amine_pattern)
+            ):
+                print("Nitro reduction detected")
+                nitro_reduction_found = True
 
-        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-    return terminal_alkene_incorporated
+    return nitro_reduction_found

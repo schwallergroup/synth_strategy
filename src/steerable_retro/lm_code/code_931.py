@@ -2,67 +2,54 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves multiple sequential modifications
-    of an aromatic ring.
+    This function detects if the synthesis follows a linear (non-convergent) approach.
     """
-    aromatic_modifications = 0
+    max_branching = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal aromatic_modifications
-
-        if node["type"] == "reaction":
+    def count_reactants(node):
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            return len(reactants)
+        return 0
 
-            # Patterns for common aromatic modifications
-            patterns = [
-                Chem.MolFromSmarts("c[Br,Cl,I,F]"),  # Halogenation
-                Chem.MolFromSmarts("c[NH2]"),  # Amination
-                Chem.MolFromSmarts("c[OH]"),  # Hydroxylation
-                Chem.MolFromSmarts("cO[#6]"),  # Etherification
-                Chem.MolFromSmarts("c[N+](=[O])[O-]"),  # Nitration
-            ]
+    def dfs_traverse(node):
+        nonlocal max_branching
 
-            # Check if the reaction involves modification of aromatic ring
-            prod_mol = Chem.MolFromSmiles(product)
-
-            for reactant in reactants:
-                react_mol = Chem.MolFromSmiles(reactant)
-
-                if react_mol and prod_mol:
-                    for pattern in patterns:
-                        # If pattern exists in product but not in reactant, or vice versa
-                        if prod_mol.HasSubstructMatch(pattern) != react_mol.HasSubstructMatch(
-                            pattern
-                        ):
-                            aromatic_modifications += 1
-                            print(f"Aromatic modification detected at depth {depth}")
-                            break
+        if node["type"] == "reaction":
+            num_reactants = count_reactants(node)
+            max_branching = max(max_branching, num_reactants)
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    return aromatic_modifications >= 2  # At least 2 modifications
+    print(f"Maximum branching factor: {max_branching}")
+
+    # If max_branching is consistently low (1-2), it's likely a linear synthesis
+    return max_branching <= 2

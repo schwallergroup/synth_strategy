@@ -2,90 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving multiple oxygen-containing
-    functional group manipulations (alcohols, ethers, esters, carboxylic acids).
+    This function detects if the synthesis involves formation of a biaryl ether bond,
+    likely via Suzuki-Miyaura coupling.
     """
-    o_fg_transformations = 0
-    total_reactions = 0
+    has_biaryl_ether_formation = False
 
     def dfs_traverse(node):
-        nonlocal o_fg_transformations, total_reactions
+        nonlocal has_biaryl_ether_formation
 
-        if node["type"] == "reaction":
-            total_reactions += 1
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if Chem.MolFromSmiles(r)]
-            product = Chem.MolFromSmiles(product_smiles)
+            # Check if one reactant has a boronic acid and another has a hydroxyl group
+            boronic_acid_pattern = Chem.MolFromSmarts("[c]B(O)O")
+            hydroxyl_pattern = Chem.MolFromSmarts("[c][O][H]")
 
-            if not product or not reactants:
-                return
+            # Check if product has biaryl ether linkage
+            biaryl_ether_pattern = Chem.MolFromSmarts("[c][O][c]")
 
-            # Check for ester reduction
-            ester_patt = Chem.MolFromSmarts("[C](=[O])[O][C]")
-            alcohol_patt = Chem.MolFromSmarts("[O]-[CH2]")
+            product_mol = Chem.MolFromSmiles(product)
 
-            if any(r.HasSubstructMatch(ester_patt) for r in reactants):
-                if product.HasSubstructMatch(alcohol_patt):
-                    o_fg_transformations += 1
-                    print(f"Ester reduction detected in reaction: {rsmi}")
-
-            # Check for ester hydrolysis
-            acid_patt = Chem.MolFromSmarts("[C](=[O])[O][H]")
-
-            if any(r.HasSubstructMatch(ester_patt) for r in reactants):
-                if product.HasSubstructMatch(acid_patt):
-                    o_fg_transformations += 1
-                    print(f"Ester hydrolysis detected in reaction: {rsmi}")
-
-            # Check for O-alkylation
-            phenol_patt = Chem.MolFromSmarts("c-[O][H]")
-            benzyl_ether_patt = Chem.MolFromSmarts("c-[O]-[CH2]-c")
-
-            if any(r.HasSubstructMatch(phenol_patt) for r in reactants):
-                if product.HasSubstructMatch(benzyl_ether_patt):
-                    o_fg_transformations += 1
-                    print(f"O-alkylation detected in reaction: {rsmi}")
-
-            # Check for ether cleavage
-            ether_patt = Chem.MolFromSmarts("[O]-[CH3]")
-
-            if any(r.HasSubstructMatch(ether_patt) for r in reactants):
-                if product.HasSubstructMatch(phenol_patt):
-                    o_fg_transformations += 1
-                    print(f"Ether cleavage detected in reaction: {rsmi}")
+            if product_mol and product_mol.HasSubstructMatch(biaryl_ether_pattern):
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        if reactant_mol.HasSubstructMatch(
+                            boronic_acid_pattern
+                        ) or reactant_mol.HasSubstructMatch(hydroxyl_pattern):
+                            has_biaryl_ether_formation = True
+                            print("Detected biaryl ether formation via Suzuki coupling")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Strategy criteria: at least 3 oxygen functional group transformations
-    has_strategy = o_fg_transformations >= 3
-    print(f"Oxygen functional group transformations: {o_fg_transformations}")
-    print(f"Strategy detected: {has_strategy}")
-
-    return has_strategy
+    return has_biaryl_ether_formation

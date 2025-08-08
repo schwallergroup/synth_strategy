@@ -2,68 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves Boc protection/deprotection sequences.
+    Detects if the synthesis route includes a transformation from
+    carboxylic acid to amide.
     """
-    boc_protection_count = 0
+    transformation_detected = False
 
     def dfs_traverse(node):
-        nonlocal boc_protection_count
+        nonlocal transformation_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0]
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for Boc protection pattern
-            if Chem.MolFromSmiles(reactants) and Chem.MolFromSmiles(product):
-                boc_pattern = Chem.MolFromSmarts("[#6]C([#6])([#6])[#8]C(=O)[#7]")
-                amine_pattern = Chem.MolFromSmarts("[NH]")
+                # Check for carboxylic acid in reactants
+                carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
 
-                reactant_mol = Chem.MolFromSmiles(reactants)
-                product_mol = Chem.MolFromSmiles(product)
+                # Check for amide in product
+                amide_pattern = Chem.MolFromSmarts("[C](=O)[NH2]")
 
-                # Boc protection: amine -> Boc-protected amine
-                if (
-                    reactant_mol.HasSubstructMatch(amine_pattern)
-                    and not reactant_mol.HasSubstructMatch(boc_pattern)
-                    and product_mol.HasSubstructMatch(boc_pattern)
+                # Check if transformation occurred
+                if any(
+                    Chem.MolFromSmiles(r)
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(carboxylic_acid_pattern)
+                    for r in reactants
+                    if Chem.MolFromSmiles(r)
                 ):
-                    print("Detected Boc protection")
-                    boc_protection_count += 1
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(amide_pattern):
+                        print("Carboxylic acid to amide transformation detected")
+                        transformation_detected = True
 
-                # Boc deprotection: Boc-protected amine -> amine
-                if (
-                    reactant_mol.HasSubstructMatch(boc_pattern)
-                    and not product_mol.HasSubstructMatch(boc_pattern)
-                    and product_mol.HasSubstructMatch(amine_pattern)
-                ):
-                    print("Detected Boc deprotection")
-                    boc_protection_count += 1
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    return boc_protection_count >= 2
+    return transformation_detected

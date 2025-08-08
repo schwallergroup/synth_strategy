@@ -2,84 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a borylation followed by Suzuki coupling sequence.
+    This function detects a synthetic strategy involving multiple C-N bond formations
+    throughout the synthesis (at least 2).
     """
-    # Initialize flags
-    found_borylation = False
-    found_suzuki = False
-
-    # Track depths
-    borylation_depth = -1
-    suzuki_depth = -1
+    c_n_bond_formations = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_borylation, found_suzuki, borylation_depth, suzuki_depth
+        nonlocal c_n_bond_formations
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            # Check if this reaction forms a C-N bond
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+                try:
+                    # Convert to molecules
+                    product_mol = Chem.MolFromSmiles(product)
+                    reactant_mols = [
+                        Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)
+                    ]
 
-            if not product or not all(reactants):
-                return
+                    # Check for C-N bond formation
+                    c_n_pattern = Chem.MolFromSmarts("[#6]-[#7]")
+                    if product_mol:
+                        product_c_n_bonds = len(product_mol.GetSubstructMatches(c_n_pattern))
 
-            # Check for borylation
-            br_pattern = Chem.MolFromSmarts("[c]-[Br]")
-            boron_pattern = Chem.MolFromSmarts("[c]-[B]")
+                        # Count C-N bonds in reactants
+                        reactant_c_n_bonds = sum(
+                            len(mol.GetSubstructMatches(c_n_pattern))
+                            for mol in reactant_mols
+                            if mol
+                        )
 
-            if any(
-                r.HasSubstructMatch(br_pattern) for r in reactants
-            ) and product.HasSubstructMatch(boron_pattern):
-                found_borylation = True
-                borylation_depth = depth
-                print(f"Detected borylation at depth {depth}")
-
-            # Check for Suzuki coupling
-            if any(r.HasSubstructMatch(boron_pattern) for r in reactants) and any(
-                r.HasSubstructMatch(br_pattern) for r in reactants
-            ):
-                # Check if product has a biaryl bond
-                biaryl_pattern = Chem.MolFromSmarts("c-c")
-                if product.HasSubstructMatch(biaryl_pattern):
-                    found_suzuki = True
-                    suzuki_depth = depth
-                    print(f"Detected Suzuki coupling at depth {depth}")
+                        if product_c_n_bonds > reactant_c_n_bonds:
+                            c_n_bond_formations += 1
+                            print(f"C-N bond formation detected in reaction at depth {depth}")
+                except:
+                    pass
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
 
-    # Check if both transformations were found in the correct order
-    correct_sequence = found_borylation and found_suzuki and borylation_depth > suzuki_depth
-
-    print(f"Cross-coupling sequence detected: {correct_sequence}")
-    return correct_sequence
+    # Return True if at least 2 C-N bond formations were detected
+    return c_n_bond_formations >= 2

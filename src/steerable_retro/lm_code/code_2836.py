@@ -2,51 +2,111 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving a benzoxazinone fragment
-    in the final product.
+    This function detects a synthetic strategy involving reduction of a ketone to a secondary alcohol.
     """
-    benzoxazinone_found = False
+    # Track if we found the ketone reduction
+    found_ketone_reduction = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal benzoxazinone_found
+        nonlocal found_ketone_reduction
 
-        if node["type"] == "mol" and depth == 0:  # Final product
-            if "smiles" in node:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                benzoxazinone_pattern = Chem.MolFromSmarts(
-                    "[#6]1[#6]2[#6]([#6][#6][#6]1)[#8][#6][#6](=[O])[#7]2"
-                )
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Extract reaction information
+            rsmi = node["metadata"]["rsmi"]
 
-                if mol and benzoxazinone_pattern and mol.HasSubstructMatch(benzoxazinone_pattern):
-                    print("Found benzoxazinone fragment in final product")
-                    benzoxazinone_found = True
+            # Check if this is a ketone reduction reaction
+            is_ketone_reduction = checker.check_reaction(
+                "Reduction of ketone to secondary alcohol", rsmi
+            )
 
-        # Traverse children
+            if is_ketone_reduction:
+                # In retrosynthesis, the product contains the ketone and reactants contain the alcohol
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
+
+                # Check for secondary alcohol in reactants and ketone in product
+                has_secondary_alcohol = checker.check_fg("Secondary alcohol", reactants_part)
+                has_ketone = checker.check_fg("Ketone", product_part)
+
+                if has_ketone and has_secondary_alcohol:
+                    print(f"Found ketone reduction at depth {depth}, reaction: {rsmi}")
+                    found_ketone_reduction = True
+                else:
+                    print(
+                        f"Reaction classified as ketone reduction but FG check failed at depth {depth}"
+                    )
+                    print(f"  Has ketone in product: {has_ketone}")
+                    print(f"  Has secondary alcohol in reactant: {has_secondary_alcohol}")
+            else:
+                # Even if not classified as ketone reduction, check if it might be one
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
+
+                has_secondary_alcohol = checker.check_fg("Secondary alcohol", reactants_part)
+                has_ketone = checker.check_fg("Ketone", product_part)
+
+                if has_ketone and has_secondary_alcohol:
+                    print(
+                        f"Potential unlabeled ketone reduction at depth {depth}, reaction: {rsmi}"
+                    )
+                    found_ketone_reduction = True
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-
-    return benzoxazinone_found
+    return found_ketone_reduction

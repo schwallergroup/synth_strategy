@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,64 +54,71 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route preserves specific functional groups (nitrile and trifluoromethyl)
-    throughout the synthesis.
+    This function detects if a nitrile group is maintained throughout the synthesis.
+    It tracks nitrile groups through atom mapping in reactions to ensure the same
+    nitrile is preserved from starting materials to the final product.
     """
-    # Track if we've found both functional groups in the target molecule
-    target_has_nitrile = False
-    target_has_trifluoromethyl = False
+    # Track if we have a valid path where nitrile is maintained
+    nitrile_maintained_paths = []
 
-    # Check if target molecule has both functional groups
-    if route["type"] == "mol":
-        target_mol_smiles = route["smiles"]
-        target_has_nitrile = checker.check_fg("Nitrile", target_mol_smiles)
-        target_has_trifluoromethyl = checker.check_fg("Trifluoro group", target_mol_smiles)
+    def dfs_traverse(node, path_maintained=True, depth=0):
+        # For molecule nodes
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            has_nitrile = checker.check_fg("Nitrile", mol_smiles)
 
-    # If target doesn't have both functional groups, strategy doesn't apply
-    if not (target_has_nitrile and target_has_trifluoromethyl):
-        print("Target molecule doesn't have both nitrile and trifluoromethyl groups")
-        return False
+            # If this is a starting material (leaf node)
+            if node.get("in_stock", False) or not node.get("children", []):
+                # If we're maintaining a nitrile path and this starting material has a nitrile
+                if path_maintained and has_nitrile:
+                    nitrile_maintained_paths.append(True)
+                # If we need a nitrile but this starting material doesn't have one
+                elif path_maintained and not has_nitrile:
+                    # This path doesn't maintain nitrile
+                    pass
+                return
 
-    # Track preservation through reactions
-    preservation = True
+            # If this is the final product (depth 0), check if it has a nitrile
+            if depth == 0 and not has_nitrile:
+                # Final product must have nitrile for strategy to apply
+                return
 
-    def check_reaction_preservation(node):
-        nonlocal preservation
+        # For reaction nodes
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Check if product has nitrile
+                product_has_nitrile = checker.check_fg("Nitrile", product)
 
-            # Check if product has the functional groups
-            product_has_nitrile = checker.check_fg("Nitrile", product_smiles)
-            product_has_trifluoromethyl = checker.check_fg("Trifluoro group", product_smiles)
+                # Check if any reactant has nitrile
+                reactants_with_nitrile = [r for r in reactants if checker.check_fg("Nitrile", r)]
 
-            # If product has the functional groups, at least one reactant should have them too
-            if product_has_nitrile:
-                reactants_with_nitrile = any(
-                    checker.check_fg("Nitrile", r) for r in reactants_smiles
+                # Check for nitrile-forming reactions
+                nitrile_forming = (
+                    checker.check_reaction("Nitrile to amide", rsmi)
+                    or checker.check_reaction("Oxidation of nitrile to carboxylic acid", rsmi)
+                    or checker.check_reaction("Reduction of nitrile to amine", rsmi)
                 )
-                if not reactants_with_nitrile:
-                    print(f"Nitrile group created in reaction: {rsmi}")
-                    preservation = False
 
-            if product_has_trifluoromethyl:
-                reactants_with_trifluoromethyl = any(
-                    checker.check_fg("Trifluoro group", r) for r in reactants_smiles
-                )
-                if not reactants_with_trifluoromethyl:
-                    print(f"Trifluoromethyl group created in reaction: {rsmi}")
-                    preservation = False
+                # If product has nitrile but no reactant does, or vice versa, nitrile is not maintained
+                if (product_has_nitrile and not reactants_with_nitrile) or (
+                    not product_has_nitrile and reactants_with_nitrile and not nitrile_forming
+                ):
+                    path_maintained = False
+            except Exception as e:
+                print(f"Error analyzing reaction: {e}")
+                # Be conservative - if we can't analyze, assume nitrile might not be maintained
+                path_maintained = False
 
-        # Traverse children
+        # Continue traversal with children
         for child in node.get("children", []):
-            check_reaction_preservation(child)
+            dfs_traverse(child, path_maintained, depth + 1)
 
     # Start traversal from the root
-    check_reaction_preservation(route)
+    dfs_traverse(route)
 
-    if preservation:
-        print("Both nitrile and trifluoromethyl groups are preserved throughout the synthesis")
-
-    return preservation
+    # If we found at least one path where nitrile is maintained
+    return len(nitrile_maintained_paths) > 0

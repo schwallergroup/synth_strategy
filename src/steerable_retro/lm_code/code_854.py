@@ -2,72 +2,70 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving multiple (2+) ester reductions
-    to alcohols across the synthesis route.
+    This function detects alkene oxidation to aldehyde in the synthetic route.
     """
-    ester_reduction_count = 0
+    alkene_oxidation_detected = False
 
     def dfs_traverse(node):
-        nonlocal ester_reduction_count
+        nonlocal alkene_oxidation_detected
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for ester reduction pattern
-            # Ester pattern in reactant
-            ester_pattern = Chem.MolFromSmarts("[#6][#8][C](=[O])[#6]")
-            # Alcohol pattern in product
-            alcohol_pattern = Chem.MolFromSmarts("[#8H1][#6]")
+            try:
+                # Check for alkene in reactants
+                alkene_pattern = Chem.MolFromSmarts("C=C")
+                # Check for aldehyde in product
+                aldehyde_pattern = Chem.MolFromSmarts("[CH]=O")
+                # Check for oxidizing agent
+                oxidizing_agent = any("O=" in r for r in reactants)
 
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+                alkene_in_reactants = any(
+                    Chem.MolFromSmiles(r).HasSubstructMatch(alkene_pattern)
+                    for r in reactants
+                    if Chem.MolFromSmiles(r)
+                )
+                aldehyde_in_product = Chem.MolFromSmiles(product).HasSubstructMatch(
+                    aldehyde_pattern
+                )
 
-            if (
-                product_mol
-                and any(r and r.HasSubstructMatch(ester_pattern) for r in reactant_mols)
-                and product_mol.HasSubstructMatch(alcohol_pattern)
-            ):
-                # Additional check to confirm it's an ester reduction
-                # Look for carbonyl disappearance
-                carbonyl_pattern = Chem.MolFromSmarts("[C](=[O])")
-                if any(r and r.GetSubstructMatches(carbonyl_pattern) for r in reactant_mols):
-                    if len(product_mol.GetSubstructMatches(carbonyl_pattern)) < sum(
-                        len(r.GetSubstructMatches(carbonyl_pattern)) for r in reactant_mols if r
-                    ):
-                        print(f"Detected ester reduction: {rsmi}")
-                        ester_reduction_count += 1
+                if alkene_in_reactants and aldehyde_in_product and oxidizing_agent:
+                    print("Detected alkene oxidation to aldehyde")
+                    alkene_oxidation_detected = True
+            except:
+                pass
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-
-    # Return True if we found at least 2 ester reductions
-    result = ester_reduction_count >= 2
-    print(f"Multiple ester reductions strategy detected: {result} (count: {ester_reduction_count})")
-    return result
+    return alkene_oxidation_detected

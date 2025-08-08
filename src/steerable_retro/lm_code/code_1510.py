@@ -2,61 +2,98 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route involves a convergent step where two complex fragments
-    are joined via ester formation.
+    Detects if the synthesis route includes a tosylate formation followed by
+    nucleophilic substitution (alcohol to tosylate to substituted product).
     """
-    convergent_ester_found = False
+    found_tosylate_formation = False
+    found_tosylate_substitution = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal convergent_ester_found
+    def dfs_traverse(node):
+        nonlocal found_tosylate_formation, found_tosylate_substitution
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if this is an ester formation reaction
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol:
-                ester_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#8]-[#6]")
-                if product_mol.HasSubstructMatch(ester_pattern):
-                    # Check if we have at least two complex reactants
-                    complex_reactants = 0
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if (
-                            reactant_mol and reactant_mol.GetNumAtoms() > 6
-                        ):  # Arbitrary threshold for "complex"
-                            complex_reactants += 1
+            # Check for tosylate formation (alcohol + TsCl -> tosylate)
+            alcohol_pattern = Chem.MolFromSmarts("[#6][OH]")
+            tosyl_chloride_pattern = Chem.MolFromSmarts("c1ccc(S(=O)(=O)Cl)cc1")
+            tosylate_pattern = Chem.MolFromSmarts("[#6]OS(=O)(=O)c1ccc(C)cc1")
 
-                    if complex_reactants >= 2:
-                        convergent_ester_found = True
-                        print(f"Convergent ester formation detected at depth {depth}")
+            # Check for tosylate formation
+            reactants_have_alcohol = False
+            reactants_have_tosyl_chloride = False
+
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(alcohol_pattern):
+                            reactants_have_alcohol = True
+                        if mol.HasSubstructMatch(tosyl_chloride_pattern):
+                            reactants_have_tosyl_chloride = True
+                except:
+                    continue
+
+            product_has_tosylate = False
+            try:
+                mol = Chem.MolFromSmiles(product)
+                if mol and mol.HasSubstructMatch(tosylate_pattern):
+                    product_has_tosylate = True
+            except:
+                pass
+
+            if (
+                reactants_have_alcohol
+                and (reactants_have_tosyl_chloride or "Ts" in rsmi)
+                and product_has_tosylate
+            ):
+                print("Found tosylate formation")
+                found_tosylate_formation = True
+
+            # Check for tosylate substitution
+            tosylate_in_reactants = False
+            for reactant in reactants:
+                try:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(tosylate_pattern):
+                        tosylate_in_reactants = True
+                        break
+                except:
+                    continue
+
+            if tosylate_in_reactants and "N" in product and not product_has_tosylate:
+                print("Found tosylate substitution")
+                found_tosylate_substitution = True
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    return convergent_ester_found
+    return found_tosylate_formation and found_tosylate_substitution

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,88 +54,110 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route follows a convergent approach
-    where multiple heterocyclic fragments are combined rather than a linear synthesis.
+    This function detects if methoxy and fluoro substituents on aromatic rings
+    are preserved throughout the synthesis.
     """
-    fragment_combinations = 0
+    # Track methoxy and fluoro groups by their atom indices in each molecule
+    methoxy_groups = {}  # mol_smiles -> list of atom indices
+    fluoro_groups = {}  # mol_smiles -> list of atom indices
 
-    # List of common heterocycles to check
-    heterocycle_types = [
-        "pyridine",
-        "pyrrole",
-        "furan",
-        "thiophene",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrazole",
-        "isoxazole",
-        "isothiazole",
-        "triazole",
-        "tetrazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "indole",
-        "benzofuran",
-        "benzothiophene",
-        "benzimidazole",
-        "benzoxazole",
-        "benzothiazole",
-        "quinoline",
-        "isoquinoline",
-        "piperidine",
-        "tetrahydrofuran",
-        "tetrahydropyran",
-        "morpholine",
-        "thiomorpholine",
-    ]
+    # First pass: identify all methoxy and fluoro groups in the route
+    def identify_groups(node, depth=0):
+        if node["type"] == "mol":
+            smiles = node["smiles"]
+            mol = Chem.MolFromSmiles(smiles)
 
-    def dfs_traverse(node):
-        nonlocal fragment_combinations
+            if mol:
+                # Check for methoxy on aromatic rings
+                has_methoxy = checker.check_fg("Ether", smiles) and checker.check_ring(
+                    "benzene", smiles
+                )
+                if has_methoxy:
+                    # Find specific methoxy groups on aromatic rings
+                    methoxy_pattern = Chem.MolFromSmarts("c-O-C")
+                    matches = mol.GetSubstructMatches(methoxy_pattern)
+                    if matches:
+                        methoxy_groups[smiles] = matches
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                # Check for fluoro on aromatic rings
+                has_fluoro = checker.check_fg("Aromatic halide", smiles) and "F" in smiles
+                if has_fluoro:
+                    # Find specific fluoro groups on aromatic rings
+                    fluoro_pattern = Chem.MolFromSmarts("c-F")
+                    matches = mol.GetSubstructMatches(fluoro_pattern)
+                    if matches:
+                        fluoro_groups[smiles] = matches
 
-                # Check if multiple fragments are being combined
-                if len(reactants) >= 2:
-                    # Count heterocycles in each reactant
-                    heterocycle_counts = []
-                    for reactant in reactants:
-                        heterocycle_count = 0
-                        for heterocycle in heterocycle_types:
-                            if checker.check_ring(heterocycle, reactant):
-                                heterocycle_count += 1
-                                break  # Count each reactant only once
-                        heterocycle_counts.append(heterocycle_count)
+                print(f"Molecule at depth {depth}: {smiles}")
+                print(f"  Has methoxy: {has_methoxy}, Has fluoro: {has_fluoro}")
 
-                    # Check if product contains heterocycles
-                    product_heterocycles = sum(
-                        1
-                        for heterocycle in heterocycle_types
-                        if checker.check_ring(heterocycle, product)
-                    )
-
-                    # If at least 2 reactants have heterocycles and product has heterocycles
-                    if (
-                        sum(1 for count in heterocycle_counts if count > 0) >= 2
-                        and product_heterocycles > 0
-                    ):
-                        fragment_combinations += 1
-                        print(f"Heterocycle fragment combination detected: {rsmi}")
-                        print(f"Heterocycle counts in reactants: {heterocycle_counts}")
-                        print(f"Heterocycles in product: {product_heterocycles}")
-
+        # Process children (reactants in retrosynthesis)
         for child in node.get("children", []):
-            dfs_traverse(child)
+            identify_groups(child, depth + 1)
 
-    dfs_traverse(route)
+    # Second pass: check preservation in each reaction
+    preserved_methoxy = True
+    preserved_fluoro = True
 
-    is_convergent = fragment_combinations >= 1
-    print(f"Fragment combinations: {fragment_combinations}")
-    print(f"Convergent heterocycle synthesis: {is_convergent}")
+    def check_preservation(node, depth=0):
+        nonlocal preserved_methoxy, preserved_fluoro
 
-    return is_convergent
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            print(f"Checking reaction at depth {depth}: {rsmi}")
+
+            # Check if product has methoxy/fluoro groups
+            product_has_methoxy = checker.check_fg("Ether", product) and checker.check_ring(
+                "benzene", product
+            )
+            product_has_fluoro = checker.check_fg("Aromatic halide", product) and "F" in product
+
+            # Check if any reactant has methoxy/fluoro groups
+            reactants_have_methoxy = any(
+                checker.check_fg("Ether", r) and checker.check_ring("benzene", r) for r in reactants
+            )
+            reactants_have_fluoro = any(
+                checker.check_fg("Aromatic halide", r) and "F" in r for r in reactants
+            )
+
+            # Check preservation
+            if reactants_have_methoxy and not product_has_methoxy:
+                preserved_methoxy = False
+                print(f"  Methoxy not preserved in reaction: {rsmi}")
+
+            if reactants_have_fluoro and not product_has_fluoro:
+                preserved_fluoro = False
+                print(f"  Fluoro not preserved in reaction: {rsmi}")
+
+        # Process children (reactants in retrosynthesis)
+        for child in node.get("children", []):
+            check_preservation(child, depth + 1)
+
+    # Check if final product has both groups
+    final_product_smiles = route["smiles"]
+    final_product = Chem.MolFromSmiles(final_product_smiles)
+
+    final_has_methoxy = checker.check_fg("Ether", final_product_smiles) and checker.check_ring(
+        "benzene", final_product_smiles
+    )
+    final_has_fluoro = (
+        checker.check_fg("Aromatic halide", final_product_smiles) and "F" in final_product_smiles
+    )
+
+    print(f"Final product: {final_product_smiles}")
+    print(f"  Has methoxy: {final_has_methoxy}, Has fluoro: {final_has_fluoro}")
+
+    # Only proceed with preservation check if final product has both groups
+    if final_has_methoxy and final_has_fluoro:
+        identify_groups(route)
+        check_preservation(route)
+
+        result = preserved_methoxy and preserved_fluoro
+        print(f"Methoxy and fluoro preservation result: {result}")
+        return result
+    else:
+        print("Final product doesn't have both methoxy and fluoro groups")
+        return False

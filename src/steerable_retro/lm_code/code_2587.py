@@ -2,77 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy involving MEM protection and deprotection of a sulfonamide nitrogen.
+    Detects synthesis strategy involving difluoromethoxy ether formation
+    from a phenol group.
     """
-    has_mem_protection = False
-    has_mem_deprotection = False
+    difluoromethoxy_formation = False
 
     def dfs_traverse(node):
-        nonlocal has_mem_protection, has_mem_deprotection
+        nonlocal difluoromethoxy_formation
 
         if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for MEM protection (N-H to N-MEM)
-            if (
-                any(
-                    Chem.MolFromSmiles(r)
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(
-                        Chem.MolFromSmarts("[NH][S](=[O])(=[O])[c]")
-                    )
-                    for r in reactants
-                )
-                and Chem.MolFromSmiles(product)
-                and Chem.MolFromSmiles(product).HasSubstructMatch(
-                    Chem.MolFromSmarts("[N]([CH2][O][CH2][CH2][O][CH3])[S](=[O])(=[O])[c]")
-                )
-            ):
-                has_mem_protection = True
-                print("Found MEM protection reaction")
-
-            # Check for MEM deprotection (N-MEM to N-H)
-            if any(
+            # Check if any reactant has a phenol group
+            phenol_present = any(
                 Chem.MolFromSmiles(r)
-                and Chem.MolFromSmiles(r).HasSubstructMatch(
-                    Chem.MolFromSmarts("[N]([CH2][O][CH2][CH2][O][CH3])[S](=[O])(=[O])[c]")
-                )
+                and Chem.MolFromSmiles(r).HasSubstructMatch(Chem.MolFromSmarts("[c][OH]"))
                 for r in reactants
-            ) and any(
-                Chem.MolFromSmiles(p)
-                and Chem.MolFromSmiles(p).HasSubstructMatch(
-                    Chem.MolFromSmarts("[NH][S](=[O])(=[O])[c]")
-                )
-                for p in product.split(".")
-            ):
-                has_mem_deprotection = True
-                print("Found MEM deprotection reaction")
+                if Chem.MolFromSmiles(r)
+            )
 
+            # Check if product has a difluoromethoxy group
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol and product_mol.HasSubstructMatch(
+                Chem.MolFromSmarts("[c][O][CH]([F])[F]")
+            ):
+                if phenol_present:
+                    difluoromethoxy_formation = True
+                    print("Detected difluoromethoxy ether formation from phenol")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
 
-    return has_mem_protection and has_mem_deprotection
+    print(f"Difluoromethoxy ether formation strategy detected: {difluoromethoxy_formation}")
+    return difluoromethoxy_formation

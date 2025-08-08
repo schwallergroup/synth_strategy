@@ -2,66 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects late-stage C=C bond formation via Heck-type cross-coupling for fragment diversification.
+    This function detects a synthetic strategy involving phenol alkylation
+    to form aryl ethers.
     """
-    found_pattern = False
+    phenol_alkylation_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal found_pattern
+    def dfs_traverse(node):
+        nonlocal phenol_alkylation_detected
 
-        if node["type"] == "reaction" and depth <= 2:  # Late stage (low depth)
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for Heck coupling pattern
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if Chem.MolFromSmiles(r)]
-                product_mol = Chem.MolFromSmiles(product)
+                # Patterns for phenol and aryl ether
+                phenol_pattern = Chem.MolFromSmarts("[#6]1:[#6]:[#6]:[#6]:[#6]:[#6]:1-[#8]")
+                aryl_ether_pattern = Chem.MolFromSmarts(
+                    "[#6]1:[#6]:[#6]:[#6]:[#6]:[#6]:1-[#8]-[#6]"
+                )
+                alkyl_halide_pattern = Chem.MolFromSmarts("[#6]-[#17,#35,#53]")
 
-                if product_mol and len(reactant_mols) >= 2:
-                    # Check for aryl halide in one reactant
-                    halide_pattern = Chem.MolFromSmarts("[c]-[I,Br]")
-                    # Check for alkene in another reactant
-                    alkene_pattern = Chem.MolFromSmarts("[C]=[C]")
-                    # Check for styrene-like pattern in product
-                    styrene_pattern = Chem.MolFromSmarts("[c]-[C]=[C]")
+                # Check reactants and products
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-                    has_halide = any(
-                        r and r.HasSubstructMatch(halide_pattern) for r in reactant_mols
-                    )
-                    has_alkene = any(
-                        r and r.HasSubstructMatch(alkene_pattern) for r in reactant_mols
-                    )
-                    has_styrene = product_mol.HasSubstructMatch(styrene_pattern)
+                # Check if phenol and alkyl halide are reactants and aryl ether is product
+                if product_mol and product_mol.HasSubstructMatch(aryl_ether_pattern):
+                    if any(
+                        mol and mol.HasSubstructMatch(phenol_pattern) for mol in reactant_mols
+                    ) and any(
+                        mol and mol.HasSubstructMatch(alkyl_halide_pattern) for mol in reactant_mols
+                    ):
+                        print("Detected phenol alkylation")
+                        phenol_alkylation_detected = True
 
-                    if has_halide and has_alkene and has_styrene:
-                        print("Found late-stage Heck-type coupling for fragment diversification")
-                        found_pattern = True
+                # Also check reverse (retrosynthetic direction)
+                if product_mol and any(
+                    mol and mol.HasSubstructMatch(aryl_ether_pattern) for mol in reactant_mols
+                ):
+                    if product_mol.HasSubstructMatch(phenol_pattern):
+                        print("Detected aryl ether cleavage (reverse of phenol alkylation)")
+                        phenol_alkylation_detected = True
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return found_pattern
+
+    return phenol_alkylation_detected

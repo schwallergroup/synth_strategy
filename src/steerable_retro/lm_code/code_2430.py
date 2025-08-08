@@ -2,129 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route involves nucleophilic aromatic substitution,
-    specifically C-Cl to C-N transformation on a pyridine ring.
+    Detects if the synthesis follows a linear strategy (no convergent steps).
+    Linear synthesis typically has 1-2 reactants per step.
     """
-    nas_detected = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal nas_detected
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and not nas_detected:
-            try:
-                # Extract reactants and product
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            # Extract reactants
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-                # First check if this is a nucleophilic substitution reaction
-                if (
-                    checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
-                    or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
-                    or checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
-                ):
-                    print(f"Detected nucleophilic substitution reaction: {rsmi}")
-
-                    # Check for pyridine ring in reactants
-                    pyridine_in_reactants = any(
-                        checker.check_ring("pyridine", r) for r in reactants_smiles
-                    )
-
-                    # Check for aromatic halide in reactants
-                    aromatic_halide_in_reactants = any(
-                        checker.check_fg("Aromatic halide", r) for r in reactants_smiles
-                    )
-
-                    # Check for amine-containing product
-                    amine_in_product = (
-                        checker.check_fg("Primary amine", product_smiles)
-                        or checker.check_fg("Secondary amine", product_smiles)
-                        or checker.check_fg("Tertiary amine", product_smiles)
-                        or checker.check_fg("Aniline", product_smiles)
-                    )
-
-                    if pyridine_in_reactants and aromatic_halide_in_reactants and amine_in_product:
-                        print(
-                            "Confirmed: Nucleophilic aromatic substitution on pyridine (C-Cl to C-N)"
-                        )
-                        nas_detected = True
-
-                # If not detected by reaction type, try to infer from functional group changes
-                if not nas_detected:
-                    # Check for pyridine ring and aromatic halide in reactants
-                    for reactant_smiles in reactants_smiles:
-                        if checker.check_ring("pyridine", reactant_smiles) and checker.check_fg(
-                            "Aromatic halide", reactant_smiles
-                        ):
-                            # Check if product has pyridine ring and amine group
-                            if checker.check_ring("pyridine", product_smiles) and (
-                                checker.check_fg("Primary amine", product_smiles)
-                                or checker.check_fg("Secondary amine", product_smiles)
-                                or checker.check_fg("Tertiary amine", product_smiles)
-                                or checker.check_fg("Aniline", product_smiles)
-                            ):
-                                print(
-                                    f"Inferred nucleophilic aromatic substitution from functional group changes: {rsmi}"
-                                )
-                                nas_detected = True
-                                break
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+            # If more than 2 reactants, likely not linear
+            if len(reactants_smiles) > 2:
+                is_linear = False
+                print(f"Non-linear step detected with {len(reactants_smiles)} reactants")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
 
-    return nas_detected
+    if is_linear:
+        print("Linear synthesis strategy detected")
+
+    return is_linear

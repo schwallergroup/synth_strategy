@@ -2,85 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes sequential deprotection of different protecting groups.
+    This function detects if the synthesis involves incorporation of a phenyl group.
     """
-    deprotection_depths = []
+    phenyl_incorporation_detected = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal deprotection_depths
+    # SMARTS pattern for phenyl group
+    phenyl_pattern = Chem.MolFromSmarts("c1ccccc1")
+
+    def dfs_traverse(node):
+        nonlocal phenyl_incorporation_detected
 
         if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check for Boc deprotection
-            boc_pattern = Chem.MolFromSmarts("[#6]([#6])([#6])([#6])[#8][#6](=[#8])[#7]")
-            has_boc_in_reactants = False
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(boc_pattern):
-                    has_boc_in_reactants = True
-                    break
+            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
+            product_mol = Chem.MolFromSmiles(product_part)
 
-            product_mol = Chem.MolFromSmiles(product)
-            has_boc_in_product = product_mol and product_mol.HasSubstructMatch(boc_pattern)
+            if product_mol and product_mol.HasSubstructMatch(phenyl_pattern):
+                # Check if phenyl is not in all reactants
+                phenyl_in_all_reactants = True
+                for r_mol in reactants_mols:
+                    if r_mol and not r_mol.HasSubstructMatch(phenyl_pattern):
+                        phenyl_in_all_reactants = False
+                        break
 
-            if has_boc_in_reactants and not has_boc_in_product:
-                deprotection_depths.append((depth, "Boc"))
+                if not phenyl_in_all_reactants:
+                    phenyl_incorporation_detected = True
+                    print(f"Phenyl incorporation detected in: {rsmi}")
 
-            # Check for methoxy deprotection
-            methoxy_pattern = Chem.MolFromSmarts("[#6][#8][#6]:[#6]")
-            hydroxy_pattern = Chem.MolFromSmarts("[#8][#6]:[#6]")
-
-            has_methoxy_in_reactants = False
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(methoxy_pattern):
-                    has_methoxy_in_reactants = True
-                    break
-
-            has_hydroxy_in_product = product_mol and product_mol.HasSubstructMatch(hydroxy_pattern)
-            has_methoxy_in_product = product_mol and product_mol.HasSubstructMatch(methoxy_pattern)
-
-            if has_methoxy_in_reactants and has_hydroxy_in_product and not has_methoxy_in_product:
-                deprotection_depths.append((depth, "Methoxy"))
-
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-
-    # Sort deprotection events by depth
-    deprotection_depths.sort()
-
-    # Check if we have at least 2 different deprotection events
-    if len(deprotection_depths) >= 2:
-        # Check if they are different types
-        deprotection_types = set([d[1] for d in deprotection_depths])
-        if len(deprotection_types) >= 2:
-            print(f"Detected sequential deprotection strategy: {deprotection_depths}")
-            return True
-
-    return False
+    print(f"Phenyl incorporation strategy: {phenyl_incorporation_detected}")
+    return phenyl_incorporation_detected

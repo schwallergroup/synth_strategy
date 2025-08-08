@@ -2,52 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a nitro group is present throughout the synthesis without modification.
+    Detects if the synthesis follows a linear strategy (no convergent steps).
     """
-    nitro_present_in_all_steps = True
+    # In a linear synthesis, each reaction node should have exactly one molecule child
+    # that is not a starting material
 
-    # SMARTS pattern for nitro group
-    nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal nitro_present_in_all_steps
+        nonlocal is_linear
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            product_part = rsmi.split(">")[-1]
-            product_mol = Chem.MolFromSmiles(product_part)
+            non_starting_material_children = 0
+            for child in node.get("children", []):
+                if child["type"] == "mol" and not child.get("in_stock", False):
+                    non_starting_material_children += 1
 
-            if product_mol:
-                if not product_mol.HasSubstructMatch(nitro_pattern):
-                    nitro_present_in_all_steps = False
-                    print(f"Nitro group not present in: {rsmi}")
+            if non_starting_material_children > 1:
+                is_linear = False
+                print(
+                    f"Convergent step detected: {non_starting_material_children} non-starting material reactants"
+                )
 
-        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-    print(f"Nitro group persistence strategy: {nitro_present_in_all_steps}")
-    return nitro_present_in_all_steps
+
+    if is_linear:
+        print("Linear synthesis strategy confirmed")
+
+    return is_linear

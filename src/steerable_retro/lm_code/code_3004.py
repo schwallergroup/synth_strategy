@@ -2,77 +2,52 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a protection-deprotection sequence using Boc group.
+    This function detects if the synthesis utilizes a tosyl group
+    as a directing or activating group.
     """
-    boc_protection = False
-    boc_deprotection = False
+    uses_tosyl = False
 
     def dfs_traverse(node):
-        nonlocal boc_protection, boc_deprotection
+        nonlocal uses_tosyl
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and "smiles" in node:
+            # Check for tosyl group
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                tosyl_pattern = Chem.MolFromSmarts("c1ccc(S(=O)(=O)[#6])cc1")
+                if mol.HasSubstructMatch(tosyl_pattern):
+                    print(f"Detected tosyl group in molecule: {node['smiles']}")
+                    uses_tosyl = True
 
-                # Check for Boc protection (primary amine -> Boc-protected amine)
-                boc_group_pattern = Chem.MolFromSmarts("[#6]C([#8])([#8][#6]([#6])([#6])[#6])")
-                primary_amine_pattern = Chem.MolFromSmarts("[NH2]")
-                protected_amine_pattern = Chem.MolFromSmarts("[NH]C(=O)O[C]([CH3])([CH3])[CH3]")
-
-                try:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol and product_mol.HasSubstructMatch(protected_amine_pattern):
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol and reactant_mol.HasSubstructMatch(
-                                primary_amine_pattern
-                            ):
-                                boc_protection = True
-                                print(
-                                    "Boc protection detected: Primary amine -> Boc-protected amine"
-                                )
-                except:
-                    pass
-
-                # Check for Boc deprotection (Boc-protected amine -> primary amine)
-                try:
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(protected_amine_pattern):
-                            product_mol = Chem.MolFromSmiles(product)
-                            if product_mol and product_mol.HasSubstructMatch(primary_amine_pattern):
-                                boc_deprotection = True
-                                print(
-                                    "Boc deprotection detected: Boc-protected amine -> primary amine"
-                                )
-                except:
-                    pass
-
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return boc_protection and boc_deprotection
+    return uses_tosyl

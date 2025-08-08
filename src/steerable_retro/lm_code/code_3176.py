@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,73 +54,65 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy involving a pyridine scaffold with
-    methoxy substituent that is maintained throughout the synthesis.
+    This function detects a synthetic strategy involving late-stage deprotection
+    of a Boc-protected amine.
     """
-    from rdkit import Chem
+    boc_deprotection_at_late_stage = False
 
-    pyridine_methoxy_count = 0
-    total_reactions = 0
+    def dfs_traverse(node, depth=0):
+        nonlocal boc_deprotection_at_late_stage
 
-    def dfs_traverse(node):
-        nonlocal pyridine_methoxy_count, total_reactions
+        print(f"Traversing node at depth {depth}, type: {node['type']}")
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            total_reactions += 1
-            try:
-                rsmi = node["metadata"]["rsmi"]
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Checking reaction at depth {depth}, RSMI: {rsmi}")
+
+            # Check if this is any type of Boc deprotection reaction
+            boc_deprotection_reactions = [
+                "Boc amine deprotection",
+                "Boc amine deprotection of guanidine",
+                "Boc amine deprotection to NH-NH2",
+                "Tert-butyl deprotection of amine",
+            ]
+
+            is_boc_deprotection = any(
+                checker.check_reaction(rxn, rsmi) for rxn in boc_deprotection_reactions
+            )
+            print(f"Is Boc deprotection: {is_boc_deprotection}")
+
+            # If not detected by reaction type, try to detect by functional group changes
+            if not is_boc_deprotection:
+                reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check for pyridine ring in the product
-                has_pyridine = checker.check_ring("pyridine", product)
+                # Check if reactants have Boc and product has amine but no Boc
+                reactant_has_boc = any(checker.check_fg("Boc", r) for r in reactants)
+                product_has_boc = checker.check_fg("Boc", product)
+                product_has_amine = (
+                    checker.check_fg("Primary amine", product)
+                    or checker.check_fg("Secondary amine", product)
+                    or checker.check_fg("Tertiary amine", product)
+                )
 
-                if has_pyridine:
-                    # Check specifically for methoxy group on pyridine
-                    mol = Chem.MolFromSmiles(product)
-                    if mol:
-                        # Pattern for methoxy attached to aromatic carbon
-                        methoxy_patt = Chem.MolFromSmarts("c-OC")
+                print(
+                    f"Manual check - Reactant has Boc: {reactant_has_boc}, Product has Boc: {product_has_boc}, Product has amine: {product_has_amine}"
+                )
 
-                        # First check if the molecule has a methoxy group
-                        if mol.HasSubstructMatch(methoxy_patt):
-                            # Then check if it's attached to the pyridine ring
-                            pyridine_atoms = set()
-                            try:
-                                # Get all atoms in pyridine rings
-                                matches = mol.GetSubstructMatches(Chem.MolFromSmarts("n1ccccc1"))
-                                for match in matches:
-                                    pyridine_atoms.update(match)
+                # If reactant has Boc, product doesn't have Boc but has amine, it's likely a Boc deprotection
+                if reactant_has_boc and not product_has_boc and product_has_amine:
+                    is_boc_deprotection = True
+                    print(f"Detected Boc deprotection by functional group analysis")
 
-                                # Get all methoxy groups
-                                methoxy_matches = mol.GetSubstructMatches(methoxy_patt)
-
-                                # Check if any methoxy is attached to pyridine
-                                for match in methoxy_matches:
-                                    # match[0] is the aromatic carbon the methoxy is attached to
-                                    if match[0] in pyridine_atoms:
-                                        pyridine_methoxy_count += 1
-                                        print(
-                                            f"Pyridine with methoxy detected in product: {product}"
-                                        )
-                                        break
-                            except Exception as e:
-                                print(f"Error checking pyridine-methoxy attachment: {e}")
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
+            if is_boc_deprotection:
+                # Consider depths 0, 1, 2, and 3 as late-stage
+                if depth <= 3:
+                    boc_deprotection_at_late_stage = True
+                    print(f"Late-stage Boc deprotection detected at depth {depth}")
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-
-    # Check if pyridine scaffold is maintained in most reactions (>80%)
-    # and ensure there are enough reactions to make a meaningful assessment
-    if total_reactions < 2:
-        return False
-
-    scaffold_maintained = pyridine_methoxy_count >= 0.8 * total_reactions
-
-    print(f"Pyridine-methoxy count: {pyridine_methoxy_count}, Total reactions: {total_reactions}")
-    print(f"Scaffold maintained: {scaffold_maintained}")
-
-    return scaffold_maintained
+    print(f"Final result: {boc_deprotection_at_late_stage}")
+    return boc_deprotection_at_late_stage

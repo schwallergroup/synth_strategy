@@ -2,84 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route contains Suzuki coupling reactions forming biaryl bonds.
-    Looks for reactions where a boronic acid/ester and aryl halide form a biaryl C-C bond.
+    This function detects if the synthesis follows a linear strategy
+    (as opposed to convergent) with each step adding one building block.
     """
-    suzuki_count = 0
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal suzuki_count
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-            # Check for boronic acid/ester pattern in reactants
-            boronic_pattern = Chem.MolFromSmarts("[c,C]-[B]([O,OH])[O,OH]")
-            boronic_ester_pattern = Chem.MolFromSmarts("[c,C]-[B]1O[C][C]O1")
+            # Count non-trivial reactants (excluding simple reagents)
+            complex_reactants = 0
+            for r in reactants_smiles:
+                mol = Chem.MolFromSmiles(r)
+                if mol is not None and mol.GetNumAtoms() > 5:  # Arbitrary threshold for "complex"
+                    complex_reactants += 1
 
-            # Check for aryl halide pattern in reactants
-            aryl_halide_pattern = Chem.MolFromSmarts("[c]-[Cl,Br,I]")
-
-            # Check for biaryl pattern in product
-            biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
-
-            has_boronic = False
-            has_aryl_halide = False
-
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(boronic_pattern) or mol.HasSubstructMatch(
-                            boronic_ester_pattern
-                        ):
-                            has_boronic = True
-                        if mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
-                except:
-                    continue
-
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    product_mol
-                    and product_mol.HasSubstructMatch(biaryl_pattern)
-                    and has_boronic
-                    and has_aryl_halide
-                ):
-                    suzuki_count += 1
-                    print(
-                        f"Found Suzuki coupling forming biaryl bond at depth {node.get('depth', 'unknown')}"
-                    )
-            except:
-                pass
+            # If more than 2 complex reactants, it's likely a convergent step
+            if complex_reactants > 2:
+                print(f"Found convergent step with {complex_reactants} complex reactants")
+                is_linear = False
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    print(f"Total Suzuki couplings forming biaryl bonds: {suzuki_count}")
-    return suzuki_count >= 1
+    return is_linear

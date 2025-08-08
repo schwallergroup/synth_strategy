@@ -2,59 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes a Suzuki coupling via boronic ester intermediate.
+    This function detects if the synthetic route uses Boc protection/deprotection
+    of nitrogen-containing groups.
     """
-    has_suzuki_coupling = False
+    has_boc_protection = False
 
     def dfs_traverse(node):
-        nonlocal has_suzuki_coupling
+        nonlocal has_boc_protection
 
-        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for boronic ester in reactants
-            boronic_ester_pattern = Chem.MolFromSmarts("[c]-[B]([O])[O]")
-            biaryl_formation = False
+                # Check for Boc group in reactants or product
+                boc_pattern = Chem.MolFromSmarts("CC(C)(C)OC(=O)[N]")
 
-            for reactant in reactants:
-                reactant_mol = Chem.MolFromSmiles(reactant)
-                if reactant_mol and reactant_mol.HasSubstructMatch(boronic_ester_pattern):
-                    # Now check if product has a new biaryl bond
+                has_boc_in_reactants = False
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(boc_pattern):
+                            has_boc_in_reactants = True
+                            break
+                    except:
+                        continue
+
+                try:
                     product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        # This is a simplification - in a real implementation,
-                        # we would need to check for new C-C bonds between aryl groups
-                        # by comparing reactants and products
-                        print("Detected potential Suzuki coupling")
-                        has_suzuki_coupling = True
+                    has_boc_in_product = product_mol and product_mol.HasSubstructMatch(boc_pattern)
 
-        # Continue traversal
+                    # If Boc appears or disappears, it's a protection/deprotection
+                    if (has_boc_in_reactants and not has_boc_in_product) or (
+                        not has_boc_in_reactants and has_boc_in_product
+                    ):
+                        has_boc_protection = True
+                        print(f"Detected Boc protection/deprotection: {rsmi}")
+                except:
+                    pass
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
-    return has_suzuki_coupling
+    return has_boc_protection

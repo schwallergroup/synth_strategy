@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,82 +54,39 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a linear synthesis strategy focused on fluorinated
-    heterocycles without convergent steps.
+    This function detects if the synthetic route involves a Grignard addition to an aldehyde.
     """
-    # Track synthesis characteristics
-    step_count = 0
-    fluorinated_heterocycle_count = 0
-    max_reactants_per_step = 0
-
-    # List of common heterocycles to check
-    heterocycles = [
-        "pyridine",
-        "pyrrole",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "triazole",
-        "tetrazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "furan",
-        "thiophene",
-        "isoxazole",
-        "isothiazole",
-        "oxadiazole",
-        "thiadiazole",
-        "piperidine",
-        "piperazine",
-        "morpholine",
-        "pyrrolidine",
-    ]
+    grignard_addition_found = False
 
     def dfs_traverse(node):
-        nonlocal step_count, fluorinated_heterocycle_count, max_reactants_per_step
+        nonlocal grignard_addition_found
 
-        if node["type"] == "reaction":
-            step_count += 1
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and not grignard_addition_found:
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            # Count reactants in this step
-            reactant_count = len(reactants)
-            max_reactants_per_step = max(max_reactants_per_step, reactant_count)
+                # Check if this is a Grignard reaction directly
+                if checker.check_reaction("Grignard from aldehyde to alcohol", rsmi):
+                    print("Detected Grignard addition to aldehyde via reaction check")
+                    grignard_addition_found = True
+                    return
 
-            # Check for fluorinated heterocycles in the product
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol:
-                # Check if product contains a heterocycle
-                contains_heterocycle = False
-                for ring in heterocycles:
-                    if checker.check_ring(ring, product):
-                        contains_heterocycle = True
-                        print(f"Found heterocycle: {ring} in product: {product}")
-                        break
-
-                # Check if product contains fluorine
-                contains_fluorine = (
-                    checker.check_fg("Trifluoro group", product)
-                    or checker.check_fg("Aromatic halide", product)
-                    and "[F]" in product
-                    or checker.check_fg("Primary halide", product)
-                    and "[F]" in product
-                    or checker.check_fg("Secondary halide", product)
-                    and "[F]" in product
-                    or checker.check_fg("Tertiary halide", product)
-                    and "[F]" in product
-                    or checker.check_fg("Alkenyl halide", product)
-                    and "[F]" in product
-                    or checker.check_fg("Triflate", product)
+                # Fallback: Check for components manually
+                aldehyde_present = any(
+                    checker.check_fg("Aldehyde", reactant) for reactant in reactants_smiles
+                )
+                grignard_present = any(
+                    checker.check_fg("Magnesium halide", reactant) for reactant in reactants_smiles
                 )
 
-                if contains_heterocycle and contains_fluorine:
-                    fluorinated_heterocycle_count += 1
-                    print(f"Found fluorinated heterocycle (count: {fluorinated_heterocycle_count})")
+                # Check if product has secondary alcohol
+                if product_smiles and aldehyde_present and grignard_present:
+                    if checker.check_fg("Secondary alcohol", product_smiles):
+                        print("Detected Grignard addition to aldehyde via component check")
+                        grignard_addition_found = True
+                        return
 
         # Traverse children
         for child in node.get("children", []):
@@ -134,13 +94,4 @@ def main(route):
 
     # Start traversal
     dfs_traverse(route)
-
-    # Linear synthesis typically has few reactants per step and no convergent steps
-    is_linear = max_reactants_per_step <= 2
-
-    print(f"Step count: {step_count}, Max reactants per step: {max_reactants_per_step}")
-    print(f"Fluorinated heterocycle count: {fluorinated_heterocycle_count}")
-    print(f"Is linear synthesis: {is_linear}")
-
-    # Return true if it's a linear synthesis with at least one fluorinated heterocycle
-    return is_linear and fluorinated_heterocycle_count > 0
+    return grignard_addition_found

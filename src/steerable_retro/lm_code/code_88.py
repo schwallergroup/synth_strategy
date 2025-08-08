@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,69 +54,133 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthesis involves aromatic halogenation,
-    particularly chlorination, fluorination, bromination, or iodination of aromatic rings.
+    This function detects if the synthesis route involves a functional group interconversion
+    (specifically methoxy to bromo conversion).
     """
-    result = False
+    # Track both direct and multi-step conversions
+    methoxy_to_bromo_conversion = False
+    methoxy_molecules = []  # Track molecules with methoxy groups
+    bromo_molecules = []  # Track molecules with bromo groups
 
-    def dfs_traverse(node):
-        nonlocal result
+    def dfs_traverse(node, depth=0):
+        nonlocal methoxy_to_bromo_conversion
 
-        if node["type"] == "reaction":
-            try:
-                # Extract reaction SMILES
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            mol = Chem.MolFromSmiles(mol_smiles)
+
+            if mol is None:
+                print(f"Warning: Could not parse molecule SMILES: {mol_smiles}")
+                return
+
+            # Check for methoxy groups
+            if "OC" in mol_smiles and checker.check_fg("Ether", mol_smiles):
+                # More specific check for methoxy pattern
+                if mol.HasSubstructMatch(Chem.MolFromSmarts("CO[#6]")):
+                    methoxy_molecules.append(mol_smiles)
+                    print(f"Found molecule with methoxy group: {mol_smiles}")
+
+            # Check for bromo groups
+            if "Br" in mol_smiles and (
+                checker.check_fg("Aromatic halide", mol_smiles)
+                or checker.check_fg("Primary halide", mol_smiles)
+                or checker.check_fg("Secondary halide", mol_smiles)
+                or checker.check_fg("Tertiary halide", mol_smiles)
+                or checker.check_fg("Alkenyl halide", mol_smiles)
+            ):
+                bromo_molecules.append(mol_smiles)
+                print(f"Found molecule with bromo group: {mol_smiles}")
+
+        elif node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                product_part = rsmi.split(">")[-1]
+                reactants = reactants_part.split(".")
 
-                # Check for aromatic halogenation reactions using the checker functions
-                if checker.check_reaction("Aromatic fluorination", rsmi):
-                    print(f"Aromatic fluorination detected in reaction: {rsmi}")
-                    result = True
-                elif checker.check_reaction("Aromatic chlorination", rsmi):
-                    print(f"Aromatic chlorination detected in reaction: {rsmi}")
-                    result = True
-                elif checker.check_reaction("Aromatic bromination", rsmi):
-                    print(f"Aromatic bromination detected in reaction: {rsmi}")
-                    result = True
-                elif checker.check_reaction("Aromatic iodination", rsmi):
-                    print(f"Aromatic iodination detected in reaction: {rsmi}")
-                    result = True
+                # Check if this reaction converts methoxy to bromo
+                methoxy_in_reactants = False
+                bromo_in_product = False
 
-                # If no specific reaction type is detected, check for functional group changes
-                if not result:
-                    reactants_smiles = rsmi.split(">")[0].split(".")
-                    product_smiles = rsmi.split(">")[-1]
+                # Check reactants for methoxy groups
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and "OC" in reactant and checker.check_fg("Ether", reactant):
+                        if reactant_mol.HasSubstructMatch(Chem.MolFromSmarts("CO[#6]")):
+                            methoxy_in_reactants = True
+                            print(f"Found methoxy group in reactant: {reactant}")
+                            break
 
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check product for bromo groups
+                product_mol = Chem.MolFromSmiles(product_part)
+                if (
+                    product_mol
+                    and "Br" in product_part
+                    and (
+                        checker.check_fg("Aromatic halide", product_part)
+                        or checker.check_fg("Primary halide", product_part)
+                        or checker.check_fg("Secondary halide", product_part)
+                        or checker.check_fg("Tertiary halide", product_part)
+                        or checker.check_fg("Alkenyl halide", product_part)
+                    )
+                ):
+                    bromo_in_product = True
+                    print(f"Found bromo group in product: {product_part}")
 
-                    # Check if product contains aromatic halides
-                    if product_mol:
-                        has_aromatic_halide = False
+                # Check if this is a methoxy to bromo conversion reaction
+                if methoxy_in_reactants and bromo_in_product:
+                    # Check for relevant reactions
+                    relevant_reactions = [
+                        "Cleavage of methoxy ethers to alcohols",
+                        "Alcohol to bromide",
+                        "Wohl-Ziegler bromination benzyl primary",
+                        "Alkyl bromides from alcohols",
+                        "Cleavage of alkoxy ethers to alcohols",
+                        "Alcohol to chloride_Other",
+                        "Ether cleavage to primary alcohol",
+                        "Primary alkyl halide to alcohol",
+                        "Aromatic bromination",
+                        "Bromination",
+                    ]
 
-                        # Check for aromatic halides in the product
-                        if checker.check_fg("Aromatic halide", product_smiles):
-                            # Verify this is a new halide by checking reactants
-                            has_new_halide = True
-                            for reactant in reactants_smiles:
-                                if checker.check_fg("Aromatic halide", reactant):
-                                    # If a reactant already has an aromatic halide, check if product has more
-                                    reactant_mol = Chem.MolFromSmiles(reactant)
-                                    if reactant_mol:
-                                        # This is a simplistic check - in a real scenario we'd need to track atom mappings
-                                        has_new_halide = True
+                    for reaction_type in relevant_reactions:
+                        if checker.check_reaction(reaction_type, rsmi):
+                            print(f"Found methoxy to bromo conversion reaction: {reaction_type}")
+                            print(f"Reaction SMILES: {rsmi}")
+                            methoxy_to_bromo_conversion = True
+                            return
 
-                            if has_new_halide:
-                                print(
-                                    f"Aromatic halogenation detected by functional group analysis in: {rsmi}"
-                                )
-                                result = True
+                    # If no specific reaction type matched, check if the reaction involves
+                    # both methoxy disappearance and bromo appearance
+                    if (
+                        "OCH3" in reactants_part
+                        and "Br" in product_part
+                        and "OCH3" not in product_part
+                    ):
+                        print(
+                            "Detected potential methoxy to bromo conversion based on SMILES patterns"
+                        )
+                        print(f"Reaction SMILES: {rsmi}")
+                        methoxy_to_bromo_conversion = True
+                        return
 
-            except Exception as e:
-                print(f"Error in halogenation detection: {e}")
-
-        # Continue traversal
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start the traversal
     dfs_traverse(route)
-    return result
+
+    # Check for multi-step conversion by analyzing tracked molecules
+    if not methoxy_to_bromo_conversion and methoxy_molecules and bromo_molecules:
+        # If we have molecules with methoxy groups and molecules with bromo groups
+        # in the synthesis route, this might indicate a multi-step conversion
+        print(f"Detected potential multi-step methoxy to bromo conversion")
+        print(f"Molecules with methoxy: {methoxy_molecules}")
+        print(f"Molecules with bromo: {bromo_molecules}")
+        methoxy_to_bromo_conversion = True
+
+    print(
+        f"Methoxy to bromo functional group interconversion detected: {methoxy_to_bromo_conversion}"
+    )
+    return methoxy_to_bromo_conversion

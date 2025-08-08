@@ -2,133 +2,75 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes C-C bond formation via
-    aryl-alkyne coupling using a triflate leaving group.
+    Detects if the synthesis contains multiple Suzuki coupling reactions
     """
-    coupling_found = False
+    suzuki_coupling_count = 0
 
-    def dfs_traverse(node):
-        nonlocal coupling_found
+    def dfs_traverse(node, depth=0):
+        nonlocal suzuki_coupling_count
 
-        if node["type"] == "reaction" and not coupling_found:
-            if "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            if "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+                reactants_str = rsmi.split(">")[0]
                 product = rsmi.split(">")[-1]
 
-                # Check for triflate-based Sonogashira coupling
-                if checker.check_reaction("Sonogashira alkyne_aryl OTf", rsmi):
-                    print(f"Found aryl-alkyne coupling using triflate: {rsmi}")
-                    coupling_found = True
-                    return
+                # Check for Suzuki coupling patterns
+                # Look for aryl bromide and boronic acid/ester derivatives
+                if "Br" in reactants_str and (
+                    "B(O" in reactants_str or "BO" in reactants_str or "OB" in reactants_str
+                ):
 
-                # If specific reaction check fails, check for components
-                triflate_present = any(
-                    checker.check_fg("Triflate", reactant) for reactant in reactants
-                )
-                alkyne_present = any(checker.check_fg("Alkyne", reactant) for reactant in reactants)
+                    reactants = reactants_str.split(".")
 
-                # Check if product contains new C-C bond between aryl and alkyne
-                if triflate_present and alkyne_present:
-                    # Check if any reactant has triflate on aromatic ring
-                    aryl_triflate = False
+                    # Try to identify aryl bromide and boronic acid/ester
+                    aryl_bromide = None
+                    boronic_derivative = None
+
                     for reactant in reactants:
-                        if checker.check_fg("Triflate", reactant):
-                            # Check if triflate is attached to aromatic ring
-                            mol = Chem.MolFromSmiles(reactant)
-                            if mol:
-                                for atom in mol.GetAtoms():
-                                    if atom.GetIsAromatic() and any(
-                                        nbr.GetSymbol() == "O"
-                                        and any(
-                                            nnbr.GetSymbol() == "S" for nnbr in nbr.GetNeighbors()
-                                        )
-                                        for nbr in atom.GetNeighbors()
-                                    ):
-                                        aryl_triflate = True
-                                        break
+                        if "Br" in reactant:
+                            aryl_bromide = Chem.MolFromSmiles(reactant)
+                        if "B(O" in reactant or "BO" in reactant or "OB" in reactant:
+                            boronic_derivative = Chem.MolFromSmiles(reactant)
 
-                    # Check if product has aryl-alkyne bond
-                    if aryl_triflate:
-                        product_mol = Chem.MolFromSmiles(product)
-                        if product_mol:
-                            for bond in product_mol.GetBonds():
-                                a1 = bond.GetBeginAtom()
-                                a2 = bond.GetEndAtom()
-                                # Check if bond is between aromatic atom and alkyne carbon
-                                if (
-                                    a1.GetIsAromatic()
-                                    and any(
-                                        b.GetBondType() == Chem.BondType.TRIPLE
-                                        for b in a2.GetBonds()
-                                    )
-                                ) or (
-                                    a2.GetIsAromatic()
-                                    and any(
-                                        b.GetBondType() == Chem.BondType.TRIPLE
-                                        for b in a1.GetBonds()
-                                    )
-                                ):
-                                    print(
-                                        f"Found aryl-alkyne coupling using triflate (component analysis): {rsmi}"
-                                    )
-                                    coupling_found = True
-                                    return
+                    product_mol = Chem.MolFromSmiles(product)
+
+                    if aryl_bromide and boronic_derivative and product_mol:
+                        # Check if product has more C-C bonds than reactants
+                        suzuki_coupling_count += 1
+                        print(f"Found Suzuki coupling at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return coupling_found
+    # Return True if we found at least 2 Suzuki couplings
+    return suzuki_coupling_count >= 2

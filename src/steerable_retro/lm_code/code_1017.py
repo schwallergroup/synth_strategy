@@ -2,63 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy where halogenated aromatic systems (with F and Cl)
-    are maintained throughout the synthesis.
+    This function detects triazine ring formation from non-ring precursors.
     """
-    has_halogenated_aromatic_target = False
-    has_halogenated_aromatic_starting_material = False
+    triazine_formed = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_halogenated_aromatic_target, has_halogenated_aromatic_starting_material
+    def dfs_traverse(node):
+        nonlocal triazine_formed
 
-        if node["type"] == "mol":
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    # Check for halogenated aromatic pattern
-                    f_aromatic_pattern = Chem.MolFromSmarts("c-[F]")
-                    cl_aromatic_pattern = Chem.MolFromSmarts("c-[Cl]")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                    has_f = mol.HasSubstructMatch(f_aromatic_pattern)
-                    has_cl = mol.HasSubstructMatch(cl_aromatic_pattern)
+            # Check if product contains triazine but reactants don't
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            triazine_pattern = Chem.MolFromSmarts("[n]1[c][n][c][n]1")
 
-                    if has_f and has_cl:
-                        if depth == 0:  # Target molecule
-                            has_halogenated_aromatic_target = True
-                            print(f"Target molecule has F and Cl substituted aromatic system")
-                        elif node.get("in_stock", False):  # Starting material
-                            has_halogenated_aromatic_starting_material = True
-                            print(f"Starting material has F and Cl substituted aromatic system")
-            except Exception as e:
-                print(f"Error processing molecule: {e}")
+            if product_mol and triazine_pattern:
+                product_has_triazine = product_mol.HasSubstructMatch(triazine_pattern)
 
-        # Process children
+                if product_has_triazine:
+                    # Check if reactants don't have triazine
+                    reactants_have_triazine = False
+                    for r_smiles in reactants_smiles:
+                        r_mol = Chem.MolFromSmiles(r_smiles)
+                        if r_mol and r_mol.HasSubstructMatch(triazine_pattern):
+                            reactants_have_triazine = True
+                            break
+
+                    if not reactants_have_triazine:
+                        print(f"Triazine formation detected in reaction: {rsmi}")
+                        triazine_formed = True
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal from root
     dfs_traverse(route)
-
-    # Return True if both target and starting material have halogenated aromatics
-    return has_halogenated_aromatic_target and has_halogenated_aromatic_starting_material
+    return triazine_formed

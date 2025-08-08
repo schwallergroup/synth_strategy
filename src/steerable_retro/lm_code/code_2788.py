@@ -2,67 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects the formation of a diaryl ether (c-O-c) bond
-    in the synthetic route.
+    Detects if the synthetic route involves coupling of two halogenated fragments
+    to form a biaryl amine.
     """
-    has_diaryl_ether_formation = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_diaryl_ether_formation
-
+    def dfs_traverse(node):
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for diaryl ether formation
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for coupling of halogenated fragments
+                fluoro_aromatic_pattern = Chem.MolFromSmarts("[c]-[F]")
+                bromo_aromatic_pattern = Chem.MolFromSmarts("[c]-[Br]")
+                chloro_aromatic_pattern = Chem.MolFromSmarts("[c]-[Cl]")
+                biaryl_amine_pattern = Chem.MolFromSmarts("[c]-[NH]-[c]")
 
-                if product_mol:
-                    # Diaryl ether pattern
-                    diaryl_ether_pattern = Chem.MolFromSmarts("c[O]c")
+                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                product_mol = Chem.MolFromSmiles(product) if product else None
 
-                    # Check if product has diaryl ether
-                    if product_mol.HasSubstructMatch(diaryl_ether_pattern):
-                        # Check if any reactant has the same pattern
-                        reactant_has_pattern = any(
-                            mol and mol.HasSubstructMatch(diaryl_ether_pattern)
-                            for mol in reactant_mols
-                        )
+                # Count halogenated fragments in reactants
+                halogenated_fragments = 0
+                for r in reactant_mols:
+                    if r:
+                        if (
+                            r.HasSubstructMatch(fluoro_aromatic_pattern)
+                            or r.HasSubstructMatch(bromo_aromatic_pattern)
+                            or r.HasSubstructMatch(chloro_aromatic_pattern)
+                        ):
+                            halogenated_fragments += 1
 
-                        # If product has pattern but reactants don't, it was formed in this reaction
-                        if not reactant_has_pattern:
-                            print(f"Found diaryl ether formation at depth {depth}")
-                            has_diaryl_ether_formation = True
+                # Check if product forms biaryl amine
+                forms_biaryl_amine = product_mol and product_mol.HasSubstructMatch(
+                    biaryl_amine_pattern
+                )
 
-        # Continue traversal
+                if halogenated_fragments >= 2 and forms_biaryl_amine:
+                    print(
+                        f"Found coupling of {halogenated_fragments} halogenated fragments to form biaryl amine"
+                    )
+                    return True
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if dfs_traverse(child):
+                return True
+
+        return False
 
     # Start traversal from the root
-    dfs_traverse(route)
-
-    return has_diaryl_ether_formation
+    return dfs_traverse(route)

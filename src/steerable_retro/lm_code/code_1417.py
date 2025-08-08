@@ -2,59 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves aryl bromide to aldehyde
-    transformation as a key step.
+    Detects a linear fragment coupling strategy with 3+ distinct fragments.
     """
-    aryl_br_to_aldehyde = False
+    fragment_count = 0
+    coupling_reactions = 0
 
-    def dfs_traverse(node, depth=0):
-        nonlocal aryl_br_to_aldehyde
+    def dfs_traverse(node):
+        nonlocal fragment_count, coupling_reactions
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-            # Check for aryl bromide in reactants
-            aryl_br_pattern = Chem.MolFromSmarts("c[Br]")
-            aryl_cho_pattern = Chem.MolFromSmarts("c[CH]=O")
+                # If reaction has multiple reactants, it might be a coupling reaction
+                if len(reactants) >= 2:
+                    coupling_reactions += 1
 
-            has_aryl_br = any(
-                Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(aryl_br_pattern)
-                for r in reactants
-            )
-            has_aryl_cho = Chem.MolFromSmiles(product) and Chem.MolFromSmiles(
-                product
-            ).HasSubstructMatch(aryl_cho_pattern)
-
-            if has_aryl_br and has_aryl_cho:
-                aryl_br_to_aldehyde = True
-                print(f"Aryl bromide to aldehyde transformation detected at depth {depth}")
+                    # Count distinct fragments by analyzing reactants
+                    for reactant in reactants:
+                        if reactant and Chem.MolFromSmiles(reactant):
+                            fragment_count += 1
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
 
-    return aryl_br_to_aldehyde
+    print(f"Found {fragment_count} fragments and {coupling_reactions} coupling reactions")
+    return fragment_count >= 3 and coupling_reactions >= 2

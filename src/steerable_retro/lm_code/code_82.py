@@ -2,69 +2,55 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves coupling with a piperazine moiety.
+    Detects a synthesis route that maintains a methoxymethyl (MOM) protection
+    on the indole nitrogen throughout the synthesis.
     """
-    piperazine_pattern = Chem.MolFromSmarts("[N]1CCN([C])CC1")
-    piperazine_coupling_found = False
+    has_mom_protection = False
 
-    def dfs_traverse(node):
-        nonlocal piperazine_coupling_found
+    def dfs_traverse(node, depth=0):
+        nonlocal has_mom_protection
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for MOM-protected indole
+                mom_indole_pattern = Chem.MolFromSmarts(
+                    "[#6]1[#6]2[#7]([CH2]O[CH3])[#6][#6][#6]2[#6][#6][#6]1"
+                )
+                if mol.HasSubstructMatch(mom_indole_pattern):
+                    print("Detected MOM-protected indole")
+                    has_mom_protection = True
 
-                # Check if piperazine is in reactants
-                piperazine_in_reactants = False
-                for r_smiles in reactants_smiles:
-                    try:
-                        r_mol = Chem.MolFromSmiles(r_smiles)
-                        if r_mol and r_mol.HasSubstructMatch(piperazine_pattern):
-                            piperazine_in_reactants = True
-                            break
-                    except:
-                        continue
-
-                # Check if piperazine is in product and was incorporated
-                try:
-                    product_mol = Chem.MolFromSmiles(product_smiles)
-                    if (
-                        product_mol
-                        and product_mol.HasSubstructMatch(piperazine_pattern)
-                        and piperazine_in_reactants
-                    ):
-                        # Check if this is a coupling reaction (more than one reactant)
-                        if len(reactants_smiles) > 1:
-                            print("Piperazine coupling detected")
-                            piperazine_coupling_found = True
-                except:
-                    pass
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return piperazine_coupling_found
+
+    return has_mom_protection

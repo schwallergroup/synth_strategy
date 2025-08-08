@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,55 +54,139 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects early introduction of a trifluoroethyl group
-    that is carried through the synthesis.
+    Detects if the synthesis route uses alcohol activation (e.g., mesylation, tosylation, triflation, halogenation)
+    followed by nucleophilic substitution.
     """
-    max_depth = 0
-    trifluoroethyl_appearances = {}  # Track depths where trifluoroethyl groups appear
+    activation_reactions = []
+    substitution_reactions = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, depth)
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-        if node["type"] == "mol" and "smiles" in node:
-            # Check for trifluoro group using the checker function
-            if checker.check_fg("Trifluoro group", node["smiles"]):
-                # Verify it's specifically a trifluoroethyl group (CF3CH2-)
-                # by checking for the pattern in the SMILES
-                mol_smiles = node["smiles"]
-                if "CCC(F)(F)F" in mol_smiles or "CC(F)(F)F" in mol_smiles:
-                    print(f"Found trifluoroethyl group at depth {depth} in molecule: {mol_smiles}")
-                    trifluoroethyl_appearances[depth] = mol_smiles
+            print(f"Examining reaction at depth {depth}: {rsmi}")
+            print(f"Reactants: {reactants}")
+            print(f"Product: {product}")
 
-        # Continue traversing the tree
+            # Check for alcohol activation reactions
+            has_alcohol = any(
+                checker.check_fg("Primary alcohol", r)
+                or checker.check_fg("Secondary alcohol", r)
+                or checker.check_fg("Tertiary alcohol", r)
+                or checker.check_fg("Aromatic alcohol", r)
+                for r in reactants
+            )
+
+            if has_alcohol:
+                print(f"Found alcohol in reactants at depth {depth}")
+
+            has_activated = (
+                checker.check_fg("Mesylate", product)
+                or checker.check_fg("Tosylate", product)
+                or checker.check_fg("Triflate", product)
+                or checker.check_fg("Primary halide", product)
+                or checker.check_fg("Secondary halide", product)
+            )
+
+            if has_activated:
+                print(f"Found activated group in product at depth {depth}")
+
+            # Check for specific activation reactions if available
+            is_activation_rxn = (
+                checker.check_reaction("Formation of Sulfonic Esters", rsmi)
+                or checker.check_reaction(
+                    "Formation of Sulfonic Esters on TMS protected alcohol", rsmi
+                )
+                or checker.check_reaction("Alcohol to triflate conversion", rsmi)
+                or checker.check_reaction("Alcohol to chloride_sulfonyl chloride", rsmi)
+                or checker.check_reaction("Alcohol to chloride_SOCl2", rsmi)
+                or checker.check_reaction("Alcohol to chloride_PCl5_ortho", rsmi)
+                or checker.check_reaction("Alcohol to chloride_POCl3", rsmi)
+                or checker.check_reaction("Alcohol to chloride_HCl", rsmi)
+                or checker.check_reaction("Appel reaction", rsmi)
+            )
+
+            if is_activation_rxn:
+                print(f"Found activation reaction at depth {depth}")
+
+            # Detect activation if either pattern is found
+            if (has_alcohol and has_activated) or is_activation_rxn:
+                activation_reactions.append((depth, rsmi))
+                print(f"Found alcohol activation at depth {depth}: {rsmi}")
+
+            # Check for nucleophilic substitution with activated leaving groups
+            has_leaving_group = any(
+                checker.check_fg("Mesylate", r)
+                or checker.check_fg("Tosylate", r)
+                or checker.check_fg("Triflate", r)
+                or checker.check_fg("Primary halide", r)
+                or checker.check_fg("Secondary halide", r)
+                for r in reactants
+            )
+
+            if has_leaving_group:
+                print(f"Found leaving group in reactants at depth {depth}")
+
+            # Check if the leaving group is gone in the product
+            leaving_group_gone = not (
+                checker.check_fg("Mesylate", product)
+                or checker.check_fg("Tosylate", product)
+                or checker.check_fg("Triflate", product)
+                or checker.check_fg("Primary halide", product)
+                or checker.check_fg("Secondary halide", product)
+            )
+
+            if leaving_group_gone:
+                print(f"Leaving group is gone in product at depth {depth}")
+
+            # Check for nucleophilic substitution reactions
+            is_subst_rxn = (
+                checker.check_reaction("Williamson Ether Synthesis", rsmi)
+                or checker.check_reaction("S-alkylation of thiols", rsmi)
+                or checker.check_reaction("N-alkylation of primary amines with alkyl halides", rsmi)
+                or checker.check_reaction(
+                    "N-alkylation of secondary amines with alkyl halides", rsmi
+                )
+                or checker.check_reaction("Mitsunobu aryl ether", rsmi)
+                or checker.check_reaction("Mitsunobu esterification", rsmi)
+                or checker.check_reaction("Alcohol to azide", rsmi)
+            )
+
+            if is_subst_rxn:
+                print(f"Found substitution reaction at depth {depth}")
+
+            # Detect substitution if either pattern is found
+            if (has_leaving_group and leaving_group_gone) or is_subst_rxn:
+                substitution_reactions.append((depth, rsmi))
+                print(f"Found nucleophilic substitution at depth {depth}: {rsmi}")
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if trifluoroethyl was introduced early and carried through
-    if trifluoroethyl_appearances and max_depth > 0:
-        # Early introduction means it appears in the deeper half of the synthesis
-        # (higher depth values = earlier in synthesis in retrosynthetic analysis)
-        early_threshold = max_depth / 2
+    print(f"Activation reactions found: {len(activation_reactions)}")
+    print(f"Substitution reactions found: {len(substitution_reactions)}")
 
-        # Find the earliest appearance of the trifluoroethyl group
-        earliest_appearance = max(trifluoroethyl_appearances.keys())
+    # Check if we found both activation and substitution reactions
+    if activation_reactions and substitution_reactions:
+        # Sort by depth
+        activation_reactions.sort(key=lambda x: x[0])
+        substitution_reactions.sort(key=lambda x: x[0])
 
-        # Check if it appears early in the synthesis (deeper than threshold)
-        early_introduction = earliest_appearance > early_threshold
+        print(f"Sorted activation reactions: {activation_reactions}")
+        print(f"Sorted substitution reactions: {substitution_reactions}")
 
-        # Check if it persists through to the final product (depth 0)
-        persists_to_final = 0 in trifluoroethyl_appearances
+        # In forward synthesis, activation should happen before substitution
+        # In retrosynthesis (our traversal), activation depth should be greater than substitution depth
+        for act_depth, act_rsmi in activation_reactions:
+            for subst_depth, subst_rsmi in substitution_reactions:
+                if act_depth > subst_depth:  # Changed from < to >
+                    print(f"Alcohol activation-substitution strategy detected:")
+                    print(f"  Activation at depth {act_depth}: {act_rsmi}")
+                    print(f"  Substitution at depth {subst_depth}: {subst_rsmi}")
+                    return True
 
-        print(f"Earliest trifluoroethyl appearance: depth {earliest_appearance}")
-        print(f"Early threshold: {early_threshold}")
-        print(f"Early introduction: {early_introduction}")
-        print(f"Persists to final product: {persists_to_final}")
-
-        # Return True if it's introduced early and persists to the final product
-        return early_introduction and persists_to_final
-
-    print("No trifluoroethyl group found or synthesis has zero depth")
     return False

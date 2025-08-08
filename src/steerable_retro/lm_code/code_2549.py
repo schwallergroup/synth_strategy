@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,50 +54,45 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a synthesis route that includes acetal deprotection in the early stage.
+    This function detects a synthesis strategy involving isoxazole heterocycle disconnection.
+    In retrosynthesis, we're looking for reactions where isoxazole is formed in the forward direction,
+    which means it should be in the products but not in the reactants.
     """
-    has_acetal_deprotection = False
+    isoxazole_disconnection_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_acetal_deprotection
+    def dfs_traverse(node):
+        nonlocal isoxazole_disconnection_found
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Early stage corresponds to higher depth in DFS traversal
-            if depth >= 2:  # Adjusted threshold based on test case
-                rsmi = node["metadata"]["rsmi"]
+            # Extract reaction SMILES
+            rsmi = node["metadata"]["rsmi"]
 
-                # Primary check: Use the specific reaction checker
-                if checker.check_reaction("Acetal hydrolysis to ketone", rsmi):
-                    print(f"Found acetal hydrolysis to ketone at depth {depth}: {rsmi}")
-                    has_acetal_deprotection = True
-                    return
+            # Split into reactants and product
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Secondary check: Look for ketal hydrolysis to ketone
-                if checker.check_reaction("Ketal hydrolysis to ketone", rsmi):
-                    print(f"Found ketal hydrolysis to ketone at depth {depth}: {rsmi}")
-                    has_acetal_deprotection = True
-                    return
+            # Check if any reactant contains isoxazole
+            isoxazole_in_reactants = False
+            for reactant in reactants:
+                if checker.check_ring("isoxazole", reactant):
+                    isoxazole_in_reactants = True
+                    break
 
-                # Fallback check: Look for acetal in reactants and ketone in product
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Check if product contains isoxazole
+            isoxazole_in_products = checker.check_ring("isoxazole", product)
 
-                has_ketone_product = checker.check_fg("Ketone", product)
-                has_acetal_reactant = any(
-                    checker.check_fg("Acetal/Ketal", reactant) for reactant in reactants
+            # Check for isoxazole disconnection: present in products but not in reactants
+            # This means isoxazole is formed in the forward reaction
+            if isoxazole_in_products and not isoxazole_in_reactants:
+                print(
+                    f"Found isoxazole disconnection: isoxazole in product but not in reactants. Reaction: {rsmi}"
                 )
-
-                if has_ketone_product and has_acetal_reactant:
-                    print(f"Found acetal/ketal to ketone conversion at depth {depth}: {rsmi}")
-                    has_acetal_deprotection = True
+                isoxazole_disconnection_found = True
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
-
-    print(f"Acetal deprotection in early stage: {has_acetal_deprotection}")
-
-    return has_acetal_deprotection
+    return isoxazole_disconnection_found

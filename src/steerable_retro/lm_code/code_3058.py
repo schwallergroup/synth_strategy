@@ -2,68 +2,99 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
-    """
-    Detects heterocycle formation via diamine-dicarbonyl condensation,
-    specifically looking for imidazopyridine formation.
-    """
-    found_pattern = False
+    """Check if the route involves formation of a tertiary alcohol."""
+    tertiary_alcohol_found = False
 
-    def dfs_traverse(node):
-        nonlocal found_pattern
+    def dfs(node, depth=0):
+        nonlocal tertiary_alcohol_found
+
+        if tertiary_alcohol_found:
+            return
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for diamine pattern in reactants
-            diamine_pattern = Chem.MolFromSmarts("[NH2][c][c][NH2]")
-            dicarbonyl_pattern = Chem.MolFromSmarts("[CH]=[O].[CH]=[O]")
+            # Check if the product contains a tertiary alcohol
+            if checker.check_fg("Tertiary alcohol", product):
+                # Check reactants to confirm this is a formation reaction
+                reactants = rsmi.split(">")[0].split(".")
+                reactant_has_tertiary_alcohol = any(
+                    checker.check_fg("Tertiary alcohol", r) for r in reactants
+                )
 
-            # Check for imidazopyridine-like pattern in product
-            imidazopyridine_pattern = Chem.MolFromSmarts("[#6]1[#7][#6][#6][#7][#6]1")
+                if not reactant_has_tertiary_alcohol:
+                    tertiary_alcohol_found = True
+                    print(f"Found tertiary alcohol formation reaction: {rsmi}")
+                    return
 
-            reactant_has_diamine = False
-            reactant_has_dicarbonyl = False
+                # Also check for specific reactions that form tertiary alcohols
+                if checker.check_reaction("Grignard from ketone to alcohol", rsmi):
+                    tertiary_alcohol_found = True
+                    print(f"Found tertiary alcohol formation via Grignard: {rsmi}")
+                    return
 
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if mol and mol.HasSubstructMatch(diamine_pattern):
-                    reactant_has_diamine = True
-                if mol and mol.HasSubstructMatch(dicarbonyl_pattern):
-                    reactant_has_dicarbonyl = True
-
-            product_mol = Chem.MolFromSmiles(product)
-            product_has_imidazopyridine = product_mol and product_mol.HasSubstructMatch(
-                imidazopyridine_pattern
-            )
-
-            if reactant_has_diamine and reactant_has_dicarbonyl and product_has_imidazopyridine:
-                print("Found heterocycle formation via diamine-dicarbonyl condensation")
-                found_pattern = True
+        # Also check the target molecule for tertiary alcohols
+        if node["type"] == "mol" and node.get("children", []) and not node.get("in_stock", False):
+            mol_smiles = node["smiles"]
+            if checker.check_fg("Tertiary alcohol", mol_smiles):
+                tertiary_alcohol_found = True
+                print(f"Found tertiary alcohol in non-starting material: {mol_smiles}")
+                return
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs(child, depth + 1)
 
-    dfs_traverse(route)
-    return found_pattern
+    dfs(route)
+    return tertiary_alcohol_found

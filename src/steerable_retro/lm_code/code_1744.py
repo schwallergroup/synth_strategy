@@ -2,82 +2,135 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects if the synthetic route employs a strategy of using
-    amide couplings to connect major fragments of the molecule.
+    This function detects a synthesis strategy where the final step is an amide coupling.
     """
-    # Track amide couplings
-    amide_couplings = []
+    final_step_is_amide_coupling = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal amide_couplings
+        nonlocal final_step_is_amide_coupling
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        # Check if this is a reaction node at depth 0 (final reaction)
+        if node["type"] == "reaction" and depth == 0:
+            print(f"Examining final reaction at depth {depth}")
+            # Check if this is an amide coupling reaction
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            print(f"Reaction SMILES: {rsmi}")
 
-            # Convert to RDKit molecules
-            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles if smi]
-            product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+            print(f"Product: {product}")
+            print(f"Reactants: {reactants}")
 
-            if product and len(reactants) >= 2:  # Need at least two reactants for fragment coupling
-                # Check for carboxylic acid or activated ester in reactants
-                acid_pattern = Chem.MolFromSmarts("[#6]-[C](=[O])[OH]")
-                ester_pattern = Chem.MolFromSmarts("[#6]-[C](=[O])[O][#6]")
-                acid_reactant = any(mol.HasSubstructMatch(acid_pattern) for mol in reactants if mol)
-                ester_reactant = any(
-                    mol.HasSubstructMatch(ester_pattern) for mol in reactants if mol
+            # Check if this is a known amide coupling reaction type
+            amide_coupling_reactions = [
+                "Carboxylic acid with primary amine to amide",
+                "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                "Ester with primary amine to amide",
+                "Ester with secondary amine to amide",
+                "Acyl chloride with secondary amine to amide",
+                "Schotten-Baumann_amide",
+            ]
+
+            for reaction_type in amide_coupling_reactions:
+                if checker.check_reaction(reaction_type, rsmi):
+                    print(f"Detected amide coupling reaction: {reaction_type}")
+                    final_step_is_amide_coupling = True
+                    return
+
+            # If no specific reaction type matched, check for functional groups
+            # Check for amide in product
+            amide_types = ["Primary amide", "Secondary amide", "Tertiary amide"]
+            has_amide = any(checker.check_fg(amide_type, product) for amide_type in amide_types)
+
+            if has_amide:
+                print("Product contains amide group")
+
+                # Check for carboxylic acid or acyl halide in reactants
+                acid_types = ["Carboxylic acid", "Acyl halide"]
+                has_acid_or_acyl = any(
+                    any(checker.check_fg(acid_type, r) for acid_type in acid_types)
+                    for r in reactants
                 )
 
                 # Check for amine in reactants
-                amine_pattern = Chem.MolFromSmarts("[#6]-[NH][#6]")
-                amine_reactant = any(
-                    mol.HasSubstructMatch(amine_pattern) for mol in reactants if mol
+                amine_types = ["Primary amine", "Secondary amine"]
+                has_amine = any(
+                    any(checker.check_fg(amine_type, r) for amine_type in amine_types)
+                    for r in reactants
                 )
 
-                # Check for amide in product
-                amide_pattern = Chem.MolFromSmarts("[#6]-[C](=[O])[N]([#6])[#6]")
-                product_has_amide = product.HasSubstructMatch(amide_pattern) if product else False
+                print(f"Reactants contain acid/acyl: {has_acid_or_acyl}, amine: {has_amine}")
 
-                # Check if this reaction is an amide coupling
-                if (acid_reactant or ester_reactant) and amine_reactant and product_has_amide:
-                    print(f"Found amide coupling at depth {depth}")
-                    amide_couplings.append(depth)
+                if has_acid_or_acyl and has_amine:
+                    print("Detected amide coupling based on functional groups")
+                    final_step_is_amide_coupling = True
 
-        # Traverse children
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+        # If this is the root molecule node, check its child reactions
+        if node["type"] == "mol" and depth == 0 and "children" in node:
+            print("Found root molecule node, checking its child reactions")
+            for child in node.get("children", []):
+                # Keep depth at 0 for immediate child reactions of the root
+                dfs_traverse(child, 0)
+        else:
+            # Continue normal traversal for other nodes
+            for child in node.get("children", []):
+                dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Strategy is present if we found at least two amide couplings
-    strategy_present = len(amide_couplings) >= 2
-
-    print(f"Amide coupling fragment strategy detected: {strategy_present}")
-    if strategy_present:
-        print(f"Amide couplings occurred at depths: {amide_couplings}")
-
-    return strategy_present
+    print(f"Final result: {final_step_is_amide_coupling}")
+    return final_step_is_amide_coupling

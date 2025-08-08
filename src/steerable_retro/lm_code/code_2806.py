@@ -2,62 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy (as opposed to convergent).
-    Linear synthesis typically has reactions with 1-2 reactants throughout.
+    This function detects if the synthetic route involves transformation of an ester to an amide.
     """
-    is_linear = True
-    reaction_count = 0
+    has_transformation = False
 
     def dfs_traverse(node):
-        nonlocal is_linear, reaction_count
+        nonlocal has_transformation
 
         if node["type"] == "reaction":
-            reaction_count += 1
-            # Extract reactants
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Count non-empty reactants
-            reactant_count = sum(1 for r in reactants if r.strip())
+                # Check for ester in reactants
+                ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])-[#6]")
+                ester_in_reactants = False
 
-            # If more than 2 reactants, likely not linear
-            if reactant_count > 2:
-                is_linear = False
-                print(f"Found non-linear step with {reactant_count} reactants")
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(ester_pattern):
+                        ester_in_reactants = True
+                        break
 
-        # Process children
+                # Check for amide in product
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol:
+                    amide_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#7]")
+                    if ester_in_reactants and product_mol.HasSubstructMatch(amide_pattern):
+                        has_transformation = True
+                        print("Found ester to amide transformation")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Must have at least 3 reactions to be considered a meaningful linear synthesis
-    strategy_present = is_linear and reaction_count >= 3
-    print(
-        f"Detected {reaction_count} reactions in a {'linear' if is_linear else 'non-linear'} sequence"
-    )
-    print(f"Strategy detection result: {strategy_present}")
-
-    return strategy_present
+    return has_transformation

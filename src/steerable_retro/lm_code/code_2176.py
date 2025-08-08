@@ -2,165 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes esterification reactions
-    (carboxylic acid → ester transformation).
+    Detects a synthesis route that includes a nitro reduction to amine step.
     """
-    esterification_detected = False
+    has_nitro_reduction = False
 
-    def dfs_traverse(node):
-        nonlocal esterification_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal has_nitro_reduction
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
             rsmi = node["metadata"]["rsmi"]
-            print(f"Examining reaction: {rsmi}")
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check for various esterification reaction types
-            esterification_reactions = [
-                "Esterification of Carboxylic Acids",
-                "Transesterification",
-                "O-alkylation of carboxylic acids with diazo compounds",
-                "Oxidative esterification of primary alcohols",
-                "Acetic anhydride and alcohol to ester",
-                "Pinner reaction to ester",
-                "Schotten-Baumann to ester",
-            ]
+            # Check for nitro reduction
+            nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
+            amine_pattern = Chem.MolFromSmarts("[#7H2]")
 
-            # Check if any of the esterification reaction types match
-            if any(
-                checker.check_reaction(reaction_type, rsmi)
-                for reaction_type in esterification_reactions
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
+            product_mol = Chem.MolFromSmiles(product_part)
+
+            if (
+                product_mol
+                and product_mol.HasSubstructMatch(amine_pattern)
+                and any(r and r.HasSubstructMatch(nitro_pattern) for r in reactant_mols if r)
             ):
-                print(f"Detected esterification reaction: {rsmi}")
-                esterification_detected = True
+                print(f"Found nitro reduction at depth {depth}")
+                has_nitro_reduction = True
 
-            # If not identified by reaction type, check by functional group transformation
-            try:
-                reactants_part = rsmi.split(">")[0]
-                product_part = rsmi.split(">")[-1]
-
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_part.split(".")]
-                product_mol = Chem.MolFromSmiles(product_part)
-
-                if product_mol and all(r is not None for r in reactants):
-                    # Check for carboxylic acid in reactants
-                    carboxylic_reactants = []
-                    for i, r in enumerate(reactants):
-                        r_smiles = Chem.MolToSmiles(r)
-                        if checker.check_fg("Carboxylic acid", r_smiles):
-                            print(f"Found carboxylic acid in reactant {i}: {r_smiles}")
-                            carboxylic_reactants.append(r_smiles)
-
-                    # Check for ester in reactants (for transesterification)
-                    ester_reactants = []
-                    for i, r in enumerate(reactants):
-                        r_smiles = Chem.MolToSmiles(r)
-                        if checker.check_fg("Ester", r_smiles):
-                            print(f"Found ester in reactant {i}: {r_smiles}")
-                            ester_reactants.append(r_smiles)
-
-                    # Check for alcohol in reactants
-                    alcohol_reactants = []
-                    for i, r in enumerate(reactants):
-                        r_smiles = Chem.MolToSmiles(r)
-                        if any(
-                            checker.check_fg(fg, r_smiles)
-                            for fg in [
-                                "Primary alcohol",
-                                "Secondary alcohol",
-                                "Tertiary alcohol",
-                                "Aromatic alcohol",
-                            ]
-                        ):
-                            print(f"Found alcohol in reactant {i}: {r_smiles}")
-                            alcohol_reactants.append(r_smiles)
-
-                    # Check for ester in product
-                    product_smiles = Chem.MolToSmiles(product_mol)
-                    has_ester_product = checker.check_fg("Ester", product_smiles)
-                    if has_ester_product:
-                        print(f"Found ester in product: {product_smiles}")
-
-                    # Check for carboxylic acid in product (for ester hydrolysis)
-                    has_carboxylic_product = checker.check_fg("Carboxylic acid", product_smiles)
-                    if has_carboxylic_product:
-                        print(f"Found carboxylic acid in product: {product_smiles}")
-
-                    # Case 1: Carboxylic acid to ester (direct esterification)
-                    if carboxylic_reactants and has_ester_product:
-                        print(f"Detected esterification (carboxylic acid to ester): {rsmi}")
-                        esterification_detected = True
-
-                    # Case 2: Alcohol + carboxylic acid to ester
-                    if alcohol_reactants and carboxylic_reactants and has_ester_product:
-                        print(f"Detected alcohol + carboxylic acid esterification: {rsmi}")
-                        esterification_detected = True
-
-                    # Case 3: Ester to different ester (transesterification)
-                    if ester_reactants and has_ester_product and alcohol_reactants:
-                        print(f"Detected transesterification (ester to ester): {rsmi}")
-                        esterification_detected = True
-
-                    # Case 4: Ester hydrolysis (reverse of esterification)
-                    if ester_reactants and has_carboxylic_product:
-                        print(f"Detected ester hydrolysis (ester to carboxylic acid): {rsmi}")
-                        esterification_detected = True
-
-            except Exception as e:
-                print(f"Error processing reaction: {e}")
-
-        # Continue DFS traversal
+        # Continue traversing the tree
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Esterification detected: {esterification_detected}")
-    return esterification_detected
+
+    if has_nitro_reduction:
+        print("Nitro reduction to amine sequence detected")
+    else:
+        print("Nitro reduction to amine sequence NOT detected")
+
+    return has_nitro_reduction

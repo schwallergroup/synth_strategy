@@ -2,42 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a linear synthesis strategy where each step builds on a single intermediate
-    (no convergent steps after initial core formation)
+    This function detects a convergent synthesis strategy with late-stage coupling,
+    where multiple fragments are combined in the final steps of the synthesis.
     """
-    # Track branching factor at each step
-    branching_factors = []
+    fragment_count_at_depth = {}
+    max_depth = 0
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            # Count number of reactants
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            num_reactants = len([r for r in reactants if r])
+        nonlocal max_depth
 
-            # Store branching factor (number of reactants)
-            branching_factors.append((depth, num_reactants))
+        max_depth = max(max_depth, depth)
+
+        if node["type"] == "reaction":
+            # Extract reactants
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
+
+            reactants = rsmi.split(">")[0].split(".")
+
+            # Count number of fragments at this depth
+            fragment_count = len(reactants)
+            if depth in fragment_count_at_depth:
+                fragment_count_at_depth[depth] = max(fragment_count_at_depth[depth], fragment_count)
+            else:
+                fragment_count_at_depth[depth] = fragment_count
 
         # Traverse children
         for child in node.get("children", []):
@@ -46,16 +60,13 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Sort by depth
-    branching_factors.sort(key=lambda x: x[0])
+    # Check if there are multiple fragments at low depths (late-stage)
+    is_convergent = False
+    late_stage_threshold = max_depth // 2  # Define late stage as first half of synthesis
 
-    # Check if linear after first step (allow first step to have multiple reactants)
-    is_linear = True
-    if len(branching_factors) > 1:
-        for i in range(1, len(branching_factors)):
-            if branching_factors[i][1] > 2:  # More than 2 reactants in later steps
-                is_linear = False
-                break
+    for depth, count in fragment_count_at_depth.items():
+        if depth <= late_stage_threshold and count >= 2:
+            is_convergent = True
+            print(f"Detected convergent synthesis with {count} fragments at depth {depth}")
 
-    print(f"Linear synthesis strategy detected: {is_linear}")
-    return is_linear
+    return is_convergent

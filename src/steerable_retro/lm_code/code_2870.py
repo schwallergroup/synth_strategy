@@ -2,54 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthetic route incorporates a trifluoromethyl-containing fragment.
+    This function detects a strategy involving a long aliphatic chain (C12+)
+    with carboxylic acid functionalities.
     """
-    trifluoromethyl_pattern = Chem.MolFromSmarts("[#6]-[C]([F])([F])[F]")
-    trifluoromethyl_depths = []
+    has_long_chain = False
+    has_carboxylic_acid = False
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "mol" and node.get("smiles"):
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol and mol.HasSubstructMatch(trifluoromethyl_pattern):
-                trifluoromethyl_depths.append(depth)
-                print(f"Found trifluoromethyl group at depth {depth}")
+        nonlocal has_long_chain, has_carboxylic_acid
 
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if not mol:
+                return
+
+            # Check for carboxylic acid
+            if mol.HasSubstructMatch(Chem.MolFromSmarts("C(=O)[OH]")):
+                has_carboxylic_acid = True
+                print(f"Found carboxylic acid at depth {depth}")
+
+            # Check for long aliphatic chain (C12+)
+            # This is a simplified approach - in practice you might need a more sophisticated algorithm
+            aliphatic_chain_pattern = Chem.MolFromSmarts("CCCCCCCCCCCCC")  # C13 chain
+            if mol.HasSubstructMatch(aliphatic_chain_pattern):
+                has_long_chain = True
+                print(f"Found long aliphatic chain at depth {depth}")
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if trifluoromethyl group is introduced in a specific reaction
-    if len(trifluoromethyl_depths) > 0:
-        # Find the earliest appearance (highest depth)
-        earliest_appearance = max(trifluoromethyl_depths)
-        print(f"Trifluoromethyl group first appears at depth {earliest_appearance}")
-
-        # If it appears after depth 0, it was introduced during synthesis
-        if earliest_appearance > 0:
-            print("Trifluoromethyl fragment was incorporated during synthesis")
-            return True
-
-    print("No trifluoromethyl fragment incorporation detected")
-    return False
+    strategy_present = has_long_chain and has_carboxylic_acid
+    print(f"Long chain carboxylic acid strategy detected: {strategy_present}")
+    return strategy_present

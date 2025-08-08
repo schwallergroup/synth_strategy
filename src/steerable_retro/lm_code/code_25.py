@@ -2,58 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves ester hydrolysis to form carboxylic acid.
+    This function detects early-stage formation of a nitrogen-containing heterocyclic ring.
     """
-    ester_hydrolysis_detected = False
+    has_ring_formation = False
 
-    def dfs_traverse(node):
-        nonlocal ester_hydrolysis_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal has_ring_formation
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and depth >= 3:  # Early stage (high depth)
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
+                reactants_smiles = rsmi.split(">")[0].split(".")
                 product_smiles = rsmi.split(">")[-1]
 
-                # Check for ester in reactants
-                reactants = Chem.MolFromSmiles(reactants_smiles)
-                if reactants:
-                    ester_pattern = Chem.MolFromSmarts("[C](=[O])[O][CH3]")
-                    if reactants.HasSubstructMatch(ester_pattern):
+                # Check for nitrogen-containing ring in product but not in reactants
+                piperidine_pattern = Chem.MolFromSmarts("[#6]1[#6][#6][#6][#6][#7]1")
 
-                        # Check for carboxylic acid in product
-                        product = Chem.MolFromSmiles(product_smiles)
-                        if product:
-                            acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
-                            if product.HasSubstructMatch(acid_pattern):
-                                ester_hydrolysis_detected = True
-                                print(f"Detected ester hydrolysis: {rsmi}")
+                has_ring_in_reactants = False
+                for reactant in reactants_smiles:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(piperidine_pattern):
+                            has_ring_in_reactants = True
+                            break
+                    except:
+                        continue
 
-        # Traverse children
+                has_ring_in_product = False
+                try:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol and product_mol.HasSubstructMatch(piperidine_pattern):
+                        has_ring_in_product = True
+                except:
+                    pass
+
+                if not has_ring_in_reactants and has_ring_in_product:
+                    print(f"Found heterocyclic ring formation at depth {depth}")
+                    has_ring_formation = True
+
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Ester hydrolysis strategy detected: {ester_hydrolysis_detected}")
-    return ester_hydrolysis_detected
+
+    return has_ring_formation

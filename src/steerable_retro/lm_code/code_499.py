@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,101 +54,27 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if benzyl ether groups are preserved throughout the synthesis.
+    Detects if the route contains a late-stage esterification reaction.
     """
-    # Track benzyl ethers and their depths
-    benzyl_ethers_by_depth = {}
 
-    def is_benzyl_ether(mol_smiles):
-        """Check if molecule contains benzyl ether groups"""
-        # Check for both ether functional group and benzene ring
-        if not checker.check_fg("Ether", mol_smiles):
-            print(f"No ether found in {mol_smiles}")
-            return False
+    def dfs(node, depth=0, found_esterification=False):
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rxn_smiles = node["metadata"]["rsmi"]
 
-        if not checker.check_ring("benzene", mol_smiles):
-            print(f"No benzene found in {mol_smiles}")
-            return False
+            # Check if this is an esterification reaction
+            is_esterification = checker.check_reaction(
+                "Esterification of Carboxylic Acids", rxn_smiles
+            )
 
-        # Get the molecule
-        mol = Chem.MolFromSmiles(mol_smiles)
-        if not mol:
-            print(f"Could not parse molecule: {mol_smiles}")
-            return False
+            if is_esterification and depth <= 2:  # Consider depth <= 2 as late-stage
+                print(f"Found late-stage esterification at depth {depth}")
+                return True
 
-        # Get ether oxygen atoms
-        ether_matches = checker.get_fg_atom_indices("Ether", mol_smiles)
-        if not ether_matches:
-            print(f"No ether atom indices found in {mol_smiles}")
-            return False
-
-        # Get benzene ring atoms
-        benzene_matches = checker.get_ring_atom_indices("benzene", mol_smiles)
-        if not benzene_matches:
-            print(f"No benzene atom indices found in {mol_smiles}")
-            return False
-
-        print(f"Ether matches: {ether_matches}")
-        print(f"Benzene matches: {benzene_matches}")
-
-        # Check for benzyl ether pattern: benzene-CH2-O-R
-        for ether_match in ether_matches:
-            for benzene_match in benzene_matches:
-                # Flatten the matches if they're nested
-                if isinstance(ether_match[0], tuple):
-                    ether_atoms = [atom for sublist in ether_match for atom in sublist]
-                else:
-                    ether_atoms = ether_match
-
-                if isinstance(benzene_match[0], tuple):
-                    benzene_atoms = [atom for sublist in benzene_match for atom in sublist]
-                else:
-                    benzene_atoms = benzene_match
-
-                # Find oxygen atoms in the ether match
-                for atom_idx in ether_atoms:
-                    atom = mol.GetAtomWithIdx(atom_idx)
-                    if atom.GetSymbol() == "O":
-                        # Check neighbors of oxygen
-                        for neighbor in atom.GetNeighbors():
-                            if neighbor.GetSymbol() == "C":
-                                # Check if this carbon is connected to benzene
-                                for benzene_atom_idx in benzene_atoms:
-                                    benzene_atom = mol.GetAtomWithIdx(benzene_atom_idx)
-                                    for benzene_neighbor in benzene_atom.GetNeighbors():
-                                        if benzene_neighbor.GetIdx() == neighbor.GetIdx():
-                                            # Found a carbon connected to both oxygen and benzene
-                                            print(f"Found benzyl ether pattern in {mol_smiles}")
-                                            return True
-
-        print(f"No benzyl ether pattern found in {mol_smiles}")
-        return False
-
-    def dfs_traverse(node, depth=0):
-        """Traverse the synthesis route and track benzyl ethers by depth"""
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-
-            # Check for benzyl ether in this molecule
-            if is_benzyl_ether(mol_smiles):
-                print(f"Found benzyl ether at depth {depth}: {mol_smiles}")
-                if depth not in benzyl_ethers_by_depth:
-                    benzyl_ethers_by_depth[depth] = []
-                benzyl_ethers_by_depth[depth].append(mol_smiles)
-
-        # Process children
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if dfs(child, depth + 1, found_esterification):
+                return True
 
-    # Start traversal
-    dfs_traverse(route)
+        return found_esterification
 
-    # Check if benzyl ethers are present in at least 3 different depths
-    result = len(benzyl_ethers_by_depth) >= 3
-
-    print(f"Benzyl ether preservation detected: {result}")
-    print(f"Found benzyl ethers at {len(benzyl_ethers_by_depth)} different depths")
-    for depth, smiles_list in benzyl_ethers_by_depth.items():
-        print(f"Depth {depth}: {len(smiles_list)} benzyl ethers")
-
-    return result
+    return dfs(route)

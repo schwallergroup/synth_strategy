@@ -2,58 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route follows a linear synthesis pattern
-    with a late-stage coupling of two major fragments.
+    Detects late-stage formation of sulfonamide group (in first half of synthesis).
     """
-    late_coupling_found = False
+    sulfonamide_formation_depth = None
+    max_depth = 0
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_coupling_found
+        nonlocal sulfonamide_formation_depth, max_depth
 
-        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions
+        max_depth = max(max_depth, depth)
+
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check if we have multiple complex reactants (indicating fragment coupling)
-            complex_reactants = 0
-            for r_smiles in reactants_smiles:
-                r = Chem.MolFromSmiles(r_smiles)
-                if r and r.GetNumAtoms() > 5:  # Consider reactants with >5 atoms as complex
-                    complex_reactants += 1
+            # Check if product contains sulfonamide but reactants don't
+            sulfonamide_pattern = Chem.MolFromSmarts("[NH]-[S](=[O])(=[O])-[c]")
 
-            if complex_reactants >= 2:
-                late_coupling_found = True
-                print(
-                    f"Late-stage coupling of multiple complex fragments detected at depth {depth}"
-                )
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol and product_mol.HasSubstructMatch(sulfonamide_pattern):
+                # Check if reactants don't have sulfonamide
+                has_sulfonamide_in_reactants = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(sulfonamide_pattern):
+                        has_sulfonamide_in_reactants = True
+                        break
 
-        # Traverse children
+                if not has_sulfonamide_in_reactants:
+                    sulfonamide_formation_depth = depth
+                    print(f"Sulfonamide formation detected at depth {depth}")
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    print(f"Linear synthesis with late-stage coupling detected: {late_coupling_found}")
-    return late_coupling_found
+    # Check if sulfonamide formation occurs in first half of synthesis (late stage)
+    if sulfonamide_formation_depth is not None and sulfonamide_formation_depth <= max_depth / 2:
+        return True
+    return False

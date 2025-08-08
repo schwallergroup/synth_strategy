@@ -2,59 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy (each step builds upon the previous)
-    rather than a convergent strategy.
+    This function detects if thiourea formation occurs in the late stage of synthesis
+    (low depth in the synthetic tree).
     """
-    # Track the maximum branching factor in the synthetic tree
-    max_branching = 0
+    found_late_thiourea = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal max_branching
+        nonlocal found_late_thiourea
 
-        if node["type"] == "reaction":
-            # Count the number of non-trivial reactants (molecules that are synthesized, not starting materials)
-            non_trivial_reactants = 0
+        if node["type"] == "reaction" and depth <= 1:  # Consider depth 0 or 1 as late stage
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    non_trivial_reactants += 1
+            # Check for thiourea formation
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if product_mol:
+                thiourea_pattern = Chem.MolFromSmarts("NC(=S)N")
+                if product_mol.HasSubstructMatch(thiourea_pattern):
+                    for reactant in reactants_smiles:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            isothiocyanate_pattern = Chem.MolFromSmarts("N=C=S")
+                            if reactant_mol.HasSubstructMatch(isothiocyanate_pattern):
+                                found_late_thiourea = True
+                                print(f"Found thiourea formation at depth {depth}")
+                                break
 
-            max_branching = max(max_branching, non_trivial_reactants)
-
-        # Continue traversing
+        # Recursively traverse children with increased depth
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
 
-    # If max_branching is 1, the synthesis is linear
-    is_linear = max_branching <= 1
-
-    if is_linear:
-        print("Detected linear synthesis strategy (no convergent steps)")
-    else:
-        print(f"Detected convergent synthesis with maximum branching factor of {max_branching}")
-
-    return is_linear
+    return found_late_thiourea

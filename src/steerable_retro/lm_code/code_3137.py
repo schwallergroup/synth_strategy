@@ -2,152 +2,86 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves biphenyl formation via cross-coupling
-    early in the synthesis (higher depth values).
+    Detects synthesis routes that use organometallic reagents (particularly Grignard)
+    to form ketones, especially from Weinreb amides or other activated carboxylic derivatives.
     """
-    cross_coupling_detected = False
+    found_organometallic_ketone_formation = False
 
-    def dfs_traverse(node, current_depth=0):
-        nonlocal cross_coupling_detected
+    def dfs_traverse(node):
+        nonlocal found_organometallic_ketone_formation
 
-        # Add depth to metadata for future reference
-        if "metadata" not in node:
-            node["metadata"] = {}
-        node["metadata"]["depth"] = current_depth
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check if this is a cross-coupling reaction
-            is_suzuki = (
-                checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
-            )
-            is_negishi = checker.check_reaction("Negishi coupling", rsmi)
-            is_stille = any(
-                checker.check_reaction(f"Stille reaction_{t}", rsmi)
-                for t in [
-                    "aryl",
-                    "aryl OTf",
-                    "vinyl",
-                    "vinyl OTf",
-                    "benzyl",
-                    "benzyl OTf",
-                    "allyl",
-                    "allyl OTf",
-                ]
-            )
-            is_hiyama = checker.check_reaction("Hiyama-Denmark Coupling", rsmi)
-            is_kumada = checker.check_reaction("Kumada cross-coupling", rsmi)
-            is_ullmann = checker.check_reaction("Ullmann condensation", rsmi)
+            # Check for organometallic reagent (Grignard or organolithium)
+            grignard_pattern = Chem.MolFromSmarts("[Mg][#6]")
+            organolithium_pattern = Chem.MolFromSmarts("[Li][#6]")
 
-            is_cross_coupling = (
-                is_suzuki or is_negishi or is_stille or is_hiyama or is_kumada or is_ullmann
-            )
+            # Check for ketone in product
+            ketone_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#6]")
 
-            # If not detected by reaction checkers, try to detect by functional groups
-            if not is_cross_coupling:
-                # Look for aryl halide in one reactant
-                has_aryl_halide = any(checker.check_fg("Aromatic halide", r) for r in reactants)
-                # Look for boronic acid/ester in another reactant
-                has_boronic = any(
-                    checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
-                    for r in reactants
-                )
-                # Look for organometallic reagents
-                has_organometallic = any(
-                    checker.check_fg("Magnesium halide", r)
-                    or checker.check_fg("Zinc halide", r)
-                    or checker.check_fg("Tin", r)
-                    for r in reactants
-                )
-
-                is_cross_coupling = has_aryl_halide and (has_boronic or has_organometallic)
-
-            # Check if product has biphenyl structure
-            if is_cross_coupling:
+            # Check reactants for organometallic reagent
+            has_organometallic = False
+            for reactant in reactants:
                 try:
-                    prod_mol = Chem.MolFromSmiles(product)
-                    # Specific biphenyl pattern: two benzene rings directly connected
-                    biphenyl_pattern = Chem.MolFromSmarts("c1ccccc1-c1ccccc1")
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(grignard_pattern) or mol.HasSubstructMatch(
+                            organolithium_pattern
+                        ):
+                            has_organometallic = True
+                            break
+                        # Also check for text indicators of Grignard in SMILES
+                        if "[Mg]" in reactant or "MgCl" in reactant or "MgBr" in reactant:
+                            has_organometallic = True
+                            break
+                except:
+                    # If SMILES parsing fails, check for text indicators
+                    if "[Mg]" in reactant or "MgCl" in reactant or "MgBr" in reactant:
+                        has_organometallic = True
+                        break
 
-                    # Check if biphenyl exists in product
-                    if prod_mol and prod_mol.HasSubstructMatch(biphenyl_pattern):
-                        # Check if biphenyl is formed in the reaction (not pre-existing)
-                        reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
-                        biphenyl_in_reactants = any(
-                            mol and mol.HasSubstructMatch(biphenyl_pattern)
-                            for mol in reactant_mols
-                            if mol
-                        )
+            # Check product for ketone
+            try:
+                prod_mol = Chem.MolFromSmiles(product)
+                if prod_mol and prod_mol.HasSubstructMatch(ketone_pattern) and has_organometallic:
+                    found_organometallic_ketone_formation = True
+                    print("Found organometallic ketone formation")
+            except:
+                pass
 
-                        if not biphenyl_in_reactants:
-                            # Check if this is early in the synthesis (depth >= 2)
-                            depth = current_depth
-                            if depth >= 2:
-                                cross_coupling_detected = True
-                                print(
-                                    f"Detected biphenyl formation via cross-coupling at depth {depth}"
-                                )
-                                print(f"Reaction SMILES: {rsmi}")
-                except Exception as e:
-                    print(f"Error processing molecule: {e}")
-
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, current_depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return cross_coupling_detected
+
+    return found_organometallic_ketone_formation

@@ -2,127 +2,97 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects thioether fragment coupling strategy in the synthesis route.
+    This function detects a synthetic strategy involving multiple protection/deprotection steps.
     """
-    thioether_formation_found = False
+    protection_count = 0
+    deprotection_count = 0
 
-    def dfs(node, depth=0):
-        nonlocal thioether_formation_found
+    # SMARTS patterns for common protecting groups
+    boc_pattern = Chem.MolFromSmarts("[NX3]C(=O)OC(C)(C)C")
+    silyl_pattern = Chem.MolFromSmarts("[OX2][Si]")
+    nosyl_pattern = Chem.MolFromSmarts("[NX3][S](=O)(=O)c1ccc([N+](=O)[O-])cc1")
+
+    def dfs_traverse(node):
+        nonlocal protection_count, deprotection_count
 
         if node["type"] == "reaction":
-            try:
-                rxn_smiles = node.get("metadata", {}).get("rsmi", "")
-                if not rxn_smiles:
-                    return
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0]
+                product_smiles = rsmi.split(">")[-1]
 
-                # Check for thioether formation reactions
-                if (
-                    checker.check_reaction("S-alkylation of thiols", rxn_smiles)
-                    or checker.check_reaction("S-alkylation of thiols (ethyl)", rxn_smiles)
-                    or checker.check_reaction("S-alkylation of thiols with alcohols", rxn_smiles)
-                    or checker.check_reaction(
-                        "S-alkylation of thiols with alcohols (ethyl)", rxn_smiles
-                    )
-                    or checker.check_reaction("thioether_nucl_sub", rxn_smiles)
-                ):
+                try:
+                    reactants_mol = Chem.MolFromSmiles(reactants_smiles)
+                    product_mol = Chem.MolFromSmiles(product_smiles)
 
-                    # Verify that a thioether is actually formed
-                    reactants = rxn_smiles.split(">")[0].split(".")
-                    product = rxn_smiles.split(">")[-1]
+                    if reactants_mol and product_mol:
+                        # Check for protection (appearance of protecting group)
+                        if (
+                            (
+                                not reactants_mol.HasSubstructMatch(boc_pattern)
+                                and product_mol.HasSubstructMatch(boc_pattern)
+                            )
+                            or (
+                                not reactants_mol.HasSubstructMatch(silyl_pattern)
+                                and product_mol.HasSubstructMatch(silyl_pattern)
+                            )
+                            or (
+                                not reactants_mol.HasSubstructMatch(nosyl_pattern)
+                                and product_mol.HasSubstructMatch(nosyl_pattern)
+                            )
+                        ):
+                            protection_count += 1
+                            print(f"Protection step detected: {rsmi}")
 
-                    # Check if any reactant has a thiol group
-                    has_thiol = any(
-                        checker.check_fg("Aliphatic thiol", r)
-                        or checker.check_fg("Aromatic thiol", r)
-                        for r in reactants
-                    )
+                        # Check for deprotection (disappearance of protecting group)
+                        if (
+                            (
+                                reactants_mol.HasSubstructMatch(boc_pattern)
+                                and not product_mol.HasSubstructMatch(boc_pattern)
+                            )
+                            or (
+                                reactants_mol.HasSubstructMatch(silyl_pattern)
+                                and not product_mol.HasSubstructMatch(silyl_pattern)
+                            )
+                            or (
+                                reactants_mol.HasSubstructMatch(nosyl_pattern)
+                                and not product_mol.HasSubstructMatch(nosyl_pattern)
+                            )
+                        ):
+                            deprotection_count += 1
+                            print(f"Deprotection step detected: {rsmi}")
+                except:
+                    print("Error processing SMILES in multiple_protection_deprotection_strategy")
 
-                    # Check if product has a monosulfide (thioether) group
-                    has_thioether = checker.check_fg("Monosulfide", product)
-
-                    if has_thiol and has_thioether:
-                        thioether_formation_found = True
-                        print(f"Found thioether formation reaction: {rxn_smiles}")
-
-                # Additional check for thioether formation through other reactions
-                if not thioether_formation_found:
-                    reactants = rxn_smiles.split(">")[0].split(".")
-                    product = rxn_smiles.split(">")[-1]
-
-                    # Check if any reactant has a thiol group and product has a thioether
-                    has_thiol = any(
-                        checker.check_fg("Aliphatic thiol", r)
-                        or checker.check_fg("Aromatic thiol", r)
-                        for r in reactants
-                    )
-                    has_thioether = checker.check_fg("Monosulfide", product)
-
-                    if (
-                        has_thiol
-                        and has_thioether
-                        and not any(checker.check_fg("Monosulfide", r) for r in reactants)
-                    ):
-                        thioether_formation_found = True
-                        print(
-                            f"Found thioether formation through alternative reaction: {rxn_smiles}"
-                        )
-
-            except Exception as e:
-                print(f"Error processing reaction node: {e}")
-
-        # Recursively check children
         for child in node.get("children", []):
-            dfs(child, depth + 1)
+            dfs_traverse(child)
 
-    dfs(route)
-    print(f"Thioether formation found: {thioether_formation_found}")
-    return thioether_formation_found
+    dfs_traverse(route)
+
+    # Return True if there are at least 2 protection/deprotection steps combined
+    return (protection_count + deprotection_count) >= 2

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -50,71 +53,61 @@ checker = check.Check(
 
 
 def main(route):
-    """Check for late-stage N-alkylation in the synthesis route"""
-    found = False
-    total_depth = get_max_depth(route)
+    """
+    This function detects if the synthesis route involves a Suzuki coupling reaction.
+    """
+    has_suzuki_coupling = False
 
-    def dfs(node, depth=0):
-        nonlocal found
+    def dfs_traverse(node):
+        nonlocal has_suzuki_coupling
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
+        if node["type"] == "reaction":
+            try:
+                rsmi = node["metadata"]["rsmi"]
 
-            # Check for N-alkylation reactions
-            if (
-                checker.check_reaction(
-                    "N-alkylation of primary amines with alkyl halides", rxn_smiles
-                )
-                or checker.check_reaction(
-                    "N-alkylation of secondary amines with alkyl halides", rxn_smiles
-                )
-                or checker.check_reaction("Alkylation of amines", rxn_smiles)
-                or checker.check_reaction("N-methylation", rxn_smiles)
-                or checker.check_reaction("Methylation", rxn_smiles)
-                or checker.check_reaction("Methylation with MeI_primary", rxn_smiles)
-                or checker.check_reaction("Methylation with MeI_secondary", rxn_smiles)
-            ):
+                # Use the checker function to directly check for Suzuki coupling reaction
+                if (
+                    checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
+                    or checker.check_reaction("Suzuki coupling with sulfonic esters", rsmi)
+                ):
+                    has_suzuki_coupling = True
+                    print(f"Detected Suzuki coupling: {rsmi}")
+                else:
+                    # Fallback to manual checking if the reaction checker doesn't identify it
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
 
-                # Late stage means low depth (close to final product)
-                # Consider first half of the synthesis as late stage
-                late_stage_threshold = max(2, total_depth // 2)
-                if depth <= late_stage_threshold:
-                    # Verify N-alkylation
-                    try:
-                        reactants = rxn_smiles.split(">")[0].split(".")
-                        product = rxn_smiles.split(">")[-1]
+                    # Check for boronic acid/ester in reactants
+                    has_boronic = any(
+                        checker.check_fg("Boronic acid", r) or checker.check_fg("Boronic ester", r)
+                        for r in reactants_smiles
+                    )
 
-                        has_amine_reactant = any(
-                            checker.check_fg("Primary amine", r)
-                            or checker.check_fg("Secondary amine", r)
-                            or checker.check_fg("Aniline", r)
-                            for r in reactants
-                        )
-                        has_alkyl_halide = any(
-                            checker.check_fg("Primary halide", r)
-                            or checker.check_fg("Secondary halide", r)
-                            or checker.check_fg("Tertiary halide", r)
-                            for r in reactants
-                        )
+                    # Check for aryl halide or triflate in reactants
+                    has_electrophile = any(
+                        checker.check_fg("Aromatic halide", r) or checker.check_fg("Triflate", r)
+                        for r in reactants_smiles
+                    )
 
-                        if has_amine_reactant and (
-                            has_alkyl_halide or any("C-[Cl,Br,I,F]" in r for r in reactants)
-                        ):
-                            found = True
-                            print(
-                                f"Found late-stage N-alkylation at depth {depth} (threshold: {late_stage_threshold}): {rxn_smiles}"
-                            )
-                    except Exception as e:
-                        print(f"Error checking N-alkylation: {e}")
-                        # If we can't verify, still consider it found if the reaction type matches
-                        found = True
-                        print(
-                            f"Found late-stage N-alkylation (unverified) at depth {depth}: {rxn_smiles}"
-                        )
+                    # If we have both key components, it might be a Suzuki coupling
+                    if has_boronic and has_electrophile:
+                        # Additional check: verify a new C-C bond is formed
+                        # This is a simplified check - in a real implementation,
+                        # we would need to track atom mappings to confirm
+                        has_suzuki_coupling = True
+                        print(f"Detected potential Suzuki coupling (manual check): {rsmi}")
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
-        # Recursively check children
+        # Traverse children
         for child in node.get("children", []):
-            dfs(child, depth + 1)
+            dfs_traverse(child)
 
-    dfs(route)
-    return found
+    # Start traversal
+    dfs_traverse(route)
+
+    print(f"Suzuki coupling strategy: {has_suzuki_coupling}")
+    return has_suzuki_coupling

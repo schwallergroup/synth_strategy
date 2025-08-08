@@ -2,63 +2,99 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy where each reaction
-    has only one non-commercial product that feeds into the next step.
+    This function detects if the synthesis maintains a tetrazole ring throughout.
     """
-    is_linear = True
-    reaction_count = 0
+    # Track tetrazole presence at each depth
+    tetrazole_at_depth = {}
 
     def dfs_traverse(node, depth=0):
-        nonlocal is_linear, reaction_count
+        if node["type"] == "mol" and node.get("smiles"):
+            mol_smiles = node["smiles"]
 
-        if node["type"] == "reaction":
-            reaction_count += 1
-            # Count non-commercial molecule children
-            non_commercial_children = 0
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    non_commercial_children += 1
+            # Check if molecule contains tetrazole using the checker function
+            has_tetrazole = checker.check_ring("tetrazole", mol_smiles)
 
-            # If more than one non-commercial child, it's not linear
-            if non_commercial_children > 1:
-                is_linear = False
-                print(
-                    f"Non-linear synthesis detected at depth {depth}: {non_commercial_children} non-commercial children"
-                )
+            if has_tetrazole:
+                print(f"Tetrazole detected at depth {depth} in molecule: {mol_smiles}")
+                tetrazole_at_depth[depth] = mol_smiles
 
-        # Traverse children
+                # Get atom indices of tetrazole rings for more detailed analysis if needed
+                tetrazole_indices = checker.get_ring_atom_indices("tetrazole", mol_smiles)
+                if tetrazole_indices:
+                    print(f"  Tetrazole atom indices: {tetrazole_indices}")
+
+        # Traverse children (reactants in retrosynthetic direction)
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal from the target molecule
     dfs_traverse(route)
 
-    # Must have at least 3 reactions to be considered a meaningful linear strategy
-    if reaction_count < 3:
-        is_linear = False
+    # Check if tetrazole is present at multiple depths (maintained throughout)
+    if len(tetrazole_at_depth) >= 2:
         print(
-            f"Only {reaction_count} reactions found, not enough for linear strategy classification"
+            f"Tetrazole maintained throughout synthesis at depths: {sorted(tetrazole_at_depth.keys())}"
         )
 
-    return is_linear
+        # Optional: Print all molecules containing tetrazole
+        for depth, smiles in sorted(tetrazole_at_depth.items()):
+            print(f"Depth {depth}: {smiles}")
+
+        return True
+    else:
+        print(
+            f"Tetrazole not maintained throughout synthesis. Found at {len(tetrazole_at_depth)} depths."
+        )
+        return False

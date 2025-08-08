@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,37 +54,54 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects tosylation activation strategy in the synthetic route.
+    This function detects a synthetic strategy where a nitrile group is preserved throughout the synthesis.
     """
-    tosylation_found = False
+    nitrile_present_in_final = False
+    all_steps_preserve_nitrile = True
 
-    def dfs(node, depth=0):
-        nonlocal tosylation_found
-
-        if tosylation_found:
-            return
+    def dfs_traverse(node, depth=0):
+        nonlocal nitrile_present_in_final, all_steps_preserve_nitrile
 
         if node["type"] == "mol":
-            # Check if molecule contains tosylate group
-            if checker.check_fg("Tosylate", node["smiles"]):
-                print(f"Found tosylate group in molecule: {node['smiles']}")
-                tosylation_found = True
+            # Check if this is the final product (root node)
+            if depth == 0:
+                if checker.check_fg("Nitrile", node["smiles"]):
+                    nitrile_present_in_final = True
+                    print(f"Final product contains nitrile group: {node['smiles']}")
+                else:
+                    print(f"Final product does NOT contain nitrile group: {node['smiles']}")
 
         elif node["type"] == "reaction":
             try:
+                # Extract reactants and product
                 rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check for tosylation reaction
-                if checker.check_reaction("Formation of Sulfonic Esters", rsmi):
-                    print(f"Found tosylation reaction: {rsmi}")
-                    tosylation_found = True
+                # Check if product has nitrile
+                product_has_nitrile = checker.check_fg("Nitrile", product)
+
+                # Check if any reactant has nitrile
+                reactant_has_nitrile = any(checker.check_fg("Nitrile", r) for r in reactants)
+
+                # If a reactant has nitrile but product doesn't, nitrile wasn't preserved
+                if reactant_has_nitrile and not product_has_nitrile:
+                    all_steps_preserve_nitrile = False
+                    print(f"Nitrile not preserved at depth {depth}, reaction: {rsmi}")
+
+                # If product has nitrile but no reactant does, nitrile was introduced
+                if product_has_nitrile and not reactant_has_nitrile:
+                    print(f"Nitrile introduced at depth {depth}, reaction: {rsmi}")
             except Exception as e:
-                print(f"Error in tosylation check: {e}")
+                print(f"Error processing reaction node: {e}")
 
-        # Continue DFS traversal
+        # Traverse children (retrosynthetic direction)
         for child in node.get("children", []):
-            dfs(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    dfs(route)
-    print(f"Tosylation activation strategy detected: {tosylation_found}")
-    return tosylation_found
+    # Start traversal
+    dfs_traverse(route)
+
+    result = nitrile_present_in_final and all_steps_preserve_nitrile
+    print(f"Nitrile preservation strategy detected: {result}")
+    return result

@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,64 +54,119 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if a fluorinated aromatic system is maintained throughout the synthesis.
+    Detects a linear synthesis strategy that includes a Suzuki coupling step.
     """
-    # Track if we've found a fluorinated aromatic system at each depth
-    fluoro_aromatic_at_depth = {}
+    found_suzuki = False
+    is_linear = True
+    main_path_nodes = []
 
-    def dfs_traverse(node, depth=0):
+    def dfs_traverse(node, depth=0, path=None):
+        nonlocal found_suzuki, is_linear, main_path_nodes
+
+        if path is None:
+            path = []
+
+        # Track this node in the current path
+        current_path = path + [node]
+
+        # If this is a leaf node (starting material or no children)
+        if node["type"] == "mol" and (
+            node.get("in_stock", False) or len(node.get("children", [])) == 0
+        ):
+            # If this is the longest path so far, update main_path_nodes
+            if len(current_path) > len(main_path_nodes):
+                main_path_nodes = current_path
+
+        # Check if this node branches (non-linear)
+        if node["type"] == "mol" and len(node.get("children", [])) > 1:
+            # We'll allow some branching, but track it
+            print(
+                f"Potential branch found at depth {depth} with {len(node.get('children', []))} children"
+            )
+
         if node["type"] == "reaction":
-            print(f"Processing reaction at depth {depth}")
-            # Mark reaction nodes as having the property to maintain continuity
-            fluoro_aromatic_at_depth[depth] = True
-        elif node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            print(f"Processing molecule at depth {depth}: {mol_smiles}")
+            rsmi = node["metadata"]["rsmi"]
+            print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-            # Check for fluorinated aromatic
-            has_fluoro_aromatic = checker.check_fg("Aromatic halide", mol_smiles)
+            # Check for Suzuki coupling using the checker function
+            suzuki_types = [
+                "Suzuki coupling with boronic acids",
+                "Suzuki coupling with boronic esters",
+                "Suzuki coupling with boronic acids OTf",
+                "Suzuki coupling with boronic esters OTf",
+                "Suzuki coupling with sulfonic esters",
+                "Suzuki",  # Generic Suzuki check
+            ]
 
-            # Verify it's specifically a fluorinated aromatic
-            if has_fluoro_aromatic:
-                mol = Chem.MolFromSmiles(mol_smiles)
-                has_fluoro_aromatic = False
-                for atom in mol.GetAtoms():
-                    if atom.GetSymbol() == "F" and any(
-                        neigh.GetIsAromatic() for neigh in atom.GetNeighbors()
-                    ):
-                        has_fluoro_aromatic = True
-                        break
+            for suzuki_type in suzuki_types:
+                if checker.check_reaction(suzuki_type, rsmi):
+                    found_suzuki = True
+                    print(f"Found {suzuki_type} at depth {depth}")
+                    break
 
-            # Record if this depth has a fluorinated aromatic
-            if depth not in fluoro_aromatic_at_depth:
-                fluoro_aromatic_at_depth[depth] = has_fluoro_aromatic
-            else:
-                fluoro_aromatic_at_depth[depth] = (
-                    fluoro_aromatic_at_depth[depth] or has_fluoro_aromatic
-                )
+            # If we haven't found a Suzuki reaction yet, check for characteristic functional groups
+            if not found_suzuki:
+                try:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-            print(f"Depth {depth}: {'Has' if has_fluoro_aromatic else 'No'} fluorinated aromatic")
+                    # Check for boronic acids/esters in reactants
+                    has_boronic = False
+                    has_aryl_halide = False
 
-        # Traverse children (reactants)
+                    for reactant in reactants:
+                        if checker.check_fg("Boronic acid", reactant) or checker.check_fg(
+                            "Boronic ester", reactant
+                        ):
+                            has_boronic = True
+                            print(f"Found boronic acid/ester in reactant: {reactant}")
+
+                        if (
+                            checker.check_fg("Aromatic halide", reactant)
+                            or checker.check_fg("Aromatic chloride", reactant)
+                            or checker.check_fg("Aromatic bromide", reactant)
+                            or checker.check_fg("Aromatic iodide", reactant)
+                            or checker.check_fg("Triflate", reactant)
+                        ):
+                            has_aryl_halide = True
+                            print(f"Found aryl halide/triflate in reactant: {reactant}")
+
+                    # If we have both boronic compound and aryl halide, it's likely a Suzuki coupling
+                    if has_boronic and has_aryl_halide:
+                        found_suzuki = True
+                        print(f"Identified Suzuki coupling by functional groups at depth {depth}")
+                except Exception as e:
+                    print(f"Error analyzing reaction components: {e}")
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, depth + 1, current_path)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if fluorinated aromatic is present at all depths
-    if not fluoro_aromatic_at_depth:
-        print("No molecules found in route")
-        return False
+    # Check if the main synthetic pathway is linear
+    # We'll define "linear" as having no more than one reaction child per molecule node
+    # in the main synthetic pathway
+    if main_path_nodes:
+        for i, node in enumerate(main_path_nodes):
+            if node["type"] == "mol" and i < len(main_path_nodes) - 1:
+                # Count reaction children that are in the main path
+                reaction_children_in_main_path = 0
+                for child in node.get("children", []):
+                    if child in main_path_nodes:
+                        reaction_children_in_main_path += 1
 
-    # Get the maximum depth
-    max_depth = max(fluoro_aromatic_at_depth.keys())
+                if reaction_children_in_main_path > 1:
+                    is_linear = False
+                    print(
+                        f"Non-linear main pathway: molecule has {reaction_children_in_main_path} reaction children in main path"
+                    )
 
-    # Check if fluorinated aromatic exists at each depth from 0 to max_depth
-    for d in range(max_depth + 1):
-        if d not in fluoro_aromatic_at_depth or not fluoro_aromatic_at_depth[d]:
-            print(f"No fluorinated aromatic at depth {d}")
-            return False
+    strategy_present = found_suzuki and is_linear
+    print(f"Linear synthesis with Suzuki coupling strategy: {strategy_present}")
+    print(f"- Found Suzuki coupling: {found_suzuki}")
+    print(f"- Is linear synthesis: {is_linear}")
+    print(f"- Main path length: {len(main_path_nodes)}")
 
-    print(f"Fluorinated aromatic maintained through all {max_depth+1} depths")
-    return True
+    return strategy_present

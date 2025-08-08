@@ -2,78 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route employs amide formation from a carboxylic acid and amine.
+    Detects if the synthesis route follows a linear strategy rather than convergent.
+    A linear strategy typically has only one complex reactant per step.
     """
-    # Flag to track if we found amide formation
-    found_amide_formation = False
+    # Count the number of steps with multiple complex reactants
+    convergent_steps = 0
+    total_steps = 0
 
     def dfs_traverse(node):
-        nonlocal found_amide_formation
+        nonlocal convergent_steps, total_steps
 
-        # Check if this is a reaction node
         if node["type"] == "reaction":
-            # Get the reaction SMILES
+            total_steps += 1
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
 
-                try:
-                    # Create RDKit mol objects
-                    product_mol = Chem.MolFromSmiles(product)
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                # Count complex reactants (more than 10 atoms)
+                complex_reactant_count = 0
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.GetNumAtoms() > 10:
+                        complex_reactant_count += 1
 
-                    # Check for carboxylic acid in reactants
-                    carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
+                if complex_reactant_count >= 2:
+                    convergent_steps += 1
 
-                    # Check for amine in reactants
-                    amine_pattern = Chem.MolFromSmarts("[NH]")
-
-                    # Check for amide in product
-                    amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
-
-                    # Check conditions for amide formation
-                    has_carboxylic_acid = any(
-                        mol and mol.HasSubstructMatch(carboxylic_acid_pattern)
-                        for mol in reactant_mols
-                    )
-                    has_amine = any(
-                        mol and mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols
-                    )
-                    has_amide = product_mol and product_mol.HasSubstructMatch(amide_pattern)
-
-                    if has_carboxylic_acid and has_amine and has_amide:
-                        print("Found amide formation from carboxylic acid and amine")
-                        found_amide_formation = True
-                except:
-                    print("Error processing reaction SMILES")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    return found_amide_formation
+    # If less than 20% of steps are convergent, consider it a linear synthesis
+    is_linear = total_steps > 0 and (convergent_steps / total_steps) < 0.2
+    if is_linear:
+        print(
+            f"Linear synthesis detected: {convergent_steps} convergent steps out of {total_steps} total steps"
+        )
+
+    return is_linear

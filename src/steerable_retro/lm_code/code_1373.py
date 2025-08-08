@@ -2,138 +2,89 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects late-stage aromatic halogenation (C-H to C-X transformation in the final step)
+    Detects if the synthesis route involves a late-stage C-N bond formation
+    (in the final or penultimate step).
     """
-    # Track if we found the halogenation at depth 1 (final step)
-    found_late_stage_halogenation = False
+    late_stage_cn_formation = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_late_stage_halogenation
+        nonlocal late_stage_cn_formation
 
-        print(f"Traversing node at depth {depth}, type: {node['type']}")
+        if node["type"] == "reaction" and depth <= 1:  # Final or penultimate step
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction" and depth == 1:  # Final step (depth 1 in retrosynthesis)
+            # Convert to RDKit molecules
             try:
-                if "rsmi" in node.get("metadata", {}):
-                    rsmi = node["metadata"]["rsmi"]
-                    print(f"Analyzing reaction SMILES at depth {depth}: {rsmi}")
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product = Chem.MolFromSmiles(product_smiles)
 
-                    # Check for specific aromatic halogenation reaction types
-                    halogenation_reactions = [
-                        "Aromatic fluorination",
-                        "Aromatic chlorination",
-                        "Aromatic bromination",
-                        "Aromatic iodination",
-                    ]
+                if product and all(r for r in reactants):
+                    # Check for C-N bond formation
+                    c_n_bonds_product = set()
+                    for bond in product.GetBonds():
+                        atoms = [bond.GetBeginAtom(), bond.GetEndAtom()]
+                        if (
+                            bond.GetBeginAtom().GetAtomicNum() == 6
+                            and bond.GetEndAtom().GetAtomicNum() == 7
+                        ) or (
+                            bond.GetBeginAtom().GetAtomicNum() == 7
+                            and bond.GetEndAtom().GetAtomicNum() == 6
+                        ):
+                            idx1, idx2 = sorted([bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()])
+                            c_n_bonds_product.add((idx1, idx2))
 
-                    for reaction_type in halogenation_reactions:
-                        if checker.check_reaction(reaction_type, rsmi):
-                            print(f"Detected late-stage {reaction_type}")
-                            found_late_stage_halogenation = True
+                    # Check if these C-N bonds exist in reactants
+                    c_n_bonds_reactants = set()
+                    for r in reactants:
+                        for bond in r.GetBonds():
+                            atoms = [bond.GetBeginAtom(), bond.GetEndAtom()]
+                            if (
+                                bond.GetBeginAtom().GetAtomicNum() == 6
+                                and bond.GetEndAtom().GetAtomicNum() == 7
+                            ) or (
+                                bond.GetBeginAtom().GetAtomicNum() == 7
+                                and bond.GetEndAtom().GetAtomicNum() == 6
+                            ):
+                                idx1, idx2 = sorted([bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()])
+                                c_n_bonds_reactants.add((idx1, idx2))
 
-                    # If specific reaction check failed, verify by checking functional groups
-                    if not found_late_stage_halogenation:
-                        product = rsmi.split(">")[-1]
-                        reactants = rsmi.split(">")[0].split(".")
+                    # If there are more C-N bonds in product than in reactants, a C-N bond was formed
+                    if len(c_n_bonds_product) > len(c_n_bonds_reactants):
+                        print(f"Late-stage C-N bond formation detected at depth {depth}")
+                        late_stage_cn_formation = True
+            except:
+                print(f"Error processing reaction SMILES at depth {depth}")
 
-                        print(f"Product: {product}")
-                        print(f"Reactants: {reactants}")
-
-                        # Check if product has aromatic halide functional group
-                        if checker.check_fg("Aromatic halide", product):
-                            print("Product contains aromatic halide")
-
-                            # Define common aromatic rings
-                            aromatic_rings = [
-                                "benzene",
-                                "naphthalene",
-                                "anthracene",
-                                "pyridine",
-                                "pyrrole",
-                                "furan",
-                                "thiophene",
-                                "imidazole",
-                                "pyrazole",
-                                "oxazole",
-                                "thiazole",
-                                "indole",
-                                "quinoline",
-                                "isoquinoline",
-                            ]
-
-                            # Check if any reactant doesn't have aromatic halide
-                            # This would indicate a halogenation occurred
-                            for reactant in reactants:
-                                print(f"Checking reactant: {reactant}")
-                                if not checker.check_fg("Aromatic halide", reactant):
-                                    print("Reactant does not contain aromatic halide")
-                                    # Verify this is an aromatic ring
-                                    if any(
-                                        checker.check_ring(ring, reactant)
-                                        for ring in aromatic_rings
-                                    ):
-                                        print(
-                                            "Detected late-stage aromatic halogenation by functional group analysis"
-                                        )
-                                        found_late_stage_halogenation = True
-            except Exception as e:
-                print(f"Error analyzing reaction: {e}")
-
-        # Process children with incremented depth
+        # Process children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    print(f"Final result: {found_late_stage_halogenation}")
-
-    return found_late_stage_halogenation
+    return late_stage_cn_formation

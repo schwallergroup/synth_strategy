@@ -2,77 +2,86 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving the conversion of a
-    Weinreb amide to a ketone.
+    Detects a linear synthetic strategy where fragments are assembled
+    sequentially through amide bond formations.
     """
-    # Initialize tracking variables
-    has_weinreb_to_ketone = False
+    amide_coupling_steps = []
+    linear_assembly = True
 
-    def dfs_traverse(node):
-        nonlocal has_weinreb_to_ketone
+    def dfs_traverse(node, depth=0):
+        nonlocal amide_coupling_steps, linear_assembly
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node.get("metadata", {}).get("rsmi", "")
-            if not rsmi:
-                return
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+                # Check if this is potentially an amide coupling
+                if len(reactants_smiles) >= 2:  # At least two reactants
+                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+                    product = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            # Check for Weinreb amide in reactants
-            weinreb_amide_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#7](-[#6])-[#6](=[#8])-[#6]")
-            # Check for ketone in product
-            ketone_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#6]")
+                    if product and all(r is not None for r in reactants):
+                        # Check for amide formation
+                        carboxylic_acid_pattern = Chem.MolFromSmarts("[C](=O)[OH]")
+                        amine_pattern = Chem.MolFromSmarts("[NH2]")
+                        amide_pattern = Chem.MolFromSmarts("[C](=O)[NH]")
 
-            has_weinreb = False
-            for reactant in reactants_smiles:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(weinreb_amide_pattern):
-                        has_weinreb = True
-                        break
-                except:
-                    continue
+                        if (
+                            any(r.HasSubstructMatch(carboxylic_acid_pattern) for r in reactants)
+                            and any(r.HasSubstructMatch(amine_pattern) for r in reactants)
+                            and product.HasSubstructMatch(amide_pattern)
+                        ):
+                            amide_coupling_steps.append(depth)
+                            print(f"Found amide coupling at depth {depth}")
 
-            has_ketone = False
-            try:
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                if product_mol and product_mol.HasSubstructMatch(ketone_pattern):
-                    has_ketone = True
-            except:
-                pass
-
-            if has_weinreb and has_ketone:
-                print("Found Weinreb amide to ketone transformation")
-                has_weinreb_to_ketone = True
+                            # Check if more than 2 reactants - would indicate convergent rather than linear
+                            if len(reactants) > 2:
+                                linear_assembly = False
+                                print(
+                                    f"Found convergent step with {len(reactants)} reactants at depth {depth}"
+                                )
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    return has_weinreb_to_ketone
+    # Sort amide coupling steps by depth
+    amide_coupling_steps.sort()
+
+    # Check if we have multiple amide couplings in a linear fashion
+    has_multiple_amide_couplings = len(amide_coupling_steps) >= 2
+
+    print(f"Amide coupling steps: {amide_coupling_steps}")
+    print(f"Linear assembly: {linear_assembly}")
+
+    return has_multiple_amide_couplings and linear_assembly

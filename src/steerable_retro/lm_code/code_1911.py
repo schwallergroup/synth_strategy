@@ -2,106 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves an azo coupling strategy where a diazonium
-    intermediate couples with an aromatic compound.
+    This function detects if the synthesis maintains a nitrile group
+    throughout the synthetic route.
     """
-    has_azo_formation = False
+    steps_with_nitrile = 0
+    total_steps = 0
 
     def dfs_traverse(node):
-        nonlocal has_azo_formation
+        nonlocal steps_with_nitrile, total_steps
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            total_steps += 1
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            product_part = rsmi.split(">")[-1]
 
-            # Check if product contains azo group (diazene)
-            if checker.check_fg("Diazene", product):
-                print(f"Found product with diazene (azo) group: {product}")
+            # Pattern for nitrile
+            nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
 
-                # Check if reactants contain compounds that can participate in azo coupling
-                for reactant in reactants:
-                    # Check for diazonium precursors or intermediates
-                    if (
-                        checker.check_fg("Diazo", reactant)
-                        or checker.check_fg("Azide", reactant)
-                        or checker.check_fg("Nitroso", reactant)
-                        or checker.check_fg("Nitro group", reactant)
-                        or checker.check_fg("Aniline", reactant)
-                        or "N=[N+]" in reactant
-                    ):  # Explicit check for diazonium salt
+            try:
+                product_mol = Chem.MolFromSmiles(product_part)
+                if product_mol and product_mol.HasSubstructMatch(nitrile_pattern):
+                    steps_with_nitrile += 1
+                    print(f"Detected nitrile in step {total_steps}")
+            except:
+                pass
 
-                        print(f"Found reactant that can participate in azo coupling: {reactant}")
-                        has_azo_formation = True
-                        break
-
-            # Check if this is a diazotization reaction (forming diazonium salt)
-            if not has_azo_formation and "N=[N+]" in product:
-                print(f"Found potential diazonium formation: {rsmi}")
-                for reactant in reactants:
-                    if checker.check_fg("Aniline", reactant) and (
-                        checker.check_fg("Nitroso", reactant)
-                        or checker.check_fg("Nitro group", reactant)
-                        or "NO2" in reactant
-                        or "NO3" in reactant
-                        or "ONO" in reactant
-                    ):
-                        print(f"Found diazotization reaction with aniline: {reactant}")
-                        has_azo_formation = True
-                        break
-
-        # Continue DFS traversal
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return has_azo_formation
+
+    # Check if nitrile is maintained throughout (in at least 80% of steps)
+    return total_steps > 0 and (steps_with_nitrile / total_steps) >= 0.8

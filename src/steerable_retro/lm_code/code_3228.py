@@ -2,50 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects the use of Weinreb amide intermediates in the synthesis.
+    This function detects if the route uses a linear fragment assembly strategy
+    with at least 3 fragments combined sequentially.
     """
-    weinreb_amide_found = False
+    fragment_coupling_depths = []
 
-    def dfs_traverse(node):
-        nonlocal weinreb_amide_found
+    def dfs_traverse(node, depth=0):
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
 
-        if node["type"] == "mol" and "smiles" in node:
-            # Check for Weinreb amide
-            weinreb_pattern = Chem.MolFromSmarts("[#6][O][N]([#6])[C](=[O])[#6]")
-            mol = Chem.MolFromSmiles(node["smiles"])
+            # Check if this is a coupling reaction (2+ reactants)
+            if len(reactants) >= 2:
+                # Look for common coupling patterns
+                product = rsmi.split(">")[-1]
+                product_mol = Chem.MolFromSmiles(product)
 
-            if mol and mol.HasSubstructMatch(weinreb_pattern):
-                weinreb_amide_found = True
-                print("Found Weinreb amide intermediate")
+                if product_mol:
+                    # Check for amide coupling
+                    amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+                    # Check for C-N bond formation
+                    cn_bond_pattern = Chem.MolFromSmarts("[C][N]")
+
+                    if product_mol.HasSubstructMatch(
+                        amide_pattern
+                    ) or product_mol.HasSubstructMatch(cn_bond_pattern):
+                        fragment_coupling_depths.append(depth)
+                        print(f"Found fragment coupling at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
 
-    if weinreb_amide_found:
-        print("Detected Weinreb amide intermediate strategy")
+    # Check if we have at least 2 coupling reactions (to combine 3+ fragments)
+    # and that they occur in a sequential manner (different depths)
+    if len(fragment_coupling_depths) >= 2 and len(set(fragment_coupling_depths)) >= 2:
+        print(f"Found linear fragment assembly with {len(fragment_coupling_depths)} couplings")
         return True
     return False

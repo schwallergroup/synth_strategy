@@ -2,79 +2,48 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a convergent synthesis strategy with Sonogashira coupling as the key fragment connection.
-    Looks for C≡C bond formation between two aromatic fragments.
+    Detects if the synthesis route includes BOC-protected amines.
     """
-    sonogashira_found = False
-    convergent_structure = False
+    boc_protection_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal sonogashira_found, convergent_structure
+    def dfs_traverse(node):
+        nonlocal boc_protection_found
 
-        if node["type"] == "reaction":
-            # Check if this is a Sonogashira coupling reaction
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                boc_pattern = Chem.MolFromSmarts("[CH3]C([CH3])([CH3])[O]C(=O)[NH]")
+                if mol.HasSubstructMatch(boc_pattern):
+                    boc_protection_found = True
+                    print("BOC protecting group detected")
 
-                # Check for C≡C bond formation
-                if len(reactants) >= 2:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        # Look for C≡C bond in product
-                        triple_bond_pattern = Chem.MolFromSmarts("[#6]#[#6]")
-                        if product_mol.HasSubstructMatch(triple_bond_pattern):
-                            # Check if reactants have aromatic rings and one has iodine
-                            has_aryl_iodide = False
-                            has_terminal_alkyne = False
-
-                            for reactant in reactants:
-                                r_mol = Chem.MolFromSmiles(reactant)
-                                if r_mol:
-                                    aryl_iodide_pattern = Chem.MolFromSmarts("c-[#53]")
-                                    if r_mol.HasSubstructMatch(aryl_iodide_pattern):
-                                        has_aryl_iodide = True
-
-                                    terminal_alkyne_pattern = Chem.MolFromSmarts("[#6]#[#6]")
-                                    if r_mol.HasSubstructMatch(terminal_alkyne_pattern):
-                                        has_terminal_alkyne = True
-
-                            if has_aryl_iodide and has_terminal_alkyne:
-                                print("Sonogashira coupling detected at depth", depth)
-                                sonogashira_found = True
-
-            # Check for convergent structure - multiple children at depth > 1
-            if depth > 0 and len(node.get("children", [])) > 1:
-                print("Convergent structure detected at depth", depth)
-                convergent_structure = True
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return sonogashira_found and convergent_structure
+    return boc_protection_found

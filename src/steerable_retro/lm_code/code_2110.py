@@ -2,126 +2,84 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthesis route that includes both nitrile formation and reduction.
+    This function detects a strategy involving nitration of an aromatic ring
+    followed by reduction to an amine.
     """
-    nitrile_formation = False
-    nitrile_reduction = False
+    # Track nitration and reduction steps
+    has_nitration = False
+    has_nitro_reduction = False
+    nitration_depth = -1
+    reduction_depth = -1
 
-    # First check if any molecule in the route contains a nitrile group
-    def check_for_nitrile(node):
-        nonlocal nitrile_formation
-        if node["type"] == "mol" and checker.check_fg("Nitrile", node["smiles"]):
-            print(f"Nitrile found in molecule: {node['smiles']}")
-            nitrile_formation = True
-        for child in node.get("children", []):
-            check_for_nitrile(child)
+    def dfs_traverse(node, depth=0):
+        nonlocal has_nitration, has_nitro_reduction, nitration_depth, reduction_depth
 
-    check_for_nitrile(route)
-
-    def dfs_traverse(node):
-        nonlocal nitrile_formation, nitrile_reduction
-
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check for nitrile formation
-            if not nitrile_formation:
-                # Check if product contains nitrile but reactants don't
-                if checker.check_fg("Nitrile", product):
-                    if not any(checker.check_fg("Nitrile", r) for r in reactants):
-                        print(f"Nitrile formation detected (new nitrile in product): {rsmi}")
-                        nitrile_formation = True
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                # Check for specific nitrile formation reactions
-                if checker.check_reaction("Schmidt reaction nitrile", rsmi):
-                    print(f"Nitrile formation reaction detected (Schmidt reaction): {rsmi}")
-                    nitrile_formation = True
+            if product and all(r for r in reactants):
+                # Check for nitration (adding NO2 to aromatic ring)
+                nitro_pattern = Chem.MolFromSmarts("c[N+](=[O])[O-]")
+                aromatic_pattern = Chem.MolFromSmarts("c")
 
-                # Check for reverse reactions where nitrile is consumed
-                # These indicate nitrile was formed earlier in the synthesis (forward direction)
-                if any(checker.check_fg("Nitrile", r) for r in reactants):
-                    if checker.check_reaction(
-                        "Oxidation of nitrile to carboxylic acid", rsmi
-                    ) or checker.check_reaction("Nitrile to amide", rsmi):
-                        print(f"Nitrile formation inferred from consumption reaction: {rsmi}")
-                        nitrile_formation = True
-
-            # Check for nitrile reduction
-            if not nitrile_reduction:
-                # Check if reactants contain nitrile and product contains amine
-                if any(checker.check_fg("Nitrile", r) for r in reactants) and (
-                    checker.check_fg("Primary amine", product)
-                    or checker.check_fg("Secondary amine", product)
-                    or checker.check_fg("Tertiary amine", product)
+                if product.HasSubstructMatch(nitro_pattern) and not any(
+                    r.HasSubstructMatch(nitro_pattern) for r in reactants
                 ):
-                    print(f"Potential nitrile reduction detected in reaction: {rsmi}")
-                    nitrile_reduction = True
+                    if any(r.HasSubstructMatch(aromatic_pattern) for r in reactants):
+                        print(f"Detected nitration at depth {depth}")
+                        has_nitration = True
+                        nitration_depth = depth
 
-                # Check for specific nitrile reduction reactions
-                if checker.check_reaction("Reduction of nitrile to amine", rsmi):
-                    print(f"Nitrile reduction reaction detected: {rsmi}")
-                    nitrile_reduction = True
+                # Check for nitro reduction
+                nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-        # Process children
+                if any(
+                    r.HasSubstructMatch(nitro_pattern) for r in reactants
+                ) and product.HasSubstructMatch(amine_pattern):
+                    print(f"Detected nitro reduction at depth {depth}")
+                    has_nitro_reduction = True
+                    reduction_depth = depth
+
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Nitrile formation: {nitrile_formation}")
-    print(f"Nitrile reduction: {nitrile_reduction}")
-
-    # Check if both conditions are met
-    return nitrile_formation and nitrile_reduction
+    # Check if nitration occurs before reduction in the synthetic direction
+    # (which means higher depth in retrosynthetic direction)
+    return has_nitration and has_nitro_reduction and nitration_depth > reduction_depth

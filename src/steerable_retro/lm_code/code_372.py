@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,68 +54,186 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects a synthesis strategy involving a methoxybenzyl-indazole core
-    with a specific functional group transformation sequence:
-    aldehyde → vinyl → diol → mesylate
+    Detects synthesis strategy involving heterocycle formation.
     """
-    # Track the functional group transformations with their depths
-    transformations = []
-    has_methoxybenzyl_indazole = False
+    heterocycle_formation = False
+
+    # List of common heterocyclic rings to check
+    heterocyclic_rings = [
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "furan",
+        "thiophene",
+        "pyran",
+        "thiopyran",
+        "oxirane",
+        "aziridine",
+        "oxetane",
+        "azetidine",
+        "thietane",
+        "pyrrolidine",
+        "tetrahydrofuran",
+        "thiolane",
+        "piperidine",
+        "tetrahydropyran",
+        "thiane",
+        "morpholine",
+        "thiomorpholine",
+        "piperazine",
+        "oxazoline",
+        "thiazolidine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "triazole",
+        "tetrazole",
+        "benzimidazole",
+        "benzoxazole",
+        "benzothiazole",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+    ]
+
+    # List of common heterocycle formation reactions
+    heterocycle_reactions = [
+        "Formation of NOS Heterocycles",
+        "Paal-Knorr pyrrole synthesis",
+        "benzimidazole_derivatives_carboxylic-acid/ester",
+        "benzimidazole_derivatives_aldehyde",
+        "benzothiazole",
+        "benzoxazole_arom-aldehyde",
+        "benzoxazole_carboxylic-acid",
+        "thiazole",
+        "tetrazole_terminal",
+        "tetrazole_connect_regioisomere_1",
+        "tetrazole_connect_regioisomere_2",
+        "1,2,4-triazole_acetohydrazide",
+        "1,2,4-triazole_carboxylic-acid/ester",
+        "pyrazole",
+        "Fischer indole",
+        "indole",
+        "oxadiazole",
+        "imidazole",
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal transformations, has_methoxybenzyl_indazole
+        nonlocal heterocycle_formation
 
-        if node["type"] == "mol":
-            mol_smiles = node["smiles"]
-            # Check for methoxybenzyl-indazole core in any molecule
-            if (
-                checker.check_ring("indazole", mol_smiles)
-                and "OC" in mol_smiles
-                and checker.check_fg("Ether", mol_smiles)
-            ):
-                has_methoxybenzyl_indazole = True
-                print(f"Detected methoxybenzyl-indazole core in molecule: {mol_smiles}")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                print(f"Reaction at depth {depth}: {rsmi}")
 
-            # Check for aldehyde → vinyl transformation
-            if (
-                any(checker.check_fg("Aldehyde", r) for r in reactants)
-                and checker.check_fg("Vinyl", product)
-                and not checker.check_fg("Aldehyde", product)
-            ):
-                transformations.append(("aldehyde_to_vinyl", depth))
-                print(f"Detected aldehyde to vinyl transformation at depth {depth}: {rsmi}")
+                # Check if this is a known heterocycle formation reaction
+                for reaction_name in heterocycle_reactions:
+                    if checker.check_reaction(reaction_name, rsmi):
+                        print(
+                            f"Found heterocycle formation reaction: {reaction_name} at depth {depth}"
+                        )
+                        heterocycle_formation = True
+                        return
 
-            # Check for vinyl → diol transformation
-            if (
-                any(checker.check_fg("Vinyl", r) for r in reactants)
-                and not checker.check_fg("Vinyl", product)
-                and (
-                    (
-                        checker.check_fg("Primary alcohol", product)
-                        and checker.check_fg("Secondary alcohol", product)
+                # Convert to RDKit molecules
+                reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                product = Chem.MolFromSmiles(product_smiles)
+
+                if all(r is not None for r in reactants) and product is not None:
+                    # Count rings in reactants and product
+                    reactant_ring_count = sum(r.GetRingInfo().NumRings() for r in reactants)
+                    product_ring_count = product.GetRingInfo().NumRings()
+
+                    print(
+                        f"Reactant ring count: {reactant_ring_count}, Product ring count: {product_ring_count}"
                     )
-                    or product.count("OH") >= 2  # Backup check for diols
-                )
-            ):
-                transformations.append(("vinyl_to_diol", depth))
-                print(f"Detected vinyl to diol transformation at depth {depth}: {rsmi}")
 
-            # Check for diol → mesylate transformation
-            if any(
-                r.count("OH") >= 2
-                or (
-                    checker.check_fg("Primary alcohol", r)
-                    and checker.check_fg("Secondary alcohol", r)
-                )
-                for r in reactants
-            ) and checker.check_fg("Mesylate", product):
-                transformations.append(("diol_to_mesylate", depth))
-                print(f"Detected diol to mesylate transformation at depth {depth}: {rsmi}")
+                    # Check if a ring was formed or transformed
+                    if product_ring_count >= reactant_ring_count:
+                        # Check for heterocyclic rings in the product that weren't in the reactants
+                        for ring_name in heterocyclic_rings:
+                            if checker.check_ring(ring_name, product_smiles):
+                                # Check if this ring was already present in any reactant
+                                if not any(
+                                    checker.check_ring(ring_name, r) for r in reactants_smiles
+                                ):
+                                    print(f"Found new {ring_name} formation at depth {depth}")
+                                    heterocycle_formation = True
+                                    return
+
+                        # Check for general heterocyclic structures if specific rings weren't found
+                        # Check for nitrogen-containing heterocycles
+                        if product.HasSubstructMatch(Chem.MolFromSmarts("[N,n]@[*]")):
+                            # Check if this N-containing ring is new
+                            n_in_ring_product = product.HasSubstructMatch(
+                                Chem.MolFromSmarts("[N,n]@[*]")
+                            )
+                            n_in_ring_reactants = any(
+                                r.HasSubstructMatch(Chem.MolFromSmarts("[N,n]@[*]"))
+                                for r in reactants
+                                if r is not None
+                            )
+
+                            if n_in_ring_product and not n_in_ring_reactants:
+                                print(f"Found nitrogen heterocycle formation at depth {depth}")
+                                heterocycle_formation = True
+                                return
+
+                        # Check for oxygen-containing heterocycles
+                        if product.HasSubstructMatch(Chem.MolFromSmarts("[O,o]@[*]")):
+                            # Check if this O-containing ring is new
+                            o_in_ring_product = product.HasSubstructMatch(
+                                Chem.MolFromSmarts("[O,o]@[*]")
+                            )
+                            o_in_ring_reactants = any(
+                                r.HasSubstructMatch(Chem.MolFromSmarts("[O,o]@[*]"))
+                                for r in reactants
+                                if r is not None
+                            )
+
+                            if o_in_ring_product and not o_in_ring_reactants:
+                                print(f"Found oxygen heterocycle formation at depth {depth}")
+                                heterocycle_formation = True
+                                return
+
+                        # Check for sulfur-containing heterocycles
+                        if product.HasSubstructMatch(Chem.MolFromSmarts("[S,s]@[*]")):
+                            # Check if this S-containing ring is new
+                            s_in_ring_product = product.HasSubstructMatch(
+                                Chem.MolFromSmarts("[S,s]@[*]")
+                            )
+                            s_in_ring_reactants = any(
+                                r.HasSubstructMatch(Chem.MolFromSmarts("[S,s]@[*]"))
+                                for r in reactants
+                                if r is not None
+                            )
+
+                            if s_in_ring_product and not s_in_ring_reactants:
+                                print(f"Found sulfur heterocycle formation at depth {depth}")
+                                heterocycle_formation = True
+                                return
+
+                # Special case: Check for cyclization reactions that form heterocycles
+                if product_ring_count > reactant_ring_count:
+                    print(f"Ring formation detected at depth {depth}")
+
+                    # Check if the product contains a heterocycle
+                    has_n = product.HasSubstructMatch(Chem.MolFromSmarts("[N,n]@[*]"))
+                    has_o = product.HasSubstructMatch(Chem.MolFromSmarts("[O,o]@[*]"))
+                    has_s = product.HasSubstructMatch(Chem.MolFromSmarts("[S,s]@[*]"))
+
+                    if has_n or has_o or has_s:
+                        print(f"Heterocycle formation detected at depth {depth}")
+                        heterocycle_formation = True
+                        return
 
         # Traverse children
         for child in node.get("children", []):
@@ -120,46 +241,4 @@ def main(route):
 
     # Start traversal
     dfs_traverse(route)
-
-    # Check if all required transformations are present
-    required_transformations = ["aldehyde_to_vinyl", "vinyl_to_diol", "diol_to_mesylate"]
-    detected_transformations = [t[0] for t in transformations]
-    all_present = all(t in detected_transformations for t in required_transformations)
-
-    # In retrosynthesis, the order should be reversed (higher depth = earlier stage)
-    # Create a dictionary mapping transformation types to their depths
-    transformation_depths = {t[0]: t[1] for t in transformations}
-
-    # Check if the transformations appear in the correct order for retrosynthesis
-    # In retrosynthesis: mesylate (late stage, low depth) -> diol -> vinyl -> aldehyde (early stage, high depth)
-    correct_order = True
-    if all_present:
-        # Check that diol_to_mesylate occurs at a lower depth (later stage) than vinyl_to_diol
-        if transformation_depths["diol_to_mesylate"] >= transformation_depths["vinyl_to_diol"]:
-            correct_order = False
-            print(
-                f"Incorrect order: diol_to_mesylate (depth {transformation_depths['diol_to_mesylate']}) should occur at lower depth than vinyl_to_diol (depth {transformation_depths['vinyl_to_diol']})"
-            )
-
-        # Check that vinyl_to_diol occurs at a lower depth (later stage) than aldehyde_to_vinyl
-        if transformation_depths["vinyl_to_diol"] >= transformation_depths["aldehyde_to_vinyl"]:
-            correct_order = False
-            print(
-                f"Incorrect order: vinyl_to_diol (depth {transformation_depths['vinyl_to_diol']}) should occur at lower depth than aldehyde_to_vinyl (depth {transformation_depths['aldehyde_to_vinyl']})"
-            )
-    else:
-        correct_order = False
-        missing = [t for t in required_transformations if t not in detected_transformations]
-        print(f"Missing transformations: {missing}")
-
-    strategy_detected = has_methoxybenzyl_indazole and all_present and correct_order
-
-    if strategy_detected:
-        print("Detected complete functional group sequence strategy")
-    else:
-        print(
-            f"Strategy detection failed: has_core={has_methoxybenzyl_indazole}, all_present={all_present}, correct_order={correct_order}"
-        )
-        print(f"Detected transformations with depths: {transformations}")
-
-    return strategy_detected
+    return heterocycle_formation

@@ -2,61 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis includes an amine to nitrile functional group transformation.
+    This function detects the use of Weinreb amide for controlled reduction to aldehyde
     """
-    amine_to_nitrile = False
+    # Define SMARTS patterns
+    weinreb_amide_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[N][OX2][#6]")
+    aldehyde_pattern = Chem.MolFromSmarts("[CX3H1](=[OX1])[#6]")
+
+    # Track if we find the patterns and at what depth
+    found_weinreb_depth = None
+    found_aldehyde_depth = None
 
     def dfs_traverse(node, depth=0):
-        nonlocal amine_to_nitrile
+        nonlocal found_weinreb_depth, found_aldehyde_depth
 
-        if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
-                reaction_smiles = node["metadata"]["rsmi"]
-                reactants_part = reaction_smiles.split(">")[0]
-                products_part = reaction_smiles.split(">")[-1]
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                if mol.HasSubstructMatch(weinreb_amide_pattern):
+                    found_weinreb_depth = depth
+                if mol.HasSubstructMatch(aldehyde_pattern):
+                    found_aldehyde_depth = depth
 
-                # Check for amine in reactants
-                amine_pattern = Chem.MolFromSmarts("[N;H2]")
-                reactant_mol = Chem.MolFromSmiles(reactants_part)
+        # Check for Weinreb amide to aldehyde transformation in reaction nodes
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for nitrile in products
-                nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
-                product_mol = Chem.MolFromSmiles(products_part)
+            reactant_mol = Chem.MolFromSmiles(reactants[0]) if reactants else None
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-                if (
-                    reactant_mol
-                    and product_mol
-                    and reactant_mol.HasSubstructMatch(amine_pattern)
-                    and product_mol.HasSubstructMatch(nitrile_pattern)
-                ):
-                    amine_to_nitrile = True
+            if reactant_mol and product_mol:
+                if reactant_mol.HasSubstructMatch(
+                    weinreb_amide_pattern
+                ) and product_mol.HasSubstructMatch(aldehyde_pattern):
+                    found_weinreb_depth = depth
+                    found_aldehyde_depth = depth - 1  # Aldehyde appears one step later in synthesis
 
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    print(f"Amine to nitrile transformation: {amine_to_nitrile}")
+    # Check if we found both Weinreb amide and aldehyde in the correct sequence
+    if found_weinreb_depth is not None and found_aldehyde_depth is not None:
+        if found_weinreb_depth > found_aldehyde_depth:  # Weinreb comes before aldehyde in synthesis
+            print(
+                f"Found Weinreb amide strategy: Weinreb at depth {found_weinreb_depth}, aldehyde at depth {found_aldehyde_depth}"
+            )
+            return True
 
-    return amine_to_nitrile
+    print("Did not find evidence of Weinreb amide strategy")
+    return False

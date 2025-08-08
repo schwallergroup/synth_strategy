@@ -2,77 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a protection-deprotection sequence involving acetate groups.
+    This function detects the formation of a lactam ring (cyclic amide) in the synthesis.
     """
-    # Track protection and deprotection events
-    protection_events = []
-    deprotection_events = []
+    has_lactam_formation = False
 
     def dfs_traverse(node):
+        nonlocal has_lactam_formation
+
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0]
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants.split(".")]
-                product_mol = Chem.MolFromSmiles(product)
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                if product_mol:
-                    # Define SMARTS patterns
-                    acetate_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2][#6]")
-                    alcohol_pattern = Chem.MolFromSmarts("[OX2H]")
+            # Check for lactam formation
+            lactam_pattern = Chem.MolFromSmarts("[#6]1~[#6]~[#6]~[#6]~[#7]~[#6](=[#8])~1")
+            acyclic_amide_pattern = Chem.MolFromSmarts("[#7]-[#6](=[#8])")
 
-                    # Check for protection (alcohol → acetate)
-                    alcohol_in_reactants = any(
-                        r and r.HasSubstructMatch(alcohol_pattern) for r in reactants_mols if r
-                    )
-                    acetate_in_product = product_mol.HasSubstructMatch(acetate_pattern)
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol and product_mol.HasSubstructMatch(lactam_pattern):
+                # Check if reactants don't have the lactam
+                lactam_in_reactants = False
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol and mol.HasSubstructMatch(lactam_pattern):
+                        lactam_in_reactants = True
+                        break
 
-                    if alcohol_in_reactants and acetate_in_product:
-                        protection_events.append(node.get("metadata", {}).get("ID", "unknown"))
+                if not lactam_in_reactants:
+                    # Check if at least one reactant has an acyclic amide or amine
+                    for reactant in reactants:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and (
+                            mol.HasSubstructMatch(acyclic_amide_pattern)
+                            or mol.HasSubstructMatch(Chem.MolFromSmarts("[#7]"))
+                        ):
+                            has_lactam_formation = True
+                            print(f"Detected lactam formation: {rsmi}")
+                            break
 
-                    # Check for deprotection (acetate → alcohol)
-                    acetate_in_reactants = any(
-                        r and r.HasSubstructMatch(acetate_pattern) for r in reactants_mols if r
-                    )
-                    alcohol_in_product = product_mol.HasSubstructMatch(alcohol_pattern)
-
-                    if acetate_in_reactants and alcohol_in_product:
-                        deprotection_events.append(node.get("metadata", {}).get("ID", "unknown"))
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-
-    # Check if both protection and deprotection occurred
-    has_protection_deprotection = len(protection_events) > 0 and len(deprotection_events) > 0
-
-    if has_protection_deprotection:
-        print(
-            f"Detected protection-deprotection sequence: Protection at {protection_events}, Deprotection at {deprotection_events}"
-        )
-
-    return has_protection_deprotection
+    return has_lactam_formation

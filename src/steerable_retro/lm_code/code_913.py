@@ -2,55 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves compounds containing fluorophenyl groups
-    that are maintained throughout the synthesis.
+    This function detects if there's a late-stage amide coupling introducing a nitrile-containing side chain.
     """
-    final_product_has_fluorophenyl = False
-    intermediates_with_fluorophenyl = 0
+    found_late_amide_coupling = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal final_product_has_fluorophenyl, intermediates_with_fluorophenyl
+        nonlocal found_late_amide_coupling
 
-        if node["type"] == "mol":
-            # Check for fluorophenyl groups
-            fluorophenyl_pattern = Chem.MolFromSmarts("c1cc(F)ccc1")
+        if (
+            node["type"] == "reaction" and depth <= 1
+        ):  # Only consider reactions at depth 0 or 1 (late stage)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            try:
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol and mol.HasSubstructMatch(fluorophenyl_pattern):
-                    if depth == 0:  # Final product
-                        final_product_has_fluorophenyl = True
-                        print("Final product contains fluorophenyl group")
-                    else:
-                        intermediates_with_fluorophenyl += 1
-                        print(f"Intermediate at depth {depth} contains fluorophenyl group")
-            except:
-                pass
+                # Check for carboxylic acid in reactants
+                acid_pattern = Chem.MolFromSmarts("[#6]-C(=O)-[#8;H1]")
+                nitrile_pattern = Chem.MolFromSmarts("[#6]-C#N")
+                amine_pattern = Chem.MolFromSmarts("[#7;H1,H2]")
+                amide_pattern = Chem.MolFromSmarts("[#6]-C(=O)-[#7]")
 
-        # Traverse children
+                has_acid = False
+                has_nitrile = False
+                has_amine = False
+
+                for reactant in reactants:
+                    mol = Chem.MolFromSmiles(reactant)
+                    if mol:
+                        if mol.HasSubstructMatch(acid_pattern):
+                            has_acid = True
+                        if mol.HasSubstructMatch(nitrile_pattern):
+                            has_nitrile = True
+                        if mol.HasSubstructMatch(amine_pattern):
+                            has_amine = True
+
+                # Check if product has amide bond
+                product_mol = Chem.MolFromSmiles(product)
+                if (
+                    product_mol
+                    and product_mol.HasSubstructMatch(amide_pattern)
+                    and product_mol.HasSubstructMatch(nitrile_pattern)
+                ):
+                    if has_acid and has_amine and has_nitrile:
+                        found_late_amide_coupling = True
+                        print("Found late-stage amide coupling with nitrile group")
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return final_product_has_fluorophenyl and intermediates_with_fluorophenyl > 0
+    return found_late_amide_coupling

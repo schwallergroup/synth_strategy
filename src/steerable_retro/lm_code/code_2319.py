@@ -2,78 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route incorporates morpholine rings via nucleophilic substitution.
+    This function detects a linear fragment assembly strategy where fragments
+    are sequentially added rather than converging multiple complex fragments.
     """
-    morpholine_addition = False
+    reaction_depths = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal morpholine_addition
+        nonlocal reaction_depths
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
 
-                # Morpholine pattern
-                morpholine_pattern = Chem.MolFromSmarts("[#8]1[#6][#6][#7][#6][#6]1")
+            # Store number of reactants at each depth
+            reaction_depths.append((depth, len(reactants)))
 
-                # Check if morpholine is in reactants
-                morpholine_in_reactants = False
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(morpholine_pattern):
-                        morpholine_in_reactants = True
-                        break
-
-                # Check if morpholine is in product
-                prod_mol = Chem.MolFromSmiles(product)
-                morpholine_in_product = prod_mol and prod_mol.HasSubstructMatch(morpholine_pattern)
-
-                # If morpholine is in both reactants and product, and we have a halide in reactants,
-                # it's likely a nucleophilic substitution
-                if morpholine_in_reactants and morpholine_in_product:
-                    halide_pattern = Chem.MolFromSmarts("[#6]-[#17,#35,#53]")
-                    halide_in_reactants = False
-
-                    for reactant in reactants:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol and mol.HasSubstructMatch(halide_pattern):
-                            halide_in_reactants = True
-                            break
-
-                    if halide_in_reactants:
-                        morpholine_addition = True
-                        print(
-                            "Detected morpholine incorporation via nucleophilic substitution at depth",
-                            depth,
-                        )
-
-        # Traverse children
+        # Recursively traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-    return morpholine_addition
+
+    # Sort by depth
+    reaction_depths.sort(key=lambda x: x[0])
+
+    # Check if most reactions have 2 reactants (binary reactions)
+    # and if they occur in sequence (linear assembly)
+    binary_reactions = sum(1 for _, num_reactants in reaction_depths if num_reactants == 2)
+
+    # Linear strategy typically has most reactions as binary and in sequence
+    is_linear = binary_reactions >= len(reaction_depths) * 0.7
+
+    if is_linear:
+        print("Found linear fragment assembly strategy")
+
+    return is_linear

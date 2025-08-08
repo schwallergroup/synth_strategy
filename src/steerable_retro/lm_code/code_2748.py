@@ -2,64 +2,58 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if fragment coupling occurs in the second half of the synthesis
+    This function detects if the synthesis follows a linear strategy
+    without convergent steps (each reaction has only one product molecule).
     """
-    max_depth = 0
-    fragment_coupling_depths = []
+    is_linear = True
 
     def dfs_traverse(node, depth=0):
-        nonlocal max_depth
-
-        # Update max depth
-        max_depth = max(max_depth, depth)
+        nonlocal is_linear
 
         if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                product_smiles = rsmi.split(">")[-1]
 
-            # Check if this is a fragment coupling (multiple reactants to single product)
-            if len([r for r in reactants_smiles if r]) > 1:
-                fragment_coupling_depths.append(depth)
-                print(f"Detected fragment coupling at depth {depth}")
+                # Check if product contains multiple molecules (indicated by ".")
+                if "." in product_smiles:
+                    # This might be a convergent step or a reaction with byproducts
+                    # For simplicity, we'll consider it non-linear
+                    is_linear = False
+                    print(f"Non-linear step detected at depth {depth}: multiple products")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    # Check if any fragment coupling occurs in the second half of the synthesis
-    if not fragment_coupling_depths:
-        return False
-
-    half_depth = max_depth / 2
-    late_couplings = [d for d in fragment_coupling_depths if d < half_depth]
-
-    print(f"Fragment couplings: {fragment_coupling_depths}, Max depth: {max_depth}")
-    print(f"Late stage couplings: {late_couplings}")
-
-    return len(late_couplings) > 0
+    if is_linear:
+        print("Linear synthesis strategy confirmed")
+    return is_linear

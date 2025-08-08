@@ -2,76 +2,107 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a strategy involving indole ring formation via
-    nitro group reduction.
+    This function detects if the synthesis involves an olefination reaction
+    (conversion of aldehyde to terminal alkene).
     """
-    has_nitro_group = False
-    has_indole_formation = False
-    nitro_depth = None
-    indole_depth = None
+    olefination_present = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_nitro_group, has_indole_formation, nitro_depth, indole_depth
+    def dfs_traverse(node):
+        nonlocal olefination_present
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
 
-            # Check for nitro group in reactants
-            nitro_pattern = Chem.MolFromSmarts("[#6]-[N+](=[O])[O-]")
-            reactants_mols = [Chem.MolFromSmiles(r) for r in reactants]
+            # First check if this is a known olefination reaction type
+            if (
+                checker.check_reaction("Wittig reaction", rsmi)
+                or checker.check_reaction("Julia Olefination", rsmi)
+                or checker.check_reaction("Wittig with Phosphonium", rsmi)
+            ):
+                print(f"Known olefination reaction detected: {rsmi}")
+                olefination_present = True
+                return
 
-            if any(r and r.HasSubstructMatch(nitro_pattern) for r in reactants_mols if r):
-                has_nitro_group = True
-                nitro_depth = depth
-                print(f"Nitro group detected at depth {depth}")
+            # If not a known reaction type, check for aldehyde to alkene conversion
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check for indole formation
-            product_mol = Chem.MolFromSmiles(product)
-            indole_pattern = Chem.MolFromSmarts("[c]1[c][c][c][c]2[c]1[nH][c][c]2")
+            # Check if any reactant has an aldehyde group
+            reactant_has_aldehyde = False
+            for reactant in reactants_part.split("."):
+                if checker.check_fg("Aldehyde", reactant):
+                    reactant_has_aldehyde = True
+                    print(f"Reactant with aldehyde found: {reactant}")
+                    break
 
-            if product_mol and product_mol.HasSubstructMatch(indole_pattern):
-                # Check if indole is formed in this reaction (not present in reactants)
-                indole_in_reactants = any(
-                    r and r.HasSubstructMatch(indole_pattern) for r in reactants_mols if r
-                )
-                if not indole_in_reactants:
-                    has_indole_formation = True
-                    indole_depth = depth
-                    print(f"Indole formation detected at depth {depth}")
+            # Check if product has a terminal alkene
+            product_has_terminal_alkene = False
+            if checker.check_fg("Alkene", product_part) or checker.check_fg("Vinyl", product_part):
+                product_has_terminal_alkene = True
+                print(f"Product with terminal alkene found: {product_part}")
 
+            # If both conditions are met, it's likely an olefination
+            if reactant_has_aldehyde and product_has_terminal_alkene:
+                print(f"Olefination from aldehyde detected at reaction: {rsmi}")
+                olefination_present = True
+
+        # Continue DFS traversal
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            if not olefination_present:  # Stop traversal if we already found an olefination
+                dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Check if nitro group is present and then indole is formed
-    if has_nitro_group and has_indole_formation:
-        if nitro_depth is not None and indole_depth is not None:
-            if nitro_depth >= indole_depth:  # Same or higher depth means earlier or same step
-                print("Strategy detected: Indole formation via nitro reduction")
-                return True
-
-    return False
+    print(f"Olefination from aldehyde present: {olefination_present}")
+    return olefination_present

@@ -2,56 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a Suzuki coupling reaction.
+    This function detects a synthetic strategy involving amine protection/deprotection,
+    specifically focusing on Cbz (carboxybenzyl) deprotection.
     """
-    result = False
+    has_cbz_deprotection = False
 
     def dfs_traverse(node):
-        nonlocal result
+        nonlocal has_cbz_deprotection
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for boronic acid in reactants
-            has_boronic_acid = any("B(O)(O)" in r or "OB(O)" in r for r in reactants_smiles)
+            # Check for Cbz deprotection
+            for reactant in reactants:
+                react_mol = Chem.MolFromSmiles(reactant)
+                if react_mol:
+                    # Cbz protected amine pattern
+                    cbz_pattern = Chem.MolFromSmarts("[O]=[C]([O][C][c])[N]")
+                    if react_mol.HasSubstructMatch(cbz_pattern):
+                        # Check if product has primary amine
+                        prod_mol = Chem.MolFromSmiles(product)
+                        if prod_mol:
+                            amine_pattern = Chem.MolFromSmarts("[NH2]")
+                            if prod_mol.HasSubstructMatch(amine_pattern):
+                                has_cbz_deprotection = True
+                                print(
+                                    f"Detected Cbz deprotection at depth {node['metadata'].get('depth', 'unknown')}"
+                                )
 
-            # Check for halogen (Cl, Br, I) in reactants
-            has_halogen = any(any(x in r for x in ["Cl", "Br", "I"]) for r in reactants_smiles)
-
-            # Check for aromatic rings in reactants and product
-            has_aromatic_reactants = any("c" in r or "n" in r for r in reactants_smiles)
-            has_aromatic_product = "c" in product_smiles or "n" in product_smiles
-
-            if has_boronic_acid and has_halogen and has_aromatic_reactants and has_aromatic_product:
-                print("Detected Suzuki coupling reaction")
-                result = True
-
-        # Continue traversal
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return result
+
+    return has_cbz_deprotection

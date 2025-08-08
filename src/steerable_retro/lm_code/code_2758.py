@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,85 +54,124 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects a synthetic strategy with a primarily linear sequence
-    that includes one convergent Suzuki coupling step.
+    Detects if the synthesis follows a linear strategy with sequential
+    transformations on heterocyclic scaffolds.
     """
-    suzuki_coupling_found = False
-    linear_steps = 0
+    # List of heterocyclic rings to check
+    heterocycle_types = [
+        "furan",
+        "pyran",
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "thiophene",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+    ]
+
+    # Track the paths of heterocycle transformations
+    paths = []
+    current_path = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal suzuki_coupling_found, linear_steps
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+            # Check if this molecule contains a heterocycle
+            has_heterocycle = False
+            heterocycle_names = []
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            for het_type in heterocycle_types:
+                if checker.check_ring(het_type, mol_smiles):
+                    has_heterocycle = True
+                    heterocycle_names.append(het_type)
 
-            # Check if this is a Suzuki coupling using the checker function
-            is_suzuki = (
-                checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
-                or checker.check_reaction("Suzuki coupling with sulfonic esters", rsmi)
-                or checker.check_reaction("Suzuki", rsmi)
-                or checker.check_reaction("{Suzuki}", rsmi)
-            )
+            if has_heterocycle:
+                # Add this molecule to the current path
+                current_path.append(
+                    {"depth": depth, "smiles": mol_smiles, "heterocycles": heterocycle_names}
+                )
+                print(
+                    f"Depth {depth}: Found molecule with heterocycles: {', '.join(heterocycle_names)}"
+                )
 
-            # Manual check for Suzuki coupling patterns if checker fails
-            if not is_suzuki:
-                has_boronic = False
-                has_aryl_halide = False
+            # If this is a leaf node (starting material) and we have a path with heterocycles
+            if node.get("in_stock", False) and len(current_path) > 0:
+                # Save this path
+                paths.append(list(current_path))
+                print(f"Completed path with {len(current_path)} heterocycle-containing molecules")
 
-                for reactant in reactants:
-                    # Check for boronic acid/ester
-                    if "B(O)" in reactant or "BO" in reactant:
-                        has_boronic = True
-                        print(f"Found boronic acid/ester: {reactant}")
+        # Process children (in retrosynthetic direction)
+        children = node.get("children", [])
 
-                    # Check for aryl halide
-                    if any(x in reactant for x in ["Br", "I", "Cl"]) and any(
-                        x in reactant for x in ["c", "C"]
-                    ):
-                        has_aryl_halide = True
-                        print(f"Found aryl halide: {reactant}")
+        # If no children or at a mol node with no heterocycles, we're at the end of a potential path
+        if len(children) == 0 and node["type"] == "mol" and len(current_path) > 0:
+            # Check if this is a starting material
+            if node.get("in_stock", False):
+                # Save this path
+                paths.append(list(current_path))
+                print(f"Completed path with {len(current_path)} heterocycle-containing molecules")
 
-                # If both patterns are found, it's likely a Suzuki coupling
-                if has_boronic and has_aryl_halide:
-                    is_suzuki = True
-                    print(f"Manually identified Suzuki coupling at depth {depth}")
-
-            if is_suzuki:
-                suzuki_coupling_found = True
-                print(f"Suzuki coupling detected at depth {depth} with RSMI: {rsmi}")
-            else:
-                # Check if this is a linear step (only one non-starting material reactant)
-                non_starting_material_count = 0
-                for child in node.get("children", []):
-                    if child["type"] == "mol" and not child.get("in_stock", False):
-                        non_starting_material_count += 1
-
-                if non_starting_material_count <= 1:
-                    linear_steps += 1
-                    print(f"Linear step detected at depth {depth} with RSMI: {rsmi}")
-                else:
-                    print(f"Non-linear step detected at depth {depth} with RSMI: {rsmi}")
-
-        # Traverse children
-        for child in node.get("children", []):
+        # Continue traversal
+        path_length_before = len(current_path)
+        for child in children:
             dfs_traverse(child, depth + 1)
+
+        # Backtrack: remove any molecules added at this level
+        while len(current_path) > 0 and current_path[-1]["depth"] >= depth:
+            current_path.pop()
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if we have a linear synthesis with one Suzuki coupling
-    if suzuki_coupling_found and linear_steps >= 2:
-        print(
-            f"Strategy detected: Linear synthesis with one convergent Suzuki step ({linear_steps} linear steps)"
-        )
-        return True
-    else:
-        print(
-            f"Strategy not detected: Suzuki coupling found: {suzuki_coupling_found}, Linear steps: {linear_steps}"
-        )
-        return False
+    # Analyze paths to find linear heterocycle synthesis strategy
+    print(f"Found {len(paths)} potential heterocycle synthesis paths")
+
+    for i, path in enumerate(paths):
+        print(f"Path {i+1}: {len(path)} heterocycle-containing molecules")
+
+        # Check if this path has sequential heterocycle transformations
+        if len(path) >= 3:
+            # Sort by depth to ensure we're following the synthetic direction
+            sorted_path = sorted(path, key=lambda x: x["depth"])
+
+            # Check for sequential transformations (at least 3)
+            sequential_transformations = 0
+            for j in range(len(sorted_path) - 1):
+                current_mol = sorted_path[j]
+                next_mol = sorted_path[j + 1]
+
+                # If depths differ by 2, there's a reaction node between them
+                if next_mol["depth"] - current_mol["depth"] == 2:
+                    sequential_transformations += 1
+                    print(
+                        f"  Sequential transformation {sequential_transformations}: "
+                        f"{current_mol['heterocycles']} → {next_mol['heterocycles']}"
+                    )
+
+            if (
+                sequential_transformations >= 2
+            ):  # At least 3 molecules with 2 transformations between them
+                print(
+                    f"Found linear heterocycle synthesis strategy with {sequential_transformations} sequential transformations"
+                )
+                return True
+
+    print("No linear heterocycle synthesis strategy found")
+    return False

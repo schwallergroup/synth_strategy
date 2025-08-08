@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,42 +54,109 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route involves multiple ether formation reactions.
+    This function detects a synthetic strategy involving sequential functional group
+    interconversions on the same carbon atom, specifically acid chloride → alcohol →
+    aldehyde → amine, while preserving a heterocyclic scaffold.
     """
-    ether_formation_reactions = []
+    # Track the sequence of transformations
+    transformations = []
 
-    def find_ether_formations(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
-            # Check if this is a Williamson ether synthesis or other ether formation
-            if (
-                checker.check_reaction("Williamson Ether Synthesis", rxn_smiles)
-                or checker.check_reaction("Williamson Ether Synthesis (intra to epoxy)", rxn_smiles)
-                or checker.check_reaction("Alcohol to ether", rxn_smiles)
-                or checker.check_reaction("Mitsunobu aryl ether", rxn_smiles)
-                or checker.check_reaction("Chan-Lam etherification", rxn_smiles)
-                or checker.check_reaction("{Williamson ether}", rxn_smiles)
+    # Track if we have a heterocyclic scaffold
+    has_heterocyclic_scaffold = False
+
+    # Define heterocyclic rings to check
+    heterocyclic_rings = [
+        "benzothiophene",
+        "indole",
+        "benzoxazole",
+        "benzimidazole",
+        "quinoline",
+        "isoquinoline",
+        "benzofuran",
+        "carbazole",
+        "purine",
+        "thiazole",
+        "oxazole",
+        "imidazole",
+        "pyridine",
+    ]
+
+    def dfs_traverse(node, depth=0):
+        nonlocal has_heterocyclic_scaffold
+
+        if node["type"] == "mol":
+            mol_smiles = node["smiles"]
+
+            # Check for heterocyclic scaffold
+            if not has_heterocyclic_scaffold:
+                for ring in heterocyclic_rings:
+                    if checker.check_ring(ring, mol_smiles):
+                        print(f"Found heterocyclic scaffold: {ring}")
+                        has_heterocyclic_scaffold = True
+                        break
+
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
+
+            # Check for acid chloride to alcohol transformation
+            if any(
+                checker.check_fg("Acyl halide", reactant) for reactant in reactants
+            ) and checker.check_fg("Primary alcohol", product):
+                print(f"Found transformation: Acyl halide → Primary alcohol")
+                transformations.append(("acid_chloride_to_alcohol", depth))
+
+            # Check for alcohol to aldehyde transformation
+            if any(
+                checker.check_fg("Primary alcohol", reactant) for reactant in reactants
+            ) and checker.check_fg("Aldehyde", product):
+                print(f"Found transformation: Primary alcohol → Aldehyde")
+                transformations.append(("alcohol_to_aldehyde", depth))
+
+            # Check for aldehyde to amine transformation (reductive amination)
+            if checker.check_reaction("Reductive amination with aldehyde", rsmi) or (
+                any(checker.check_fg("Aldehyde", reactant) for reactant in reactants)
+                and any(checker.check_fg("Primary amine", reactant) for reactant in reactants)
+                and (
+                    checker.check_fg("Secondary amine", product)
+                    or checker.check_fg("Tertiary amine", product)
+                )
             ):
-                ether_formation_reactions.append((rxn_smiles, depth))
+                print(f"Found transformation: Aldehyde → Amine (Reductive amination)")
+                transformations.append(("aldehyde_to_amine", depth))
 
-            # Also check if product contains ether functional groups
-            product = rxn_smiles.split(">")[-1]
-            reactants = rxn_smiles.split(">")[0].split(".")
-
-            # Check if ether is formed in the reaction (product has ether but reactants don't)
-            if checker.check_fg("Ether", product):
-                ether_in_reactants = any(checker.check_fg("Ether", r) for r in reactants)
-                if not ether_in_reactants:
-                    ether_formation_reactions.append((rxn_smiles, depth))
-
+        # Traverse children
         for child in node.get("children", []):
-            find_ether_formations(child, depth + 1)
+            dfs_traverse(child, depth + 1)
 
-    find_ether_formations(route)
+    # Start traversal
+    dfs_traverse(route)
 
-    # Remove duplicates
-    unique_reactions = set(rxn for rxn, _ in ether_formation_reactions)
+    # Sort transformations by depth (to get the correct sequence)
+    transformations.sort(key=lambda x: x[1], reverse=True)
 
-    # Consider it a multiple ether formation strategy if at least 2 ether formations are found
-    print(f"Ether formation reactions found: {len(unique_reactions)}")
-    return len(unique_reactions) >= 2
+    # Extract just the transformation types in sequence
+    transformation_sequence = [t[0] for t in transformations]
+    print(f"Transformation sequence: {transformation_sequence}")
+
+    # Check if we have the correct sequence
+    has_correct_sequence = False
+    if len(transformation_sequence) >= 3:
+        for i in range(len(transformation_sequence) - 2):
+            if (
+                transformation_sequence[i] == "acid_chloride_to_alcohol"
+                and transformation_sequence[i + 1] == "alcohol_to_aldehyde"
+                and transformation_sequence[i + 2] == "aldehyde_to_amine"
+            ):
+                has_correct_sequence = True
+                break
+
+    # Check if we found the complete strategy
+    strategy_found = has_correct_sequence and has_heterocyclic_scaffold
+
+    print(f"Sequential functional group interconversion strategy detected: {strategy_found}")
+    print(f"  - Correct transformation sequence: {has_correct_sequence}")
+    print(f"  - Heterocyclic scaffold found: {has_heterocyclic_scaffold}")
+
+    return strategy_found

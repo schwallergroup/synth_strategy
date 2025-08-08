@@ -2,65 +2,57 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes with multiple esterification reactions
-    (COOH → COOMe transformations).
+    This function detects late-stage carbamate formation.
     """
-    esterification_count = 0
+    carbamate_formation_found = False
 
-    def dfs_traverse(node):
-        nonlocal esterification_count
+    def dfs_traverse(node, depth=0):
+        nonlocal carbamate_formation_found
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check for esterification (COOH → COOMe)
-            carboxylic_acid_pattern = Chem.MolFromSmarts("C(=O)[OH]")
-            methyl_ester_pattern = Chem.MolFromSmarts("C(=O)OC")
+            # Check if product has carbamate
+            product_mol = Chem.MolFromSmiles(product_part)
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            reactant_mols = [
-                Chem.MolFromSmiles(r) for r in reactants_smiles if Chem.MolFromSmiles(r)
-            ]
+            if product_mol:
+                carbamate_pattern = Chem.MolFromSmarts("[N][C](=[O])[O]")
+                if product_mol.HasSubstructMatch(carbamate_pattern):
+                    # Check if this is a late-stage reaction (depth < 2)
+                    if depth < 2:
+                        print(f"Found late-stage carbamate formation at depth {depth}")
+                        carbamate_formation_found = True
 
-            # Check if any reactant has carboxylic acid and product has methyl ester
-            if product_mol and product_mol.HasSubstructMatch(methyl_ester_pattern):
-                if any(
-                    r and r.HasSubstructMatch(carboxylic_acid_pattern)
-                    for r in reactant_mols
-                    if r is not None
-                ):
-                    print(f"Found esterification at depth: {node.get('depth', 'unknown')}")
-                    esterification_count += 1
-
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-
-    return esterification_count >= 2
+    return carbamate_formation_found

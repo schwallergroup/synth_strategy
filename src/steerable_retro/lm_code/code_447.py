@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,95 +54,119 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if the synthetic route uses a cross-coupling reaction
-    to form a biaryl system.
+    This function detects a synthetic strategy involving incorporation of a
+    dichlorophenyl group via an isocyanate intermediate.
     """
-    cross_coupling_found = False
+    # Track if we found the strategy
+    strategy_found = False
 
-    def dfs_traverse(node):
-        nonlocal cross_coupling_found
+    # Patterns for dichlorophenyl groups (1,2-, 1,3-, and 1,4-dichlorophenyl)
+    dichlorophenyl_patterns = ["c1c(Cl)cc(Cl)cc1", "c1c(Cl)ccc(Cl)c1", "c1cc(Cl)c(Cl)cc1"]
 
-        if node["type"] == "reaction":
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+    def dfs_traverse(node, depth=0):
+        nonlocal strategy_found
 
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
             reactants_smiles = rsmi.split(">")[0].split(".")
             product_smiles = rsmi.split(">")[-1]
 
-            # Check for cross-coupling reactions directly
-            is_cross_coupling = (
-                checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
-                or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
-                or checker.check_reaction("Stille reaction_aryl", rsmi)
-                or checker.check_reaction("Stille reaction_vinyl", rsmi)
-                or checker.check_reaction("Stille reaction_benzyl", rsmi)
-                or checker.check_reaction("Stille reaction_allyl", rsmi)
-                or checker.check_reaction("Stille reaction_aryl OTf", rsmi)
-                or checker.check_reaction("Negishi", rsmi)
-                or checker.check_reaction("Hiyama-Denmark Coupling", rsmi)
-                or checker.check_reaction("Kumada cross-coupling", rsmi)
-                or checker.check_reaction("Aryllithium cross-coupling", rsmi)
-            )
+            print(f"Analyzing reaction at depth {depth}: {rsmi}")
 
-            # Check if product contains a biaryl system
-            product_mol = Chem.MolFromSmiles(product_smiles)
-            if product_mol and is_cross_coupling:
-                # Check for two connected aromatic rings (using 'a' for any aromatic atom)
-                biaryl_pattern = Chem.MolFromSmarts("a:a-a:a")
-                if product_mol.GetSubstructMatches(biaryl_pattern):
-                    print(f"Cross-coupling biaryl formation detected: {rsmi}")
-                    cross_coupling_found = True
+            try:
+                # Check for dichlorophenyl-containing isocyanate in reactants
+                dichlorophenyl_isocyanate_in_reactants = False
+                for reactant_smiles in reactants_smiles:
+                    # Check if this reactant has dichlorophenyl pattern
+                    has_dichlorophenyl = any(
+                        pattern in reactant_smiles for pattern in dichlorophenyl_patterns
+                    ) or (
+                        checker.check_fg("Aromatic halide", reactant_smiles)
+                        and reactant_smiles.count("Cl") >= 2
+                    )
 
-            # Fallback check for cross-coupling pattern if reaction type check fails
-            if not cross_coupling_found:
-                aryl_halide_found = False
-                organometallic_found = False
+                    # Check if this reactant has isocyanate
+                    has_isocyanate = checker.check_fg("Isocyanate", reactant_smiles)
 
-                for reactant in reactants_smiles:
-                    if checker.check_fg("Aromatic halide", reactant):
-                        aryl_halide_found = True
-                        print(f"Found aromatic halide: {reactant}")
+                    print(f"Reactant: {reactant_smiles}")
+                    print(f"  Has dichlorophenyl: {has_dichlorophenyl}")
+                    print(f"  Has isocyanate: {has_isocyanate}")
 
-                    # Check for various organometallic reagents
-                    if (
-                        checker.check_fg("Boronic acid", reactant)
-                        or checker.check_fg("Boronic ester", reactant)
-                        or "Sn" in reactant
-                        or "ZnCl" in reactant
-                        or checker.check_fg("Magnesium halide", reactant)
-                    ):
-                        organometallic_found = True
-                        print(f"Found organometallic compound: {reactant}")
+                    if has_dichlorophenyl and has_isocyanate:
+                        print(
+                            f"Found dichlorophenyl-containing isocyanate in reactant: {reactant_smiles}"
+                        )
+                        dichlorophenyl_isocyanate_in_reactants = True
+                        break
 
-                # Check if product contains a biaryl system
-                if product_mol and aryl_halide_found and organometallic_found:
-                    biaryl_pattern = Chem.MolFromSmarts("a:a-a:a")
-                    if product_mol.GetSubstructMatches(biaryl_pattern):
-                        print(f"Cross-coupling biaryl formation detected (pattern-based): {rsmi}")
-                        cross_coupling_found = True
+                # Check if the product contains a structure derived from dichlorophenyl-isocyanate
+                if dichlorophenyl_isocyanate_in_reactants:
+                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    if product_mol:
+                        has_dichlorophenyl_in_product = any(
+                            pattern in product_smiles for pattern in dichlorophenyl_patterns
+                        ) or (
+                            checker.check_fg("Aromatic halide", product_smiles)
+                            and product_smiles.count("Cl") >= 2
+                        )
 
-                    # Additional check for biaryl system with more specific pattern
-                    biaryl_pattern2 = Chem.MolFromSmarts("c:c-c:c")
-                    if product_mol.GetSubstructMatches(biaryl_pattern2):
-                        print(f"Carbon-based biaryl formation detected: {rsmi}")
-                        cross_coupling_found = True
+                        print(f"Product: {product_smiles}")
+                        print(f"  Has dichlorophenyl: {has_dichlorophenyl_in_product}")
 
-                    # Check for heteroaromatic biaryl systems
-                    hetero_biaryl = Chem.MolFromSmarts("c:c-[n,o,s]:c")
-                    if product_mol.GetSubstructMatches(hetero_biaryl):
-                        print(f"Heteroaromatic biaryl formation detected: {rsmi}")
-                        cross_coupling_found = True
+                        # Check for common products of isocyanate reactions
+                        has_urea = checker.check_fg("Urea", product_smiles)
+                        has_carbamate = checker.check_fg("Carbamic ester", product_smiles)
+                        has_amide = (
+                            checker.check_fg("Primary amide", product_smiles)
+                            or checker.check_fg("Secondary amide", product_smiles)
+                            or checker.check_fg("Tertiary amide", product_smiles)
+                        )
 
-        # Traverse children
+                        print(f"  Has urea: {has_urea}")
+                        print(f"  Has carbamate: {has_carbamate}")
+                        print(f"  Has amide: {has_amide}")
+
+                        if has_dichlorophenyl_in_product and (
+                            has_urea or has_carbamate or has_amide
+                        ):
+                            print(
+                                f"Found incorporation of dichlorophenyl group via isocyanate in product: {product_smiles}"
+                            )
+                            strategy_found = True
+
+                        # Check if the reaction is a known isocyanate reaction
+                        isocyanate_reaction = (
+                            checker.check_reaction(
+                                "Urea synthesis via isocyanate and primary amine", rsmi
+                            )
+                            or checker.check_reaction(
+                                "Urea synthesis via isocyanate and secondary amine", rsmi
+                            )
+                            or checker.check_reaction(
+                                "Urea synthesis via isocyanate and diazo", rsmi
+                            )
+                            or checker.check_reaction(
+                                "Urea synthesis via isocyanate and sulfonamide", rsmi
+                            )
+                            or checker.check_reaction("Carbamic ester", rsmi)
+                        )
+
+                        print(f"  Is known isocyanate reaction: {isocyanate_reaction}")
+
+                        if has_dichlorophenyl_in_product and isocyanate_reaction:
+                            print(
+                                f"Found dichlorophenyl incorporation via isocyanate reaction: {rsmi}"
+                            )
+                            strategy_found = True
+            except Exception as e:
+                print(f"Error analyzing reaction: {e}")
+
+        # Continue traversing
         for child in node.get("children", []):
-            if (
-                not cross_coupling_found
-            ):  # Stop traversal if we already found what we're looking for
-                dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
-    return cross_coupling_found
+    print(f"Strategy found: {strategy_found}")
+    return strategy_found

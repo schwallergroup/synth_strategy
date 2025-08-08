@@ -2,59 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects early-stage spirocyclic system formation involving
-    an indole and a small ring.
+    This function detects the use of nitrile-containing heterocycles in the synthesis.
     """
-    spirocycle_formed = False
-    indole_pattern = Chem.MolFromSmarts("[#6]1:[#6]:[#6]:[#6]2:[#7]:[#6]:[#6]:[#6]:[#6]:2:[#6]:1")
+    has_nitrile_heterocycle = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal spirocycle_formed
+    def dfs_traverse(node):
+        nonlocal has_nitrile_heterocycle
 
-        if node["type"] == "reaction" and depth >= 3:  # Early stage (high depth)
+        if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
 
-                # Check if product contains a spirocyclic system
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    # Check for spirocyclic system
-                    for atom in product_mol.GetAtoms():
-                        if (
-                            atom.IsInRingSize(3)
-                            and len([r for r in atom.GetNeighbors() if r.IsInRing()]) >= 3
-                        ):
-                            # Check if indole is present
-                            if product_mol.HasSubstructMatch(indole_pattern):
-                                print(f"Detected spirocycle formation at depth {depth}")
-                                spirocycle_formed = True
+                # Check for nitrile-containing heterocycle in reactants
+                nitrile_pattern = Chem.MolFromSmarts("C#N")
+                heterocycle_patterns = [
+                    Chem.MolFromSmarts("c1nccn1"),  # pyrazole
+                    Chem.MolFromSmarts("c1ncnn1"),  # triazole
+                    Chem.MolFromSmarts("c1ncccc1"),  # pyridine
+                    Chem.MolFromSmarts("c1nccs1"),  # thiazole
+                    Chem.MolFromSmarts("c1nccnc1"),  # pyrimidine
+                ]
+
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(nitrile_pattern):
+                            # Check if it also has a heterocycle
+                            for pattern in heterocycle_patterns:
+                                if mol.HasSubstructMatch(pattern):
+                                    print("Detected nitrile-containing heterocycle")
+                                    has_nitrile_heterocycle = True
+                                    break
+                            if has_nitrile_heterocycle:
                                 break
+                    except:
+                        continue
 
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return spirocycle_formed
+    return has_nitrile_heterocycle

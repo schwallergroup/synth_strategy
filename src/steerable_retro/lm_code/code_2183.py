@@ -2,60 +2,49 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic strategy involving nitro group reduction to amine.
+    This function detects if an indole core is maintained throughout the synthesis.
     """
-    nitro_reduction_detected = False
+    indole_pattern = Chem.MolFromSmarts("[#6]1[#6][#7][#6]2[#6][#6][#6][#6][#6]12")
+    indole_present_at_all_depths = True
 
     def dfs_traverse(node):
-        nonlocal nitro_reduction_detected
+        nonlocal indole_present_at_all_depths
+        if node["type"] == "mol":
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                if not mol.HasSubstructMatch(indole_pattern):
+                    if not node.get("in_stock", False):  # Only check non-starting materials
+                        indole_present_at_all_depths = False
+                        print(f"Indole core not found in molecule: {node['smiles']}")
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check for nitro to amine reduction
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol:
-                    amine_pattern = Chem.MolFromSmarts("c-[NH2]")
-                    if product_mol.HasSubstructMatch(amine_pattern):
-                        # Check if any reactant has nitro group
-                        for reactant in reactants:
-                            reactant_mol = Chem.MolFromSmiles(reactant)
-                            if reactant_mol:
-                                nitro_pattern = Chem.MolFromSmarts("c-[N+](=[O])-[O-]")
-                                if reactant_mol.HasSubstructMatch(nitro_pattern):
-                                    nitro_reduction_detected = True
-                                    print("Nitro to amine reduction detected")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Nitro to amine reduction strategy detected: {nitro_reduction_detected}")
-    return nitro_reduction_detected
+    print(f"Indole core maintained throughout: {indole_present_at_all_depths}")
+    return indole_present_at_all_depths

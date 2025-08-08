@@ -2,75 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects late-stage nitrile formation from tertiary amine.
-    Looks for a reaction in the first half of the synthesis that introduces a nitrile group.
+    Detects synthesis routes that involve multiple heterocyclic systems,
+    specifically thiophene, pyrimidine, morpholine, and piperazine.
     """
-    nitrile_pattern = Chem.MolFromSmarts("[#6]#[N]")
-    tertiary_amine_pattern = Chem.MolFromSmarts("[#6]-[N](-[#6])-[#6]")
+    # Count of different heterocycles found
+    heterocycle_count = 0
+    found_thiophene = False
+    found_pyrimidine = False
+    found_morpholine = False
+    found_piperazine = False
 
-    found_nitrile_formation = False
-    max_depth = 0
-    nitrile_formation_depth = None
+    def dfs_traverse(node):
+        nonlocal heterocycle_count, found_thiophene, found_pyrimidine, found_morpholine, found_piperazine
 
-    # First pass to find max depth
-    def find_max_depth(node, current_depth=0):
-        nonlocal max_depth
-        max_depth = max(max_depth, current_depth)
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for each heterocycle
+                thiophene = Chem.MolFromSmarts("[#6]1[#6][#6][#16][#6]1")
+                pyrimidine = Chem.MolFromSmarts("[#6]1[#7][#6][#7][#6][#6]1")
+                morpholine = Chem.MolFromSmarts("[#6]1[#6][#8][#6][#6][#7]1")
+                piperazine = Chem.MolFromSmarts("[#6]1[#6][#7][#6][#6][#7]1")
 
+                if not found_thiophene and mol.HasSubstructMatch(thiophene):
+                    found_thiophene = True
+                    heterocycle_count += 1
+                    print("Found thiophene heterocycle")
+
+                if not found_pyrimidine and mol.HasSubstructMatch(pyrimidine):
+                    found_pyrimidine = True
+                    heterocycle_count += 1
+                    print("Found pyrimidine heterocycle")
+
+                if not found_morpholine and mol.HasSubstructMatch(morpholine):
+                    found_morpholine = True
+                    heterocycle_count += 1
+                    print("Found morpholine heterocycle")
+
+                if not found_piperazine and mol.HasSubstructMatch(piperazine):
+                    found_piperazine = True
+                    heterocycle_count += 1
+                    print("Found piperazine heterocycle")
+
+        # Continue traversing
         for child in node.get("children", []):
-            find_max_depth(child, current_depth + 1)
+            dfs_traverse(child)
 
-    # Second pass to find nitrile formation
-    def dfs_traverse(node, depth=0):
-        nonlocal found_nitrile_formation, nitrile_formation_depth
-
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check if product contains nitrile
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(nitrile_pattern):
-                    # Check if any reactant contains tertiary amine
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(tertiary_amine_pattern):
-                            print(f"Found nitrile formation from tertiary amine at depth {depth}")
-                            found_nitrile_formation = True
-                            nitrile_formation_depth = depth
-                            break
-
-        for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
-
-    find_max_depth(route)
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if nitrile formation occurs in first half of synthesis (late stage)
-    if found_nitrile_formation and nitrile_formation_depth is not None:
-        return nitrile_formation_depth <= max_depth / 2
-
-    return False
+    # Return True if at least 3 different heterocycles are found
+    return heterocycle_count >= 3

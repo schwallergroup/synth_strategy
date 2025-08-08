@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,69 +54,98 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if a Boc-protected amine is maintained throughout the synthesis.
-    This means the Boc group is present in the final product and is not added
-    or removed during the synthesis.
+    This function detects a synthetic strategy involving ring opening,
+    specifically ketal/acetal ring opening and other ring opening reactions.
     """
-    # Check if target molecule has Boc group
-    if route["type"] == "mol":
-        target_mol = route["smiles"]
-        target_has_boc = checker.check_fg("Boc", target_mol)
-        if not target_has_boc:
-            print(f"Target molecule does not have Boc group: {target_mol}")
-            return False
+    has_ring_opening = False
 
-    # Track if Boc is maintained in all reactions
-    boc_maintained = True
+    def dfs_traverse(node):
+        nonlocal has_ring_opening
 
-    def dfs_traverse(node, depth=0):
-        nonlocal boc_maintained
-
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Check if product has Boc group
-            product_has_boc = checker.check_fg("Boc", product)
+            # Check for specific ring opening reactions
+            if (
+                checker.check_reaction("Acetal hydrolysis to aldehyde", rsmi)
+                or checker.check_reaction("Ketal hydrolysis to ketone", rsmi)
+                or checker.check_reaction("Acetal hydrolysis to diol", rsmi)
+            ):
+                print(f"Found ketal/acetal ring opening reaction: {rsmi}")
+                has_ring_opening = True
+                return
 
-            # Check if any reactant has Boc group
-            reactant_has_boc = any(checker.check_fg("Boc", reactant) for reactant in reactants)
+            # Check for epoxide ring opening
+            if checker.check_reaction("Ring opening of epoxide with amine", rsmi):
+                print(f"Found epoxide ring opening reaction: {rsmi}")
+                has_ring_opening = True
+                return
 
-            # Check if Boc protection/deprotection reaction
-            is_boc_protection = checker.check_reaction("Boc amine protection", rsmi)
-            is_boc_deprotection = checker.check_reaction("Boc amine deprotection", rsmi)
+            # Check for other ring opening patterns
+            for reactant in reactants_smiles:
+                # Check for cyclic structures in reactants
+                has_cyclic_reactant = any(
+                    checker.check_ring(ring_name, reactant)
+                    for ring_name in [
+                        "dioxane",
+                        "dioxolane",
+                        "oxirane",
+                        "oxetane",
+                        "tetrahydrofuran",
+                        "tetrahydropyran",
+                        "aziridine",
+                        "azetidine",
+                        "pyrrolidine",
+                        "piperidine",
+                    ]
+                )
 
-            # In retrosynthesis, a protection step means the Boc is added going backward,
-            # which means it's removed going forward - this breaks the "maintained" strategy
-            if is_boc_protection:
-                print(f"Found Boc protection reaction at depth {depth}: {rsmi}")
-                boc_maintained = False
+                if has_cyclic_reactant:
+                    # Try to confirm by counting rings
+                    try:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        product_mol = Chem.MolFromSmiles(product_smiles)
 
-            # In retrosynthesis, a deprotection step means the Boc is removed going backward,
-            # which means it's added going forward - this breaks the "maintained" strategy
-            if is_boc_deprotection:
-                print(f"Found Boc deprotection reaction at depth {depth}: {rsmi}")
-                boc_maintained = False
+                        if reactant_mol and product_mol:
+                            reactant_rings = Chem.GetSSSR(reactant_mol)
+                            product_rings = Chem.GetSSSR(product_mol)
 
-            # Check if Boc is maintained in this step
-            if product_has_boc and not reactant_has_boc and not is_boc_protection:
-                print(f"Boc appears in product but not in reactants at depth {depth}: {rsmi}")
-                boc_maintained = False
+                            if len(reactant_rings) > len(product_rings):
+                                print(f"Found ring opening based on ring count: {rsmi}")
+                                print(
+                                    f"Reactant rings: {len(reactant_rings)}, Product rings: {len(product_rings)}"
+                                )
+                                has_ring_opening = True
+                                return
+                    except Exception as e:
+                        print(f"Error in ring counting: {e}")
 
-            if not product_has_boc and reactant_has_boc and not is_boc_deprotection:
-                print(f"Boc appears in reactants but not in product at depth {depth}: {rsmi}")
-                boc_maintained = False
+                    # Check for functional group changes consistent with ring opening
+                    if (
+                        checker.check_ring("dioxane", reactant)
+                        or checker.check_ring("dioxolane", reactant)
+                    ) and (
+                        checker.check_fg("Ketone", product_smiles)
+                        or checker.check_fg("Aldehyde", product_smiles)
+                    ):
+                        print(f"Found ketal/acetal ring opening based on functional groups: {rsmi}")
+                        has_ring_opening = True
+                        return
 
-            if product_has_boc:
-                print(f"Found Boc-protected amine in product at depth {depth}: {rsmi}")
+                    if checker.check_ring("oxirane", reactant) and "OH" in product_smiles:
+                        print(f"Found epoxide ring opening based on functional groups: {rsmi}")
+                        has_ring_opening = True
+                        return
 
-        # Traverse children
+        # Continue traversing
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    print(f"Boc-protected amine maintained strategy detected: {boc_maintained}")
-    return boc_maintained
+    if has_ring_opening:
+        print("Detected ring opening strategy")
+    return has_ring_opening

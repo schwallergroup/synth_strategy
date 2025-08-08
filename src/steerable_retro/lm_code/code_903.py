@@ -2,103 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the final product contains multiple (>3) connected aromatic rings.
+    This function detects if the route uses a nitrile -> amine -> amide
+    functional group interconversion sequence.
     """
-    has_multi_aromatic = False
+    has_nitrile_to_amine = False
+    has_amine_to_amide = False
 
-    def dfs_traverse(node, is_root=True):
-        nonlocal has_multi_aromatic
+    def dfs_traverse(node):
+        nonlocal has_nitrile_to_amine, has_amine_to_amide
 
-        if node["type"] == "mol" and is_root:  # Final product node (root)
-            try:
-                mol_smiles = node["smiles"]
-                print(f"Analyzing final product: {mol_smiles}")
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if mol:
-                    # Get all aromatic rings
-                    aromatic_rings = []
-                    ring_info = mol.GetRingInfo()
-                    for ring_atoms in ring_info.AtomRings():
-                        is_aromatic = True
-                        for atom_idx in ring_atoms:
-                            atom = mol.GetAtomWithIdx(atom_idx)
-                            if not atom.GetIsAromatic():
-                                is_aromatic = False
-                                break
-                        if is_aromatic:
-                            aromatic_rings.append(set(ring_atoms))
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                    print(f"Found {len(aromatic_rings)} aromatic rings")
+            nitrile_pattern = Chem.MolFromSmarts("[C]#[N]")
+            amine_pattern = Chem.MolFromSmarts("[N;H2][C]")
+            amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
 
-                    # Check if we have more than 3 aromatic rings
-                    if len(aromatic_rings) > 3:
-                        print(f"Final product contains more than 3 aromatic rings: {mol_smiles}")
-                        has_multi_aromatic = True
-                        return
+            product_mol = Chem.MolFromSmiles(product)
 
-                    # Check if rings are connected (share atoms or bonds)
-                    if len(aromatic_rings) >= 2:
-                        # Build a graph of connected rings
-                        connected_rings = {}
-                        for i in range(len(aromatic_rings)):
-                            connected_rings[i] = []
-                            for j in range(len(aromatic_rings)):
-                                if i != j and aromatic_rings[i].intersection(aromatic_rings[j]):
-                                    connected_rings[i].append(j)
+            # Check for nitrile -> amine conversion
+            if product_mol and product_mol.HasSubstructMatch(amine_pattern):
+                nitrile_in_reactants = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(nitrile_pattern):
+                        nitrile_in_reactants = True
+                        break
 
-                        # Count connected components and their sizes
-                        visited = set()
-                        connected_components = []
+                if nitrile_in_reactants:
+                    has_nitrile_to_amine = True
+                    print("Nitrile to amine conversion detected")
 
-                        def dfs_rings(ring_idx, component):
-                            visited.add(ring_idx)
-                            component.append(ring_idx)
-                            for neighbor in connected_rings[ring_idx]:
-                                if neighbor not in visited:
-                                    dfs_rings(neighbor, component)
+            # Check for amine -> amide conversion
+            if product_mol and product_mol.HasSubstructMatch(amide_pattern):
+                amine_in_reactants = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(amine_pattern):
+                        amine_in_reactants = True
+                        break
 
-                        for i in range(len(aromatic_rings)):
-                            if i not in visited:
-                                component = []
-                                dfs_rings(i, component)
-                                connected_components.append(component)
-
-                        # Check if any component has more than 3 rings
-                        for component in connected_components:
-                            print(f"Found connected component with {len(component)} rings")
-                            if len(component) > 3:
-                                print(
-                                    f"Final product contains a connected system of more than 3 aromatic rings"
-                                )
-                                has_multi_aromatic = True
-                                return
-            except Exception as e:
-                print(f"Error analyzing molecule: {e}")
+                if amine_in_reactants:
+                    has_amine_to_amide = True
+                    print("Amine to amide conversion detected")
 
         for child in node.get("children", []):
-            dfs_traverse(child, is_root=False)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    print(f"Multi-aromatic system found: {has_multi_aromatic}")
-    return has_multi_aromatic
+    result = has_nitrile_to_amine and has_amine_to_amide
+    print(f"Nitrile -> amine -> amide sequence: {result}")
+    return result

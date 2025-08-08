@@ -2,93 +2,104 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving multiple protection/deprotection steps.
+    This function detects if the synthetic route involves a nitro reduction followed by amide formation.
     """
-    protection_count = 0
-    deprotection_count = 0
+    # Track molecules through the synthesis
+    molecule_sequence = []
+    nitro_reduction_step = -1
+    amide_formation_step = -1
 
-    # SMARTS patterns for common protecting groups
-    boc_pattern = Chem.MolFromSmarts("[NX3]C(=O)OC(C)(C)C")
-    silyl_pattern = Chem.MolFromSmarts("[OX2][Si]")
-    nosyl_pattern = Chem.MolFromSmarts("[NX3][S](=O)(=O)c1ccc([N+](=O)[O-])cc1")
-
-    def dfs_traverse(node):
-        nonlocal protection_count, deprotection_count
+    def dfs_traverse(node, step=0):
+        nonlocal nitro_reduction_step, amide_formation_step
 
         if node["type"] == "reaction":
-            if "rsmi" in node["metadata"]:
+            if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0]
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                try:
-                    reactants_mol = Chem.MolFromSmiles(reactants_smiles)
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for nitro reduction
+                nitro_pattern = Chem.MolFromSmarts("[#6]c[N+](=[O])[O-]")
+                amine_pattern = Chem.MolFromSmarts("[#6]c[NH2]")
 
-                    if reactants_mol and product_mol:
-                        # Check for protection (appearance of protecting group)
-                        if (
-                            (
-                                not reactants_mol.HasSubstructMatch(boc_pattern)
-                                and product_mol.HasSubstructMatch(boc_pattern)
-                            )
-                            or (
-                                not reactants_mol.HasSubstructMatch(silyl_pattern)
-                                and product_mol.HasSubstructMatch(silyl_pattern)
-                            )
-                            or (
-                                not reactants_mol.HasSubstructMatch(nosyl_pattern)
-                                and product_mol.HasSubstructMatch(nosyl_pattern)
-                            )
-                        ):
-                            protection_count += 1
-                            print(f"Protection step detected: {rsmi}")
+                nitro_in_reactants = False
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(nitro_pattern):
+                            nitro_in_reactants = True
+                            break
+                    except:
+                        continue
 
-                        # Check for deprotection (disappearance of protecting group)
-                        if (
-                            (
-                                reactants_mol.HasSubstructMatch(boc_pattern)
-                                and not product_mol.HasSubstructMatch(boc_pattern)
-                            )
-                            or (
-                                reactants_mol.HasSubstructMatch(silyl_pattern)
-                                and not product_mol.HasSubstructMatch(silyl_pattern)
-                            )
-                            or (
-                                reactants_mol.HasSubstructMatch(nosyl_pattern)
-                                and not product_mol.HasSubstructMatch(nosyl_pattern)
-                            )
-                        ):
-                            deprotection_count += 1
-                            print(f"Deprotection step detected: {rsmi}")
-                except:
-                    print("Error processing SMILES in multiple_protection_deprotection_strategy")
+                if nitro_in_reactants:
+                    try:
+                        prod_mol = Chem.MolFromSmiles(product)
+                        if prod_mol and prod_mol.HasSubstructMatch(amine_pattern):
+                            print("Nitro reduction detected at step", step)
+                            nitro_reduction_step = step
+                    except:
+                        pass
+
+                # Check for amide formation
+                acyl_chloride_pattern = Chem.MolFromSmarts("C(=O)Cl")
+                amide_pattern = Chem.MolFromSmarts("C(=O)N")
+
+                acyl_chloride_in_reactants = False
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol and mol.HasSubstructMatch(acyl_chloride_pattern):
+                            acyl_chloride_in_reactants = True
+                            break
+                    except:
+                        continue
+
+                if acyl_chloride_in_reactants:
+                    try:
+                        prod_mol = Chem.MolFromSmiles(product)
+                        if prod_mol and prod_mol.HasSubstructMatch(amide_pattern):
+                            print("Amide formation detected at step", step)
+                            amide_formation_step = step
+                    except:
+                        pass
 
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, step + 1)
 
     dfs_traverse(route)
 
-    # Return True if there are at least 2 protection/deprotection steps combined
-    return (protection_count + deprotection_count) >= 2
+    # Check if nitro reduction occurs before amide formation
+    if nitro_reduction_step != -1 and amide_formation_step != -1:
+        if (
+            nitro_reduction_step > amide_formation_step
+        ):  # Remember: higher step number = earlier in synthesis
+            print("Sequence detected: nitro reduction followed by amide formation")
+            return True
+
+    return False

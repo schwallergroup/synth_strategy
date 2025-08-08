@@ -2,81 +2,51 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves sequential aromatic coupling reactions.
+    This function detects if the route involves the synthesis of a benzochroman scaffold.
     """
-    coupling_depths = []
+    has_benzochroman_scaffold = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal coupling_depths
+    def dfs_traverse(node):
+        nonlocal has_benzochroman_scaffold
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            # Benzochroman scaffold SMARTS pattern
+            # This pattern represents the core tricyclic system of benzochroman
+            benzochroman_pattern = Chem.MolFromSmarts("[c]1[c][c]2[c]([c][c]1)[O][C][C][C]2")
 
-            # Check for boronic acid/ester pattern in reactants
-            boronic_pattern = Chem.MolFromSmarts("[c][B]([O])[O]")
-            boronic_ester_pattern = Chem.MolFromSmarts("[c][B]1[O][C]([C])([C])[C]([C])([C])[O]1")
-
-            # Check for aryl halide pattern in reactants
-            aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,I,Cl]")
-
-            # Check for biaryl formation in product
-            biaryl_pattern = Chem.MolFromSmarts("[c]-[c]")
-
-            has_boronic = False
-            has_aryl_halide = False
-
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        if mol.HasSubstructMatch(boronic_pattern) or mol.HasSubstructMatch(
-                            boronic_ester_pattern
-                        ):
-                            has_boronic = True
-                        if mol.HasSubstructMatch(aryl_halide_pattern):
-                            has_aryl_halide = True
-                except:
-                    continue
-
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                has_biaryl = product_mol and product_mol.HasSubstructMatch(biaryl_pattern)
-            except:
-                has_biaryl = False
-
-            if has_boronic and has_aryl_halide and has_biaryl:
-                print(f"Found aromatic coupling at depth {depth}: {rsmi}")
-                coupling_depths.append(depth)
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and mol.HasSubstructMatch(benzochroman_pattern):
+                has_benzochroman_scaffold = True
+                print("Benzochroman scaffold detected")
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Check if there are at least 2 coupling reactions with different depths
-    sequential = len(set(coupling_depths)) >= 2
-    print(f"Sequential aromatic couplings found: {sequential} at depths {coupling_depths}")
-    return sequential
+    print(f"Benzochroman scaffold synthesis: {has_benzochroman_scaffold}")
+    return has_benzochroman_scaffold

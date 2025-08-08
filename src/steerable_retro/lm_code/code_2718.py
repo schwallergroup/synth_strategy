@@ -2,74 +2,230 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
-def main(route, depth=0, max_depth=2):
+def main(route):
     """
-    Detects if the synthesis route includes a late-stage N-oxidation.
-    Late-stage means it occurs within the first few steps (low depth in retrosynthetic analysis).
+    This function detects if the synthetic route primarily involves heterocyclic systems,
+    particularly nitrogen-containing heterocycles like pyrazoles and pyrimidines.
     """
-    if route["type"] == "reaction" and depth <= max_depth:
-        # Check if this is an N-oxidation reaction
-        try:
-            rsmi = route["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+    heterocycle_reactions = 0
+    total_reactions = 0
 
-            # Check if product contains N-oxide but reactants don't
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol:
-                has_n_oxide_product = False
-                for atom in product_mol.GetAtoms():
-                    if (
-                        atom.GetSymbol() == "N"
-                        and atom.GetFormalCharge() == 1
-                        and any(n.GetSymbol() == "O" for n in atom.GetNeighbors())
-                    ):
-                        has_n_oxide_product = True
+    # List of heterocycles to check
+    heterocycles = [
+        "pyrazole",
+        "pyrimidine",
+        "furan",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "oxolane",
+        "oxane",
+        "dioxolane",
+        "dioxolene",
+        "trioxane",
+        "dioxepane",
+        "pyrrole",
+        "pyridine",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "thiomorpholine",
+        "aziridine",
+        "azetidine",
+        "azepane",
+        "diazepane",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "carbazole",
+        "acridine",
+        "thiophene",
+        "thiopyran",
+        "thiirane",
+        "thietane",
+        "thiolane",
+        "thiane",
+        "dithiane",
+        "dithiolane",
+        "benzothiophene",
+        "oxathiolane",
+        "dioxathiolane",
+        "thiazolidine",
+        "oxazolidine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "pteridin",
+        "phenothiazine",
+        "phenoxazine",
+        "dibenzofuran",
+        "dibenzothiophene",
+        "xanthene",
+        "thioxanthene",
+        "pyrroline",
+        "pyrrolidone",
+        "imidazolidine",
+        "porphyrin",
+        "indazole",
+        "benzotriazole",
+    ]
+
+    def dfs_traverse(node):
+        nonlocal heterocycle_reactions, total_reactions
+
+        if node["type"] == "reaction":
+            total_reactions += 1
+            heterocycle_involved = False
+
+            try:
+                rsmi = node["metadata"]["rsmi"]
+                reactants_part = rsmi.split(">")[0]
+                products_part = rsmi.split(">")[-1]
+
+                reactants = reactants_part.split(".")
+                products = products_part.split(".")
+
+                # Check if heterocycles are formed or modified in the reaction
+                reactant_heterocycles = set()
+                product_heterocycles = set()
+
+                # Check heterocycles in reactants
+                for reactant in reactants:
+                    for heterocycle in heterocycles:
+                        if checker.check_ring(heterocycle, reactant):
+                            reactant_heterocycles.add(heterocycle)
+
+                # Check heterocycles in products
+                for product in products:
+                    for heterocycle in heterocycles:
+                        if checker.check_ring(heterocycle, product):
+                            product_heterocycles.add(heterocycle)
+
+                # Heterocycle reaction if:
+                # 1. New heterocycle formed (in products but not in reactants)
+                # 2. Heterocycle modified (different heterocycles in reactants vs products)
+                # 3. Reaction specifically involves heterocycle chemistry
+
+                if (
+                    product_heterocycles - reactant_heterocycles
+                    or reactant_heterocycles - product_heterocycles
+                    or (reactant_heterocycles and product_heterocycles)
+                ):
+                    heterocycle_involved = True
+
+                # Check for specific heterocycle-forming reactions
+                heterocycle_forming_reactions = [
+                    "Paal-Knorr pyrrole synthesis",
+                    "Fischer indole",
+                    "Friedlaender chinoline",
+                    "benzofuran",
+                    "benzothiophene",
+                    "indole",
+                    "oxadiazole",
+                    "pyrazole",
+                    "tetrazole_terminal",
+                    "tetrazole_connect_regioisomere_1",
+                    "tetrazole_connect_regioisomere_2",
+                    "Huisgen_Cu-catalyzed_1,4-subst",
+                    "Huisgen_Ru-catalyzed_1,5_subst",
+                    "1,2,4-triazole_acetohydrazide",
+                    "1,2,4-triazole_carboxylic-acid/ester",
+                    "3-nitrile-pyridine",
+                    "benzimidazole_derivatives_carboxylic-acid/ester",
+                    "benzimidazole_derivatives_aldehyde",
+                    "benzothiazole",
+                    "benzoxazole_arom-aldehyde",
+                    "benzoxazole_carboxylic-acid",
+                    "thiazole",
+                ]
+
+                for rxn_type in heterocycle_forming_reactions:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        heterocycle_involved = True
                         break
 
-                if has_n_oxide_product:
-                    # Check if reactants don't have N-oxide
-                    has_n_oxide_reactant = False
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol:
-                            for atom in reactant_mol.GetAtoms():
-                                if (
-                                    atom.GetSymbol() == "N"
-                                    and atom.GetFormalCharge() == 1
-                                    and any(n.GetSymbol() == "O" for n in atom.GetNeighbors())
-                                ):
-                                    has_n_oxide_reactant = True
-                                    break
+                if heterocycle_involved:
+                    heterocycle_reactions += 1
+                    print(f"Heterocycle reaction detected: {rsmi}")
 
-                    if not has_n_oxide_reactant:
-                        print(f"Late-stage N-oxidation detected at depth {depth}")
-                        return True
-        except Exception as e:
-            print(f"Error analyzing N-oxidation: {e}")
+            except Exception as e:
+                print(f"Error processing reaction: {e}")
 
-    # Recursively check children
-    for child in route.get("children", []):
-        if late_stage_n_oxidation_strategy(child, depth + 1, max_depth):
-            return True
+        for child in node.get("children", []):
+            dfs_traverse(child)
 
-    return False
+    dfs_traverse(route)
+
+    # Route is heterocycle-focused if most reactions involve heterocycles
+    is_heterocycle_focused = total_reactions > 0 and heterocycle_reactions / total_reactions >= 0.7
+
+    print(f"Heterocycle reactions: {heterocycle_reactions}/{total_reactions}")
+    print(f"Heterocycle-focused synthesis: {is_heterocycle_focused}")
+
+    return is_heterocycle_focused

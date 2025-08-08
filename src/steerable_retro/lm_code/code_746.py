@@ -2,77 +2,67 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a linear synthesis route that preserves an aryl bromide throughout
-    the synthesis while building molecular complexity.
+    This function detects if the synthesis route involves a late-stage Suzuki coupling.
     """
-    is_linear = True
-    has_aryl_bromide = False
-    aryl_bromide_preserved = False
-    reaction_count = 0
+    boronic_pattern = Chem.MolFromSmarts("[c]-[B]([O])[O]")
+    aryl_halide_pattern = Chem.MolFromSmarts("[c]-[#53,#35,#17]")  # I, Br, Cl
+    suzuki_coupling_late_stage = False
+    late_stage_threshold = 4  # Consider depths < 4 as late in synthesis
 
     def dfs_traverse(node):
-        nonlocal is_linear, has_aryl_bromide, aryl_bromide_preserved, reaction_count
+        nonlocal suzuki_coupling_late_stage
 
         if node["type"] == "reaction":
-            reaction_count += 1
+            depth = int(node.get("metadata", {}).get("depth", 0))
+            if depth < late_stage_threshold:
+                rsmi = node.get("metadata", {}).get("rsmi", "")
+                if rsmi:
+                    reactants = rsmi.split(">")[0].split(".")
+                    product = rsmi.split(">")[-1]
 
-            # Check if this is a branching point (convergent synthesis)
-            reactant_count = 0
-            for child in node.get("children", []):
-                if child["type"] == "mol" and not child.get("in_stock", False):
-                    reactant_count += 1
+                    # Check for Suzuki coupling pattern: boronic acid/ester + aryl halide -> biaryl
+                    has_boronic = False
+                    has_aryl_halide = False
 
-            if reactant_count > 1:
-                is_linear = False
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if reactant_mol.HasSubstructMatch(boronic_pattern):
+                                has_boronic = True
+                            if reactant_mol.HasSubstructMatch(aryl_halide_pattern):
+                                has_aryl_halide = True
 
-            # Check for aryl bromide in product
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
+                    if has_boronic and has_aryl_halide:
+                        print(f"Late-stage Suzuki coupling detected at depth {depth}")
+                        suzuki_coupling_late_stage = True
 
-                if product:
-                    product_mol = Chem.MolFromSmiles(product)
-                    if product_mol:
-                        aryl_bromide_pattern = Chem.MolFromSmarts("[Br][c]")
-                        if product_mol.HasSubstructMatch(aryl_bromide_pattern):
-                            has_aryl_bromide = True
-
-        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Check if aryl bromide is preserved throughout (present in final product)
-    if "smiles" in route:
-        final_product_mol = Chem.MolFromSmiles(route["smiles"])
-        if final_product_mol:
-            aryl_bromide_pattern = Chem.MolFromSmarts("[Br][c]")
-            if final_product_mol.HasSubstructMatch(aryl_bromide_pattern):
-                aryl_bromide_preserved = True
-
-    result = is_linear and has_aryl_bromide and aryl_bromide_preserved and reaction_count >= 3
-    print(f"Linear synthesis with preserved aryl bromide: {result}")
-    return result
+    return suzuki_coupling_late_stage

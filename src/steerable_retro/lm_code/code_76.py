@@ -2,62 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects N-alkylation reactions, particularly with alkyl halides.
+    This function detects a synthesis that preserves a bicyclic core structure
+    throughout the synthesis.
     """
-    n_alkylation_detected = False
+    bicyclic_steps = 0
+    total_steps = 0
 
-    def dfs_traverse(node):
-        nonlocal n_alkylation_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal bicyclic_steps, total_steps
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            total_steps += 1
 
-                # Patterns for N-alkylation
-                nh_pattern = Chem.MolFromSmarts("[nH]")  # Pyrazole NH
-                alkyl_halide_pattern = Chem.MolFromSmarts(
-                    "[#6][#6]([#6])[I,Br,Cl]"
-                )  # Alkyl halide (focusing on isopropyl)
-                n_alkylated_pattern = Chem.MolFromSmarts(
-                    "[n][#6][#6]([#6])[#6,#1]"
-                )  # N-alkylated product
+            # Extract product
+            rsmi = node["metadata"]["rsmi"]
+            product_smiles = rsmi.split(">")[-1]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-                product_mol = Chem.MolFromSmiles(product) if product else None
+            # Check for bicyclic core
+            bicyclic_pattern = Chem.MolFromSmarts("[#6]1[#6]2[#6][#6]2[#6][#7]1")
+            if product_mol.HasSubstructMatch(bicyclic_pattern):
+                bicyclic_steps += 1
+                print(f"Detected bicyclic core at depth {depth}")
 
-                if product_mol and product_mol.HasSubstructMatch(n_alkylated_pattern):
-                    if any(r and r.HasSubstructMatch(nh_pattern) for r in reactant_mols):
-                        if any(
-                            r and r.HasSubstructMatch(alkyl_halide_pattern) for r in reactant_mols
-                        ):
-                            print("Detected N-alkylation with alkyl halide")
-                            n_alkylation_detected = True
-
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return n_alkylation_detected
+
+    # Return True if bicyclic core is preserved throughout most of the synthesis
+    core_preserved = (bicyclic_steps > 0) and (bicyclic_steps / total_steps >= 0.75)
+    print(f"Strategy detection result: {core_preserved}")
+    print(f"Steps with bicyclic core: {bicyclic_steps}/{total_steps}")
+
+    return core_preserved

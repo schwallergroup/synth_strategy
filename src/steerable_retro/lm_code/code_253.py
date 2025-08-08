@@ -2,59 +2,62 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy
-    (each step builds on a single precursor, not convergent)
+    Detects if the synthesis route involves the oxidation of a methylthio group to a methylsulfonyl group.
     """
-    is_linear = True
+    oxidation_detected = False
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        nonlocal oxidation_detected
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # If a reaction has more than one non-reagent reactant, it's convergent
-            # We'll consider small molecules (less than 10 atoms) as potential reagents
-            significant_reactants = 0
-            for reactant in reactants:
-                mol = Chem.MolFromSmiles(reactant)
-                if (
-                    mol and mol.GetNumAtoms() >= 10
-                ):  # Arbitrary threshold for "significant" molecule
-                    significant_reactants += 1
+                # Check for methylthio in reactants
+                methylthio_pattern = Chem.MolFromSmarts("[#6][S][#6]")
+                # Check for methylsulfonyl in product
+                methylsulfonyl_pattern = Chem.MolFromSmarts("[#6][S](=[O])(=[O])[#6]")
 
-            if significant_reactants > 1:
-                is_linear = False
-                print(f"Found convergent step with {significant_reactants} significant reactants")
+                product_mol = Chem.MolFromSmiles(product)
 
-        # Process children
+                if product_mol and product_mol.HasSubstructMatch(methylsulfonyl_pattern):
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol and reactant_mol.HasSubstructMatch(methylthio_pattern):
+                            print("Detected methylthio to methylsulfonyl oxidation")
+                            oxidation_detected = True
+                            break
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    print(f"Linear synthesis strategy detected: {is_linear}")
-    return is_linear
+    return oxidation_detected

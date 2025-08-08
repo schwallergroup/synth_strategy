@@ -2,66 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a strategy based on maintaining an indole-benzamide core
-    throughout the synthesis.
+    This function detects if the synthetic route involves silyl protection of a hydroxyl group.
     """
-    has_indole_benzamide = False
-    indole_benzamide_count = 0
-    total_reactions = 0
+    silyl_protection_found = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_indole_benzamide, indole_benzamide_count, total_reactions
+    def dfs_traverse(node):
+        nonlocal silyl_protection_found
 
-        if node["type"] == "reaction":
-            total_reactions += 1
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-                # Check for indole-benzamide core
-                prod_mol = Chem.MolFromSmiles(product)
-                if prod_mol:
-                    indole_pattern = Chem.MolFromSmarts("c1cnc2ccccc12")
-                    benzamide_pattern = Chem.MolFromSmarts("c1ccccc1C(=O)N")
+            # Check if reactants contain a hydroxyl group and product contains a silyl ether
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+            product_mol = Chem.MolFromSmiles(product) if product else None
 
-                    if prod_mol.HasSubstructMatch(indole_pattern) and prod_mol.HasSubstructMatch(
-                        benzamide_pattern
-                    ):
-                        indole_benzamide_count += 1
-                        print(f"Found indole-benzamide core at depth {depth}")
+            if product_mol:
+                # Check for hydroxyl in reactants
+                hydroxyl_pattern = Chem.MolFromSmarts("[OX2H]")
+                has_hydroxyl = any(
+                    mol.HasSubstructMatch(hydroxyl_pattern) for mol in reactant_mols if mol
+                )
+
+                # Check for silyl ether in product
+                silyl_pattern = Chem.MolFromSmarts("[OX2][Si]")
+                has_silyl = product_mol.HasSubstructMatch(silyl_pattern) if product_mol else False
+
+                if has_hydroxyl and has_silyl:
+                    print("Silyl protection detected")
+                    silyl_protection_found = True
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-
-    # Consider it a core strategy if present in most reactions
-    has_indole_benzamide = indole_benzamide_count >= total_reactions * 0.7
-
-    if has_indole_benzamide:
-        print(
-            f"Detected indole-benzamide core strategy (present in {indole_benzamide_count}/{total_reactions} reactions)"
-        )
-
-    return has_indole_benzamide
+    return silyl_protection_found

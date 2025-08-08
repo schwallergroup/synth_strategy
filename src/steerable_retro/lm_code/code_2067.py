@@ -2,69 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis follows a linear strategy
-    rather than a convergent one.
+    Detects if the synthesis includes N-alkylation of a heterocycle.
     """
-    # In a linear synthesis, most reactions have only one non-reagent reactant
-    # We'll count reactions and check how many have multiple complex reactants
-
-    total_reactions = 0
-    convergent_reactions = 0
-    threshold_complex_atoms = 10  # Define complex molecule as having > 10 atoms
+    found_n_alkylation = False
 
     def dfs_traverse(node):
-        nonlocal total_reactions, convergent_reactions
+        nonlocal found_n_alkylation
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                total_reactions += 1
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Count complex reactants
-                complex_reactants = 0
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.GetNumAtoms() > threshold_complex_atoms:
-                        complex_reactants += 1
+            # Convert to RDKit molecules
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+            product = Chem.MolFromSmiles(product_smiles)
 
-                if complex_reactants > 1:
-                    convergent_reactions += 1
-                    print(f"Convergent reaction detected: {complex_reactants} complex reactants")
+            # Check for N-alkylation of heterocycle
+            heterocycle_nh = Chem.MolFromSmarts("[nH]")
+            alkyl_halide = Chem.MolFromSmarts("[C][Br,Cl,I,F]")
+            n_alkylated = Chem.MolFromSmarts("[n][C]")
+
+            if (
+                any(r.HasSubstructMatch(heterocycle_nh) for r in reactants)
+                and any(r.HasSubstructMatch(alkyl_halide) for r in reactants)
+                and product.HasSubstructMatch(n_alkylated)
+            ):
+                found_n_alkylation = True
+                print("Found N-alkylation of heterocycle")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
 
-    # If less than 25% of reactions are convergent, consider it a linear synthesis
-    is_linear = total_reactions > 0 and (convergent_reactions / total_reactions) < 0.25
-    if is_linear:
-        print(
-            f"Linear synthesis detected: {convergent_reactions}/{total_reactions} convergent reactions"
-        )
-
-    return is_linear
+    return found_n_alkylation

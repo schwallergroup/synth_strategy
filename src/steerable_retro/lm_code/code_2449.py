@@ -2,49 +2,64 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis involves a difluorobenzyl group.
+    This function detects if the synthesis follows a linear strategy with a final convergent step.
     """
-    has_difluorobenzyl = False
+    # Track synthesis pattern
+    is_final_step_convergent = False
+    all_other_steps_linear = True
 
     def dfs_traverse(node):
-        nonlocal has_difluorobenzyl
+        nonlocal is_final_step_convergent, all_other_steps_linear
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Define difluorobenzyl pattern
-                difluorobenzyl_pattern = Chem.MolFromSmarts("[c]1[c]([F])[c]([F])[c][c][c]1[C]")
-                if mol.HasSubstructMatch(difluorobenzyl_pattern):
-                    has_difluorobenzyl = True
-                    print(f"Found difluorobenzyl group in molecule: {node['smiles']}")
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
 
-        # Continue traversal
+                # Count non-empty reactants
+                reactant_count = sum(1 for r in reactants if r.strip())
+
+                # Check if it's the final step (depth 0)
+                if node.get("depth", 0) == 0:
+                    if reactant_count >= 2:
+                        is_final_step_convergent = True
+                        print("Final step is convergent with", reactant_count, "reactants")
+                else:
+                    # For other steps, check if they're linear
+                    if reactant_count > 2:
+                        all_other_steps_linear = False
+                        print("Found non-linear step at depth", node.get("depth", "unknown"))
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    print(
-        f"Synthesis {'contains' if has_difluorobenzyl else 'does not contain'} difluorobenzyl group"
-    )
-    return has_difluorobenzyl
+
+    return is_final_step_convergent and all_other_steps_linear

@@ -2,93 +2,155 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves a protection-deprotection sequence,
-    particularly focusing on alcohol/phenol protection.
+    Detects if the synthesis follows a linear strategy with no convergent steps.
+    Each reaction should have only one reactant that contributes to the product structure.
+    Reagents, catalysts, and solvents are not counted as reactants for this purpose.
     """
-    # Track protection and deprotection events
-    protection_events = []
-    deprotection_events = []
+    is_linear = True
 
-    def dfs_traverse(node, depth=0):
-        nonlocal protection_events, deprotection_events
+    def is_reagent_or_solvent(smiles):
+        """
+        Identifies common reagents and solvents that shouldn't count as reactants
+        for determining linearity of synthesis.
+        """
+        # Common solvents
+        solvents = [
+            "O",
+            "CO",
+            "CCO",
+            "CCCO",
+            "CCCCO",
+            "CC(C)O",
+            "C1CCCCC1",
+            "CC(=O)O",
+            "CC(=O)OC",
+            "CN(C)C=O",
+            "CS(=O)C",
+            "ClCCl",
+            "ClC(Cl)Cl",
+            "FC(F)F",
+            "FC(F)(F)C(F)(F)F",
+        ]
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        # Common reagents
+        reagents = [
+            "O=S(Cl)Cl",
+            "O=C(Cl)Cl",
+            "Cl",
+            "Br",
+            "I",
+            "F",
+            "O=C=O",
+            "N#N",
+            "O=O",
+            "[H][H]",
+            "BH3",
+            "B(O)O",
+            "B(OC)OC",
+            "B(OH)3",
+            "P(Cl)Cl",
+            "P(=O)(Cl)Cl",
+            "S(=O)(=O)(Cl)Cl",
+            "[Na+]",
+            "[K+]",
+            "[Li+]",
+            "[Mg+2]",
+            "[Zn+2]",
+            "[Cu+]",
+            "[Cu+2]",
+            "[Pd]",
+            "[Pt]",
+        ]
 
-                # Protection patterns
-                alcohol_pattern = Chem.MolFromSmarts("[OH]")
-                protected_alcohol_patterns = [
-                    Chem.MolFromSmarts("[O][CH2][c]"),  # Benzyl ether
-                    Chem.MolFromSmarts("[O][Si]"),  # Silyl ether
-                    Chem.MolFromSmarts("[O]C(=O)"),  # Ester
-                ]
+        # Simple molecules like water, ammonia, HCl, etc.
+        simple_molecules = [
+            "O",
+            "N",
+            "Cl",
+            "Br",
+            "I",
+            "F",
+            "[H][H]",
+            "CO2",
+            "NH3",
+            "HCl",
+            "HBr",
+            "HI",
+            "HF",
+        ]
 
-                # Check for protection: alcohol → protected form
-                has_alcohol = any(
-                    Chem.MolFromSmiles(r) is not None
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(alcohol_pattern)
-                    for r in reactants
-                    if r
-                )
+        # Clean the SMILES by removing atom mapping
+        clean_smiles = "".join([c for c in smiles if not (c.isdigit() or c == ":")])
+        mol = Chem.MolFromSmiles(clean_smiles)
 
-                prod_mol = Chem.MolFromSmiles(product) if product else None
-                is_protected = prod_mol is not None and any(
-                    prod_mol.HasSubstructMatch(pattern) for pattern in protected_alcohol_patterns
-                )
+        if mol is None:
+            return False
 
-                if has_alcohol and is_protected:
-                    protection_events.append(depth)
-                    print(f"Found protection event at depth {depth}")
+        # Check if it's a small molecule (likely a reagent/solvent)
+        if mol.GetNumAtoms() <= 3:
+            return True
 
-                # Check for deprotection: protected form → alcohol
-                has_protected = any(
-                    Chem.MolFromSmiles(r) is not None
-                    and any(
-                        Chem.MolFromSmiles(r).HasSubstructMatch(pattern)
-                        for pattern in protected_alcohol_patterns
-                    )
-                    for r in reactants
-                    if r
-                )
+        # Check against known lists
+        for known_smiles in solvents + reagents + simple_molecules:
+            known_mol = Chem.MolFromSmiles(known_smiles)
+            if known_mol and mol.GetNumAtoms() == known_mol.GetNumAtoms():
+                if mol.HasSubstructMatch(known_mol) or known_mol.HasSubstructMatch(mol):
+                    return True
 
-                has_alcohol_product = prod_mol is not None and prod_mol.HasSubstructMatch(
-                    alcohol_pattern
-                )
+        return False
 
-                if has_protected and has_alcohol_product:
-                    deprotection_events.append(depth)
-                    print(f"Found deprotection event at depth {depth}")
+    def dfs_traverse(node):
+        nonlocal is_linear
 
-        # Continue traversal
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            reactants = reactants_part.split(".")
+
+            # Count significant reactants (excluding reagents/solvents)
+            significant_reactants = [r for r in reactants if not is_reagent_or_solvent(r)]
+
+            # If there's more than one significant reactant, it's not a linear synthesis
+            if len(significant_reactants) > 1:
+                is_linear = False
+                print(f"Non-linear step detected: {rsmi}")
+                print(f"Significant reactants: {significant_reactants}")
+
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
 
-    # Check if we have both protection and deprotection events
-    return len(protection_events) > 0 and len(deprotection_events) > 0
+    if is_linear:
+        print("Linear synthesis strategy detected")
+    else:
+        print("Non-linear synthesis strategy detected")
+
+    return is_linear

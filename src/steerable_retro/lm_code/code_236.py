@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,38 +54,45 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis route contains a Grignard reaction (ketone to tertiary alcohol).
+    This function detects if a nitrile group is preserved through multiple steps of the synthesis.
     """
-    grignard_found = False
+    nitrile_by_depth = {}
 
-    def dfs_traverse(node, depth=0):
-        nonlocal grignard_found
+    def dfs_traverse(node, current_depth=0):
+        if node["type"] == "mol":
+            smiles = node["smiles"]
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            print(f"Checking reaction at depth {depth}: {rsmi}")
+            # Check for nitrile group using the checker function
+            has_nitrile = checker.check_fg("Nitrile", smiles)
+            print(
+                f"Checking nitrile at depth {current_depth}, SMILES: {smiles}, Result: {has_nitrile}"
+            )
 
-            # Check specifically for Grignard reaction from ketone to alcohol
-            if checker.check_reaction("Grignard from ketone to alcohol", rsmi):
-                print(f"Grignard reaction (ketone to alcohol) found at depth {depth}")
-                grignard_found = True
+            # Store nitrile presence at this depth
+            if current_depth not in nitrile_by_depth:
+                nitrile_by_depth[current_depth] = has_nitrile
+            else:
+                # If we already have a value for this depth, OR it with the new value
+                # This handles branching synthesis routes
+                nitrile_by_depth[current_depth] = nitrile_by_depth[current_depth] or has_nitrile
 
-            # Alternative check for Grignard reactions
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            if has_nitrile:
+                print(f"Found nitrile group at depth {current_depth}")
 
-            # Check if any reactant contains magnesium and another contains a ketone
-            has_mg = any(checker.check_fg("Magnesium halide", r) for r in reactants)
-            has_ketone = any(checker.check_fg("Ketone", r) for r in reactants)
-
-            # Check if product contains a tertiary alcohol
-            if has_mg and has_ketone and product:
-                if checker.check_fg("Tertiary alcohol", product):
-                    print(f"Grignard pattern detected manually at depth {depth}")
-                    grignard_found = True
-
+        # Traverse children with incremented depth
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child, current_depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return grignard_found
+
+    # Count how many depths have nitrile groups
+    nitrile_depths = sorted([d for d in nitrile_by_depth.keys() if nitrile_by_depth[d]])
+
+    # Check if nitrile is preserved through multiple steps (at least 2 different depths)
+    nitrile_preservation = len(nitrile_depths) >= 2
+
+    print(f"Nitrile preservation strategy detected: {nitrile_preservation}")
+    print(f"Nitrile found at depths: {nitrile_depths}")
+
+    return nitrile_preservation

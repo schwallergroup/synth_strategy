@@ -2,106 +2,85 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving multiple C-N bond
-    formations, including at least one N-arylation step.
+    Detects if the synthesis involves Sonogashira coupling for C-C bond formation
+    between an aryl halide and a terminal alkyne.
     """
-    c_n_bond_formations = 0
-    n_arylation_detected = False
+    has_sonogashira = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal c_n_bond_formations, n_arylation_detected
+    def dfs_traverse(node):
+        nonlocal has_sonogashira
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node.get("type") == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for C-N bond formation
+            # Create molecules
             product_mol = Chem.MolFromSmiles(product)
-            if product_mol:
-                # Look for new C-N bonds
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol:
-                        # Compare product and reactant for new C-N bonds
-                        prod_bonds = set(
-                            [
-                                (b.GetBeginAtomIdx(), b.GetEndAtomIdx())
-                                for b in product_mol.GetBonds()
-                                if (
-                                    product_mol.GetAtomWithIdx(b.GetBeginAtomIdx()).GetSymbol()
-                                    == "C"
-                                    and product_mol.GetAtomWithIdx(b.GetEndAtomIdx()).GetSymbol()
-                                    == "N"
-                                )
-                                or (
-                                    product_mol.GetAtomWithIdx(b.GetBeginAtomIdx()).GetSymbol()
-                                    == "N"
-                                    and product_mol.GetAtomWithIdx(b.GetEndAtomIdx()).GetSymbol()
-                                    == "C"
-                                )
-                            ]
-                        )
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants]
 
-                        react_bonds = set(
-                            [
-                                (b.GetBeginAtomIdx(), b.GetEndAtomIdx())
-                                for b in reactant_mol.GetBonds()
-                                if (
-                                    reactant_mol.GetAtomWithIdx(b.GetBeginAtomIdx()).GetSymbol()
-                                    == "C"
-                                    and reactant_mol.GetAtomWithIdx(b.GetEndAtomIdx()).GetSymbol()
-                                    == "N"
-                                )
-                                or (
-                                    reactant_mol.GetAtomWithIdx(b.GetBeginAtomIdx()).GetSymbol()
-                                    == "N"
-                                    and reactant_mol.GetAtomWithIdx(b.GetEndAtomIdx()).GetSymbol()
-                                    == "C"
-                                )
-                            ]
-                        )
+            if product_mol and all(reactant_mols):
+                # Check for Sonogashira pattern: aryl halide + terminal alkyne
+                aryl_halide_pattern = Chem.MolFromSmarts("c[Br,I,Cl]")
+                terminal_alkyne_pattern = Chem.MolFromSmarts("C#C[H]")
+                tms_alkyne_pattern = Chem.MolFromSmarts("C#C[Si]")
 
-                        if len(prod_bonds) > len(react_bonds):
-                            c_n_bond_formations += 1
-                            print(f"C-N bond formation detected at depth {depth}")
+                has_aryl_halide = False
+                has_terminal_alkyne = False
+                has_tms_alkyne = False
 
-                            # Check if it's an N-arylation (aromatic C-N bond)
-                            if "c" in product and "I" in "".join(reactants):
-                                n_arylation_pattern = Chem.MolFromSmarts("c-[#7]")
-                                if product_mol.HasSubstructMatch(n_arylation_pattern):
-                                    n_arylation_detected = True
-                                    print(f"N-arylation detected at depth {depth}")
-                            break
+                for r_mol in reactant_mols:
+                    if r_mol.HasSubstructMatch(aryl_halide_pattern):
+                        has_aryl_halide = True
+                    if r_mol.HasSubstructMatch(terminal_alkyne_pattern):
+                        has_terminal_alkyne = True
+                    if r_mol.HasSubstructMatch(tms_alkyne_pattern):
+                        has_tms_alkyne = True
+
+                # Check if product has C-C≡C pattern (aryl-alkyne)
+                aryl_alkyne_pattern = Chem.MolFromSmarts("c-C#C")
+                has_aryl_alkyne_product = product_mol.HasSubstructMatch(aryl_alkyne_pattern)
+
+                # If we have an aryl halide and a terminal/TMS alkyne as reactants,
+                # and an aryl-alkyne product, it's likely a Sonogashira coupling
+                if (
+                    has_aryl_halide
+                    and (has_terminal_alkyne or has_tms_alkyne)
+                    and has_aryl_alkyne_product
+                ):
+                    has_sonogashira = True
+                    print(f"Sonogashira coupling detected: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Strategy is present if we have multiple C-N bond formations including at least one N-arylation
-    return c_n_bond_formations >= 2 and n_arylation_detected
+    return has_sonogashira

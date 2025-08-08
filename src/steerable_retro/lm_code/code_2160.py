@@ -2,85 +2,157 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a linear synthesis strategy with sequential functionalization:
-    phenol → ether → aldehyde → alcohol → alkyne → coupled product
+    Detects a strategy involving late-stage arylation via cross-coupling,
+    particularly Suzuki-type coupling with boronic acids.
     """
-    # Track functional group transformations
-    transformations = []
+    late_arylation_found = False
+    depth_threshold = 2  # Consider "late stage" if depth <= 2
 
     def dfs_traverse(node, depth=0):
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        nonlocal late_arylation_found
 
-            # Convert to molecules
-            reactant_mols = [
-                Chem.MolFromSmiles(r) for r in reactants_smiles if Chem.MolFromSmiles(r)
-            ]
-            product_mol = Chem.MolFromSmiles(product_smiles)
+        if node["type"] == "reaction" and depth <= depth_threshold:
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            if product_mol and reactant_mols:
-                # Define patterns for functional groups
-                phenol_pattern = Chem.MolFromSmarts("[OX2H][cX3]:[c]")
-                ether_pattern = Chem.MolFromSmarts("[OX2]([cX3])[CX4]")
-                aldehyde_pattern = Chem.MolFromSmarts("[CX3H1](=O)[#6]")
-                alcohol_pattern = Chem.MolFromSmarts("[OX2H][CX4]")
-                terminal_alkyne_pattern = Chem.MolFromSmarts("[CX2]#[CH]")
-                internal_alkyne_pattern = Chem.MolFromSmarts("[CX2]#[CX2]")
+                print(f"Examining reaction at depth {depth}: {rsmi}")
 
-                # Check for transformations
-                if any(
-                    r.HasSubstructMatch(phenol_pattern) for r in reactant_mols
-                ) and product_mol.HasSubstructMatch(ether_pattern):
-                    transformations.append(("phenol_to_ether", depth))
-                    print(f"Found phenol to ether transformation at depth {depth}")
+                # Check if this is an arylation cross-coupling reaction
+                is_arylation = (
+                    checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic esters", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic acids OTf", rsmi)
+                    or checker.check_reaction("Suzuki coupling with boronic esters OTf", rsmi)
+                    or checker.check_reaction("Buchwald-Hartwig", rsmi)
+                    or checker.check_reaction(
+                        "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)", rsmi
+                    )
+                    or checker.check_reaction("Heck terminal vinyl", rsmi)
+                    or checker.check_reaction("Negishi coupling", rsmi)
+                    or checker.check_reaction("Stille reaction_aryl", rsmi)
+                    or checker.check_reaction("Sonogashira alkyne_aryl halide", rsmi)
+                    or checker.check_reaction("Ullmann condensation", rsmi)
+                    or checker.check_reaction("Ullmann-Goldberg Substitution aryl alcohol", rsmi)
+                    or checker.check_reaction("Hiyama-Denmark Coupling", rsmi)
+                    or checker.check_reaction("Kumada cross-coupling", rsmi)
+                )
 
-                if any(
-                    r.HasSubstructMatch(ether_pattern) for r in reactant_mols
-                ) and product_mol.HasSubstructMatch(aldehyde_pattern):
-                    transformations.append(("ether_to_aldehyde", depth))
-                    print(f"Found ether to aldehyde transformation at depth {depth}")
+                print(f"Is arylation cross-coupling: {is_arylation}")
 
-                if any(
-                    r.HasSubstructMatch(aldehyde_pattern) for r in reactant_mols
-                ) and product_mol.HasSubstructMatch(alcohol_pattern):
-                    transformations.append(("aldehyde_to_alcohol", depth))
-                    print(f"Found aldehyde to alcohol transformation at depth {depth}")
+                # Check for coupling partners in reactants
+                coupling_partner_present = any(
+                    checker.check_fg("Boronic acid", r)
+                    or checker.check_fg("Boronic ester", r)
+                    or checker.check_fg("Aromatic halide", r)
+                    or checker.check_fg("Triflate", r)
+                    for r in reactants
+                )
 
-                if any(
-                    r.HasSubstructMatch(alcohol_pattern) for r in reactant_mols
-                ) and product_mol.HasSubstructMatch(terminal_alkyne_pattern):
-                    transformations.append(("alcohol_to_terminal_alkyne", depth))
-                    print(f"Found alcohol to terminal alkyne transformation at depth {depth}")
+                print(f"Has coupling partner: {coupling_partner_present}")
 
-                if any(
-                    r.HasSubstructMatch(terminal_alkyne_pattern) for r in reactant_mols
-                ) and product_mol.HasSubstructMatch(internal_alkyne_pattern):
-                    transformations.append(("terminal_to_internal_alkyne", depth))
-                    print(f"Found terminal to internal alkyne transformation at depth {depth}")
+                # Check for aromatic rings in product
+                aromatic_rings = [
+                    "benzene",
+                    "naphthalene",
+                    "anthracene",
+                    "pyridine",
+                    "quinoline",
+                    "isoquinoline",
+                    "indole",
+                    "benzothiophene",
+                    "benzoxazole",
+                    "benzimidazole",
+                    "furan",
+                    "thiophene",
+                    "pyrazole",
+                    "imidazole",
+                    "oxazole",
+                    "thiazole",
+                    "pyrimidine",
+                ]
+
+                has_aromatic_ring = any(
+                    checker.check_ring(ring, product) for ring in aromatic_rings
+                )
+
+                print(f"Has aromatic ring in product: {has_aromatic_ring}")
+
+                # Check if a new C-C or C-N or C-O bond is formed between aromatic rings
+                # This is a heuristic check for arylation reactions that might not be captured by reaction types
+                new_aryl_bond_formed = False
+
+                # If we have aromatic halides in reactants and aromatic rings in product
+                # it's likely an arylation reaction
+                aromatic_halide_present = any(
+                    checker.check_fg("Aromatic halide", r) for r in reactants
+                )
+
+                if aromatic_halide_present and has_aromatic_ring:
+                    print("Aromatic halide present in reactants and aromatic ring in product")
+                    new_aryl_bond_formed = True
+
+                if (
+                    is_arylation or coupling_partner_present or new_aryl_bond_formed
+                ) and has_aromatic_ring:
+                    print(f"Found late-stage arylation via cross-coupling at depth {depth}")
+                    print(
+                        f"Is arylation: {is_arylation}, Has coupling partner: {coupling_partner_present}"
+                    )
+                    late_arylation_found = True
 
         # Traverse children
         for child in node.get("children", []):
@@ -89,12 +161,4 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    # Check if we have at least 3 sequential transformations
-    if len(transformations) >= 3:
-        # Sort by depth to check sequence
-        transformations.sort(
-            key=lambda x: x[1], reverse=True
-        )  # Higher depth = earlier in synthesis
-        print(f"Found sequential transformations: {[t[0] for t in transformations]}")
-        return True
-    return False
+    return late_arylation_found

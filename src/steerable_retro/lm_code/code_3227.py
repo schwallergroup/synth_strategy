@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,60 +54,88 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects the presence of acetonide-protected diols throughout the synthesis.
-
-    An acetonide protection strategy involves:
-    1. The presence of acetonide-protected diols (dioxolane or dioxane rings)
-    2. Acetal formation reactions (diol acetalization)
-    3. Acetal hydrolysis reactions (to diol)
+    This function detects nitro group reduction to amine during synthesis.
     """
-    acetonide_present = False
-    acetonide_formation = False
-    acetonide_hydrolysis = False
+    nitro_reduction_found = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal acetonide_present, acetonide_formation, acetonide_hydrolysis
+        nonlocal nitro_reduction_found
 
-        # Check molecule nodes for acetonide structures
-        if node["type"] == "mol" and "smiles" in node:
-            mol_smiles = node["smiles"]
+        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            # Check for dioxolane (5-membered) or dioxane (6-membered) rings
-            if checker.check_ring("dioxolane", mol_smiles):
-                print(f"Found dioxolane ring (potential acetonide) at depth {depth}: {mol_smiles}")
-                acetonide_present = True
+            print(f"Checking reaction at depth {depth}: {rsmi}")
 
-            if checker.check_ring("dioxane", mol_smiles):
-                print(f"Found dioxane ring (potential acetonide) at depth {depth}: {mol_smiles}")
-                acetonide_present = True
+            # Direct check for nitro reduction reaction
+            if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                print(f"Found nitro reduction reaction at depth {depth}")
+                nitro_reduction_found = True
+                return
 
-        # Check reaction nodes for acetonide formation/hydrolysis
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rxn_smiles = node["metadata"]["rsmi"]
+            # Check for nitro groups in reactants
+            for reactant in reactants:
+                if checker.check_fg("Nitro group", reactant):
+                    print(f"Found nitro group in reactant: {reactant}")
 
-            # Check for diol acetalization (acetonide formation)
-            if checker.check_reaction("Diol acetalization", rxn_smiles):
-                print(f"Found diol acetalization reaction at depth {depth}: {rxn_smiles}")
-                acetonide_formation = True
+                    # Check if the nitro group is absent in the product
+                    if not checker.check_fg("Nitro group", product):
+                        print(f"Nitro group is absent in product: {product}")
 
-            # Check for acetal hydrolysis to diol (acetonide removal)
-            if checker.check_reaction("Acetal hydrolysis to diol", rxn_smiles):
-                print(f"Found acetal hydrolysis to diol reaction at depth {depth}: {rxn_smiles}")
-                acetonide_hydrolysis = True
+                        # Check for various amine types in the product
+                        if (
+                            checker.check_fg("Primary amine", product)
+                            or checker.check_fg("Secondary amine", product)
+                            or checker.check_fg("Tertiary amine", product)
+                            or checker.check_fg("Aniline", product)
+                        ):
+
+                            print(f"Found amine in product: {product}")
+
+                            # Additional check for reaction types that might involve nitro reduction
+                            if (
+                                checker.check_reaction("Reduction of nitro groups to amines", rsmi)
+                                or "reduction" in rsmi.lower()
+                                or "nitro" in rsmi.lower()
+                                and "amine" in rsmi.lower()
+                            ):
+                                print(f"Found nitro group reduction to amine at depth {depth}")
+                                nitro_reduction_found = True
+                                return
+
+                    # Even if nitro group is still present, check if any nitro group was reduced
+                    # This handles partial reduction in molecules with multiple nitro groups
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    product_mol = Chem.MolFromSmiles(product)
+
+                    if reactant_mol and product_mol:
+                        # Count nitro groups in reactant and product
+                        reactant_nitro_count = len(
+                            checker.get_fg_atom_indices("Nitro group", reactant)
+                        )
+                        product_nitro_count = len(
+                            checker.get_fg_atom_indices("Nitro group", product)
+                        )
+
+                        # If there are fewer nitro groups in the product, and new amines appeared
+                        if product_nitro_count < reactant_nitro_count and (
+                            checker.check_fg("Primary amine", product)
+                            or checker.check_fg("Secondary amine", product)
+                            or checker.check_fg("Tertiary amine", product)
+                            or checker.check_fg("Aniline", product)
+                        ):
+
+                            print(f"Found partial nitro group reduction at depth {depth}")
+                            print(
+                                f"Reactant nitro count: {reactant_nitro_count}, Product nitro count: {product_nitro_count}"
+                            )
+                            nitro_reduction_found = True
+                            return
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-
-    # Strategy is present if we have the protected structure or relevant reactions
-    strategy_present = acetonide_present or acetonide_formation or acetonide_hydrolysis
-
-    if strategy_present:
-        print("Detected acetonide-protected diol strategy:")
-        print(f"- Acetonide structures present: {acetonide_present}")
-        print(f"- Acetonide formation reactions: {acetonide_formation}")
-        print(f"- Acetonide hydrolysis reactions: {acetonide_hydrolysis}")
-
-    return strategy_present
+    return nitro_reduction_found

@@ -2,62 +2,94 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a synthesis strategy where methoxy groups are preserved
-    throughout the synthesis while other functional groups are modified.
+    Detects if the synthesis route contains a nitro reduction to amine reaction.
     """
-    # Track reactions and methoxy presence
-    reactions_count = 0
-    reactions_with_methoxy = 0
+    has_nitro_reduction = False
 
-    def dfs_traverse(node):
-        nonlocal reactions_count, reactions_with_methoxy
+    def dfs(node, depth=0):
+        nonlocal has_nitro_reduction
 
         if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            product = rsmi.split(">")[-1]
+            rxn_smiles = node["metadata"]["rsmi"]
 
-            # Count this reaction
-            reactions_count += 1
+            # Check if this is a nitro reduction reaction
+            if checker.check_reaction("Reduction of nitro groups to amines", rxn_smiles):
+                has_nitro_reduction = True
+                print(f"Found nitro reduction reaction: {rxn_smiles}")
+            else:
+                # Alternative check: look for nitro group in reactants and amine in products
+                reactants = rxn_smiles.split(">")[0].split(".")
+                product = rxn_smiles.split(">")[-1]
 
-            # Check for methoxy group in product
-            product_mol = Chem.MolFromSmiles(product)
-            if product_mol:
-                methoxy_pattern = Chem.MolFromSmarts("[c][O][C]")
-                if product_mol.HasSubstructMatch(methoxy_pattern):
-                    reactions_with_methoxy += 1
-                    print(f"Found methoxy group in reaction at depth {reactions_count}")
+                nitro_in_reactants = any(checker.check_fg("Nitro group", r) for r in reactants)
+                amine_in_product = (
+                    checker.check_fg("Primary amine", product)
+                    or checker.check_fg("Secondary amine", product)
+                    or checker.check_fg("Tertiary amine", product)
+                )
 
-        # Traverse children
+                if (
+                    nitro_in_reactants
+                    and amine_in_product
+                    and not checker.check_fg("Nitro group", product)
+                ):
+                    has_nitro_reduction = True
+                    print(f"Found nitro reduction reaction (by FG analysis): {rxn_smiles}")
+
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs(child, depth + 1)
 
-    # Start traversal
-    dfs_traverse(route)
-
-    # Strategy is present if all reactions preserve methoxy groups and we have at least 3 reactions
-    result = reactions_count >= 3 and reactions_with_methoxy == reactions_count
-    print(
-        f"Methoxy preserving synthesis strategy detected: {result} ({reactions_with_methoxy}/{reactions_count} reactions)"
-    )
-    return result
+    dfs(route)
+    return has_nitro_reduction

@@ -2,50 +2,56 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects the construction of a pyrrolo[2,3-b]pyridine scaffold.
+    Detects if the synthesis follows a linear strategy (each reaction has only one product).
     """
-    scaffold_constructed = False
+    is_linear = True
 
     def dfs_traverse(node):
-        nonlocal scaffold_constructed
+        nonlocal is_linear
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            # Check if the reaction produces multiple products
             rsmi = node["metadata"]["rsmi"]
-            product = rsmi.split(">")[-1]
+            products = rsmi.split(">")[-1].split(".")
 
-            # Check for pyrrolo[2,3-b]pyridine scaffold in product
-            scaffold_pattern = Chem.MolFromSmarts("c1cncc2[nH]ccc12")
-            try:
-                mol = Chem.MolFromSmiles(product)
-                if mol and mol.HasSubstructMatch(scaffold_pattern):
-                    scaffold_constructed = True
-                    print(f"Found pyrrolo[2,3-b]pyridine scaffold in product: {product}")
-            except:
-                pass
+            if len(products) > 1:
+                is_linear = False
+                print(f"Found non-linear step with multiple products: {rsmi}")
 
+        elif node["type"] == "mol" and not node.get("in_stock", False):
+            # If a non-starting molecule has multiple reactions (children), it's not linear
+            if len(node.get("children", [])) > 1:
+                is_linear = False
+                print(f"Found branching at molecule: {node['smiles']}")
+
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return scaffold_constructed
+    return is_linear

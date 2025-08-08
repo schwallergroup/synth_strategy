@@ -2,61 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves transformation of an ester to an amide.
+    This function detects a protection-deprotection sequence involving acetate groups.
     """
-    has_transformation = False
+    # Track protection and deprotection events
+    protection_events = []
+    deprotection_events = []
 
     def dfs_traverse(node):
-        nonlocal has_transformation
-
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+                reactants = rsmi.split(">")[0]
                 product = rsmi.split(">")[-1]
 
-                # Check for ester in reactants
-                ester_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])-[#6]")
-                ester_in_reactants = False
-
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(ester_pattern):
-                        ester_in_reactants = True
-                        break
-
-                # Check for amide in product
+                reactants_mols = [Chem.MolFromSmiles(r) for r in reactants.split(".")]
                 product_mol = Chem.MolFromSmiles(product)
+
                 if product_mol:
-                    amide_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#7]")
-                    if ester_in_reactants and product_mol.HasSubstructMatch(amide_pattern):
-                        has_transformation = True
-                        print("Found ester to amide transformation")
+                    # Define SMARTS patterns
+                    acetate_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2][#6]")
+                    alcohol_pattern = Chem.MolFromSmarts("[OX2H]")
+
+                    # Check for protection (alcohol → acetate)
+                    alcohol_in_reactants = any(
+                        r and r.HasSubstructMatch(alcohol_pattern) for r in reactants_mols if r
+                    )
+                    acetate_in_product = product_mol.HasSubstructMatch(acetate_pattern)
+
+                    if alcohol_in_reactants and acetate_in_product:
+                        protection_events.append(node.get("metadata", {}).get("ID", "unknown"))
+
+                    # Check for deprotection (acetate → alcohol)
+                    acetate_in_reactants = any(
+                        r and r.HasSubstructMatch(acetate_pattern) for r in reactants_mols if r
+                    )
+                    alcohol_in_product = product_mol.HasSubstructMatch(alcohol_pattern)
+
+                    if acetate_in_reactants and alcohol_in_product:
+                        deprotection_events.append(node.get("metadata", {}).get("ID", "unknown"))
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
 
-    return has_transformation
+    # Check if both protection and deprotection occurred
+    has_protection_deprotection = len(protection_events) > 0 and len(deprotection_events) > 0
+
+    if has_protection_deprotection:
+        print(
+            f"Detected protection-deprotection sequence: Protection at {protection_events}, Deprotection at {deprotection_events}"
+        )
+
+    return has_protection_deprotection

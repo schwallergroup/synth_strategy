@@ -2,68 +2,59 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis uses a convergent approach with multiple amide couplings
-    to assemble fragments.
+    Detects if the synthesis involves heterocyclic compounds,
+    particularly pyrazole and pyridine rings.
     """
-    amide_couplings = []
-    fragments = set()
+    has_pyrazole = False
+    has_pyridine = False
 
-    def dfs_traverse(node, depth=0):
-        nonlocal amide_couplings, fragments
+    def dfs_traverse(node):
+        nonlocal has_pyrazole, has_pyridine
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            smiles = node.get("smiles", "")
+            if smiles:
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    # Check for pyrazole
+                    pyrazole_pattern = Chem.MolFromSmarts("[n]1[n][c,n][c,n][c,n]1")
+                    if mol.HasSubstructMatch(pyrazole_pattern):
+                        print("Found pyrazole heterocycle")
+                        has_pyrazole = True
 
-            product_mol = Chem.MolFromSmiles(product_smiles)
+                    # Check for pyridine
+                    pyridine_pattern = Chem.MolFromSmarts("[n]1[c][c][c][c][c]1")
+                    if mol.HasSubstructMatch(pyridine_pattern):
+                        print("Found pyridine heterocycle")
+                        has_pyridine = True
 
-            # Check for amide formation
-            amide_pattern = Chem.MolFromSmarts("[NX3][CX3](=[OX1])")
-            if product_mol.HasSubstructMatch(amide_pattern):
-                # Count number of fragments being combined
-                if len(reactants_smiles) >= 2:
-                    amide_couplings.append((depth, len(reactants_smiles)))
-                    for r in reactants_smiles:
-                        fragments.add(r)
-                    print(
-                        f"Found amide coupling at depth {depth} combining {len(reactants_smiles)} fragments"
-                    )
-
-        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal from root
     dfs_traverse(route)
-
-    # Check if the strategy is present
-    strategy_present = len(amide_couplings) >= 2 and len(fragments) >= 3
-
-    print(f"Convergent amide coupling strategy detected: {strategy_present}")
-    print(f"Number of amide couplings: {len(amide_couplings)}")
-    print(f"Number of unique fragments: {len(fragments)}")
-
-    return strategy_present
+    return has_pyrazole or has_pyridine  # Either heterocycle is present

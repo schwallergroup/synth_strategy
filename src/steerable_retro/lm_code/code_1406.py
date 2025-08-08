@@ -2,63 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the route incorporates a cyclopropyl group.
+    This function detects if the synthesis route involves a late-stage amide coupling
+    (depth 0 or 1) between an acid chloride and an amine.
     """
-    found_cyclopropyl = False
+    amide_formation_found = False
 
-    def dfs_traverse(node):
-        nonlocal found_cyclopropyl
+    def dfs_traverse(node, depth=0):
+        nonlocal amide_formation_found
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction" and depth <= 1:  # Only check late-stage reactions
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Pattern for cyclopropyl group
-            cyclopropyl_pattern = Chem.MolFromSmarts("[C]1[C][C]1")
+                # Check for acid chloride in reactants
+                acid_chloride_pattern = Chem.MolFromSmarts("[C](=O)Cl")
+                # Check for primary amine in reactants
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
+                # Check for amide in product
+                amide_pattern = Chem.MolFromSmarts("[NH][C](=O)")
 
-            try:
-                product_mol = Chem.MolFromSmiles(product)
-                if product_mol and product_mol.HasSubstructMatch(cyclopropyl_pattern):
-                    # Check if any reactant has cyclopropyl
-                    has_cyclopropyl_reactant = False
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if reactant_mol and reactant_mol.HasSubstructMatch(cyclopropyl_pattern):
-                            has_cyclopropyl_reactant = True
-                            break
+                acid_chloride_present = any(
+                    Chem.MolFromSmiles(r) is not None
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(acid_chloride_pattern)
+                    for r in reactants
+                    if r
+                )
+                amine_present = any(
+                    Chem.MolFromSmiles(r) is not None
+                    and Chem.MolFromSmiles(r).HasSubstructMatch(amine_pattern)
+                    for r in reactants
+                    if r
+                )
+                amide_in_product = Chem.MolFromSmiles(product) is not None and Chem.MolFromSmiles(
+                    product
+                ).HasSubstructMatch(amide_pattern)
 
-                    if has_cyclopropyl_reactant:
-                        found_cyclopropyl = True
-                        print(
-                            f"Found cyclopropyl incorporation at depth {node.get('depth', 'unknown')}"
-                        )
-            except:
-                pass
+                if acid_chloride_present and amine_present and amide_in_product:
+                    print(f"Found amide formation at depth {depth}")
+                    amide_formation_found = True
 
+        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return found_cyclopropyl
+    return amide_formation_found

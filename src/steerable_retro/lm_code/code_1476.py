@@ -2,86 +2,51 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects etherification via tosylate strategy in the synthetic route.
+    This function detects a synthetic strategy involving trifluoromethyl groups in the final product.
     """
-    etherification_found = False
+    cf3_count = 0
 
-    def dfs(node, depth=0):
-        nonlocal etherification_found
+    def dfs_traverse(node):
+        nonlocal cf3_count
 
-        if etherification_found:
-            return
+        if node["type"] == "mol" and not node.get("children", []):  # Final product
+            mol = Chem.MolFromSmiles(node["smiles"])
+            cf3_pattern = Chem.MolFromSmarts("C(F)(F)F")
+            if mol:
+                cf3_count = len(mol.GetSubstructMatches(cf3_pattern))
+                print(f"Found {cf3_count} trifluoromethyl groups in final product")
 
-        if node["type"] == "reaction":
-            try:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
-
-                # Check for Williamson ether synthesis or similar reactions
-                if checker.check_reaction("Williamson Ether Synthesis", rsmi):
-                    # Check if one of the reactants contains tosylate
-                    for reactant in reactants:
-                        if checker.check_fg("Tosylate", reactant):
-                            print(f"Found etherification via tosylate: {rsmi}")
-                            etherification_found = True
-                            break
-            except Exception as e:
-                print(f"Error in etherification check: {e}")
-
-        # Continue DFS traversal
+        # Traverse children
         for child in node.get("children", []):
-            dfs(child, depth + 1)
+            dfs_traverse(child)
 
-    dfs(route)
-    print(f"Etherification via tosylate strategy detected: {etherification_found}")
-    return etherification_found
+    # Start traversal
+    dfs_traverse(route)
+
+    print(f"Trifluoromethyl-containing strategy detected: {cf3_count > 0}")
+    return cf3_count > 0

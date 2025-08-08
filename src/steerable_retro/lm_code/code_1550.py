@@ -2,77 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects synthesis routes that build a piperazine scaffold with sequential N-alkylations.
+    This function detects late-stage amide bond formation.
     """
-    # Track if we found piperazine and alkylation reactions
-    found_piperazine = False
-    alkylation_count = 0
+    amide_formation_depth = None
+    max_depth = -1
 
-    def dfs_traverse(node):
-        nonlocal found_piperazine, alkylation_count
+    def dfs_traverse(node, depth=0):
+        nonlocal amide_formation_depth, max_depth
 
-        if node["type"] == "mol":
-            # Check if molecule contains piperazine
-            if node.get("smiles"):
-                mol = Chem.MolFromSmiles(node["smiles"])
-                if mol:
-                    piperazine_pattern = Chem.MolFromSmarts("[#7]1[#6][#6][#7][#6][#6]1")
-                    if mol.HasSubstructMatch(piperazine_pattern):
-                        found_piperazine = True
-                        print("Found piperazine scaffold")
+        max_depth = max(max_depth, depth)
 
-        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
             reactants = rsmi.split(">")[0].split(".")
             product = rsmi.split(">")[-1]
 
-            # Check for alkylation reaction (N-alkylation)
-            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-            product_mol = Chem.MolFromSmiles(product) if product else None
+            # Check for amide formation
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol:
+                amide_pattern = Chem.MolFromSmarts("[C](=[O])[N]")
+                if product_mol.HasSubstructMatch(amide_pattern):
+                    # Check if any reactant doesn't have the amide
+                    amide_in_all_reactants = True
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if not reactant_mol.HasSubstructMatch(amide_pattern):
+                                amide_in_all_reactants = False
+                                break
 
-            if all(reactant_mols) and product_mol:
-                # Look for alkyl halide pattern in reactants
-                alkyl_halide_pattern = Chem.MolFromSmarts("[#6]-[Br,Cl,I]")
-                amine_pattern = Chem.MolFromSmarts("[#7;!$(N=*);!$(NC=O)]")
-
-                has_alkyl_halide = any(
-                    mol.HasSubstructMatch(alkyl_halide_pattern) for mol in reactant_mols
-                )
-                has_amine = any(mol.HasSubstructMatch(amine_pattern) for mol in reactant_mols)
-
-                if has_alkyl_halide and has_amine:
-                    alkylation_count += 1
-                    print(f"Found N-alkylation reaction, total count: {alkylation_count}")
+                    if not amide_in_all_reactants:
+                        # This reaction forms an amide
+                        if amide_formation_depth is None or depth < amide_formation_depth:
+                            amide_formation_depth = depth
+                            print(f"Amide formation detected at depth {depth} in reaction: {rsmi}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Return True if we found piperazine and at least 2 alkylation reactions
-    result = found_piperazine and alkylation_count >= 2
-    print(f"Piperazine scaffold with sequential alkylations strategy detected: {result}")
-    return result
+    # Consider it late-stage if it's in the first half of the synthesis
+    # (remember depth 0 is the final step)
+    if amide_formation_depth is not None and amide_formation_depth <= max_depth / 2:
+        print(
+            f"Late-stage amide formation detected at depth {amide_formation_depth} (max depth: {max_depth})"
+        )
+        return True
+    return False

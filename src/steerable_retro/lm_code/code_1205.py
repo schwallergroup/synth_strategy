@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,211 +54,96 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the route uses late-stage amine diversification as the final step.
-    Specifically, looks for C-N bond formation in the last step of the synthesis.
+    Detects if the synthetic route involves late-stage sulfonamide formation.
+    Looks for sulfonamide formation in the second half of the synthesis.
     """
-    found_late_amine = False
-    final_reactions = []
+    max_depth = 0
+    sulfonamide_depth = None
 
-    # First pass to identify final reactions (those leading directly to the target molecule)
-    def identify_final_reactions(node, depth=0):
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            # Check if this reaction leads to a final product (the target molecule)
-            for child in node.get("children", []):
-                if child.get("type") == "mol" and not child.get("in_stock", False):
-                    # If this child is the target molecule (has no further reactions)
-                    has_reaction_child = False
-                    for grandchild in child.get("children", []):
-                        if grandchild.get("type") == "reaction":
-                            has_reaction_child = True
-                            break
+    # First pass to find max depth
+    def find_max_depth(node, current_depth=0):
+        nonlocal max_depth
+        max_depth = max(max_depth, current_depth)
 
-                    if not has_reaction_child:
-                        # This is a final reaction (leads to target molecule)
-                        final_reactions.append((node, depth))
-                        break
-
-        # Continue traversal
         for child in node.get("children", []):
-            identify_final_reactions(child, depth + 1)
+            find_max_depth(child, current_depth + 1)
 
-    # Second pass to check final reactions for amine diversification
-    def check_amine_diversification(reaction_node):
-        nonlocal found_late_amine
+    # Second pass to find sulfonamide formation
+    def find_sulfonamide(node, depth=0):
+        nonlocal sulfonamide_depth
 
-        if "metadata" in reaction_node and "rsmi" in reaction_node["metadata"]:
-            rsmi = reaction_node["metadata"]["rsmi"]
-            print(f"Checking reaction: {rsmi}")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_str = rsmi.split(">")[0]
+            product_str = rsmi.split(">")[-1]
 
-            # Check for amine diversification reactions
-            amine_diversification_reactions = [
-                "N-alkylation of primary amines with alkyl halides",
-                "N-alkylation of secondary amines with alkyl halides",
-                "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation primary amine",
-                "Buchwald-Hartwig/Ullmann-Goldberg/N-arylation secondary amine",
-                "N-arylation (Buchwald-Hartwig/Ullmann-Goldberg)",
-                "Reductive amination with aldehyde",
-                "Reductive amination with ketone",
-                "Reductive amination with alcohol",
-                "Alkylation of amines",
-                "Buchwald-Hartwig",
-                "{Buchwald-Hartwig}",
-                "Negishi coupling",
-                "Heck reaction with vinyl ester and amine",
-                "Goldberg coupling",
-                "Goldberg coupling aryl amine-aryl chloride",
-                "Goldberg coupling aryl amide-aryl chloride",
-                "Ullmann-Goldberg Substitution amine",
-                "Ugi reaction",
-                "Reductive amination",
-                "{reductive amination}",
-                "aza-Michael addition aromatic",
-                "aza-Michael addition secondary",
-                "aza-Michael addition primary",
-                "Displacement of ethoxy group by primary amine",
-                "Displacement of ethoxy group by secondary amine",
-                "Eschweiler-Clarke Primary Amine Methylation",
-                "Eschweiler-Clarke Secondary Amine Methylation",
-                "Reductive methylation of primary amine with formaldehyde",
-                "N-methylation",
-                "Methylation with MeI_primary",
-                "Methylation with MeI_secondary",
-                "Methylation with MeI_tertiary",
-                "DMS Amine methylation",
-            ]
+            print(f"Checking reaction at depth {depth}: {rsmi}")
 
-            for reaction_type in amine_diversification_reactions:
-                if checker.check_reaction(reaction_type, rsmi):
-                    print(f"Found amine diversification reaction: {reaction_type}")
-                    found_late_amine = True
-                    return
+            # Check if reactants contain sulfonyl halide
+            reactants = reactants_str.split(".")
+            has_sulfonyl_halide = any(checker.check_fg("Sulfonyl halide", r) for r in reactants)
+            print(f"  Has sulfonyl halide in reactants: {has_sulfonyl_halide}")
 
-            # If no specific reaction type matched, check for reactants and products
-            reactants_part = rsmi.split(">")[0]
-            product_part = rsmi.split(">")[-1]
-            reactants = reactants_part.split(".")
+            # Check if product has sulfonamide pattern
+            has_sulfonamide = checker.check_fg("Sulfonamide", product_str)
+            print(f"  Has sulfonamide in product: {has_sulfonamide}")
 
-            # Check for amine functional groups in reactants
-            has_primary_amine = any(checker.check_fg("Primary amine", r) for r in reactants)
-            has_secondary_amine = any(checker.check_fg("Secondary amine", r) for r in reactants)
-            has_tertiary_amine_reactant = any(
-                checker.check_fg("Tertiary amine", r) for r in reactants
+            # Check if reactants do NOT have sulfonamide (to ensure it's being formed)
+            no_sulfonamide_in_reactants = not any(
+                checker.check_fg("Sulfonamide", r) for r in reactants
             )
+            print(f"  No sulfonamide in reactants: {no_sulfonamide_in_reactants}")
 
-            # Check for leaving groups in reactants
-            has_leaving_group = any(
-                checker.check_fg("Primary halide", r)
-                or checker.check_fg("Secondary halide", r)
-                or checker.check_fg("Tertiary halide", r)
-                or checker.check_fg("Aromatic halide", r)
-                or checker.check_fg("Triflate", r)
-                or checker.check_fg("Mesylate", r)
-                or checker.check_fg("Tosylate", r)
+            # Check if this is a sulfonamide formation reaction
+            is_sulfonamide_reaction = (
+                checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) primary amine", rsmi
+                )
+                or checker.check_reaction(
+                    "Sulfonamide synthesis (Schotten-Baumann) secondary amine", rsmi
+                )
+                or checker.check_reaction("Schotten-Baumann to ester", rsmi)  # Sometimes mislabeled
+            )
+            print(f"  Is recognized sulfonamide reaction: {is_sulfonamide_reaction}")
+
+            # Alternative check: look for sulfonyl halide + amine reaction pattern
+            has_amine = any(
+                checker.check_fg("Primary amine", r)
+                or checker.check_fg("Secondary amine", r)
+                or checker.check_fg("Aniline", r)
                 for r in reactants
             )
+            print(f"  Has amine in reactants: {has_amine}")
 
-            # Check for amine groups in product
-            has_primary_amine_product = checker.check_fg("Primary amine", product_part)
-            has_secondary_amine_product = checker.check_fg("Secondary amine", product_part)
-            has_tertiary_amine_product = checker.check_fg("Tertiary amine", product_part)
+            # Determine if this is a sulfonamide formation
+            is_forming_sulfonamide = (
+                has_sulfonamide
+                and has_sulfonyl_halide
+                and has_amine
+                and no_sulfonamide_in_reactants
+                and (is_sulfonamide_reaction or (has_sulfonyl_halide and has_amine))
+            )
 
-            # Check for C-N bond formation
-            if (has_primary_amine or has_secondary_amine) and has_leaving_group:
-                # Primary → Secondary or Secondary → Tertiary
-                if (
-                    has_primary_amine and has_secondary_amine_product and not has_secondary_amine
-                ) or (
-                    has_secondary_amine
-                    and has_tertiary_amine_product
-                    and not has_tertiary_amine_reactant
-                ):
-                    print("Found amine diversification: Amine alkylation pattern")
-                    found_late_amine = True
-                    return
+            if is_forming_sulfonamide:
+                print(f"Detected sulfonamide formation at depth {depth}")
+                # Track the earliest (lowest depth) sulfonamide formation
+                if sulfonamide_depth is None or depth < sulfonamide_depth:
+                    sulfonamide_depth = depth
 
-            # Check for other amine formation patterns
-            if not found_late_amine:
-                # Check for amide coupling reactions
-                if (
-                    any(checker.check_fg("Carboxylic acid", r) for r in reactants)
-                    and any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        for r in reactants
-                    )
-                    and (
-                        checker.check_fg("Primary amide", product_part)
-                        or checker.check_fg("Secondary amide", product_part)
-                        or checker.check_fg("Tertiary amide", product_part)
-                    )
-                ):
-                    print("Found amine diversification: Amide coupling pattern")
-                    found_late_amine = True
-                    return
+        for child in node.get("children", []):
+            find_sulfonamide(child, depth + 1)
 
-                # Check for urea formation
-                if (
-                    any(checker.check_fg("Isocyanate", r) for r in reactants)
-                    and any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        for r in reactants
-                    )
-                    and checker.check_fg("Urea", product_part)
-                ):
-                    print("Found amine diversification: Urea formation pattern")
-                    found_late_amine = True
-                    return
+    find_max_depth(route)
+    print(f"Maximum synthesis depth: {max_depth}")
+    find_sulfonamide(route)
 
-                # Check for sulfonamide formation
-                if (
-                    any(checker.check_fg("Sulfonyl halide", r) for r in reactants)
-                    and any(
-                        checker.check_fg("Primary amine", r)
-                        or checker.check_fg("Secondary amine", r)
-                        for r in reactants
-                    )
-                    and checker.check_fg("Sulfonamide", product_part)
-                ):
-                    print("Found amine diversification: Sulfonamide formation pattern")
-                    found_late_amine = True
-                    return
+    # Check if sulfonamide formation occurs in second half of synthesis
+    if sulfonamide_depth is not None:
+        is_late_stage = sulfonamide_depth <= (max_depth // 2)
+        print(f"Sulfonamide formation at depth {sulfonamide_depth} of max depth {max_depth}")
+        print(f"Is late stage: {is_late_stage}")
+        return is_late_stage
+    else:
+        print("No sulfonamide formation detected in the route")
 
-    # Start traversal to identify final reactions
-    identify_final_reactions(route)
-
-    # Sort final reactions by depth (lowest depth = latest stage)
-    final_reactions.sort(key=lambda x: x[1])
-
-    # Check each final reaction for amine diversification, starting with the latest stage
-    for reaction, _ in final_reactions:
-        check_amine_diversification(reaction)
-        if found_late_amine:
-            break
-
-    # If no final reactions were found or none had amine diversification,
-    # try to find the last reaction in the route
-    if not final_reactions or not found_late_amine:
-
-        def find_last_reaction(node, current_depth=0, min_depth=float("inf"), last_reaction=None):
-            if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-                if current_depth <= min_depth:
-                    min_depth = current_depth
-                    last_reaction = node
-
-            for child in node.get("children", []):
-                result_depth, result_reaction = find_last_reaction(
-                    child, current_depth + 1, min_depth, last_reaction
-                )
-                if result_depth <= min_depth and result_reaction is not None:
-                    min_depth = result_depth
-                    last_reaction = result_reaction
-
-            return min_depth, last_reaction
-
-        _, last_reaction = find_last_reaction(route)
-        if last_reaction:
-            print("Checking last reaction in route")
-            check_amine_diversification(last_reaction)
-
-    return found_late_amine
+    return False

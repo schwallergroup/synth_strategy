@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,120 +54,91 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis involves a late-stage heterocyclic ring formation
-    in the final or penultimate step.
+    Detects a synthetic strategy involving benzoxazole formation and late-stage nitro reduction.
+    The strategy involves:
+    1. Benzoxazole ring formation in an intermediate step
+    2. Nitro reduction as the final step
     """
-    ring_formation_detected = False
-
-    # List of common heterocyclic rings to check
-    heterocyclic_rings = [
-        "furan",
-        "pyrrole",
-        "pyridine",
-        "pyrazole",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrimidine",
-        "pyrazine",
-        "pyridazine",
-        "triazole",
-        "tetrazole",
-        "isoxazole",
-        "isothiazole",
-        "oxadiazole",
-        "thiadiazole",
-        "indole",
-        "benzofuran",
-        "benzothiophene",
-        "benzimidazole",
-        "benzoxazole",
-        "benzothiazole",
-        "quinoline",
-        "isoquinoline",
-        "thiophene",
-        "morpholine",
-        "piperidine",
-        "piperazine",
-        "pyrrolidine",
-        "tetrahydrofuran",
-        "dioxane",
-    ]
+    benzoxazole_formed = False
+    late_nitro_reduction = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal ring_formation_detected
+        nonlocal benzoxazole_formed, late_nitro_reduction
 
-        if node["type"] == "reaction" and depth <= 1:  # Final or penultimate step
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
+        if node["type"] == "reaction":
+            # Extract reactants and product from reaction SMILES
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
+
+            # Check for benzoxazole formation
+            # Check if any of the benzoxazole formation reactions are detected
+            benzoxazole_rxn_types = [
+                "Benzoxazole formation from aldehyde",
+                "Benzoxazole formation from acyl halide",
+                "Benzoxazole formation from ester/carboxylic acid",
+                "Benzoxazole formation (intramolecular)",
+                "{benzoxazole_arom-aldehyde}",
+                "{benzoxazole_carboxylic-acid}",
+            ]
+
+            for rxn_type in benzoxazole_rxn_types:
+                if checker.check_reaction(rxn_type, rsmi):
+                    print(f"Benzoxazole formation detected at depth: {depth}")
+                    benzoxazole_formed = True
+                    break
+
+            # If reaction type check failed, try structural check
+            if not benzoxazole_formed:
                 reactants_smiles = rsmi.split(">")[0].split(".")
                 product_smiles = rsmi.split(">")[-1]
 
                 try:
-                    # Convert SMILES to RDKit molecules
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+                    product_has_benzoxazole = checker.check_ring("benzoxazole", product_smiles)
+                    reactant_has_benzoxazole = any(
+                        checker.check_ring("benzoxazole", r) for r in reactants_smiles
+                    )
 
-                    if product_mol and all(r for r in reactant_mols):
-                        # Count rings in reactants and product
-                        reactant_ring_count = sum(len(Chem.GetSSSR(r)) for r in reactant_mols)
-                        product_ring_count = len(Chem.GetSSSR(product_mol))
-
-                        # Check if product has more rings than reactants combined
-                        if product_ring_count > reactant_ring_count:
-                            print(
-                                f"Ring count increased: {reactant_ring_count} → {product_ring_count}"
-                            )
-
-                            # Check for heterocyclic rings in product that aren't in reactants
-                            for ring_name in heterocyclic_rings:
-                                if checker.check_ring(ring_name, product_smiles):
-                                    # Verify this ring wasn't present in any reactant
-                                    ring_is_new = True
-                                    for reactant in reactants_smiles:
-                                        if checker.check_ring(ring_name, reactant):
-                                            ring_is_new = False
-                                            break
-
-                                    if ring_is_new:
-                                        print(
-                                            f"Late-stage heterocyclic ring formation detected: {ring_name} at depth {depth}"
-                                        )
-                                        ring_formation_detected = True
-                                        break
-
-                            # If no specific heterocycle was identified but rings increased,
-                            # check for general heteroatoms in rings
-                            if not ring_formation_detected:
-                                # Check for any heterocyclic structure
-                                hetero_pattern = Chem.MolFromSmarts(
-                                    "[r;!#6]"
-                                )  # Ring atom that's not carbon
-                                if product_mol.HasSubstructMatch(hetero_pattern):
-                                    # Check if this pattern is new
-                                    hetero_is_new = True
-                                    for r_mol in reactant_mols:
-                                        if r_mol and r_mol.HasSubstructMatch(hetero_pattern):
-                                            # Need to check if the specific heterocyclic system is new
-                                            # This is a simplified check
-                                            if len(
-                                                r_mol.GetSubstructMatches(hetero_pattern)
-                                            ) >= len(
-                                                product_mol.GetSubstructMatches(hetero_pattern)
-                                            ):
-                                                hetero_is_new = False
-                                                break
-
-                                    if hetero_is_new:
-                                        print(
-                                            f"Generic heterocyclic ring formation detected at depth {depth}"
-                                        )
-                                        ring_formation_detected = True
+                    if product_has_benzoxazole and not reactant_has_benzoxazole:
+                        print(f"Benzoxazole formation detected at depth: {depth}")
+                        benzoxazole_formed = True
                 except Exception as e:
-                    print(f"Error in ring formation detection: {e}")
+                    print(f"Error checking benzoxazole structure: {e}")
 
+            # Check for nitro reduction at depth 0 or 1 (final or penultimate step)
+            if depth <= 1:
+                # Check for nitro reduction reaction
+                if checker.check_reaction("Reduction of nitro groups to amines", rsmi):
+                    print(f"Late-stage nitro reduction detected at depth: {depth}")
+                    late_nitro_reduction = True
+                else:
+                    # Fallback to structural check
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
+
+                    try:
+                        reactant_has_nitro = any(
+                            checker.check_fg("Nitro group", r) for r in reactants_smiles
+                        )
+                        # Check for both primary amine and aniline in product
+                        product_has_amine = checker.check_fg(
+                            "Primary amine", product_smiles
+                        ) or checker.check_fg("Aniline", product_smiles)
+                        # Ensure nitro group is removed in product
+                        product_has_no_nitro = not checker.check_fg("Nitro group", product_smiles)
+
+                        if reactant_has_nitro and product_has_amine and product_has_no_nitro:
+                            print(f"Late-stage nitro reduction detected at depth: {depth}")
+                            late_nitro_reduction = True
+                    except Exception as e:
+                        print(f"Error checking nitro reduction: {e}")
+
+        # Process children with incremented depth
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return ring_formation_detected
+
+    # Return True if both conditions are met
+    return benzoxazole_formed and late_nitro_reduction

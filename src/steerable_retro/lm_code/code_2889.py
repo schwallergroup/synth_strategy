@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,125 +54,86 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy with a late-stage C-C bond formation
-    (typically via Grignard or similar reaction).
+    This function detects if the synthetic route involves amide formation in the final step.
     """
-    # Track if we found a late-stage C-C bond formation
-    late_stage_cc_bond = False
+    amide_formation_at_depth_zero = False
 
-    # Track reaction steps and their depths to determine linearity
-    reaction_depths = []
+    def dfs_traverse(node):
+        nonlocal amide_formation_at_depth_zero
 
-    def dfs_traverse(node, depth=0):
-        nonlocal late_stage_cc_bond
+        if node["type"] == "reaction" and node.get("metadata", {}).get("depth", 0) == 0:
+            rsmi = node.get("metadata", {}).get("rsmi")
+            if rsmi:
+                try:
+                    reactants_smiles = rsmi.split(">")[0].split(".")
+                    product_smiles = rsmi.split(">")[-1]
 
-        if node["type"] == "reaction":
-            # Store the depth of this reaction
-            reaction_depths.append(depth)
+                    # Check if this is an amide formation reaction using the checker
+                    amide_formation_reactions = [
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_N",
+                        "Acylation of Nitrogen Nucleophiles by Acyl/Thioacyl/Carbamoyl Halides and Analogs_OS",
+                        "Acylation of Nitrogen Nucleophiles by Carboxylic Acids",
+                        "Acyl chloride with ammonia to amide",
+                        "Acyl chloride with primary amine to amide (Schotten-Baumann)",
+                        "Acyl chloride with secondary amine to amide",
+                        "Carboxylic acid with primary amine to amide",
+                        "Ester with ammonia to amide",
+                        "Ester with primary amine to amide",
+                        "Ester with secondary amine to amide",
+                        "Schotten-Baumann to ester",
+                        "Schotten-Baumann_amide",
+                        "Acylation of primary amines",
+                        "Acylation of secondary amines",
+                        "Carboxylic acid to amide conversion",
+                    ]
 
-            # Check if this is a late-stage reaction (depth 0 or 1)
-            if depth <= 1 and "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
+                    # Check if any of the amide formation reactions match
+                    is_amide_formation = any(
+                        checker.check_reaction(rxn_name, rsmi)
+                        for rxn_name in amide_formation_reactions
+                    )
 
-                # Check for C-C bond forming reactions
-                cc_bond_forming_reactions = [
-                    "Grignard from aldehyde to alcohol",
-                    "Grignard from ketone to alcohol",
-                    "Suzuki coupling with boronic acids",
-                    "Suzuki coupling with boronic esters",
-                    "Suzuki coupling with boronic acids OTf",
-                    "Suzuki coupling with boronic esters OTf",
-                    "Suzuki coupling with sulfonic esters",
-                    "Negishi coupling",
-                    "Wittig reaction with triphenylphosphorane",
-                    "Wittig with Phosphonium",
-                    "Heck terminal vinyl",
-                    "Oxidative Heck reaction",
-                    "Oxidative Heck reaction with vinyl ester",
-                    "Stille reaction_aryl",
-                    "Stille reaction_vinyl",
-                    "Stille reaction_benzyl",
-                    "Stille reaction_allyl",
-                    "Kumada cross-coupling",
-                    "Aryllithium cross-coupling",
-                    "Friedel-Crafts alkylation",
-                    "Friedel-Crafts alkylation with halide",
-                    "Knoevenagel Condensation",
-                    "Aldol condensation",
-                    "Michael addition",
-                    "Michael addition methyl",
-                    "Hiyama-Denmark Coupling",
-                    "decarboxylative_coupling",
-                    "Catellani reaction ortho",
-                    "Catellani reaction para",
-                    "beta C(sp3) arylation",
-                ]
+                    # If reaction checker didn't identify it, do a more detailed check
+                    if not is_amide_formation:
+                        # Check for functional groups in reactants and products
+                        acyl_sources = ["Carboxylic acid", "Acyl halide", "Ester", "Anhydride"]
+                        amine_types = ["Primary amine", "Secondary amine", "Aniline"]
+                        amide_types = ["Primary amide", "Secondary amide", "Tertiary amide"]
 
-                for reaction_type in cc_bond_forming_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Found late-stage C-C bond formation via {reaction_type}")
-                        late_stage_cc_bond = True
-                        break
+                        has_acyl_source = any(
+                            any(checker.check_fg(fg, r) for fg in acyl_sources)
+                            for r in reactants_smiles
+                        )
+                        has_amine = any(
+                            any(checker.check_fg(amine, r) for amine in amine_types)
+                            for r in reactants_smiles
+                        )
 
-                # If no specific reaction type matched, check for general C-C bond formation
-                if not late_stage_cc_bond:
-                    try:
-                        # Extract reactants and product
-                        reactants_str = rsmi.split(">")[0]
-                        product_str = rsmi.split(">")[-1]
+                        product_has_amide = any(
+                            checker.check_fg(amide, product_smiles) for amide in amide_types
+                        )
 
-                        # Check if this is a Grignard reaction not caught by the specific types
-                        for reactant in reactants_str.split("."):
-                            if checker.check_fg("Magnesium halide", reactant):
-                                print("Found late-stage C-C bond formation with Grignard reagent")
-                                late_stage_cc_bond = True
-                                break
+                        # Check if we have the right reactants and product for amide formation
+                        if product_has_amide and has_acyl_source and has_amine:
+                            # Verify that the amide is formed in this reaction (not pre-existing)
+                            reactants_have_amide = any(
+                                any(checker.check_fg(amide, r) for amide in amide_types)
+                                for r in reactants_smiles
+                            )
 
-                            # Check for organolithium compounds
-                            if checker.check_fg("Alkyl lithium", reactant) or checker.check_fg(
-                                "Aryl lithium", reactant
-                            ):
-                                print(
-                                    "Found late-stage C-C bond formation with organolithium reagent"
-                                )
-                                late_stage_cc_bond = True
-                                break
-                    except Exception as e:
-                        print(f"Error analyzing reaction: {e}")
+                            if not reactants_have_amide:
+                                is_amide_formation = True
+
+                    if is_amide_formation:
+                        amide_formation_at_depth_zero = True
+
+                except Exception as e:
+                    pass  # Silently handle errors
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
-
-    # Check if the synthesis is linear
-    is_linear = len(reaction_depths) >= 2  # At least 2 steps
-
-    if reaction_depths:
-        # Sort depths to analyze the pattern
-        reaction_depths.sort()
-
-        # Check if the depths follow a pattern consistent with linear synthesis
-        # For a linear synthesis, depths should increase with a consistent pattern
-        # Allow gaps of up to 2 between consecutive depths
-        max_gap = 0
-        for i in range(1, len(reaction_depths)):
-            gap = reaction_depths[i] - reaction_depths[i - 1]
-            max_gap = max(max_gap, gap)
-
-        # If max gap between consecutive depths is > 2, it suggests significant branching
-        is_linear = is_linear and max_gap <= 2
-
-        # Additional check: in a linear synthesis, the number of unique depths should be close to the total number of reactions
-        unique_depths = len(set(reaction_depths))
-        is_linear = (
-            is_linear and unique_depths >= len(reaction_depths) * 0.7
-        )  # At least 70% of reactions should be at unique depths
-
-    print(f"Reaction depths: {reaction_depths}")
-    print(f"Is linear: {is_linear}, Has late-stage C-C bond: {late_stage_cc_bond}")
-
-    # Return True if it's a linear synthesis with late-stage C-C bond formation
-    return is_linear and late_stage_cc_bond
+    return amide_formation_at_depth_zero

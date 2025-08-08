@@ -2,101 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy where two aromatic fragments
-    are connected via ether bonds using an alkyl chain linker.
+    Detects a synthetic strategy involving tosylation of an alcohol (leaving group installation).
     """
-    # Track if we found the pattern
-    found_pattern = False
-    # Track the presence of key features
-    has_ether_linkage = False
-    has_alkyl_chain = False
-    aromatic_fragments = 0
+    has_alcohol_tosylation = False
 
     def dfs_traverse(node):
-        nonlocal found_pattern, has_ether_linkage, has_alkyl_chain, aromatic_fragments
+        nonlocal has_alcohol_tosylation
 
-        if node["type"] == "mol":
-            # Check final product for the desired pattern
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if mol:
-                # Check for aromatic-O-alkyl-O-aromatic pattern
-                aromatic_ether_pattern = Chem.MolFromSmarts(
-                    "c-[#8]-[#6]-[#6]-[#6]-[#6]-[#6]-[#8]-c"
-                )
-                if mol.HasSubstructMatch(aromatic_ether_pattern):
-                    has_ether_linkage = True
-                    has_alkyl_chain = True
-                    aromatic_fragments = 2
-                    found_pattern = True
-                    print(
-                        f"Found aromatic-O-alkyl-O-aromatic pattern in molecule: {node['smiles']}"
-                    )
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-        elif node["type"] == "reaction":
-            # Extract reactants and product
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+                if reactants and product:
+                    # Check for alcohol and tosyl chloride patterns in reactants
+                    alcohol_pattern = Chem.MolFromSmarts("[OH][CH2]")
+                    tosyl_chloride_pattern = Chem.MolFromSmarts("Cl[S](=[O])(=[O])[c]")
 
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+                    has_alcohol = False
+                    has_tosyl_chloride = False
 
-            # Check for ether formation reactions
-            if any("O" in r for r in reactants) and "O" in product:
-                prod_mol = Chem.MolFromSmiles(product)
-                if prod_mol and prod_mol.HasSubstructMatch(Chem.MolFromSmarts("c-[#8]-[#6]")):
-                    has_ether_linkage = True
-                    print(f"Found ether formation reaction: {rsmi}")
+                    for reactant in reactants:
+                        reactant_mol = Chem.MolFromSmiles(reactant)
+                        if reactant_mol:
+                            if reactant_mol.HasSubstructMatch(alcohol_pattern):
+                                has_alcohol = True
+                            if reactant_mol.HasSubstructMatch(tosyl_chloride_pattern):
+                                has_tosyl_chloride = True
 
-                # Check for alkyl chain
-                if any(
-                    Chem.MolFromSmiles(r)
-                    and Chem.MolFromSmiles(r).HasSubstructMatch(
-                        Chem.MolFromSmarts("[#6]-[#6]-[#6]-[#6]-[#6]")
-                    )
-                    for r in reactants
-                    if Chem.MolFromSmiles(r)
-                ):
-                    has_alkyl_chain = True
-                    print(f"Found alkyl chain in reaction: {rsmi}")
+                    # Check for tosylate pattern in product
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        tosylate_pattern = Chem.MolFromSmarts("[O][S](=[O])(=[O])[c]")
+                        if product_mol.HasSubstructMatch(tosylate_pattern):
+                            if has_alcohol and has_tosyl_chloride:
+                                has_alcohol_tosylation = True
 
-                # Count aromatic fragments
-                for r in reactants:
-                    r_mol = Chem.MolFromSmiles(r)
-                    if r_mol and r_mol.HasSubstructMatch(Chem.MolFromSmarts("c1ccccc1")):
-                        aromatic_fragments += 1
-                        print(f"Found aromatic fragment: {r}")
-
-        # Continue traversing
+        # Recursively process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
     # Start traversal
     dfs_traverse(route)
 
-    # Check if we have all the required elements
-    if has_ether_linkage and has_alkyl_chain and aromatic_fragments >= 2:
-        found_pattern = True
-
-    return found_pattern
+    print(f"Alcohol tosylation strategy: {has_alcohol_tosylation}")
+    return has_alcohol_tosylation

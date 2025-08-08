@@ -2,67 +2,69 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis route involves formation of a sulfonamide bond in the late stage
-    (depth 0 or 1).
+    This function detects if the synthesis includes multiple nucleophilic aromatic substitutions.
     """
-    found_late_stage_sulfonamide = False
+    nas_reactions = 0
 
     def dfs_traverse(node):
-        nonlocal found_late_stage_sulfonamide
+        nonlocal nas_reactions
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            depth = node.get("depth", -1)
-            if depth <= 1:  # Late stage (depth 0 or 1)
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
                 rsmi = node["metadata"]["rsmi"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]
 
-                # Check if product has sulfonamide but reactants don't
-                sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[O])(=[O])[#7]")
-
-                product_mol = Chem.MolFromSmiles(product)
-                if not product_mol:
-                    return
-
-                if product_mol.HasSubstructMatch(sulfonamide_pattern):
-                    # Check if any reactant has this pattern
-                    has_pattern_in_reactants = False
-                    for reactant in reactants:
-                        reactant_mol = Chem.MolFromSmiles(reactant)
-                        if not reactant_mol:
-                            continue
-                        if reactant_mol.HasSubstructMatch(sulfonamide_pattern):
-                            has_pattern_in_reactants = True
+                # Check for chlorinated aromatic in reactants
+                chloro_aromatic_found = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        chloro_aromatic_pattern = Chem.MolFromSmarts("[c][Cl]")
+                        if reactant_mol.HasSubstructMatch(chloro_aromatic_pattern):
+                            chloro_aromatic_found = True
                             break
 
-                    if not has_pattern_in_reactants:
-                        found_late_stage_sulfonamide = True
-                        print(f"Found late-stage sulfonamide formation at depth: {depth}")
+                # Check for new C-N bond in product where chlorine was
+                if chloro_aromatic_found:
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol:
+                        # This is a simplified check - in reality would need to confirm
+                        # the exact position where Cl was replaced
+                        c_n_bond_pattern = Chem.MolFromSmarts("[c][N]")
+                        if product_mol.HasSubstructMatch(c_n_bond_pattern):
+                            nas_reactions += 1
+                            print(
+                                f"Detected nucleophilic aromatic substitution, count: {nas_reactions}"
+                            )
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-
-    return found_late_stage_sulfonamide
+    return nas_reactions >= 2  # Return True if at least 2 NAS reactions are found

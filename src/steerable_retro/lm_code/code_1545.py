@@ -2,59 +2,68 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a linear synthesis strategy with a late-stage fragment coupling,
-    where two significant fragments are combined in the final steps.
+    Detects methyl to aldehyde oxidation in the synthetic sequence.
     """
-    late_fragment_coupling = False
+    found_pattern = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_fragment_coupling
+        nonlocal found_pattern
 
-        if node["type"] == "reaction" and depth <= 1:  # Focus on late-stage reactions
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+        if node["type"] == "reaction":
+            # Extract reactants and product
+            rsmi = node.get("metadata", {}).get("rsmi", "")
+            if not rsmi:
+                return
 
-                # Check if we have at least two significant fragments
-                if len(reactants) >= 2:
-                    significant_fragments = 0
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                    for reactant in reactants:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            # Consider a fragment significant if it has at least 6 atoms
-                            if mol.GetNumAtoms() >= 6:
-                                significant_fragments += 1
+            # Check for methyl pattern in reactants and aldehyde in product
+            methyl_pattern = Chem.MolFromSmarts("[#6][CH3]")
+            aldehyde_pattern = Chem.MolFromSmarts("[#6][CH]=O")
 
-                    if significant_fragments >= 2:
-                        late_fragment_coupling = True
-                        print("Late-stage fragment coupling detected at depth", depth)
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if not product_mol or not product_mol.HasSubstructMatch(aldehyde_pattern):
+                # Skip if product doesn't have aldehyde
+                pass
+            else:
+                # Check if any reactant has methyl group
+                for reactant in reactants_smiles:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(methyl_pattern):
+                        found_pattern = True
+                        print(f"Found methyl to aldehyde oxidation at depth {depth}")
+                        break
 
-        # Continue traversing
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from root
     dfs_traverse(route)
-    return late_fragment_coupling
+    return found_pattern

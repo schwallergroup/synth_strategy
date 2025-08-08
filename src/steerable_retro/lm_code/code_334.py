@@ -2,97 +2,81 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
-def main(route, debug=False):
+def main(route):
     """
-    Detects if the synthesis follows a linear strategy (no convergent steps with multiple complex fragments).
-
-    A linear synthesis typically builds a molecule by sequential addition of small fragments to a growing core.
-    Convergent synthesis involves separate complex fragments being joined in late-stage reactions.
-
-    Args:
-        route: The synthesis route tree
-        debug: Whether to print debug information
-
-    Returns:
-        bool: True if the synthesis is linear, False if convergent steps are detected
+    This function detects a synthetic strategy involving heterocyclic ring closure
+    via C-N bond formation to construct a nitrogen-containing ring system.
     """
-    is_linear = True
+    # Initialize tracking variables
+    has_cn_bond_formation = False
+    has_heterocycle_formation = False
 
     def dfs_traverse(node):
-        nonlocal is_linear
+        nonlocal has_cn_bond_formation, has_heterocycle_formation
 
-        if node["type"] == "reaction" and "rsmi" in node.get("metadata", {}):
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_part = rsmi.split(">")[0]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Handle empty reactants
-            if not reactants_part:
-                return
+            # Convert to RDKit molecules
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product_mol = Chem.MolFromSmiles(product_smiles) if product_smiles else None
 
-            reactants = reactants_part.split(".")
+            if product_mol and len(reactant_mols) > 1:
+                # Check for C-N bond formation
+                # This is a simplified approach - in practice, you'd need atom mapping
+                # to accurately track bond formation
 
-            # Skip if only one reactant (definitely linear)
-            if len(reactants) <= 1:
-                return
+                # Check if product has more rings than reactants
+                product_ring_count = sum(1 for ring in Chem.GetSSSR(product_mol))
+                reactants_ring_count = sum(
+                    sum(1 for ring in Chem.GetSSSR(r)) for r in reactant_mols
+                )
 
-            # Analyze reactant complexity
-            reactant_complexities = []
-            total_atoms = 0
+                if product_ring_count > reactants_ring_count:
+                    # Check if the product contains a nitrogen heterocycle
+                    n_heterocycle_pattern = Chem.MolFromSmarts("[#6]1~[#6]~[#6]~[#7]~[#6]1")
+                    if product_mol.HasSubstructMatch(n_heterocycle_pattern):
+                        has_heterocycle_formation = True
+                        has_cn_bond_formation = True
+                        print("Detected heterocyclic ring formation via C-N bond")
 
-            for reactant in reactants:
-                try:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol:
-                        num_atoms = mol.GetNumAtoms()
-                        num_rings = len(mol.GetSSSR())
-
-                        # Calculate complexity score based on atoms and rings
-                        complexity = num_atoms + (num_rings * 2)
-                        reactant_complexities.append(complexity)
-                        total_atoms += num_atoms
-                except Exception as e:
-                    if debug:
-                        print(f"Error processing reactant {reactant}: {e}")
-                    continue
-
-            # Sort complexities in descending order
-            reactant_complexities.sort(reverse=True)
-
-            # Check for convergent pattern - multiple significant fragments
-            if len(reactant_complexities) >= 2:
-                # If the second most complex reactant is significant compared to the total
-                # (more than 25% of total atoms or complexity > 12)
-                if len(reactant_complexities) >= 2 and (
-                    (reactant_complexities[1] > 12)
-                    or (total_atoms > 0 and reactant_complexities[1] / total_atoms > 0.25)
-                ):
-                    is_linear = False
-                    if debug:
-                        print(
-                            f"Found convergent step with reactant complexities: {reactant_complexities}"
-                        )
-
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal
     dfs_traverse(route)
-    return is_linear
+
+    # Check if the strategy is present
+    strategy_present = has_cn_bond_formation and has_heterocycle_formation
+
+    if strategy_present:
+        print("Detected heterocyclic ring closure via C-N bond formation")
+
+    return strategy_present

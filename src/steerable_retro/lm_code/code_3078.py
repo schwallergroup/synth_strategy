@@ -2,68 +2,73 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic route that includes coupling between heterocycles.
+    This function detects a linear synthesis route that incorporates a fluorophenyl group
+    throughout the synthesis.
     """
-    has_heterocycle_coupling = False
+    # Track if we found fluorophenyl in all steps
+    steps_with_fluorophenyl = set()
+    total_steps = 0
 
-    def dfs_traverse(node):
-        nonlocal has_heterocycle_coupling
+    def dfs_traverse(node, depth=0):
+        nonlocal total_steps
 
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_str = rsmi.split(">")[0]
-                product_str = rsmi.split(">")[-1]
+            total_steps += 1
 
-                # Define heterocycle patterns
-                pyrimidine_pattern = Chem.MolFromSmarts("c1ncncc1")
-                indole_pattern = Chem.MolFromSmarts("c1ccc2[nH]ccc2c1")
+            # Extract product from reaction SMILES
+            rsmi = node["metadata"].get("rsmi", "")
+            if not rsmi:
+                return
 
-                reactants = [Chem.MolFromSmiles(r) for r in reactants_str.split(".") if r]
-                product = Chem.MolFromSmiles(product_str) if product_str else None
+            parts = rsmi.split(">")
+            if len(parts) < 3:
+                return
 
-                if product and reactants:
-                    # Check if reactants contain different heterocycles
-                    heterocycle_types = set()
-                    for r in reactants:
-                        if r:
-                            if r.HasSubstructMatch(pyrimidine_pattern):
-                                heterocycle_types.add("pyrimidine")
-                            if r.HasSubstructMatch(indole_pattern):
-                                heterocycle_types.add("indole")
+            product = parts[-1]
 
-                    # If we have at least 2 different heterocycle types in reactants
-                    if len(heterocycle_types) >= 2:
-                        has_heterocycle_coupling = True
-                        print(f"Found heterocycle coupling between {', '.join(heterocycle_types)}")
+            # Check for fluorophenyl group in product
+            fluorophenyl_pattern = Chem.MolFromSmarts("c[F]")
+            try:
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(fluorophenyl_pattern):
+                    steps_with_fluorophenyl.add(depth)
+                    print(f"Found fluorophenyl group at depth {depth}")
+            except:
+                pass
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
+    # Start traversal from the root
     dfs_traverse(route)
 
-    print(f"Heterocycle coupling strategy detection result: {has_heterocycle_coupling}")
-    return has_heterocycle_coupling
+    # The strategy is present if fluorophenyl is found in all steps
+    strategy_present = len(steps_with_fluorophenyl) == total_steps and total_steps > 0
+    print(f"Linear synthesis with fluorophenyl strategy detected: {strategy_present}")
+    return strategy_present

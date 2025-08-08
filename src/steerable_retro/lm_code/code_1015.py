@@ -2,92 +2,109 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a synthesis strategy involving intramolecular ring formation
-    creating a bicyclic system from an acyl chloride intermediate.
+    Detects a strategy involving Boc protection of an indole nitrogen during synthesis.
     """
-    ring_formation_detected = False
+    # Initialize tracking variables
+    has_boc_protection = False
+    has_indole = False
+    has_boc_protected_indole = False
 
-    def dfs_traverse(node):
-        nonlocal ring_formation_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal has_boc_protection, has_indole, has_boc_protected_indole
 
-        if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        if node["type"] == "mol":
+            if "smiles" in node:
+                mol_smiles = node["smiles"]
 
-                # Try to convert to RDKit molecules
-                try:
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for indole
+                if checker.check_ring("indole", mol_smiles):
+                    has_indole = True
+                    print(f"Detected indole at depth {depth}: {mol_smiles}")
 
-                    if all(reactant_mols) and product_mol:
-                        # Count rings in reactants and product
-                        reactant_ring_count = sum(
-                            len(mol.GetRingInfo().AtomRings()) for mol in reactant_mols
-                        )
-                        product_ring_count = len(product_mol.GetRingInfo().AtomRings())
+                # Check for Boc group and indole together
+                if checker.check_fg("Boc", mol_smiles) and checker.check_ring("indole", mol_smiles):
+                    has_boc_protected_indole = True
+                    has_boc_protection = True
+                    print(f"Detected N-Boc protected indole at depth {depth}: {mol_smiles}")
 
-                        # Check if product has more rings than reactants
-                        if product_ring_count > reactant_ring_count:
-                            # Check if acyl chloride pattern exists in any reactant
-                            acyl_chloride_pattern = Chem.MolFromSmarts("[#6]-[#6](=[#8])-[#17]")
-                            has_acyl_chloride = any(
-                                mol.HasSubstructMatch(acyl_chloride_pattern)
-                                for mol in reactant_mols
-                            )
+        elif node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
 
-                            # Check if product has a bicyclic system
-                            ring_systems = product_mol.GetRingInfo().AtomRings()
-                            atoms_in_rings = set()
-                            for ring in ring_systems:
-                                atoms_in_rings.update(ring)
+            # Check for Boc protection reaction
+            if checker.check_reaction("Boc amine protection", rsmi):
+                has_boc_protection = True
+                print(f"Detected Boc protection reaction at depth {depth}: {rsmi}")
 
-                            # Count atoms that appear in multiple rings
-                            shared_atoms = 0
-                            for atom_idx in atoms_in_rings:
-                                rings_containing_atom = 0
-                                for ring in ring_systems:
-                                    if atom_idx in ring:
-                                        rings_containing_atom += 1
-                                if rings_containing_atom > 1:
-                                    shared_atoms += 1
+            # Also check for Boc deprotection as part of the strategy
+            if checker.check_reaction("Boc amine deprotection", rsmi):
+                has_boc_protection = True
+                print(f"Detected Boc deprotection reaction at depth {depth}: {rsmi}")
 
-                            # If we have shared atoms between rings and had an acyl chloride, it's likely
-                            # an intramolecular ring formation creating a bicyclic system
-                            if shared_atoms > 0 and has_acyl_chloride:
-                                print(
-                                    f"Detected intramolecular ring formation creating a bicyclic system"
-                                )
-                                ring_formation_detected = True
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
-
-        # Process children
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Start traversal
     dfs_traverse(route)
-    return ring_formation_detected
+
+    # Check if all required elements are present
+    result = has_boc_protection and has_indole
+
+    print(f"Boc protection detected: {has_boc_protection}")
+    print(f"Indole detected: {has_indole}")
+    print(f"N-Boc protected indole detected: {has_boc_protected_indole}")
+    print(f"Overall Boc protection strategy detected: {result}")
+
+    return result

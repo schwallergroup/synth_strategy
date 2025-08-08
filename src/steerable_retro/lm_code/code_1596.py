@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,68 +54,79 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the final product contains 3 or more aromatic rings.
+    Detects a synthesis involving heterocyclic compounds (thiophene and nitrogen heterocycles like imidazole, pyrimidine, etc.).
     """
-    aromatic_ring_count = 0
+    has_thiophene = False
+    has_nitrogen_heterocycle = False
+
+    # List of nitrogen-containing heterocycles to check
+    nitrogen_heterocycles = [
+        "imidazole",
+        "pyrimidine",
+        "pyrazine",
+        "triazole",
+        "tetrazole",
+        "pyridine",
+        "pyridazine",
+        "purine",
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal aromatic_ring_count
+        nonlocal has_thiophene, has_nitrogen_heterocycle
 
-        if node["type"] == "mol" and depth == 0:  # Final product
-            print(f"Analyzing final product: {node['smiles']}")
-            mol = Chem.MolFromSmiles(node["smiles"])
-            if not mol:
-                print("Failed to parse molecule SMILES")
-                return
+        # Check molecules for heterocycles
+        if node["type"] == "mol" and node.get("smiles"):
+            mol_smiles = node["smiles"]
 
-            # Method 1: Use RingInfo to find aromatic rings
-            ring_info = mol.GetRingInfo()
-            atom_rings = ring_info.AtomRings()
-            aromatic_rings = []
+            # Check for thiophene
+            if not has_thiophene and checker.check_ring("thiophene", mol_smiles):
+                has_thiophene = True
+                print(f"Detected thiophene in molecule at depth {depth}: {mol_smiles}")
 
-            for ring in atom_rings:
-                if all(mol.GetAtomWithIdx(idx).GetIsAromatic() for idx in ring):
-                    aromatic_rings.append(ring)
-                    print(f"Found aromatic ring: {ring}")
+            # Check for nitrogen heterocycles
+            if not has_nitrogen_heterocycle:
+                for heterocycle in nitrogen_heterocycles:
+                    if checker.check_ring(heterocycle, mol_smiles):
+                        has_nitrogen_heterocycle = True
+                        print(f"Detected {heterocycle} in molecule at depth {depth}: {mol_smiles}")
+                        break
 
-            aromatic_ring_count = len(aromatic_rings)
+        # Check reactions that might form heterocycles
+        elif node["type"] == "reaction" and node.get("metadata", {}).get("rsmi"):
+            rsmi = node["metadata"]["rsmi"]
+            product = rsmi.split(">")[-1]
 
-            # Method 2: Use ring pattern detection as backup
-            if aromatic_ring_count < 3:
-                print("Using ring pattern detection as backup")
-                aromatic_systems = [
-                    "benzene",
-                    "pyridine",
-                    "pyrrole",
-                    "furan",
-                    "thiophene",
+            # Check if the reaction product contains thiophene
+            if not has_thiophene and checker.check_ring("thiophene", product):
+                has_thiophene = True
+                print(f"Detected thiophene formation in reaction at depth {depth}")
+
+            # Check if the reaction product contains nitrogen heterocycles
+            if not has_nitrogen_heterocycle:
+                for heterocycle in nitrogen_heterocycles:
+                    if checker.check_ring(heterocycle, product):
+                        has_nitrogen_heterocycle = True
+                        print(f"Detected {heterocycle} formation in reaction at depth {depth}")
+                        break
+
+                # Also check for specific reactions that form nitrogen heterocycles
+                nitrogen_heterocycle_reactions = [
                     "imidazole",
-                    "pyrazole",
-                    "oxazole",
-                    "thiazole",
-                    "indole",
-                    "quinoline",
-                    "isoquinoline",
-                    "naphthalene",
-                    "anthracene",
+                    "triaryl-imidazole",
+                    "benzimidazole_derivatives_carboxylic-acid/ester",
+                    "benzimidazole_derivatives_aldehyde",
+                    "tetrazole_terminal",
+                    "tetrazole_connect_regioisomere_1",
+                    "tetrazole_connect_regioisomere_2",
+                    "1,2,4-triazole_acetohydrazide",
+                    "1,2,4-triazole_carboxylic-acid/ester",
                 ]
 
-                # Use a set to avoid double-counting rings
-                detected_rings = set()
-                for ring_name in aromatic_systems:
-                    if checker.check_ring(ring_name, node["smiles"]):
-                        ring_indices = checker.get_ring_atom_indices(ring_name, node["smiles"])
-                        print(f"Detected {len(ring_indices)} instances of {ring_name}")
-                        for ring_atoms in ring_indices:
-                            # Add tuple of sorted atom indices to ensure uniqueness
-                            detected_rings.add(tuple(sorted(ring_atoms[0])))
-
-                # Use the higher count between the two methods
-                backup_count = len(detected_rings)
-                print(f"Backup method found {backup_count} unique aromatic rings")
-                aromatic_ring_count = max(aromatic_ring_count, backup_count)
-
-            print(f"Total aromatic rings detected: {aromatic_ring_count}")
+                for rxn_type in nitrogen_heterocycle_reactions:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        has_nitrogen_heterocycle = True
+                        print(f"Detected {rxn_type} reaction at depth {depth}")
+                        break
 
         # Traverse children
         for child in node.get("children", []):
@@ -121,6 +135,11 @@ def main(route):
     # Start traversal
     dfs_traverse(route)
 
-    result = aromatic_ring_count >= 3
-    print(f"3+ aromatic rings detected: {result}")
-    return result
+    # Strategy is present if both heterocycles are involved
+    strategy_present = has_thiophene and has_nitrogen_heterocycle
+    print(f"Heterocycle-containing synthesis strategy detected: {strategy_present}")
+    print(
+        f"Found thiophene: {has_thiophene}, Found nitrogen heterocycle: {has_nitrogen_heterocycle}"
+    )
+
+    return strategy_present

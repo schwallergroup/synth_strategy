@@ -2,68 +2,61 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a Boc protection-deprotection sequence in the synthesis.
+    Detects if the synthetic route follows a linear strategy (vs convergent).
+    Checks if most reactions have only 1-2 reactants.
     """
-    boc_protected_found = False
-    deprotection_found = False
+    reaction_count = 0
+    linear_reaction_count = 0
 
     def dfs_traverse(node):
-        nonlocal boc_protected_found, deprotection_found
+        nonlocal reaction_count, linear_reaction_count
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_str = rsmi.split(">")[0]
 
-            # Check for Boc group in molecules
-            boc_pattern = Chem.MolFromSmarts("C(=O)OC(C)(C)C")
+            # Count number of reactants
+            reactants = reactants_str.split(".")
+            reaction_count += 1
 
-            # Check for deprotection (Boc in reactants but not in product)
-            reactants_have_boc = any(
-                Chem.MolFromSmiles(r).HasSubstructMatch(boc_pattern) for r in reactants if r
-            )
-            product_has_boc = (
-                Chem.MolFromSmiles(product).HasSubstructMatch(boc_pattern) if product else False
-            )
+            # If reaction has 1-2 reactants, consider it linear
+            if len(reactants) <= 2:
+                linear_reaction_count += 1
 
-            if reactants_have_boc and not product_has_boc:
-                deprotection_found = True
-                print("Boc deprotection detected")
-
-            # Check for protection (Boc in product)
-            if product_has_boc:
-                boc_protected_found = True
-                print("Boc protected intermediate detected")
-
-        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Return True if both protection and deprotection were found
-    result = boc_protected_found and deprotection_found
-    print(f"Boc protection-deprotection sequence detected: {result}")
-    return result
+    # If more than 80% of reactions are linear, consider the whole synthesis linear
+    if reaction_count > 0:
+        linear_ratio = linear_reaction_count / reaction_count
+        print(f"Linear reactions: {linear_reaction_count}/{reaction_count} ({linear_ratio:.2f})")
+        return linear_ratio >= 0.8
+
+    return False

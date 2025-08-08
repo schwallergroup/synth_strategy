@@ -2,51 +2,94 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis follows a linear strategy without convergent steps.
+    This function detects a synthetic strategy involving multiple oxygen-containing
+    functional group manipulations (alcohols, ethers, esters, carboxylic acids).
     """
-    # Track the maximum branching factor
-    max_branching = 0
+    o_fg_transformations = 0
+    total_reactions = 0
 
     def dfs_traverse(node):
-        nonlocal max_branching
+        nonlocal o_fg_transformations, total_reactions
 
         if node["type"] == "reaction":
-            # Count number of reactants
+            total_reactions += 1
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            num_reactants = len([r for r in reactants if r])
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Update max branching
-            max_branching = max(max_branching, num_reactants)
-            print(f"Reaction has {num_reactants} reactants")
+            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles if Chem.MolFromSmiles(r)]
+            product = Chem.MolFromSmiles(product_smiles)
 
-        # Traverse children
+            if not product or not reactants:
+                return
+
+            # Check for ester reduction
+            ester_patt = Chem.MolFromSmarts("[C](=[O])[O][C]")
+            alcohol_patt = Chem.MolFromSmarts("[O]-[CH2]")
+
+            if any(r.HasSubstructMatch(ester_patt) for r in reactants):
+                if product.HasSubstructMatch(alcohol_patt):
+                    o_fg_transformations += 1
+                    print(f"Ester reduction detected in reaction: {rsmi}")
+
+            # Check for ester hydrolysis
+            acid_patt = Chem.MolFromSmarts("[C](=[O])[O][H]")
+
+            if any(r.HasSubstructMatch(ester_patt) for r in reactants):
+                if product.HasSubstructMatch(acid_patt):
+                    o_fg_transformations += 1
+                    print(f"Ester hydrolysis detected in reaction: {rsmi}")
+
+            # Check for O-alkylation
+            phenol_patt = Chem.MolFromSmarts("c-[O][H]")
+            benzyl_ether_patt = Chem.MolFromSmarts("c-[O]-[CH2]-c")
+
+            if any(r.HasSubstructMatch(phenol_patt) for r in reactants):
+                if product.HasSubstructMatch(benzyl_ether_patt):
+                    o_fg_transformations += 1
+                    print(f"O-alkylation detected in reaction: {rsmi}")
+
+            # Check for ether cleavage
+            ether_patt = Chem.MolFromSmarts("[O]-[CH3]")
+
+            if any(r.HasSubstructMatch(ether_patt) for r in reactants):
+                if product.HasSubstructMatch(phenol_patt):
+                    o_fg_transformations += 1
+                    print(f"Ether cleavage detected in reaction: {rsmi}")
+
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Linear synthesis has max branching factor of 1
-    return max_branching <= 2  # Allow for solvents/reagents
+    # Strategy criteria: at least 3 oxygen functional group transformations
+    has_strategy = o_fg_transformations >= 3
+    print(f"Oxygen functional group transformations: {o_fg_transformations}")
+    print(f"Strategy detected: {has_strategy}")
+
+    return has_strategy

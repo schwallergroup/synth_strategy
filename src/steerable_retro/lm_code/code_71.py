@@ -2,75 +2,65 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves aromatic bromination.
+    This function detects if the synthetic route involves a late-stage (depth 0 or 1)
+    aromatic C-N bond formation, typically via nucleophilic aromatic substitution.
     """
-    bromination_detected = False
+    late_stage_cn_formation = False
 
-    def dfs_traverse(node):
-        nonlocal bromination_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal late_stage_cn_formation
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
+        if node["type"] == "reaction" and depth <= 1:  # Late stage (depth 0 or 1)
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
+            reactants_smiles = rsmi.split(">")[0]
             product_smiles = rsmi.split(">")[-1]
 
-            # Count bromine atoms in reactants and product
-            reactants_br_count = 0
-            for r_smiles in reactants_smiles:
+            # Check if an amine is present in reactants
+            amine_pattern = Chem.MolFromSmarts("[#7;!$(N~[!#6]);!$(N~[#6]~[#7,#8,#16])]")
+            for reactant in reactants_smiles.split("."):
                 try:
-                    r_mol = Chem.MolFromSmiles(r_smiles)
-                    if r_mol:
-                        for atom in r_mol.GetAtoms():
-                            if atom.GetSymbol() == "Br" and atom.GetIsAromatic():
-                                reactants_br_count += 1
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and reactant_mol.HasSubstructMatch(amine_pattern):
+                        # Check if product has new C-N bond where C is aromatic
+                        product_mol = Chem.MolFromSmiles(product_smiles)
+                        if product_mol:
+                            aromatic_cn_pattern = Chem.MolFromSmarts("c-[#7]")
+                            if product_mol.HasSubstructMatch(aromatic_cn_pattern):
+                                print(
+                                    f"Found late-stage aromatic C-N bond formation at depth {depth}"
+                                )
+                                late_stage_cn_formation = True
                 except:
                     continue
 
-            # Count bromine atoms in product
-            try:
-                p_mol = Chem.MolFromSmiles(product_smiles)
-                product_br_count = 0
-                if p_mol:
-                    for atom in p_mol.GetAtoms():
-                        if atom.GetSymbol() == "Br":
-                            # Check if bromine is attached to aromatic carbon
-                            for neighbor in atom.GetNeighbors():
-                                if neighbor.GetSymbol() == "C" and neighbor.GetIsAromatic():
-                                    product_br_count += 1
-            except:
-                product_br_count = 0
-
-            # If product has more bromine atoms than reactants, it's a bromination
-            if product_br_count > reactants_br_count:
-                print(f"Aromatic bromination detected in reaction: {rsmi}")
-                bromination_detected = True
-
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
-    return bromination_detected
+    return late_stage_cn_formation

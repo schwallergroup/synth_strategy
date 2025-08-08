@@ -2,58 +2,52 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthetic route involves reduction of a nitro group to an amine.
+    Detects if the route preserves a benzofuran core throughout the synthesis.
     """
-    nitro_reduction_found = False
+    benzofuran_pattern = Chem.MolFromSmarts("[c]1[c][o][c]2[c]1[cH][cH][cH][cH]2")
+    all_products_have_benzofuran = True
 
     def dfs_traverse(node):
-        nonlocal nitro_reduction_found
+        nonlocal all_products_have_benzofuran
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "mol" and not node.get("in_stock", False):
+            # Check if this molecule has the benzofuran core
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol and not mol.HasSubstructMatch(benzofuran_pattern):
+                all_products_have_benzofuran = False
+                print(f"Found a product without benzofuran core: {node['smiles']}")
 
-            # Check if reactant contains nitro group and product contains amine
-            nitro_pattern = Chem.MolFromSmarts("[#7+](=[#8])[#8-]")
-            amine_pattern = Chem.MolFromSmarts("[#7;H2]")
-
-            product_mol = Chem.MolFromSmiles(product)
-
-            if product_mol and product_mol.HasSubstructMatch(amine_pattern):
-                # Check if any reactant has nitro group
-                for reactant in reactants:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(nitro_pattern):
-                        print("Nitro reduction detected in reaction")
-                        nitro_reduction_found = True
-                        break
-
-        # Traverse children
+        # Continue traversal
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
-    return nitro_reduction_found
+
+    print(f"Benzofuran core preservation: {all_products_have_benzofuran}")
+    return all_products_have_benzofuran

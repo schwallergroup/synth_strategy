@@ -2,86 +2,173 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects a synthetic sequence involving nitro reduction to amine
-    followed by tetrazole formation from the amine.
+    Detects a synthetic strategy involving sequential amine protection-deprotection
+    with two different protecting groups, followed by sulfonamide formation.
     """
-    # Track if we've found the key transformations
-    found_nitro_reduction = False
-    found_tetrazole_formation = False
+    # Track if we found each key element
+    found_trifluoroacetamide_protection = False
+    found_trifluoroacetamide_deprotection = False
+    found_carbamate_protection = False
+    found_carbamate_deprotection = False
+    found_sulfonamide_formation = False
+
+    # Track the depth at which each event occurs
+    trifluoroacetamide_protection_depth = -1
+    trifluoroacetamide_deprotection_depth = -1
+    carbamate_protection_depth = -1
+    carbamate_deprotection_depth = -1
+    sulfonamide_formation_depth = -1
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_nitro_reduction, found_tetrazole_formation
+        nonlocal found_trifluoroacetamide_protection, found_trifluoroacetamide_deprotection
+        nonlocal found_carbamate_protection, found_carbamate_deprotection
+        nonlocal found_sulfonamide_formation
+        nonlocal trifluoroacetamide_protection_depth, trifluoroacetamide_deprotection_depth
+        nonlocal carbamate_protection_depth, carbamate_deprotection_depth
+        nonlocal sulfonamide_formation_depth
 
-        if node["type"] == "reaction":
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
             rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+            reactants_part = rsmi.split(">")[0]
+            product_part = rsmi.split(">")[-1]
 
-            # Check for nitro reduction
-            if not found_nitro_reduction:
-                nitro_patt = Chem.MolFromSmarts("[N+](=O)[O-]")
-                amine_patt = Chem.MolFromSmarts("c-[NH2]")
+            reactants = reactants_part.split(".")
 
-                reactant_has_nitro = False
+            # Check for trifluoroacetamide protection
+            trifluoroacetamide_pattern = Chem.MolFromSmarts("[N]-C(=O)-C([F])([F])([F])")
+            product_mol = Chem.MolFromSmiles(product_part)
+
+            if product_mol and product_mol.HasSubstructMatch(trifluoroacetamide_pattern):
+                # Check if any reactant doesn't have the trifluoroacetamide
+                has_reactant_without_trifluoroacetamide = False
                 for reactant in reactants:
                     reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(nitro_patt):
-                        reactant_has_nitro = True
+                    if reactant_mol and not reactant_mol.HasSubstructMatch(
+                        trifluoroacetamide_pattern
+                    ):
+                        has_reactant_without_trifluoroacetamide = True
                         break
 
-                product_mol = Chem.MolFromSmiles(product)
-                if reactant_has_nitro and product_mol and product_mol.HasSubstructMatch(amine_patt):
-                    print("Found nitro reduction to amine")
-                    found_nitro_reduction = True
+                if has_reactant_without_trifluoroacetamide:
+                    found_trifluoroacetamide_protection = True
+                    trifluoroacetamide_protection_depth = depth
+                    print(f"Found trifluoroacetamide protection at depth {depth}")
 
-            # Check for tetrazole formation from amine
-            if not found_tetrazole_formation:
-                amine_patt = Chem.MolFromSmarts("c-[NH2]")
-                tetrazole_patt = Chem.MolFromSmarts("c-n1nnnc1C")
+            # Check for trifluoroacetamide deprotection
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.HasSubstructMatch(trifluoroacetamide_pattern):
+                    product_mol = Chem.MolFromSmiles(product_part)
+                    if product_mol and not product_mol.HasSubstructMatch(
+                        trifluoroacetamide_pattern
+                    ):
+                        found_trifluoroacetamide_deprotection = True
+                        trifluoroacetamide_deprotection_depth = depth
+                        print(f"Found trifluoroacetamide deprotection at depth {depth}")
 
-                reactant_has_amine = False
+            # Check for carbamate protection
+            carbamate_pattern = Chem.MolFromSmarts("[N]-C(=O)-O-[C]")
+            product_mol = Chem.MolFromSmiles(product_part)
+
+            if product_mol and product_mol.HasSubstructMatch(carbamate_pattern):
+                # Check if any reactant doesn't have the carbamate
+                has_reactant_without_carbamate = False
                 for reactant in reactants:
                     reactant_mol = Chem.MolFromSmiles(reactant)
-                    if reactant_mol and reactant_mol.HasSubstructMatch(amine_patt):
-                        reactant_has_amine = True
+                    if reactant_mol and not reactant_mol.HasSubstructMatch(carbamate_pattern):
+                        has_reactant_without_carbamate = True
                         break
 
-                product_mol = Chem.MolFromSmiles(product)
-                if (
-                    reactant_has_amine
-                    and product_mol
-                    and product_mol.HasSubstructMatch(tetrazole_patt)
-                ):
-                    print("Found tetrazole formation from amine")
-                    found_tetrazole_formation = True
+                if has_reactant_without_carbamate:
+                    found_carbamate_protection = True
+                    carbamate_protection_depth = depth
+                    print(f"Found carbamate protection at depth {depth}")
+
+            # Check for carbamate deprotection
+            for reactant in reactants:
+                reactant_mol = Chem.MolFromSmiles(reactant)
+                if reactant_mol and reactant_mol.HasSubstructMatch(carbamate_pattern):
+                    product_mol = Chem.MolFromSmiles(product_part)
+                    if product_mol and not product_mol.HasSubstructMatch(carbamate_pattern):
+                        found_carbamate_deprotection = True
+                        carbamate_deprotection_depth = depth
+                        print(f"Found carbamate deprotection at depth {depth}")
+
+            # Check for sulfonamide formation
+            sulfonamide_pattern = Chem.MolFromSmarts("[#16](=[#8])(=[#8])-[#7]")
+            product_mol = Chem.MolFromSmiles(product_part)
+
+            if product_mol and product_mol.HasSubstructMatch(sulfonamide_pattern):
+                # Check if any reactant doesn't have the sulfonamide
+                has_reactant_without_sulfonamide = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol and not reactant_mol.HasSubstructMatch(sulfonamide_pattern):
+                        has_reactant_without_sulfonamide = True
+                        break
+
+                if has_reactant_without_sulfonamide:
+                    found_sulfonamide_formation = True
+                    sulfonamide_formation_depth = depth
+                    print(f"Found sulfonamide formation at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from root
+    # Start traversal
     dfs_traverse(route)
 
-    # Return True if both transformations were found
-    return found_nitro_reduction and found_tetrazole_formation
+    # Check if the strategy is present
+    # We need both protection-deprotection cycles and sulfonamide formation
+    has_trifluoroacetamide_cycle = (
+        found_trifluoroacetamide_protection and found_trifluoroacetamide_deprotection
+    )
+    has_carbamate_cycle = found_carbamate_protection and found_carbamate_deprotection
+
+    # Check if the sequence is correct (trifluoroacetamide cycle, then carbamate cycle)
+    correct_sequence = (
+        trifluoroacetamide_protection_depth
+        > trifluoroacetamide_deprotection_depth
+        > carbamate_protection_depth
+        > carbamate_deprotection_depth
+    )
+
+    # Check if sulfonamide formation is late-stage (higher depth means earlier in synthesis)
+    late_stage_sulfonamide = sulfonamide_formation_depth > trifluoroacetamide_deprotection_depth
+
+    result = (
+        has_trifluoroacetamide_cycle
+        and has_carbamate_cycle
+        and found_sulfonamide_formation
+        and correct_sequence
+        and late_stage_sulfonamide
+    )
+
+    print(f"Sequential amine protection-deprotection with sulfonamide formation: {result}")
+    return result

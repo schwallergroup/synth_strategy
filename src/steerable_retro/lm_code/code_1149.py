@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,117 +54,82 @@ checker = check.Check(
 
 def main(route):
     """
-    This function detects if esterification occurs at the final stages (depths 0-2) of the synthesis.
-    In retrosynthetic analysis, esterification appears as ester hydrolysis in the forward direction.
+    This function detects if the synthesis follows a linear strategy with sequential transformations.
+    It checks if most reactions have only one main reactant (1:1 transformations).
     """
-    late_stage_esterification_detected = False
+    reaction_count = 0
+    linear_reaction_count = 0
+
+    # Track the depth of each reaction to analyze tree structure
+    max_depth = 0
+    reaction_depths = []
 
     def dfs_traverse(node, depth=0):
-        nonlocal late_stage_esterification_detected
+        nonlocal reaction_count, linear_reaction_count, max_depth
 
-        # Check at depths 0-2 (final reactions)
-        if node["type"] == "reaction" and depth <= 2:
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+        # Update max depth
+        max_depth = max(max_depth, depth)
 
-                print(f"Analyzing reaction at depth {depth}: {rsmi}")
+        if node["type"] == "reaction":
+            # Extract reactants
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
 
-                # Check if this is an esterification reaction (in retrosynthetic direction)
-                is_esterification = False
+            # Count significant reactants (ignoring very small molecules)
+            significant_reactants = 0
+            for reactant_smiles in reactants_smiles:
+                mol = Chem.MolFromSmiles(reactant_smiles)
+                if (
+                    mol and mol.GetNumHeavyAtoms() > 3
+                ):  # Consider molecules with >3 heavy atoms significant
+                    significant_reactants += 1
 
-                # Direct esterification reactions (forward direction)
-                esterification_reactions = [
-                    "Esterification of Carboxylic Acids",
-                    "Transesterification",
-                    "O-alkylation of carboxylic acids with diazo compounds",
-                    "Oxidative esterification of primary alcohols",
-                    "Acetic anhydride and alcohol to ester",
-                    "Schotten-Baumann to ester",
-                ]
+            reaction_count += 1
+            reaction_depths.append(depth)
 
-                # Ester hydrolysis reactions (forward direction, which are esterifications in retrosynthesis)
-                hydrolysis_reactions = [
-                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters",
-                    "Ester saponification (methyl deprotection)",
-                    "Ester saponification (alkyl deprotection)",
-                    "COOH ethyl deprotection",
-                ]
+            # Check if this is a linear transformation (exactly one significant reactant)
+            if significant_reactants == 1:
+                linear_reaction_count += 1
 
-                # Check for direct esterification (forward direction)
-                for reaction_type in esterification_reactions:
-                    if checker.check_reaction(reaction_type, rsmi):
-                        print(f"Detected forward esterification reaction type: {reaction_type}")
-                        is_esterification = True
-                        break
+            # Check if this is a known linear reaction type
+            elif (
+                checker.check_reaction("Oxidation of aldehydes to carboxylic acids", rsmi)
+                or checker.check_reaction("Reduction of aldehydes and ketones to alcohols", rsmi)
+                or checker.check_reaction("Esterification of Carboxylic Acids", rsmi)
+                or checker.check_reaction(
+                    "Hydrolysis or Hydrogenolysis of Carboxylic Esters or Thioesters", rsmi
+                )
+            ):
+                linear_reaction_count += 1
 
-                # Check for ester hydrolysis (which is esterification in retrosynthesis)
-                if not is_esterification:
-                    for reaction_type in hydrolysis_reactions:
-                        if checker.check_reaction(reaction_type, rsmi):
-                            print(f"Detected ester hydrolysis reaction type: {reaction_type}")
-                            is_esterification = True
-                            break
-
-                # If not directly identified, check for functional group changes
-                if not is_esterification:
-                    # Check for ester in reactants (retrosynthetic esterification)
-                    ester_in_reactants = False
-                    for reactant in reactants:
-                        if checker.check_fg("Ester", reactant):
-                            ester_in_reactants = True
-                            print(f"Found ester in reactant: {reactant}")
-                            break
-
-                    # Check for carboxylic acid in product (retrosynthetic esterification)
-                    acid_in_product = checker.check_fg("Carboxylic acid", product)
-                    if acid_in_product:
-                        print(f"Found carboxylic acid in product: {product}")
-
-                    # Check for alcohol in product (might be present in hydrolysis)
-                    alcohol_in_product = (
-                        checker.check_fg("Primary alcohol", product)
-                        or checker.check_fg("Secondary alcohol", product)
-                        or checker.check_fg("Tertiary alcohol", product)
-                        or checker.check_fg("Aromatic alcohol", product)
-                    )
-
-                    # Forward esterification check
-                    acid_in_reactants = False
-                    alcohol_in_reactants = False
-                    for reactant in reactants:
-                        if checker.check_fg("Carboxylic acid", reactant):
-                            acid_in_reactants = True
-                            print(f"Found carboxylic acid in reactant: {reactant}")
-                        if (
-                            checker.check_fg("Primary alcohol", reactant)
-                            or checker.check_fg("Secondary alcohol", reactant)
-                            or checker.check_fg("Tertiary alcohol", reactant)
-                            or checker.check_fg("Aromatic alcohol", reactant)
-                        ):
-                            alcohol_in_reactants = True
-                            print(f"Found alcohol in reactant: {reactant}")
-
-                    ester_in_product = checker.check_fg("Ester", product)
-                    if ester_in_product:
-                        print(f"Found ester in product: {product}")
-
-                    # Determine if this is an esterification (in either direction)
-                    if (ester_in_reactants and acid_in_product) or (
-                        acid_in_reactants and alcohol_in_reactants and ester_in_product
-                    ):
-                        print(f"Detected esterification by functional group analysis")
-                        is_esterification = True
-
-                if is_esterification:
-                    print(f"Late-stage esterification detected at depth {depth}")
-                    late_stage_esterification_detected = True
-
-        # Continue traversing the synthesis route
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Late-stage esterification detected: {late_stage_esterification_detected}")
-    return late_stage_esterification_detected
+
+    # Calculate linearity metrics
+    if reaction_count > 0:
+        # Reaction linearity: percentage of reactions that are linear transformations
+        reaction_linearity = linear_reaction_count / reaction_count
+
+        # Path linearity: how close the synthesis is to a single path
+        # In a perfectly linear synthesis, max_depth + 1 = reaction_count
+        path_linearity = (max_depth + 1) / reaction_count if reaction_count > 0 else 0
+
+        # Combined linearity score (weighted average)
+        linearity_score = 0.7 * reaction_linearity + 0.3 * path_linearity
+
+        print(
+            f"Linear reactions: {linear_reaction_count}/{reaction_count} ({reaction_linearity:.2f})"
+        )
+        print(
+            f"Path linearity: {path_linearity:.2f} (max depth: {max_depth}, reactions: {reaction_count})"
+        )
+        print(f"Overall linearity score: {linearity_score:.2f}")
+
+        # Consider it linear if the combined score is at least 0.65
+        return linearity_score >= 0.65
+
+    return False

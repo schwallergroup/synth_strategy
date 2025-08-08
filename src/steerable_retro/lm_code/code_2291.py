@@ -2,130 +2,77 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects thiazole ring formation from alpha-bromo ketone and thioacetamide.
+    This function detects a synthetic strategy involving an early Suzuki coupling
+    for C-C bond formation between an aryl halide and a boronic acid/ester.
     """
-    thiazole_formation_detected = False
+    has_suzuki_coupling = False
+    high_depth_reaction = False
 
-    def dfs_traverse(node):
-        nonlocal thiazole_formation_detected
+    def dfs_traverse(node, depth=0):
+        nonlocal has_suzuki_coupling, high_depth_reaction
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            # Check if this is a high-depth (early in synthesis) reaction
+            if depth >= 2:  # Depth 2 or higher is considered early in synthesis
+                high_depth_reaction = True
 
-                print(f"Analyzing reaction: {rsmi}")
+                # Extract reactants and product
+                rsmi = node["metadata"].get("rsmi", "")
+                if rsmi:
+                    reactants_part = rsmi.split(">")[0]
+                    product_part = rsmi.split(">")[-1]
 
-                # Check if the reaction is a thiazole formation reaction
-                is_thiazole_reaction = checker.check_reaction("thiazole", rsmi)
+                    reactants = [Chem.MolFromSmiles(r) for r in reactants_part.split(".") if r]
+                    product = Chem.MolFromSmiles(product_part) if product_part else None
 
-                # Check if product contains thiazole ring
-                has_thiazole_in_product = checker.check_ring("thiazole", product)
+                    if product and all(r for r in reactants):
+                        # Check for aryl halide
+                        aryl_halide_pattern = Chem.MolFromSmarts("[c][Br,Cl,I,F]")
+                        # Check for boronic acid/ester
+                        boronic_pattern = Chem.MolFromSmarts("[#6]B([#8])[#8]")
 
-                if has_thiazole_in_product:
-                    print(f"Product contains thiazole ring: {product}")
+                        has_aryl_halide = any(
+                            r.HasSubstructMatch(aryl_halide_pattern) for r in reactants
+                        )
+                        has_boronic = any(r.HasSubstructMatch(boronic_pattern) for r in reactants)
 
-                # Check if reactants contain alpha-bromo ketone and thioamide
-                has_alpha_bromo_ketone = False
-                has_thioamide = False
+                        # Check if product has new C-C bond between aryl groups
+                        if has_aryl_halide and has_boronic:
+                            print("Detected potential Suzuki coupling at depth", depth)
+                            has_suzuki_coupling = True
 
-                for reactant in reactants:
-                    # Check for alpha-bromo ketone (ketone + primary or secondary halide)
-                    if checker.check_fg("Ketone", reactant) and (
-                        checker.check_fg("Primary halide", reactant)
-                        or checker.check_fg("Secondary halide", reactant)
-                    ):
-                        has_alpha_bromo_ketone = True
-                        print(f"Found alpha-bromo ketone: {reactant}")
-
-                    # Check for alpha-bromo ketone pattern in SMILES
-                    if "C(=O)CH2Br" in reactant or "[CH2:21]Br" in reactant:
-                        has_alpha_bromo_ketone = True
-                        print(f"Found alpha-bromo ketone pattern: {reactant}")
-
-                    # Check for thioamide
-                    if checker.check_fg("Thioamide", reactant):
-                        has_thioamide = True
-                        print(f"Found thioamide: {reactant}")
-
-                # If we can't directly check for thioamide, look for thiourea or similar structures
-                if not has_thioamide:
-                    for reactant in reactants:
-                        if (
-                            checker.check_fg("Thiourea", reactant)
-                            or "C(=S)N" in reactant
-                            or "[C:2]([NH2:3])=[S:22]" in reactant
-                        ):
-                            has_thioamide = True
-                            print(f"Found thioamide-like structure: {reactant}")
-
-                # Determine if this is a thiazole formation reaction
-                if (
-                    is_thiazole_reaction
-                    or (has_thiazole_in_product and has_alpha_bromo_ketone and has_thioamide)
-                    or (
-                        has_thiazole_in_product
-                        and ("CH2Br" in rsmi or "[CH2:21]Br" in rsmi)
-                        and ("C(=S)N" in rsmi or "[C:2]([NH2:3])=[S:22]" in rsmi)
-                    )
-                ):
-                    print(
-                        f"Detected thiazole formation from alpha-bromo ketone and thioacetamide\nReactants: {reactants}\nProduct: {product}"
-                    )
-                    thiazole_formation_detected = True
-
+        # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
-    return thiazole_formation_detected
+
+    result = has_suzuki_coupling and high_depth_reaction
+    print(f"Early Suzuki coupling strategy detected: {result}")
+    return result

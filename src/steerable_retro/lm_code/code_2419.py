@@ -2,78 +2,164 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects an O-alkylation in early stage followed by ring formation.
+    This function detects a strategy involving early nitration followed by nucleophilic aromatic substitution.
     """
-    o_alkylation_depth = -1
-    ring_formation_after_alkylation = False
+    # Initialize tracking variables
+    nitration_depth = -1
+    chlorination_depth = -1
+    substitution_depth = -1
 
     def dfs_traverse(node, depth=0):
-        nonlocal o_alkylation_depth, ring_formation_after_alkylation
+        nonlocal nitration_depth, chlorination_depth, substitution_depth
 
         if node["type"] == "reaction":
             if "rsmi" in node.get("metadata", {}):
                 rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                try:
-                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-                    product_mol = Chem.MolFromSmiles(product_smiles)
+                # Check for nitration
+                if (
+                    checker.check_reaction("Aromatic nitration with HNO3", rsmi)
+                    or checker.check_reaction("Aromatic nitration with NO3 salt", rsmi)
+                    or checker.check_reaction("Aromatic nitration with NO2 salt", rsmi)
+                    or checker.check_reaction("Aromatic nitration with alkyl NO2", rsmi)
+                ):
+                    nitration_depth = depth
+                    print(f"Detected nitration at depth {depth}, product: {product}")
 
-                    if all(mol is not None for mol in reactant_mols) and product_mol is not None:
-                        # Check for O-alkylation (Williamson ether synthesis)
-                        oh_pattern = Chem.MolFromSmarts("[OH]-[c]")
-                        br_pattern = Chem.MolFromSmarts("Br[CH2][C](=O)[O]")
-                        ether_pattern = Chem.MolFromSmarts("[c]-[O]-[CH2][C](=O)[O]")
+                # Check for chlorination
+                if checker.check_reaction("Aromatic chlorination", rsmi):
+                    chlorination_depth = depth
+                    print(f"Detected chlorination at depth {depth}, product: {product}")
 
-                        has_oh = any(mol.HasSubstructMatch(oh_pattern) for mol in reactant_mols)
-                        has_br = any(mol.HasSubstructMatch(br_pattern) for mol in reactant_mols)
-                        has_ether = product_mol.HasSubstructMatch(ether_pattern)
+                # Check for nucleophilic aromatic substitution
+                if (
+                    checker.check_reaction("nucl_sub_aromatic_ortho_nitro", rsmi)
+                    or checker.check_reaction("nucl_sub_aromatic_para_nitro", rsmi)
+                    or checker.check_reaction("heteroaromatic_nuc_sub", rsmi)
+                ):
+                    substitution_depth = depth
+                    print(
+                        f"Detected nucleophilic aromatic substitution at depth {depth}, product: {product}"
+                    )
+
+                # If we don't have specific reaction checkers, fall back to functional group analysis
+                if (
+                    nitration_depth == -1
+                    and checker.check_fg("Nitro group", product)
+                    and not any(checker.check_fg("Nitro group", r) for r in reactants)
+                ):
+                    nitration_depth = depth
+                    print(f"Detected nitration (by FG) at depth {depth}, product: {product}")
+
+                if (
+                    chlorination_depth == -1
+                    and checker.check_fg("Aromatic halide", product)
+                    and not any(checker.check_fg("Aromatic halide", r) for r in reactants)
+                ):
+                    # Verify it's specifically chlorination
+                    product_mol = Chem.MolFromSmiles(product)
+                    if product_mol and product_mol.HasSubstructMatch(Chem.MolFromSmarts("c-Cl")):
+                        chlorination_depth = depth
+                        print(f"Detected chlorination (by FG) at depth {depth}, product: {product}")
+
+                if substitution_depth == -1:
+                    # Check for C-Cl to C-N transformation
+                    reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
+                    product_mol = Chem.MolFromSmiles(product)
+
+                    if all(reactant_mols) and product_mol:
+                        has_cl_reactant = any(
+                            mol.HasSubstructMatch(Chem.MolFromSmarts("c-Cl"))
+                            for mol in reactant_mols
+                        )
+                        has_nitro_reactant = any(
+                            checker.check_fg("Nitro group", Chem.MolToSmiles(mol))
+                            for mol in reactant_mols
+                        )
+                        has_cl_product = product_mol.HasSubstructMatch(Chem.MolFromSmarts("c-Cl"))
+                        has_nh_product = product_mol.HasSubstructMatch(Chem.MolFromSmarts("c-[N]"))
 
                         if (
-                            has_oh and has_br and has_ether and depth > 3
-                        ):  # Early stage (high depth)
-                            o_alkylation_depth = depth
-                            print(f"O-alkylation detected at depth {depth}")
-
-                        # Check for ring formation
-                        reactant_ring_count = sum(Chem.GetSSSR(mol) for mol in reactant_mols)
-                        product_ring_count = Chem.GetSSSR(product_mol)
-
-                        if (
-                            product_ring_count > reactant_ring_count
-                            and o_alkylation_depth > -1
-                            and depth < o_alkylation_depth
+                            has_cl_reactant
+                            and has_nitro_reactant
+                            and not has_cl_product
+                            and has_nh_product
                         ):
-                            ring_formation_after_alkylation = True
-                            print(f"Ring formation after O-alkylation detected at depth {depth}")
-                except Exception as e:
-                    print(f"Error processing reaction: {e}")
+                            substitution_depth = depth
+                            print(
+                                f"Detected nucleophilic aromatic substitution (by FG) at depth {depth}, product: {product}"
+                            )
 
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
+    # Start traversal
     dfs_traverse(route)
 
-    return o_alkylation_depth > -1 and ring_formation_after_alkylation
+    print(
+        f"Nitration depth: {nitration_depth}, Chlorination depth: {chlorination_depth}, Substitution depth: {substitution_depth}"
+    )
+
+    # Check if all three features are detected in the correct sequence
+    if nitration_depth != -1 and chlorination_depth != -1 and substitution_depth != -1:
+        # Verify correct sequence: nitration (early) -> chlorination -> nucleophilic substitution (late)
+        if nitration_depth > chlorination_depth > substitution_depth:
+            print("Detected early nitration with nucleophilic aromatic substitution strategy")
+            return True
+
+    return False

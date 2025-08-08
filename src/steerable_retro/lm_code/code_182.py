@@ -2,57 +2,76 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis route follows a convergent approach
-    where multiple complex fragments are combined.
+    This function detects amide formation from an amine and an acylating agent.
     """
-    max_fragments_combined = 0
+    found_amide_formation = False
 
-    def dfs_traverse(node):
-        nonlocal max_fragments_combined
+    def dfs_traverse(node, depth=0):
+        nonlocal found_amide_formation
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
+            if "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Count non-trivial reactants (more than 5 heavy atoms)
-            complex_fragments = 0
-            for r in reactants_smiles:
-                mol = Chem.MolFromSmiles(r)
-                if mol is not None and mol.GetNumHeavyAtoms() > 5:
-                    complex_fragments += 1
+                # Check for amine pattern in reactants
+                amine_pattern = Chem.MolFromSmarts("[NH2]")
 
-            if complex_fragments >= 2:
-                print(f"Found reaction combining {complex_fragments} complex fragments")
-                max_fragments_combined = max(max_fragments_combined, complex_fragments)
+                # Check for acylating agent pattern
+                acyl_pattern = Chem.MolFromSmarts("[C](=[O])[O]")
+
+                # Check for amide product pattern
+                amide_pattern = Chem.MolFromSmarts("[NH][C](=[O])")
+
+                # Check reactants and product
+                has_amine = False
+                has_acyl = False
+
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    if reactant_mol:
+                        if reactant_mol.HasSubstructMatch(amine_pattern):
+                            has_amine = True
+                        if reactant_mol.HasSubstructMatch(acyl_pattern):
+                            has_acyl = True
+
+                product_mol = Chem.MolFromSmiles(product)
+                if product_mol and product_mol.HasSubstructMatch(amide_pattern):
+                    if has_amine and has_acyl:
+                        found_amide_formation = True
+                        print("Found amide formation")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal
     dfs_traverse(route)
 
-    is_convergent = max_fragments_combined >= 2
-    print(f"Convergent synthesis strategy: {is_convergent}")
-    return is_convergent
+    return found_amide_formation

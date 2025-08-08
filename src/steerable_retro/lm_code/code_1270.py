@@ -2,69 +2,111 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    This function detects a synthetic strategy involving biaryl formation via Suzuki coupling.
+    This function detects the formation of a quinazoline core during the synthesis.
     """
-    suzuki_coupling_detected = False
+    from rdkit import Chem
+
+    quinazoline_formation_detected = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal suzuki_coupling_detected
+        nonlocal quinazoline_formation_detected
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            try:
+                # Extract reactants and product
+                rsmi = node["metadata"]["rsmi"]
+                reactants_smiles = rsmi.split(">")[0].split(".")
+                product_smiles = rsmi.split(">")[-1]
 
-            reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
-            product = Chem.MolFromSmiles(product_smiles)
+                # Check if this is a Niementowski quinazoline reaction
+                if checker.check_reaction("{Niementowski_quinazoline}", rsmi):
+                    print(f"Detected Niementowski quinazoline reaction at depth {depth}: {rsmi}")
+                    quinazoline_formation_detected = True
+                    return
 
-            # Check for Suzuki coupling pattern
-            boronic_acid_pattern = Chem.MolFromSmarts("B(O)(O)c1ccccc1")
-            aryl_halide_pattern = Chem.MolFromSmarts("[Cl,Br,I]c1ccccc1")
-            biaryl_pattern = Chem.MolFromSmarts("c1ccccc1-c1ccccc1")
+                # Check if product contains a quinazoline structure
+                try:
+                    product_has_quinazoline = checker.check_ring("quinazoline", product_smiles)
 
-            reactants_with_boronic_acid = any(
-                r and r.HasSubstructMatch(boronic_acid_pattern) for r in reactants
-            )
-            reactants_with_aryl_halide = any(
-                r and r.HasSubstructMatch(aryl_halide_pattern) for r in reactants
-            )
+                    if product_has_quinazoline:
+                        print(f"Product contains quinazoline at depth {depth}: {product_smiles}")
 
-            if (
-                reactants_with_boronic_acid
-                and reactants_with_aryl_halide
-                and product
-                and product.HasSubstructMatch(biaryl_pattern)
-            ):
-                print(f"Detected Suzuki coupling at depth {depth}")
-                suzuki_coupling_detected = True
+                        # Check if any reactant has quinazoline
+                        reactant_has_quinazoline = False
+                        for reactant_smiles in reactants_smiles:
+                            if checker.check_ring("quinazoline", reactant_smiles):
+                                reactant_has_quinazoline = True
+                                print(f"Reactant already contains quinazoline: {reactant_smiles}")
+                                break
+
+                        if not reactant_has_quinazoline:
+                            print(
+                                f"Quinazoline core formation detected in reaction at depth {depth}: {rsmi}"
+                            )
+                            quinazoline_formation_detected = True
+                except Exception as e:
+                    print(f"Error checking quinazoline structure: {e}")
+            except Exception as e:
+                print(f"Error processing reaction node: {e}")
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
+    # Call dfs_traverse on the root node
     dfs_traverse(route)
+    print(f"Quinazoline formation detected: {quinazoline_formation_detected}")
 
-    print(f"Biaryl formation via Suzuki coupling detected: {suzuki_coupling_detected}")
-    return suzuki_coupling_detected
+    return quinazoline_formation_detected

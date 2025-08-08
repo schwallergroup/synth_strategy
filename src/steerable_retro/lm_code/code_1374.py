@@ -2,107 +2,93 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects preservation of bis-pyrazole scaffold throughout the synthesis
+    Detects if the synthesis route involves a Suzuki coupling (C-C bond formation
+    between an aryl/heteroaryl halide and a boronic acid/ester).
     """
-    # Track if pyrazole rings are present at each step
-    all_steps_have_pyrazoles = True
-    step_count = 0
+    has_suzuki = False
 
     def dfs_traverse(node):
-        nonlocal all_steps_have_pyrazoles, step_count
+        nonlocal has_suzuki
 
-        if node["type"] == "mol" and "smiles" in node:
-            mol_smiles = node["smiles"]
+        if node["type"] == "reaction":
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-            # Skip checking reagents/catalysts that are typically not part of the main scaffold
-            if mol_smiles in ["O=S(Cl)Cl", "N", "O=S(=O)(Cl)Cl"]:
-                print(f"Skipping reagent/catalyst: {mol_smiles}")
-                return
+            # Check for boronic acid/ester pattern in reactants
+            boronic_pattern = re.compile(r"B\(O\)|OB\(O\)")
+            has_boronic = any(boronic_pattern.search(r) for r in reactants_smiles)
 
-            # Check for pyrazole rings using the checker function
-            if checker.check_ring("pyrazole", mol_smiles):
-                # Count pyrazole rings
-                pyrazole_indices = checker.get_ring_atom_indices("pyrazole", mol_smiles)
-                print(f"Found {len(pyrazole_indices)} pyrazole rings in molecule: {mol_smiles}")
+            # Check for aryl/heteroaryl halide pattern
+            halide_pattern = re.compile(r"Br|I|Cl")
+            has_halide = any(halide_pattern.search(r) for r in reactants_smiles)
 
-                if len(pyrazole_indices) < 2:  # We expect at least 2 pyrazole rings
-                    all_steps_have_pyrazoles = False
-                    print(
-                        f"Found only {len(pyrazole_indices)} pyrazole rings in molecule: {mol_smiles}"
-                    )
-            else:
-                # Try to check if the molecule contains connected pyrazoles that might not be detected individually
-                mol = Chem.MolFromSmiles(mol_smiles)
-                if "cnn1-c1" in mol_smiles or "nn(C)c" in mol_smiles:
-                    print(f"Detected connected pyrazole structure in: {mol_smiles}")
-                    # Count how many pyrazole-like structures we have
-                    pyrazole_count = mol_smiles.count("cnn") + mol_smiles.count("nn(")
-                    if pyrazole_count >= 2:
-                        print(f"Found approximately {pyrazole_count} pyrazole-like structures")
-                    else:
-                        all_steps_have_pyrazoles = False
-                        print(f"Insufficient pyrazole-like structures: {pyrazole_count}")
-                else:
-                    all_steps_have_pyrazoles = False
-                    print(f"No pyrazole rings found in molecule: {mol_smiles}")
+            if has_boronic and has_halide:
+                try:
+                    reactants = [Chem.MolFromSmiles(r) for r in reactants_smiles]
+                    product = Chem.MolFromSmiles(product_smiles)
 
-            step_count += 1
+                    if product and all(r for r in reactants):
+                        # Check if a new C-C bond is formed between aromatic carbons
+                        aromatic_c_c_bonds_product = set()
+                        for bond in product.GetBonds():
+                            if (
+                                bond.GetBeginAtom().GetAtomicNum() == 6
+                                and bond.GetEndAtom().GetAtomicNum() == 6
+                                and bond.GetBeginAtom().GetIsAromatic()
+                                and bond.GetEndAtom().GetIsAromatic()
+                            ):
+                                idx1, idx2 = sorted([bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()])
+                                aromatic_c_c_bonds_product.add((idx1, idx2))
+
+                        aromatic_c_c_bonds_reactants = set()
+                        for r in reactants:
+                            for bond in r.GetBonds():
+                                if (
+                                    bond.GetBeginAtom().GetAtomicNum() == 6
+                                    and bond.GetEndAtom().GetAtomicNum() == 6
+                                    and bond.GetBeginAtom().GetIsAromatic()
+                                    and bond.GetEndAtom().GetIsAromatic()
+                                ):
+                                    idx1, idx2 = sorted(
+                                        [bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()]
+                                    )
+                                    aromatic_c_c_bonds_reactants.add((idx1, idx2))
+
+                        if len(aromatic_c_c_bonds_product) > len(aromatic_c_c_bonds_reactants):
+                            print("Suzuki coupling detected")
+                            has_suzuki = True
+                except:
+                    print("Error processing reaction SMILES for Suzuki detection")
 
         # Process children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal
     dfs_traverse(route)
-
-    # Only return True if we've checked at least one molecule and all have pyrazoles
-    return all_steps_have_pyrazoles and step_count > 0
+    return has_suzuki

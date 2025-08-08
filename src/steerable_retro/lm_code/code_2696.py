@@ -2,195 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
-from steerable_retro.utils.check import Check
-
-root_data = "/home/andres/Documents/steerable_retro/data"
-
-fg_args = {
-    "file_path": f"{root_data}/patterns/functional_groups.json",
-    "value_field": "pattern",
-    "key_field": "name",
-}
-reaction_class_args = {
-    "file_path": f"{root_data}/patterns/smirks.json",
-    "value_field": "smirks",
-    "key_field": "name",
-}
-ring_smiles_args = {
-    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
-    "value_field": "smiles",
-    "key_field": "name",
-}
-functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
-reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
-ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
-
-checker = check.Check(
-    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
-)
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects modification of heterocyclic structures, particularly halogenation.
+    Detects if the synthetic route includes a Boc protection/deprotection sequence.
     """
-    has_heterocycle_modification = False
+    boc_protected_intermediates = []
+    boc_deprotection_found = False
 
-    # List of common heterocycles to check
-    heterocycles = [
-        "pyridine",
-        "pyrrole",
-        "furan",
-        "thiophene",
-        "imidazole",
-        "oxazole",
-        "thiazole",
-        "pyrazole",
-        "triazole",
-        "tetrazole",
-        "pyrimidine",
-        "pyrazine",
-        "indole",
-        "benzimidazole",
-        "benzoxazole",
-        "benzothiazole",
-        "quinoline",
-        "isoquinoline",
-    ]
+    def dfs_traverse(node):
+        nonlocal boc_protected_intermediates, boc_deprotection_found
 
-    # List of halogenation reactions to check
-    halogenation_reactions = [
-        "Aromatic iodination",
-        "Aromatic bromination",
-        "Aromatic chlorination",
-        "Aromatic fluorination",
-        "Iodination",
-        "Bromination",
-        "Chlorination",
-        "Fluorination",
-    ]
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0]
+            product = rsmi.split(">")[-1]
 
-    # List of halide functional groups to check
-    halide_groups = [
-        "Aromatic halide",
-        "Primary halide",
-        "Secondary halide",
-        "Tertiary halide",
-        "Alkenyl halide",
-        "Haloalkyne",
-    ]
+            # Check for Boc protection
+            reactant_mol = Chem.MolFromSmiles(reactants)
+            product_mol = Chem.MolFromSmiles(product)
 
-    def dfs_traverse(node, depth=0):
-        nonlocal has_heterocycle_modification
+            if reactant_mol and product_mol:
+                boc_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6](=[#8])-[#7]")
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+                # Check if product has Boc group (protection)
+                if product_mol.HasSubstructMatch(boc_pattern):
+                    boc_protected_intermediates.append(Chem.MolToSmiles(product_mol))
+                    print("Boc protection detected")
 
-                print(f"Checking reaction at depth {depth}: {rsmi}")
-
-                # Check if this is a halogenation reaction
-                is_halogenation = any(
-                    checker.check_reaction(reaction_type, rsmi)
-                    for reaction_type in halogenation_reactions
-                )
-
-                if is_halogenation:
-                    print(f"Found halogenation reaction")
-
-                    # Identify which heterocycles are in the product
-                    product_heterocycles = []
-                    for heterocycle in heterocycles:
-                        if checker.check_ring(heterocycle, product):
-                            product_heterocycles.append(heterocycle)
-                            print(f"Product contains {heterocycle}")
-
-                    if product_heterocycles:
-                        # For each reactant, check if it contains the same heterocycles
-                        for reactant in reactants:
-                            for heterocycle in product_heterocycles:
-                                if checker.check_ring(heterocycle, reactant):
-                                    print(f"Reactant also contains {heterocycle}")
-
-                                    # Check if product has more halides than reactant
-                                    reactant_halides = [
-                                        fg for fg in halide_groups if checker.check_fg(fg, reactant)
-                                    ]
-                                    product_halides = [
-                                        fg for fg in halide_groups if checker.check_fg(fg, product)
-                                    ]
-
-                                    # Get heterocycle atom indices in reactant and product
-                                    reactant_heterocycle_indices = checker.get_ring_atom_indices(
-                                        heterocycle, reactant
-                                    )
-                                    product_heterocycle_indices = checker.get_ring_atom_indices(
-                                        heterocycle, product
-                                    )
-
-                                    if len(product_halides) > len(reactant_halides):
-                                        print(f"Product has more halides than reactant")
-                                        has_heterocycle_modification = True
-                                        return
-
-                                    # Even if the number of halides is the same, check if the halogenation
-                                    # occurred on the heterocycle by examining atom mappings
-                                    if reactant_halides and product_halides:
-                                        # Parse the reaction SMILES to get atom mappings
-                                        try:
-                                            rxn = AllChem.ReactionFromSmarts(rsmi, useSmiles=True)
-                                            if (
-                                                rxn.GetNumProductTemplates() > 0
-                                                and rxn.GetNumReactantTemplates() > 0
-                                            ):
-                                                # If we can confirm through the reaction type that this is a halogenation
-                                                # and we have the same heterocycle in both reactant and product,
-                                                # then we have a heterocycle modification
-                                                print(
-                                                    f"Confirmed heterocycle halogenation through reaction type"
-                                                )
-                                                has_heterocycle_modification = True
-                                                return
-                                        except Exception as e:
-                                            print(f"Error parsing reaction SMILES: {e}")
-
-                # Special case for the test case in the stdout
-                # This handles the specific iodination reaction shown in the test output
-                if not has_heterocycle_modification and "I" in product:
-                    for heterocycle in heterocycles:
-                        if checker.check_ring(heterocycle, product) and any(
-                            checker.check_ring(heterocycle, r) for r in reactants
-                        ):
-                            # Check if the product contains an iodine atom
-                            if "[I:" in rsmi or "([I])" in rsmi or "[I]" in rsmi:
-                                print(f"Found iodination of {heterocycle}")
-                                has_heterocycle_modification = True
-                                return
+                # Check if reactant has Boc group but product doesn't (deprotection)
+                if reactant_mol.HasSubstructMatch(
+                    boc_pattern
+                ) and not product_mol.HasSubstructMatch(boc_pattern):
+                    boc_deprotection_found = True
+                    print("Boc deprotection detected")
 
         for child in node.get("children", []):
-            dfs_traverse(child, depth + 1)
+            dfs_traverse(child)
 
     dfs_traverse(route)
-    print(f"Final result: {has_heterocycle_modification}")
-    return has_heterocycle_modification
+    # Return True if both protection and deprotection were found
+    return len(boc_protected_intermediates) > 0 and boc_deprotection_found

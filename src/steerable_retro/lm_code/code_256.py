@@ -2,28 +2,31 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
-
-from steerable_retro.utils import check, fuzzy_dict
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
 
-root_data = "/home/andres/Documents/steerable_retro/data"
+root_data = "/home/dparm/steerable_retro/data"
 
 fg_args = {
     "file_path": f"{root_data}/patterns/functional_groups.json",
@@ -51,108 +54,71 @@ checker = check.Check(
 
 def main(route):
     """
-    Detects if the synthesis uses a Suzuki coupling (aryl halide + boronic acid)
-    as the final step (depth 0) to form a biaryl system.
+    Detects if the synthesis route involves the conversion of a hydroxyl group to a chloride.
     """
-    final_step_is_suzuki = False
+    conversion_detected = False
 
     def dfs_traverse(node):
-        nonlocal final_step_is_suzuki
+        nonlocal conversion_detected
+
+        if conversion_detected:
+            return  # Early return if already detected
 
         if node["type"] == "reaction":
-            # Calculate if this is a final step (all children are molecules)
-            is_final_step = node.get("children", []) and all(
-                child.get("type") == "mol" for child in node.get("children", [])
-            )
-            # Also check metadata depth if available
-            metadata_depth = node.get("metadata", {}).get("depth", -1)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
 
-            print(
-                f"Examining reaction node. Calculated final step: {is_final_step}, Metadata depth: {metadata_depth}"
-            )
+                # Check for specific alcohol to chloride reactions
+                alcohol_to_chloride_reactions = [
+                    "Alcohol to chloride_sulfonyl chloride",
+                    "Alcohol to chloride_SOCl2",
+                    "Alcohol to chloride_CHCl3",
+                    "Alcohol to chloride_CH2Cl2",
+                    "Alcohol to chloride_PCl5_ortho",
+                    "Alcohol to chloride_POCl3_ortho",
+                    "Alcohol to chloride_POCl3_para",
+                    "Alcohol to chloride_POCl3",
+                    "Alcohol to chloride_HCl",
+                    "Alcohol to chloride_Salt",
+                    "Alcohol to chloride_Other",
+                ]
 
-            if is_final_step or metadata_depth == 0:
-                # Get reaction SMILES
-                rsmi = node["metadata"].get("rsmi", "")
-                if not rsmi:
-                    print("No reaction SMILES found in metadata")
-                    return
+                for reaction_type in alcohol_to_chloride_reactions:
+                    if checker.check_reaction(reaction_type, rsmi):
+                        print(f"Detected hydroxyl to chloride conversion: {reaction_type}")
+                        conversion_detected = True
+                        return
 
-                print(f"Reaction SMILES: {rsmi}")
+                # If specific reaction check failed, try checking functional group conversion
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-                # Check if this is a Suzuki coupling using the checker function
-                is_suzuki_acids = checker.check_reaction("Suzuki coupling with boronic acids", rsmi)
-                is_suzuki_esters = checker.check_reaction(
-                    "Suzuki coupling with boronic esters", rsmi
-                )
-                is_suzuki_otf_acids = checker.check_reaction(
-                    "Suzuki coupling with boronic acids OTf", rsmi
-                )
-                is_suzuki_otf_esters = checker.check_reaction(
-                    "Suzuki coupling with boronic esters OTf", rsmi
-                )
-                is_suzuki_sulfonic = checker.check_reaction(
-                    "Suzuki coupling with sulfonic esters", rsmi
-                )
-
-                print(
-                    f"Suzuki checks - acids: {is_suzuki_acids}, esters: {is_suzuki_esters}, otf_acids: {is_suzuki_otf_acids}, otf_esters: {is_suzuki_otf_esters}, sulfonic: {is_suzuki_sulfonic}"
-                )
-
-                if any(
-                    [
-                        is_suzuki_acids,
-                        is_suzuki_esters,
-                        is_suzuki_otf_acids,
-                        is_suzuki_otf_esters,
-                        is_suzuki_sulfonic,
-                    ]
+                # Check for chloride in product
+                if (
+                    checker.check_fg("Primary halide", product)
+                    or checker.check_fg("Secondary halide", product)
+                    or checker.check_fg("Tertiary halide", product)
+                    or checker.check_fg("Aromatic halide", product)
                 ):
-                    print("Detected late-stage Suzuki coupling")
-                    final_step_is_suzuki = True
-                else:
-                    print("Not a recognized Suzuki coupling reaction, performing additional checks")
 
-                    # Additional check for biaryl formation
-                    try:
-                        reactants_part = rsmi.split(">")[0]
-                        products_part = rsmi.split(">")[-1]
+                    # Check for hydroxyl in reactants
+                    for reactant in reactants:
+                        if (
+                            checker.check_fg("Primary alcohol", reactant)
+                            or checker.check_fg("Secondary alcohol", reactant)
+                            or checker.check_fg("Tertiary alcohol", reactant)
+                            or checker.check_fg("Aromatic alcohol", reactant)
+                        ):
 
-                        # Check for boronic acid/ester in reactants
-                        reactants = reactants_part.split(".")
-                        has_boronic = False
-                        has_aryl_halide = False
+                            # This is a potential hydroxyl to chloride conversion
+                            # Ideally, we would check atom mapping to confirm the exact position
+                            print(f"Detected potential hydroxyl to chloride conversion")
+                            conversion_detected = True
+                            return
 
-                        for reactant in reactants:
-                            if checker.check_fg("Boronic acid", reactant) or checker.check_fg(
-                                "Boronic ester", reactant
-                            ):
-                                print(f"Found boronic acid/ester in reactant: {reactant}")
-                                has_boronic = True
-                            if checker.check_fg("Aromatic halide", reactant) or checker.check_fg(
-                                "Triflate", reactant
-                            ):
-                                print(f"Found aryl halide/triflate in reactant: {reactant}")
-                                has_aryl_halide = True
-
-                        # Check for biaryl in product
-                        product_mol = Chem.MolFromSmiles(products_part)
-                        if product_mol:
-                            biaryl_pattern = Chem.MolFromSmarts("c:c-c:c")
-                            has_biaryl = product_mol.HasSubstructMatch(biaryl_pattern)
-                            print(f"Product has biaryl: {has_biaryl}")
-
-                            if has_boronic and has_aryl_halide and has_biaryl:
-                                print(
-                                    "Detected potential Suzuki coupling based on reactants and product structure"
-                                )
-                                final_step_is_suzuki = True
-                    except Exception as e:
-                        print(f"Error in additional check: {e}")
-
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    print(f"Final result: {final_step_is_suzuki}")
-    return final_step_is_suzuki
+    return conversion_detected

@@ -2,90 +2,72 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects if the synthesis involves multiple aromatic substitution reactions
-    (bromination, nitration, etc.) on the same core structure.
+    Detects if the route involves late-stage introduction of a nitro group.
+    Late stage is defined as occurring in the first half of the synthesis (lower depth).
     """
-    aromatic_substitutions = 0
+    nitro_introduction_found = False
+    max_depth = 0
 
-    def dfs_traverse(node):
-        nonlocal aromatic_substitutions
+    def dfs_traverse(node, depth=0):
+        nonlocal nitro_introduction_found, max_depth
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+        max_depth = max(max_depth, depth)
+
+        if node["type"] == "reaction":
+            # Extract reactants and product
             rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0].split(".")
-            product_smiles = rsmi.split(">")[-1]
+            reactants = rsmi.split(">")[0].split(".")
+            product = rsmi.split(">")[-1]
 
-            try:
-                # Patterns for common aromatic substitutions
-                bromination_pattern = Chem.MolFromSmarts("c-Br")
-                nitration_pattern = Chem.MolFromSmarts("c-[N+](=O)[O-]")
+            # Check if nitro group is introduced in this reaction
+            nitro_pattern = Chem.MolFromSmarts("[N+](=[O])[O-]")
 
-                product_mol = Chem.MolFromSmiles(product_smiles)
-                reactant_mols = [
-                    Chem.MolFromSmiles(r) for r in reactants_smiles if Chem.MolFromSmiles(r)
-                ]
+            product_mol = Chem.MolFromSmiles(product)
+            if product_mol and product_mol.HasSubstructMatch(nitro_pattern):
+                # Check if any reactant doesn't have nitro group
+                has_nitro_in_reactants = all(
+                    Chem.MolFromSmiles(r) and Chem.MolFromSmiles(r).HasSubstructMatch(nitro_pattern)
+                    for r in reactants
+                    if Chem.MolFromSmiles(r)
+                )
 
-                # Check if product has a new aromatic substitution not present in reactants
-                if product_mol:
-                    # Check for new bromination
-                    if product_mol.HasSubstructMatch(bromination_pattern):
-                        br_in_product = len(product_mol.GetSubstructMatches(bromination_pattern))
-                        br_in_reactants = sum(
-                            [
-                                len(r.GetSubstructMatches(bromination_pattern))
-                                for r in reactant_mols
-                                if r
-                            ]
-                        )
+                if not has_nitro_in_reactants:
+                    print(f"Nitro group introduction detected at depth {depth}")
+                    nitro_introduction_found = True
+                    # Check if this is late stage (first half of synthesis)
+                    if depth <= max_depth / 2:
+                        return True
 
-                        if br_in_product > br_in_reactants:
-                            print("Aromatic bromination detected")
-                            aromatic_substitutions += 1
-
-                    # Check for new nitration
-                    if product_mol.HasSubstructMatch(nitration_pattern):
-                        nitro_in_product = len(product_mol.GetSubstructMatches(nitration_pattern))
-                        nitro_in_reactants = sum(
-                            [
-                                len(r.GetSubstructMatches(nitration_pattern))
-                                for r in reactant_mols
-                                if r
-                            ]
-                        )
-
-                        if nitro_in_product > nitro_in_reactants:
-                            print("Aromatic nitration detected")
-                            aromatic_substitutions += 1
-            except Exception as e:
-                print(f"Error in multiple_aromatic_substitution_strategy: {e}")
-
-        # Continue traversing
+        # Process children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal
     dfs_traverse(route)
 
-    # Return True if at least 2 aromatic substitutions are detected
-    return aromatic_substitutions >= 2
+    # Determine if nitro introduction was in late stage
+    return nitro_introduction_found and max_depth > 0

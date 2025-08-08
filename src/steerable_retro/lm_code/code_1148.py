@@ -2,51 +2,91 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if acylation with oxalyl chloride is used in the synthesis.
+    This function detects multiple amine functional group interconversions in the synthesis.
+    It tracks transformations between nitro, amine, amide, and isothiocyanate groups.
     """
-    oxalyl_chloride_acylation_detected = False
+    amine_pattern = Chem.MolFromSmarts("c[NH2]")
+    nitro_pattern = Chem.MolFromSmarts("c[N+](=O)[O-]")
+    amide_pattern = Chem.MolFromSmarts("c[NH]C(=O)")
+    isothiocyanate_pattern = Chem.MolFromSmarts("c[N]=C=S")
+
+    amine_transformations = 0
 
     def dfs_traverse(node):
-        nonlocal oxalyl_chloride_acylation_detected
+        nonlocal amine_transformations
+
         if node["type"] == "reaction":
-            if "metadata" in node and "rsmi" in node["metadata"]:
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+            # Extract reactants and product
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for oxalyl chloride in reactants
-                oxalyl_chloride_pattern = Chem.MolFromSmarts("ClC(=O)C(=O)Cl")
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if not product_mol:
+                return
 
-                for reactant in reactants:
-                    mol = Chem.MolFromSmiles(reactant)
-                    if mol and mol.HasSubstructMatch(oxalyl_chloride_pattern):
-                        oxalyl_chloride_acylation_detected = True
-                        print(f"Acylation with oxalyl chloride detected in reaction: {rsmi}")
-                        break
+            # Check for various transformations
+            for reactant_smiles in reactants_smiles:
+                reactant_mol = Chem.MolFromSmiles(reactant_smiles)
+                if not reactant_mol:
+                    continue
 
+                # Nitro to amine
+                if (
+                    reactant_mol.HasSubstructMatch(nitro_pattern)
+                    and product_mol.HasSubstructMatch(amine_pattern)
+                    and not reactant_mol.HasSubstructMatch(amine_pattern)
+                ):
+                    print("Nitro to amine transformation detected")
+                    amine_transformations += 1
+
+                # Amine to amide
+                if (
+                    reactant_mol.HasSubstructMatch(amine_pattern)
+                    and product_mol.HasSubstructMatch(amide_pattern)
+                    and not reactant_mol.HasSubstructMatch(amide_pattern)
+                ):
+                    print("Amine to amide transformation detected")
+                    amine_transformations += 1
+
+                # Isothiocyanate to amine
+                if (
+                    reactant_mol.HasSubstructMatch(isothiocyanate_pattern)
+                    and product_mol.HasSubstructMatch(amine_pattern)
+                    and not reactant_mol.HasSubstructMatch(amine_pattern)
+                ):
+                    print("Isothiocyanate to amine transformation detected")
+                    amine_transformations += 1
+
+        # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    print(f"Acylation with oxalyl chloride detected: {oxalyl_chloride_acylation_detected}")
-    return oxalyl_chloride_acylation_detected
+    return amine_transformations >= 2  # At least 2 different amine transformations

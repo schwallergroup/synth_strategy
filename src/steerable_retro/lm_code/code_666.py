@@ -2,80 +2,249 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+root_data = "/home/dparm/steerable_retro/data"
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
 
 
 def main(route):
     """
-    Detects a synthetic strategy where SNAr occurs on an activated aromatic ring
-    with electron-withdrawing groups (nitro, fluoro) ortho or para to the leaving group.
+    This function detects a synthetic strategy involving late-stage ring formation
+    (in the final or penultimate step of the synthesis).
     """
-    # Track if we found an activated SNAr
-    found_activated_snar = False
+    ring_formation_at_depth = None
+    max_depth = 0
+
+    # List of common ring types to check
+    ring_types = [
+        "furan",
+        "pyran",
+        "dioxane",
+        "tetrahydrofuran",
+        "tetrahydropyran",
+        "oxirane",
+        "oxetane",
+        "oxolane",
+        "oxane",
+        "dioxolane",
+        "dioxolene",
+        "trioxane",
+        "dioxepane",
+        "pyrrole",
+        "pyridine",
+        "pyrazole",
+        "imidazole",
+        "oxazole",
+        "thiazole",
+        "pyrimidine",
+        "pyrazine",
+        "pyridazine",
+        "triazole",
+        "tetrazole",
+        "pyrrolidine",
+        "piperidine",
+        "piperazine",
+        "morpholine",
+        "thiomorpholine",
+        "aziridine",
+        "azetidine",
+        "azepane",
+        "diazepane",
+        "indole",
+        "quinoline",
+        "isoquinoline",
+        "purine",
+        "carbazole",
+        "acridine",
+        "thiophene",
+        "thiopyran",
+        "thiirane",
+        "thietane",
+        "thiolane",
+        "thiane",
+        "dithiane",
+        "dithiolane",
+        "benzothiophene",
+        "oxathiolane",
+        "dioxathiolane",
+        "thiazolidine",
+        "oxazolidine",
+        "isoxazole",
+        "isothiazole",
+        "oxadiazole",
+        "thiadiazole",
+        "cyclopropane",
+        "cyclobutane",
+        "cyclopentane",
+        "cyclohexane",
+        "cycloheptane",
+        "cyclooctane",
+        "benzene",
+        "naphthalene",
+        "anthracene",
+        "benzoxazole",
+        "benzothiazole",
+        "benzimidazole",
+        "pteridin",
+        "phenothiazine",
+        "phenoxazine",
+        "dibenzofuran",
+        "dibenzothiophene",
+        "xanthene",
+        "thioxanthene",
+        "pyrroline",
+        "pyrrolidone",
+        "imidazolidine",
+        "porphyrin",
+        "indazole",
+        "benzotriazole",
+    ]
+
+    # List of ring-forming reaction types
+    ring_forming_reactions = [
+        "Formation of NOS Heterocycles",
+        "Paal-Knorr pyrrole synthesis",
+        "Benzothiazole formation from aldehyde",
+        "Benzothiazole formation from acyl halide",
+        "Benzothiazole formation from ester/carboxylic acid",
+        "Benzoxazole formation from aldehyde",
+        "Benzoxazole formation from acyl halide",
+        "Benzoxazole formation from ester/carboxylic acid",
+        "Benzoxazole formation (intramolecular)",
+        "Benzimidazole formation from aldehyde",
+        "Benzimidazole formation from acyl halide",
+        "Benzimidazole formation from ester/carboxylic acid",
+        "Huisgen alkyne-azide 1,3 dipolar cycloaddition",
+        "Huisgen 1,3 dipolar cycloaddition",
+        "Huisgen alkene-azide 1,3 dipolar cycloaddition",
+        "Pyrazole formation",
+        "Intramolecular amination of azidobiphenyls (heterocycle formation)",
+        "Intramolecular amination (heterocycle formation)",
+        "Diels-Alder",
+        "Pauson-Khand reaction",
+        "Michael-induced ring closure from hydrazone",
+        "Michael-induced ring closure from diazoalkane",
+        "[3+2]-cycloaddition of hydrazone and alkyne",
+        "[3+2]-cycloaddition of hydrazone and alkene",
+        "[3+2]-cycloaddition of diazoalkane and alkyne",
+        "[3+2]-cycloaddition of diazoalkane and alkene",
+        "[3+2]-cycloaddition of diazoalkane and alpha-alkyne",
+        "[3+2]-cycloaddition of diazoalkane and alpha-alkene",
+        "Pictet-Spengler",
+    ]
 
     def dfs_traverse(node, depth=0):
-        nonlocal found_activated_snar
+        nonlocal ring_formation_at_depth, max_depth
 
-        if node["type"] == "reaction":
-            # Extract reactants and product
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants_smiles = rsmi.split(">")[0].split(".")
-                product_smiles = rsmi.split(">")[-1]
+        max_depth = max(max_depth, depth)
 
-                # Check for potential SNAr reaction
-                # Look for halogen in reactants
-                for reactant in reactants_smiles:
-                    reactant_mol = Chem.MolFromSmiles(reactant)
-                    if not reactant_mol:
-                        continue
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants_part = rsmi.split(">")[0]
+            products_part = rsmi.split(">")[-1]
 
-                    # Check for aryl halide with activating groups
-                    # Ortho activation patterns
-                    ortho_nitro_halide = Chem.MolFromSmarts("c([N+](=O)[O-])c[F,Cl,Br,I]")
-                    ortho_fluoro_halide = Chem.MolFromSmarts("c(F)c[F,Cl,Br,I]")
+            # Check if this is a known ring-forming reaction
+            is_ring_forming_reaction = False
+            for rxn_type in ring_forming_reactions:
+                if checker.check_reaction(rxn_type, rsmi):
+                    print(f"Ring-forming reaction detected: {rxn_type} at depth {depth}")
+                    is_ring_forming_reaction = True
+                    break
 
-                    # Para activation patterns
-                    para_nitro_halide = Chem.MolFromSmarts("c([N+](=O)[O-])ccc[F,Cl,Br,I]")
-                    para_fluoro_halide = Chem.MolFromSmarts("c(F)ccc[F,Cl,Br,I]")
+            # Process reactants and products
+            reactants_smiles = reactants_part.split(".")
+            product_smiles = products_part
 
-                    if (
-                        reactant_mol.HasSubstructMatch(ortho_nitro_halide)
-                        or reactant_mol.HasSubstructMatch(ortho_fluoro_halide)
-                        or reactant_mol.HasSubstructMatch(para_nitro_halide)
-                        or reactant_mol.HasSubstructMatch(para_fluoro_halide)
-                    ):
+            # Check for new rings in the product that weren't in the reactants
+            new_rings_formed = False
 
-                        # Check if product has a new C-N bond where the halogen was
-                        product_mol = Chem.MolFromSmiles(product_smiles)
-                        if product_mol:
-                            # Look for aromatic C-N bond that wasn't in the reactant
-                            c_n_bond_pattern = Chem.MolFromSmarts("cN")
-                            if product_mol.HasSubstructMatch(c_n_bond_pattern):
-                                print(f"Found activated SNAr at depth {depth}")
-                                found_activated_snar = True
+            # First check if we can create valid molecules
+            reactant_mols = [Chem.MolFromSmiles(r) for r in reactants_smiles if r]
+            product_mol = Chem.MolFromSmiles(product_smiles)
 
-        # Continue traversing the tree
+            if product_mol and all(r for r in reactant_mols):
+                # Count rings in reactants and product
+                try:
+                    reactant_ring_count = sum(r.GetRingInfo().NumRings() for r in reactant_mols)
+                    product_ring_count = product_mol.GetRingInfo().NumRings()
+
+                    # Check if new rings were formed
+                    if product_ring_count > reactant_ring_count:
+                        print(
+                            f"Ring count increased: {reactant_ring_count} -> {product_ring_count} at depth {depth}"
+                        )
+                        new_rings_formed = True
+                except Exception as e:
+                    print(f"Error counting rings: {e}")
+
+                # Check for specific ring types in product that aren't in reactants
+                for ring_type in ring_types:
+                    # Check if ring exists in product but not in any reactant
+                    if checker.check_ring(ring_type, product_smiles):
+                        ring_in_reactants = any(
+                            checker.check_ring(ring_type, r) for r in reactants_smiles
+                        )
+                        if not ring_in_reactants:
+                            print(f"New ring type formed: {ring_type} at depth {depth}")
+                            new_rings_formed = True
+
+            # If we detected ring formation through any method, record the depth
+            if new_rings_formed or is_ring_forming_reaction:
+                ring_formation_at_depth = depth
+
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
 
-    return found_activated_snar
+    # Check if ring formation occurs in the final or penultimate step
+    if ring_formation_at_depth is not None and ring_formation_at_depth <= 1:
+        print(f"Late-stage ring formation strategy detected at depth {ring_formation_at_depth}")
+        return True
+
+    return False

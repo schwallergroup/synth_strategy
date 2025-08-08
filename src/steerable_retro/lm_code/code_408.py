@@ -2,75 +2,63 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects a synthetic strategy where borylation is used
-    to prepare an aromatic ring for subsequent cross-coupling.
+    Detects if the synthetic route involves multiple heterocyclic systems
+    such as pyrazole, isoxazole, and thiophene.
     """
-    has_borylation = False
+    heterocycle_count = 0
+    heterocycle_types = set()
 
-    def dfs_traverse(node):
-        nonlocal has_borylation
+    def dfs_traverse(node, depth=0):
+        nonlocal heterocycle_count, heterocycle_types
 
-        if node["type"] == "reaction":
-            # Extract reaction SMILES
-            rsmi = node["metadata"].get("rsmi", "")
-            if not rsmi:
-                return
+        if node["type"] == "mol" and "smiles" in node:
+            mol = Chem.MolFromSmiles(node["smiles"])
+            if mol:
+                # Check for different heterocycles
+                pyrazole_pattern = Chem.MolFromSmarts("[n]1[n]cc[c]1")
+                isoxazole_pattern = Chem.MolFromSmarts("[n]1oc[c]c1")
+                thiophene_pattern = Chem.MolFromSmarts("[s]1ccc[c]1")
+                morpholine_pattern = Chem.MolFromSmarts("[N]1CCOC[C]1")
 
-            # Split into reactants and product
-            parts = rsmi.split(">")
-            if len(parts) < 3:
-                return
+                if mol.HasSubstructMatch(pyrazole_pattern):
+                    heterocycle_types.add("pyrazole")
+                if mol.HasSubstructMatch(isoxazole_pattern):
+                    heterocycle_types.add("isoxazole")
+                if mol.HasSubstructMatch(thiophene_pattern):
+                    heterocycle_types.add("thiophene")
+                if mol.HasSubstructMatch(morpholine_pattern):
+                    heterocycle_types.add("morpholine")
 
-            reactants = parts[0].split(".")
-            product = parts[2]
-
-            # Check for borylation patterns
-            try:
-                # Look for boronic acid in product but not in reactants
-                boronic_acid_pattern = Chem.MolFromSmarts("[c][B]([OH])[OH]")
-
-                product_mol = Chem.MolFromSmiles(product)
-                reactant_mols = [Chem.MolFromSmiles(r) for r in reactants if r]
-
-                product_has_boronic_acid = product_mol and product_mol.HasSubstructMatch(
-                    boronic_acid_pattern
-                )
-                reactants_have_boronic_acid = any(
-                    mol and mol.HasSubstructMatch(boronic_acid_pattern) for mol in reactant_mols
-                )
-
-                if product_has_boronic_acid and not reactants_have_boronic_acid:
-                    depth = node["metadata"].get("depth", -1)
-                    print(f"Detected borylation preparation at depth {depth}")
-                    has_borylation = True
-            except:
-                pass
-
-        # Continue traversal
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
-    # Start traversal from the root
     dfs_traverse(route)
-    return has_borylation
+    heterocycle_count = len(heterocycle_types)
+
+    print(f"Found {heterocycle_count} different heterocycle types: {', '.join(heterocycle_types)}")
+    return heterocycle_count >= 3  # Route has at least 3 different heterocycle types

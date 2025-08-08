@@ -2,61 +2,78 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if a synthetic route includes transformation of aryl halides to aryl ethers.
+    Detects the activation of a carboxylic acid to an acid chloride for subsequent coupling.
     """
-    has_transformation = False
+    has_acid_chloride_formation = False
 
     def dfs_traverse(node):
-        nonlocal has_transformation
+        nonlocal has_acid_chloride_formation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0]
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for aryl halide to aryl ether transformation
-            reactant_mol = Chem.MolFromSmiles(reactants)
-            product_mol = Chem.MolFromSmiles(product)
+                # Check for carboxylic acid in reactants
+                acid_in_reactants = False
+                for reactant in reactants:
+                    reactant_mol = Chem.MolFromSmiles(reactant)
+                    acid_pattern = Chem.MolFromSmarts("[C](=[O])[OH]")
 
-            if reactant_mol and product_mol:
-                # Pattern for aryl halide in reactant
-                aryl_halide_patt = Chem.MolFromSmarts("[c]-[#53,#35,#17,#9]")
-                # Pattern for aryl ether in product
-                aryl_ether_patt = Chem.MolFromSmarts("[c]-[#8]-[#6]")
+                    if (
+                        reactant_mol
+                        and acid_pattern
+                        and reactant_mol.HasSubstructMatch(acid_pattern)
+                    ):
+                        acid_in_reactants = True
+                        break
 
-                if reactant_mol.HasSubstructMatch(
-                    aryl_halide_patt
-                ) and product_mol.HasSubstructMatch(aryl_ether_patt):
-                    print(f"Found aryl halide to ether transformation: {rsmi}")
-                    has_transformation = True
+                # Check for acid chloride in product
+                if acid_in_reactants:
+                    product_mol = Chem.MolFromSmiles(product)
+                    acid_chloride_pattern = Chem.MolFromSmarts("[C](=[O])[Cl]")
+
+                    if (
+                        product_mol
+                        and acid_chloride_pattern
+                        and product_mol.HasSubstructMatch(acid_chloride_pattern)
+                    ):
+                        has_acid_chloride_formation = True
+                        print(
+                            f"Detected acid chloride formation at depth {node.get('depth', 'unknown')}"
+                        )
 
         # Traverse children
         for child in node.get("children", []):
             dfs_traverse(child)
 
-    # Start traversal from root
+    # Start traversal from the root
     dfs_traverse(route)
 
-    print(f"Aryl halide to ether transformation strategy detected: {has_transformation}")
-    return has_transformation
+    return has_acid_chloride_formation

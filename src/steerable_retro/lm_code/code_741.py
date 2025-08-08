@@ -2,61 +2,66 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects if the synthesis includes a late-stage alcohol oxidation.
-    Late stage is defined as occurring in the first half of the synthesis (lower depth).
+    Detects if the synthesis route involves an ester hydrolysis step.
     """
-    max_depth = 0
-    has_late_oxidation = False
+    found_ester_hydrolysis = False
 
     def dfs_traverse(node, depth=0):
-        nonlocal max_depth, has_late_oxidation
-
-        max_depth = max(max_depth, depth)
+        nonlocal found_ester_hydrolysis
 
         if node["type"] == "reaction":
-            rsmi = node["metadata"]["rsmi"]
-            reactants_smiles = rsmi.split(">")[0]
-            product_smiles = rsmi.split(">")[-1]
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for alcohol oxidation
-            alcohol_pattern = Chem.MolFromSmarts("[#6][#6;!$(C=O)][OH]")
-            carbonyl_pattern = Chem.MolFromSmarts("[#6][C;$(C=O)][#8]")
+                # In retrosynthesis, product has ester and reactant has carboxylic acid
+                ester_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2][#6]")
+                acid_pattern = Chem.MolFromSmarts("[CX3](=[OX1])[OX2H]")
 
-            reactants = [Chem.MolFromSmiles(smi) for smi in reactants_smiles.split(".")]
-            product = Chem.MolFromSmiles(product_smiles)
+                try:
+                    product_mol = Chem.MolFromSmiles(product)
 
-            if (
-                any(mol.HasSubstructMatch(alcohol_pattern) for mol in reactants if mol)
-                and product
-                and product.HasSubstructMatch(carbonyl_pattern)
-            ):
-                if depth <= 1:  # Late stage (near the target)
-                    has_late_oxidation = True
-                    print(f"Late-stage alcohol oxidation detected at depth {depth}")
+                    if product_mol and product_mol.HasSubstructMatch(ester_pattern):
+                        for reactant in reactants:
+                            reactant_mol = Chem.MolFromSmiles(reactant)
+                            if not reactant_mol:
+                                continue
 
+                            if reactant_mol.HasSubstructMatch(acid_pattern):
+                                print(f"Found ester hydrolysis at depth {depth}")
+                                found_ester_hydrolysis = True
+                except:
+                    pass
+
+        # Continue traversing
         for child in node.get("children", []):
             dfs_traverse(child, depth + 1)
 
     dfs_traverse(route)
-    return has_late_oxidation
+    return found_ester_hydrolysis

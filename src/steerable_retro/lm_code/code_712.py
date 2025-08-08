@@ -2,67 +2,79 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects nitro group reduction to amine.
+    Detects if the synthetic route employs N-alkylation of a heterocycle
+    using an alkyl halide.
     """
-    nitro_reduction_found = False
+    found_n_alkylation = False
 
-    def dfs_traverse(node):
-        nonlocal nitro_reduction_found
+    def dfs_traverse(node, depth=0):
+        nonlocal found_n_alkylation
 
-        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
-            rsmi = node["metadata"]["rsmi"]
-            reactants = rsmi.split(">")[0].split(".")
-            product = rsmi.split(">")[-1]
+        if node["type"] == "reaction":
+            if "metadata" in node and "rsmi" in node["metadata"]:
+                rsmi = node["metadata"]["rsmi"]
+                reactants = rsmi.split(">")[0].split(".")
+                product = rsmi.split(">")[-1]
 
-            # Check for nitro group in reactants
-            nitro_pattern = Chem.MolFromSmarts("[N+](=O)[O-]")
+                # Check for N-alkylation pattern
+                nh_heterocycle_pattern = Chem.MolFromSmarts("[nH]")
+                alkyl_halide_pattern = Chem.MolFromSmarts("[C]-[#9,#17,#35,#53]")
+                n_alkylated_pattern = Chem.MolFromSmarts("[n]-[C]")
 
-            for reactant in reactants:
+                has_nh_heterocycle = False
+                has_alkyl_halide = False
+
+                for reactant in reactants:
+                    try:
+                        mol = Chem.MolFromSmiles(reactant)
+                        if mol:
+                            if mol.HasSubstructMatch(nh_heterocycle_pattern):
+                                has_nh_heterocycle = True
+                            if mol.HasSubstructMatch(alkyl_halide_pattern):
+                                has_alkyl_halide = True
+                    except:
+                        continue
+
+                # Check if product has N-alkylated heterocycle
                 try:
-                    r_mol = Chem.MolFromSmiles(reactant)
-                    if r_mol and r_mol.HasSubstructMatch(nitro_pattern):
-                        # Check if product has amine where nitro was
-                        p_mol = Chem.MolFromSmiles(product)
-                        if p_mol:
-                            # Count nitro groups in reactant
-                            nitro_count_r = len(r_mol.GetSubstructMatches(nitro_pattern))
-                            # Count nitro groups in product
-                            nitro_count_p = len(p_mol.GetSubstructMatches(nitro_pattern))
-
-                            # Check if nitro groups decreased and amines increased
-                            amine_pattern = Chem.MolFromSmarts("[NH2]")
-                            amine_count_r = len(r_mol.GetSubstructMatches(amine_pattern))
-                            amine_count_p = len(p_mol.GetSubstructMatches(amine_pattern))
-
-                            if nitro_count_p < nitro_count_r and amine_count_p > amine_count_r:
-                                print("Found nitro reduction to amine")
-                                nitro_reduction_found = True
+                    prod_mol = Chem.MolFromSmiles(product)
+                    if prod_mol and prod_mol.HasSubstructMatch(n_alkylated_pattern):
+                        if has_nh_heterocycle and has_alkyl_halide:
+                            found_n_alkylation = True
+                            print(f"Found N-alkylation at depth {depth}")
                 except:
-                    continue
+                    pass
 
+        # Continue traversing the tree
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
+    # Start traversal from the root
     dfs_traverse(route)
-    return nitro_reduction_found
+
+    return found_n_alkylation

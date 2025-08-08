@@ -2,71 +2,74 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    This function detects Suzuki coupling (aryl halide + boronic acid/ester).
+    This function detects a strategy involving functionalization of an imidazole core
+    at multiple positions.
     """
-    has_suzuki_coupling = False
+    imidazole_functionalizations = []
 
-    def dfs_traverse(node):
-        nonlocal has_suzuki_coupling
-
+    def dfs_traverse(node, depth=0):
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
-                product = rsmi.split(">")[-1]
+            rsmi = node["metadata"]["rsmi"]
+            reactants_smiles = rsmi.split(">")[0].split(".")
+            product_smiles = rsmi.split(">")[-1]
 
-                # Check for aryl halide
-                aryl_halide_pattern = Chem.MolFromSmarts("c[Br,I,Cl]")
+            # Check for imidazole core
+            imidazole_pattern = Chem.MolFromSmarts("c1ncnc1")
 
-                # Check for boronic acid/ester
-                boronic_pattern = Chem.MolFromSmarts("[#6]B([#8])[#8]")
-                boronic_ester_pattern = Chem.MolFromSmarts("[#6]B1OC(C)(C)OC1(C)C")
+            # Check if product has imidazole
+            product_mol = Chem.MolFromSmiles(product_smiles)
+            if product_mol and product_mol.HasSubstructMatch(imidazole_pattern):
+                # This reaction involves an imidazole
 
-                has_aryl_halide = False
-                has_boronic = False
+                # Check for different types of functionalizations
+                n_alkylation_pattern = Chem.MolFromSmarts("[n][CH2]c")
+                c_oxidation_pattern = Chem.MolFromSmarts("c[CH]=O")
 
-                for reactant in reactants:
-                    try:
-                        mol = Chem.MolFromSmiles(reactant)
-                        if mol:
-                            if mol.HasSubstructMatch(aryl_halide_pattern):
-                                has_aryl_halide = True
-                            if mol.HasSubstructMatch(boronic_pattern) or mol.HasSubstructMatch(
-                                boronic_ester_pattern
-                            ):
-                                has_boronic = True
-                    except:
-                        continue
+                if product_mol.HasSubstructMatch(n_alkylation_pattern):
+                    imidazole_functionalizations.append(("n_alkylation", depth))
+                    print(f"Detected imidazole N-alkylation at depth {depth}")
 
-                if has_aryl_halide and has_boronic:
-                    print("Detected Suzuki coupling")
-                    has_suzuki_coupling = True
+                if product_mol.HasSubstructMatch(c_oxidation_pattern):
+                    imidazole_functionalizations.append(("c_oxidation", depth))
+                    print(f"Detected imidazole C-oxidation at depth {depth}")
 
         # Traverse children
         for child in node.get("children", []):
-            dfs_traverse(child)
+            dfs_traverse(child, depth + 1)
 
     # Start traversal from the root
     dfs_traverse(route)
-    return has_suzuki_coupling
+
+    # Check if we have at least 2 different types of functionalizations
+    functionalization_types = set(f[0] for f in imidazole_functionalizations)
+    multiple_functionalizations = len(functionalization_types) >= 2
+
+    if multiple_functionalizations:
+        print(f"Detected multiple types of imidazole functionalizations: {functionalization_types}")
+
+    return multiple_functionalizations

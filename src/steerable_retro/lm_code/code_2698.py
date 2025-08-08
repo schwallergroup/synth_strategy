@@ -2,58 +2,60 @@
 
 """LM-defined function for strategy description."""
 
+from rdkit.Chem import AllChem, rdFMCS
 import copy
-import re
 from collections import deque
-
-import rdkit
 import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
 from rdkit import Chem
-from rdkit.Chem import (
-    AllChem,
-    Descriptors,
-    Lipinski,
-    rdChemReactions,
-    rdFMCS,
-    rdMolDescriptors,
-    rdmolops,
-)
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
 from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
 
 
 def main(route):
     """
-    Detects the use of Grignard reagents in the synthesis.
+    Detects if the synthetic route includes O-demethylation (methoxy to hydroxyl).
     """
-    has_grignard_reaction = False
+    o_demethylation_found = False
 
     def dfs_traverse(node):
-        nonlocal has_grignard_reaction
+        nonlocal o_demethylation_found
 
-        if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
-                rsmi = node["metadata"]["rsmi"]
-                reactants = rsmi.split(">")[0].split(".")
+        if node["type"] == "reaction" and "metadata" in node and "rsmi" in node["metadata"]:
+            rsmi = node["metadata"]["rsmi"]
+            reactants = rsmi.split(">")[0]
+            product = rsmi.split(">")[-1]
 
-                # Check for Grignard reagent pattern
-                grignard_patt = Chem.MolFromSmarts("[#6][Mg][Br,Cl,I,F]")
+            # Check for methoxy in reactant and hydroxyl in product
+            reactant_mol = Chem.MolFromSmiles(reactants)
+            product_mol = Chem.MolFromSmiles(product)
 
-                for r in reactants:
-                    try:
-                        r_mol = Chem.MolFromSmiles(r)
-                        if r_mol and r_mol.HasSubstructMatch(grignard_patt):
-                            print("Found Grignard reagent in reaction")
-                            has_grignard_reaction = True
-                            break
-                    except:
-                        # Some Grignard reagents might not parse well
-                        if "[Mg]" in r:
-                            print("Found potential Grignard reagent by text search")
-                            has_grignard_reaction = True
-                            break
+            if reactant_mol and product_mol:
+                methoxy_pattern = Chem.MolFromSmarts("[#6]-[#8]-[#6;H3]")
+                hydroxyl_pattern = Chem.MolFromSmarts("[#6]-[#8;H]")
+
+                if reactant_mol.HasSubstructMatch(
+                    methoxy_pattern
+                ) and product_mol.HasSubstructMatch(hydroxyl_pattern):
+                    # This is a simplification; a more robust implementation would track atom mappings
+                    o_demethylation_found = True
+                    print("O-demethylation detected")
 
         for child in node.get("children", []):
             dfs_traverse(child)
 
     dfs_traverse(route)
-    return has_grignard_reaction
+    return o_demethylation_found
