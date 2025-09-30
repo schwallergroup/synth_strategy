@@ -4,7 +4,7 @@
 
 import unittest
 
-from steerable_retro.version import get_version
+from synth_strategy.version import get_version
 
 
 class TestVersion(unittest.TestCase):
