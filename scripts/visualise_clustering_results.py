@@ -92,15 +92,20 @@ def create_cluster_summary(
         
         f.write(f"## Top {top_n_features} Defining Functions\n\n")
 
-        for feature_name, distinctiveness_score in defining_features[:top_n_features]:
+        # feature is a dict with"function", "score" and "description"
+        # rewrite accordingly
+        for feature in defining_features[:top_n_features]:
+            feature_name = feature["function"]
+            distinctiveness_score = feature["score"]
+            docstring = feature["description"]
             f.write(f"### 1. `{feature_name}`\n")
             f.write(f"*Distinctiveness Score: {distinctiveness_score:.4f}*\n\n")
-            
-            docstring = docstrings.get(feature_name, "No docstring found.")
             f.write("```\n")
             f.write(docstring.strip() + "\n")
             f.write("```\n\n")
             f.write("---\n\n")
+
+        
 
 def main():
     parser = argparse.ArgumentParser(

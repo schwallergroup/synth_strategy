@@ -1,0 +1,28 @@
+# SynthStrategy Configuration File
+# This file contains default settings for all SynthStrategy components
+
+defaults:
+  functions_dir: "data/strategy_functions"
+  output_dir: "results"
+  workers: 4
+  log_level: "INFO"
+
+clustering:
+  max_clusters: 15
+  silhouette_threshold: 0.3
+  min_routes_per_cluster: 2
+  random_state: 42
+
+retrieval:
+  embedding_model: "all-MiniLM-L6-v2"
+  top_k: 10
+  top_n_functions: null
+  metadata_db: "data/function_metadata_database.json"
+  route_db_dir: "data/routes"
+  embedding_cache: "data/retrieval_embeddings"
+
+visualization:
+  image_format: "png"
+  examples_per_cluster: 10
+  dpi: 300
+  figure_size: [12, 8]

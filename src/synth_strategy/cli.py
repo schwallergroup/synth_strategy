@@ -76,11 +76,16 @@ def annotate_command(args) -> None:
                 # Generate visualization if requested
                 if args.visualize:
                     print("🎨 Generating visualizations...")
-                    api.visualize_clustering(
+                    # Save annotated routes to a temp directory for visualization
+                    import tempfile
+                    temp_annotated_dir = tempfile.mkdtemp()
+                    temp_annotated_file = Path(temp_annotated_dir) / "annotated_routes.json"
+                    with open(temp_annotated_file, 'w') as f:
+                        json.dump(annotated_routes, f)
+                    visualize_clustering_results(
                         results=clustering_results,
-                        routes=annotated_routes,
-                        output_dir=str(output_path.parent / "visualizations"),
-                        interactive=args.interactive
+                        annotated_dir=temp_annotated_dir,
+                        output_dir=output_path.parent / "visualizations"
                     )
             else:
                 print(f"⚠️  Clustering skipped: {clustering_results.get('reason', 'Unknown reason')}")
@@ -137,7 +142,9 @@ def cluster_command(args) -> None:
         # Generate visualization if requested
         if args.visualize:
             print("🎨 Generating visualizations...")
-            visualize_clustering_results(results, routes, output_path.parent)
+            # Use the input directory for annotated routes
+            annotated_dir = args.input_dir if args.input_dir else str(Path(args.input_file).parent)
+            visualize_clustering_results(results, annotated_dir, output_path.parent)
         
     except Exception as e:
         print(f"❌ Error during clustering: {e}")
@@ -216,14 +223,16 @@ def visualize_command(args) -> None:
             print("Error: --input required for clustering visualization")
             sys.exit(1)
         
+        if not args.annotated_dir:
+            print("Error: --annotated_dir required for clustering visualization")
+            sys.exit(1)
+        
         # Load clustering results
         with open(args.input, 'r') as f:
             results = json.load(f)
         
-        # Load routes for visualization
-        routes = load_routes_from_directory(args.routes_dir) if args.routes_dir else []
-        
-        visualize_clustering_results(results, routes, args.output)
+        # Pass the annotated directory path directly
+        visualize_clustering_results(results, args.annotated_dir, args.output)
         
     elif args.type == "retrieval":
         if not args.input:
@@ -264,7 +273,7 @@ def load_routes_from_file(file_path: str) -> List[Dict[str, Any]]:
         return json.load(f)
 
 
-def visualize_clustering_results(results: Dict[str, Any], routes: List[Dict[str, Any]], output_dir: Path) -> None:
+def visualize_clustering_results(results: Dict[str, Any], annotated_dir: str, output_dir: Path) -> None:
     """Generate clustering visualizations."""
     try:
         # Import visualization script
@@ -276,23 +285,14 @@ def visualize_clustering_results(results: Dict[str, Any], routes: List[Dict[str,
             json.dump(results, f)
             results_file = f.name
         
-        # Create temporary directory for routes if needed
-        routes_dir = None
-        if routes:
-            routes_dir = tempfile.mkdtemp()
-            with open(Path(routes_dir) / "routes.json", 'w') as f:
-                json.dump(routes, f)
-        
         # Run visualization script
         cmd = [
             sys.executable, 
             "scripts/visualise_clustering_results.py",
             "--analysis_file", results_file,
+            "--annotated_dir", annotated_dir,
             "--output_dir", str(output_dir)
         ]
-        
-        if routes_dir:
-            cmd.extend(["--annotated_dir", routes_dir])
         
         subprocess.run(cmd, check=True)
         
@@ -399,7 +399,7 @@ Examples:
     viz_parser.add_argument("--type", choices=["clustering", "retrieval"], required=True, help="Type of visualization")
     viz_parser.add_argument("--input", "-i", required=True, help="Input results file")
     viz_parser.add_argument("--output", "-o", help="Output directory")
-    viz_parser.add_argument("--routes-dir", help="Directory containing routes (for clustering)")
+    viz_parser.add_argument("--annotated_dir", help="Directory containing annotated routes (required for clustering visualization)")
     
     args = parser.parse_args()
     
