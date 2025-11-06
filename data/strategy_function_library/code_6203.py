@@ -1,0 +1,115 @@
+from typing import Tuple, Dict, List
+import copy
+from rdkit.Chem import AllChem, rdFMCS
+from collections import deque
+import rdkit.Chem as Chem
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdChemReactions
+from rdkit.Chem import AllChem
+from rdkit.Chem import rdFMCS
+import rdkit.Chem.rdFMCS
+from rdkit.Chem import AllChem, Descriptors, rdMolDescriptors
+from rdkit import Chem
+from rdkit.Chem import Descriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdmolops
+import re
+from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit.Chem import AllChem, Descriptors
+import traceback
+import rdkit
+from collections import Counter
+from steerable_retro.utils.check import Check
+from steerable_retro.utils import fuzzy_dict, check
+
+from pathlib import Path
+root_data = Path(__file__).parent.parent
+
+fg_args = {
+    "file_path": f"{root_data}/patterns/functional_groups.json",
+    "value_field": "pattern",
+    "key_field": "name",
+}
+reaction_class_args = {
+    "file_path": f"{root_data}/patterns/smirks.json",
+    "value_field": "smirks",
+    "key_field": "name",
+}
+ring_smiles_args = {
+    "file_path": f"{root_data}/patterns/chemical_rings_smiles.json",
+    "value_field": "smiles",
+    "key_field": "name",
+}
+functional_groups = fuzzy_dict.FuzzyDict.from_json(**fg_args)
+reaction_classes = fuzzy_dict.FuzzyDict.from_json(**reaction_class_args)
+ring_smiles = fuzzy_dict.FuzzyDict.from_json(**ring_smiles_args)
+
+checker = check.Check(
+    fg_dict=functional_groups, reaction_dict=reaction_classes, ring_dict=ring_smiles
+)
+
+
+SONOGASHIRA_VARIANTS = [
+    "Sonogashira acetylene_aryl halide",
+    "Sonogashira alkyne_aryl halide",
+    "Sonogashira acetylene_aryl OTf",
+    "Sonogashira alkyne_aryl OTf",
+    "Sonogashira acetylene_alkenyl halide",
+    "Sonogashira alkyne_alkenyl halide",
+    "Sonogashira acetylene_alkenyl OTf",
+    "Sonogashira alkyne_alkenyl OTf",
+    "Sonogashira acetylene_acyl halide",
+    "Sonogashira alkyne_acyl halide",
+]
+
+def main(route) -> Tuple[bool, Dict]:
+    """
+    Detects a late-stage Sonogashira coupling. The specific reaction variants checked are defined in the SONOGASHIRA_VARIANTS list.
+    """
+    findings_template = {
+        "atomic_checks": {
+            "named_reactions": [],
+            "ring_systems": [],
+            "functional_groups": []
+        },
+        "structural_constraints": []
+    }
+    findings_json = copy.deepcopy(findings_template)
+
+    sonogashira_detected = False
+
+    def dfs_traverse(node, depth=0):
+        nonlocal sonogashira_detected, findings_json
+
+        if node["type"] == "reaction" and depth <= 2:  # Late stage (low depth)
+            if "rsmi" in node.get("metadata", {}):
+                rsmi = node["metadata"]["mapped_reaction_smiles"]
+
+                # Check if this is a Sonogashira reaction using the checker
+                for rxn_type in SONOGASHIRA_VARIANTS:
+                    if checker.check_reaction(rxn_type, rsmi):
+                        sonogashira_detected = True
+                        findings_json["atomic_checks"]["named_reactions"].append(rxn_type)
+                        # Add structural constraint if depth condition is met
+                        findings_json["structural_constraints"].append({
+                            "type": "positional",
+                            "details": {
+                                "target": "Sonogashira coupling",
+                                "position": "within_last_3_stages",
+                                "condition": "depth <= 2"
+                            }
+                        })
+                        break
+
+        for child in node.get("children", []):
+            # New logic for depth calculation
+            if node["type"] == "reaction":
+                # If current node is a reaction, depth remains the same for children (chemicals)
+                dfs_traverse(child, depth)
+            else:
+                # If current node is a chemical, depth increases for children (reactions)
+                dfs_traverse(child, depth + 1)
+
+    dfs_traverse(route)
+    return sonogashira_detected, findings_json
