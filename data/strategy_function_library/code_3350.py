@@ -43,7 +43,7 @@ def main(route) -> Tuple[bool, Dict]:
         nonlocal piperazine_modifications, result, findings_json
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "mapped_reaction_smiles" in node.get("metadata", {}):
                 rsmi = node["metadata"]["mapped_reaction_smiles"]
                 reactants_smiles = rsmi.split(">")[0]
                 product_smiles = rsmi.split(">")[-1]

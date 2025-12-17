@@ -20,8 +20,8 @@ from rdkit.Chem import AllChem, Descriptors
 import traceback
 import rdkit
 from collections import Counter
-from steerable_retro.utils.check import Check
-from steerable_retro.utils import fuzzy_dict, check
+from synth_strategy.utils.check import Check
+from synth_strategy.utils import fuzzy_dict, check
 
 from pathlib import Path
 root_data = Path(__file__).parent.parent
@@ -70,7 +70,7 @@ def main(route) -> Tuple[bool, Dict]:
         nonlocal protection_found, findings_json
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "mapped_reaction_smiles" in node.get("metadata", {}):
                 rsmi = node["metadata"]["mapped_reaction_smiles"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]

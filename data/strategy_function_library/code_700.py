@@ -42,7 +42,7 @@ def main(route) -> Tuple[bool, Dict]:
         nonlocal found_early_aryl_n_coupling, findings_json
 
         if node["type"] == "reaction" and depth >= 2:  # Early stage (depth >= 2)
-            if "rsmi" in node.get("metadata", {}):
+            if "mapped_reaction_smiles" in node.get("metadata", {}):
                 rsmi = node["metadata"]["mapped_reaction_smiles"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]

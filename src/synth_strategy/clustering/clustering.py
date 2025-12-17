@@ -243,33 +243,78 @@ def main():
     """
     parser = argparse.ArgumentParser(description="Aggregate annotated files and perform strategy clustering.")
     parser.add_argument("--input-dir", required=True, help="Directory containing ANNOTATED JSON files (outputs from annotation.py).")
-    parser.add_argument("--output", required=True, help="Path to save the final clustering analysis JSON.")
+    parser.add_argument("--output", required=False, help="Path to save the final clustering analysis JSON (aggregate mode).")
     parser.add_argument("--code-dir", required=True, help="Path to the source code files for functions to extract docstrings.")
+    parser.add_argument("--per-file", action="store_true", help="If set, cluster each input JSON file individually and save per-file outputs.")
+    parser.add_argument("--output-dir", required=False, help="Directory to save per-file results when using --per-file. Defaults to results/<basename(input-dir)>.")
     args = parser.parse_args()
 
-    # Aggregate all routes from annotated files
-    all_annotated_routes = []
-    json_files = glob.glob(os.path.join(args.input_dir, '*.json'))
+    # Validate args depending on mode
+    if not args.per_file and not args.output:
+        parser.error("--output is required unless --per-file is specified.")
+
+    # Discover input files
+    json_files = sorted(glob.glob(os.path.join(args.input_dir, '*.json')))
     logger.info(f"Found {len(json_files)} annotated files to process in {args.input_dir}.")
-    for file_path in json_files:
-        try:
-            with open(file_path, 'r') as f:
-                all_annotated_routes.extend(json.load(f))
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Could not load or parse {file_path}: {e}")
 
-    # Perform clustering on the aggregated, pre-annotated data
-    results = perform_strategy_clustering(
-        routes=all_annotated_routes,
-        code_dir=args.code_dir,
-        pre_annotated=True  # Data is already annotated
-    )
+    if args.per_file:
+        # Determine output directory
+        output_dir = Path(args.output_dir) if args.output_dir else Path("results") / Path(args.input_dir).name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Per-file clustering enabled. Saving outputs to {output_dir}")
 
-    # Save final analysis
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, 'w') as f:
-        json.dump(results, f, indent=2)
-    logger.info(f"Clustering analysis complete. Results saved to {args.output}")
+        for file_path in json_files:
+            file_path = Path(file_path)
+            try:
+                with open(file_path, 'r') as f:
+                    routes = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Could not load or parse {file_path}: {e}")
+                # Ensure one output per input (write an error JSON)
+                error_out = output_dir / f"{file_path.stem}_clustering.json"
+                with open(error_out, 'w') as ef:
+                    json.dump({
+                        'status': 'error',
+                        'reason': f'Failed to load or parse input file: {e}'
+                    }, ef, indent=2)
+                continue
+
+            # Perform clustering for this file
+            results = perform_strategy_clustering(
+                routes=routes,
+                code_dir=args.code_dir,
+                pre_annotated=True
+            )
+
+            # Save per-file result
+            out_path = output_dir / f"{file_path.stem}_clustering.json"
+            with open(out_path, 'w') as f:
+                json.dump(results, f, indent=2)
+            logger.info(f"Saved per-file clustering result to {out_path}")
+
+        logger.info("Per-file clustering complete.")
+    else:
+        # Aggregate all routes from annotated files
+        all_annotated_routes = []
+        for file_path in json_files:
+            try:
+                with open(file_path, 'r') as f:
+                    all_annotated_routes.extend(json.load(f))
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Could not load or parse {file_path}: {e}")
+
+        # Perform clustering on the aggregated, pre-annotated data
+        results = perform_strategy_clustering(
+            routes=all_annotated_routes,
+            code_dir=args.code_dir,
+            pre_annotated=True  # Data is already annotated
+        )
+
+        # Save final analysis
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.output, 'w') as f:
+            json.dump(results, f, indent=2)
+        logger.info(f"Clustering analysis complete. Results saved to {args.output}")
 
 if __name__ == "__main__":
     main()

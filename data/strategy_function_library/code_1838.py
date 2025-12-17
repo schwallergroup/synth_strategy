@@ -51,7 +51,7 @@ def main(route) -> Tuple[bool, Dict]:
 
         if node["type"] == "reaction":
             # Check if this is an amide formation reaction
-            if "rsmi" in node.get("metadata", {}):
+            if "mapped_reaction_smiles" in node.get("metadata", {}):
                 rsmi = node["metadata"]["mapped_reaction_smiles"]
                 reactants = rsmi.split(">")[0].split(".")
                 product = rsmi.split(">")[-1]

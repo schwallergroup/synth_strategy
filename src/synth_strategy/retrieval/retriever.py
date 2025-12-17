@@ -4,6 +4,7 @@ import json
 import pickle
 import os
 import copy
+import time
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
@@ -29,11 +30,23 @@ class StrategyRetriever:
                  embedding_cache_path: str,
                  embedder: Embedder,
                  use_structural_constraints: bool = False,
+                 use_semantic: bool = True,
+                 use_semantic_prefilter: bool = True,
+                 use_categorical: bool = True,
+                 ignore_atomic_categories: List[str] = None,
                  cache_dir: str = ".retriever_cache"):
         print("Initializing StrategyRetriever...")
         
         self.embedder = embedder
         self.use_structural_constraints = use_structural_constraints
+        self.use_semantic = use_semantic
+        # Controls whether semantic similarity is used to pre-filter candidate
+        # functions, independently of whether it is used for reranking.
+        self.use_semantic_prefilter = use_semantic_prefilter
+        self.use_categorical = use_categorical
+        # normalize ignored categories to lowercase and a set
+        self.ignore_atomic_categories = set((ignore_atomic_categories or []))
+        self.ignore_atomic_categories = {c.lower() for c in self.ignore_atomic_categories}
         self.route_db_dir = Path(route_db_dir)
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
@@ -150,13 +163,6 @@ class StrategyRetriever:
             print(f"Error getting embedding for text: '{text[:50]}...'. Error: {e}")
             return np.zeros(self.description_embeddings.shape[1])
 
-    # --- All other methods from the previous version of StrategyRetriever ---
-    # --- (_find_top_n_similar_functions, _load_or_create_index, etc.)   ---
-    # --- are included here without change. For brevity, they are omitted ---
-    # --- but they should be copied directly from the previous version.   ---
-    # --- The only change was in __init__ and _get_single_embedding.      ---
-
-    #<-- PASTE ALL OTHER METHODS FROM THE PREVIOUS StrategyRetriever HERE -->
     def _find_top_n_similar_functions(self, nl_description: str, top_n: int) -> Set[str]:
         if not nl_description:
             return set(self.func_ids)
@@ -268,6 +274,9 @@ class StrategyRetriever:
         } for func_meta in metadata_list]
 
     def _evaluate_atomic_checks(self, filters: Dict, atomic_sets: Dict[str, Set[str]]) -> bool:
+        # If categorical checks are disabled globally, always pass
+        if not self.use_categorical:
+            return True
         # CORRECT: Handle implicit AND for a list of filters at the start.
         # A query like [{"A":...}, {"B":...}] means A AND B.
         if isinstance(filters, list):
@@ -288,7 +297,13 @@ class StrategyRetriever:
             if isinstance(or_clause, list):
                 return any(self._evaluate_atomic_checks(sub_filter, atomic_sets) for sub_filter in or_clause)
             elif isinstance(or_clause, dict):
-                for category, or_terms in or_clause.items():
+                # Drop ignored categories from the OR dict
+                remaining = {category: or_terms for category, or_terms in or_clause.items()
+                             if category.lower() not in self.ignore_atomic_categories}
+                if not remaining:
+                    # If everything is ignored, treat as unconstrained (True)
+                    return True
+                for category, or_terms in remaining.items():
                     if not isinstance(or_terms, list):
                         raise ValueError(f"In a compact OR clause, the value for category '{category}' must be a list of terms.")
                     if not {term.lower() for term in or_terms}.isdisjoint(atomic_sets.get(category, set())):
@@ -299,22 +314,26 @@ class StrategyRetriever:
         
         if 'NOT' in filters:
             return not self._evaluate_atomic_checks(filters['NOT'], atomic_sets)
-        
-        # Base Case: This is an atomic check dictionary like {"ring_systems": ["piperazine"]}
-        # The faulty merge_dicts call and list check are removed from here.
+
+
         for category, required_terms in filters.items():
+            # Skip categories that are configured to be ignored
+            if category.lower() in self.ignore_atomic_categories:
+                continue
             if not isinstance(required_terms, list):
                 return False
-                #  raise ValueError(f"The value for category '{category}' must be a list of terms.")
-            
-            # This is where the original error occurred. It will now only receive proper term lists.
+
             if not {term.lower() for term in required_terms}.issubset(atomic_sets.get(category, set())):
                 return False
+        # If all keys were ignored, treat as unconstrained True
         return True
 
     def _filter_candidate_functions(self, filters: Dict, initial_candidates: Set[str] = None) -> Set[str]:
         if initial_candidates is None:
             initial_candidates = set(self.func_id_to_metadata.keys())
+        # If categorical checks are disabled, return all candidates
+        if not self.use_categorical:
+            return initial_candidates
         if not filters:
             return initial_candidates
         return {
@@ -323,6 +342,8 @@ class StrategyRetriever:
         }
 
     def _check_instance_match(self, query_filters: Dict, pass_details: Dict) -> bool:
+        if not self.use_categorical:
+            return True
         instance_atomic_sets = {
             cat: set(item.lower() for item in val) 
             for cat, val in pass_details.get('atomic_checks', {}).items()
@@ -410,6 +431,9 @@ class StrategyRetriever:
             print(f"Warning: Could not save retrieval results to file: {e}")
 
     def retrieve_complex(self, complex_query: Dict[str, Any], top_k: int = 5, top_n_functions: int = None, debug: bool = False) -> List[Dict[str, Any]]:
+        total_start = time.perf_counter()
+        embedding_time = 0.0
+
         operator = complex_query.get("operator", "AND").upper()
         sub_queries = complex_query.get("queries", [])
         if not sub_queries:
@@ -419,12 +443,61 @@ class StrategyRetriever:
             print(f"Executing complex query with {len(sub_queries)} sub-queries (operator: '{operator}', top_n_functions: {top_n_functions}).")
 
         # --- MODIFICATION 1: Pre-compute all query embeddings once ---
-        print("Pre-computing embeddings for all sub-queries...") # Added for clarity
-        sub_query_embeddings = {
-            i: self._get_single_embedding(sq_item['query'].get('natural_language_description', ''))
-            for i, sq_item in enumerate(sub_queries)
-        }
-        print(f" -> Done. {len(sub_query_embeddings)} embeddings computed.")
+        sub_query_embeddings = None
+        if self.use_semantic:
+            print("Pre-computing embeddings for all sub-queries (batched)...")
+            texts: List[str] = [
+                sq_item['query'].get('natural_language_description', '') or ''
+                for sq_item in sub_queries
+            ]
+
+            sub_query_embeddings = {}
+            embed_dim = int(self.description_embeddings.shape[1]) if self.description_embeddings.size > 0 else 0
+
+            start_embed = time.perf_counter()
+            try:
+                # Batch only non-empty texts to avoid unnecessary calls
+                non_empty_indices = [i for i, t in enumerate(texts) if t]
+                if non_empty_indices:
+                    batch_inputs = [texts[i] for i in non_empty_indices]
+                    batched = self.embedder.get_embeddings(batch_inputs)
+                    batched_arr = np.array(batched)
+
+                    if batched_arr.ndim != 2 or batched_arr.shape[0] != len(non_empty_indices):
+                        raise ValueError(
+                            f"Unexpected batched embedding shape {batched_arr.shape} "
+                            f"for {len(non_empty_indices)} sub-queries."
+                        )
+
+                    # If we know the corpus embedding dim, enforce it for safety
+                    if embed_dim and batched_arr.shape[1] != embed_dim:
+                        print(
+                            f"Warning: query embedding dim {batched_arr.shape[1]} "
+                            f"!= corpus dim {embed_dim}. Proceeding but cosine "
+                            "similarity may fail."
+                        )
+
+                    for local_idx, global_idx in enumerate(non_empty_indices):
+                        sub_query_embeddings[global_idx] = batched_arr[local_idx]
+
+                # Fill empty or missing texts with zero vectors
+                if embed_dim == 0 and sub_query_embeddings:
+                    embed_dim = len(next(iter(sub_query_embeddings.values())))
+
+                zero_vec = np.zeros(embed_dim, dtype=float) if embed_dim else np.array([], dtype=float)
+                for i in range(len(texts)):
+                    if i not in sub_query_embeddings:
+                        sub_query_embeddings[i] = zero_vec
+
+            except Exception as e:
+                print(f"Error during batched sub-query embedding: {e}. Falling back to per-query embedding.")
+                sub_query_embeddings = {
+                    i: self._get_single_embedding(texts[i])
+                    for i in range(len(texts))
+                }
+
+            embedding_time = time.perf_counter() - start_embed
+            print(f" -> Done. {len(sub_query_embeddings)} embeddings computed in {embedding_time:.3f}s.")
 
         sub_query_info = []
         for i, sq_item in enumerate(sub_queries):
@@ -433,7 +506,13 @@ class StrategyRetriever:
             candidate_funcs = atomically_filtered_funcs
 
             nl_desc = sub_query.get('natural_language_description')
-            if top_n_functions and nl_desc:
+            # Optional semantic pre-filtering: can be disabled independently of reranking.
+            if (
+                self.use_semantic
+                and self.use_semantic_prefilter
+                and top_n_functions
+                and nl_desc
+            ):
                 # --- MODIFICATION 2: Use the pre-computed embedding ---
                 query_embedding = sub_query_embeddings[i]
                 semantically_filtered_funcs = self._find_top_n_similar_functions_with_embedding(query_embedding, top_n_functions)
@@ -449,7 +528,6 @@ class StrategyRetriever:
                 "candidate_funcs": candidate_funcs
             })
 
-        # ... (rest of the candidate selection logic remains the same) ...
         final_candidate_route_ids = set()
         positive_route_sets = [s['routes'] for s in sub_query_info if not s['negate']]
 
@@ -502,25 +580,24 @@ class StrategyRetriever:
             total_score = 0
             num_scores = 0
             for sub_query_idx, matching_func_ids in positive_matches.items():
-                nl_query = sub_queries[sub_query_idx]['query'].get('natural_language_description', '')
-                if not nl_query: continue
-                
-                query_embedding = sub_query_embeddings[sub_query_idx]
-                
-                sub_query_score = 0
-                for func_id in matching_func_ids:
-                    embedding_idx = self.func_id_to_embedding_idx.get(func_id)
-                    if embedding_idx is None: continue
-                    
-                    func_embedding = self.description_embeddings[embedding_idx]
-                    score = cosine_similarity([query_embedding], [func_embedding])[0][0]
-                    sub_query_score += score
-                    
-                if matching_func_ids:
-                    total_score += sub_query_score / len(matching_func_ids)
-                    num_scores += 1
-                    
-            final_score = (total_score / num_scores) if num_scores > 0 else 0.0
+                if self.use_semantic:
+                    nl_query = sub_queries[sub_query_idx]['query'].get('natural_language_description', '')
+                    if not nl_query:
+                        continue
+                    query_embedding = sub_query_embeddings[sub_query_idx]
+                    sub_query_score = 0
+                    for func_id in matching_func_ids:
+                        embedding_idx = self.func_id_to_embedding_idx.get(func_id)
+                        if embedding_idx is None:
+                            continue
+                        func_embedding = self.description_embeddings[embedding_idx]
+                        score = cosine_similarity([query_embedding], [func_embedding])[0][0]
+                        sub_query_score += score
+                    if matching_func_ids:
+                        total_score += sub_query_score / len(matching_func_ids)
+                        num_scores += 1
+
+            final_score = (total_score / num_scores) if (self.use_semantic and num_scores > 0) else 0.0
             
             scored_results.append({
                 'route_id': route_id,
@@ -539,5 +616,14 @@ class StrategyRetriever:
         scored_results.sort(key=lambda x: (x['match_count'], x['rank_score']), reverse=True)
         
         final_results = scored_results[:top_k]
-            
+
+        total_time = time.perf_counter() - total_start
+        if debug:
+            print(
+                f"[retrieve_complex] Total time: {total_time:.3f}s "
+                f"(embedding: {embedding_time:.3f}s, "
+                f"sub_queries: {len(sub_queries)}, "
+                f"top_k: {top_k}, top_n_functions: {top_n_functions})"
+            )
+
         return final_results

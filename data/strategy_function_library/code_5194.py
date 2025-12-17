@@ -44,7 +44,7 @@ def main(route) -> Tuple[bool, Dict]:
         nonlocal trifluoromethyl_introduction_detected, findings_json
 
         if node["type"] == "reaction":
-            if "rsmi" in node.get("metadata", {}):
+            if "mapped_reaction_smiles" in node.get("metadata", {}):
                 rsmi = node["metadata"]["mapped_reaction_smiles"]
                 reactants_smiles = rsmi.split(">")[0].split(".")
                 product_smiles = rsmi.split(">")[-1]

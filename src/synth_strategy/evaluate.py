@@ -283,6 +283,24 @@ async def main():
     parser.add_argument("--force_description",type=bool, default=False)
     parser.add_argument("--force_rewrite",type=bool, default=False)
     parser.add_argument("--reasoning_budget_for_rewrite", type=int, default=8000)
+    # --- Ablation Toggles (kept compatible with steerable_retro) ---
+    parser.add_argument("--disable_semantic", action="store_true",
+                        help="Disable semantic similarity (no semantic prefiltering or ranking).")
+    parser.add_argument("--disable_semantic_prefilter", action="store_true",
+                        help="Disable semantic prefiltering (keep semantic reranking).")
+    parser.add_argument("--disable_categorical", action="store_true",
+                        help="Disable categorical/atomic matching (ignore filters).")
+    parser.add_argument("--ignore_atomic_categories", nargs='*', default=[],
+                        help="Atomic categories to ignore (e.g., named_reactions ring_systems functional_groups).")
+    parser.add_argument(
+        "--queries_path",
+        type=str,
+        default="",
+        help=(
+            "If set, skip description/query rewriting and load precomputed queries "
+            "from this JSON file (absolute or project-root-relative)."
+        ),
+    )
     args = parser.parse_args()
 
     base_path = Path(__file__).resolve().parents[2] # Simplified for standalone execution
@@ -296,14 +314,32 @@ async def main():
     description_cache_path = output_dir / "merged_descriptions.json"
     rewritten_query_cache_path = output_dir / f"queries/queries_google_gemini-2.5-pro.json"
 
-    benchmark_data = load_json(benchmark_path)
-    if not benchmark_data:
-        print(f"Error: Benchmark file not found or empty at '{benchmark_path}'")
-        return
+    if args.queries_path:
+        queries_path = Path(args.queries_path)
+        if not queries_path.is_absolute():
+            queries_path = base_path / args.queries_path
+        print(f"Loading precomputed queries from '{queries_path}' (skipping rewriting stage).")
+        queries = load_json(queries_path)
+        if not queries:
+            print(f"Error: No usable queries loaded from '{queries_path}'.")
+            return
+    else:
+        benchmark_data = load_json(benchmark_path)
+        if not benchmark_data:
+            print(f"Error: Benchmark file not found or empty at '{benchmark_path}'")
+            return
 
-    # Stages 1 & 2 run only once as they are model-agnostic
-    descriptions = run_description_generation_stage(benchmark_data, args.description_model, description_cache_path, args.force_description)
-    queries = run_query_rewriting_stage(descriptions, args.rewriter_model, rewritten_query_cache_path, args.force_rewrite, args.reasoning_budget_for_rewrite)
+        # Stages 1 & 2 run only once as they are model-agnostic
+        descriptions = run_description_generation_stage(
+            benchmark_data, args.description_model, description_cache_path, args.force_description
+        )
+        queries = run_query_rewriting_stage(
+            descriptions,
+            args.rewriter_model,
+            rewritten_query_cache_path,
+            args.force_rewrite,
+            args.reasoning_budget_for_rewrite,
+        )
     
     ablation_results_dir = output_dir / "ablations"
     ablation_results_dir.mkdir(parents=True, exist_ok=True)
@@ -336,6 +372,10 @@ async def main():
             route_db_dir=str(route_db_dir),
             embedding_cache_path=str(corpus_embedding_cache_path),
             embedder=query_embedder, # Use the query-specific embedder
+            use_semantic=not args.disable_semantic,
+            use_semantic_prefilter=not args.disable_semantic_prefilter,
+            use_categorical=not args.disable_categorical,
+            ignore_atomic_categories=args.ignore_atomic_categories,
         )
 
         # 4. Run Retrieval Sweep and Save Results
