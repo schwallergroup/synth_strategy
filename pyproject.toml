@@ -35,9 +35,13 @@ notebook = [
     "jupyter>=1.0.0",
     "ipykernel>=6.0.0",
 ]
+ui = [
+    "streamlit>=1.30.0",
+]
 
 [project.scripts]
 synth-strategy = "synth_strategy.cli:main"
+synth-strategy-ui = "synth_strategy.webui:launch"
 
 [tool.black]
 line-length = 100
