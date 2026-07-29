@@ -123,7 +123,7 @@ The downloaded data includes thousands of annotated synthesis routes ready for r
 
 **Manual Download:**
 If you prefer to download manually, the data is available at:
-https://figshare.com/account/articles/30146374
+[https://figshare.com/account/articles/30146374](https://doi.org/10.6084/m9.figshare.30146374)
 
 ## CLI Usage
 
