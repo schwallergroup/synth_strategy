@@ -33,6 +33,11 @@ matched = annotated[0]["passing_functions"]  # function name -> detected evidenc
  "children": [{"type": "reaction", "metadata": {"mapped_reaction_smiles": "CCO>>CC(=O)O"}, "children": [...]}]}
 ```
 
+For convergent steps (a reaction node with more than one child branch), you do not need to order
+`children` yourself: `annotate_strategies` sorts each node's children by subtree depth (deepest
+branch first) before running any function, so the main synthetic line is always index 0 regardless
+of input order.
+
 Same thing from the CLI:
 
 ```bash
