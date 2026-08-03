@@ -3,14 +3,14 @@ import os
 from pathlib import Path
 from collections import defaultdict
 
-def extract_strategies_to_files(json_data, output_dir, root_data="/home/dparm/synth_strategy/data"):
+def extract_strategies_to_files(json_data, output_dir, root_data="../data"):
     """
     Extract passing code blocks from JSON and write to individual Python files.
     
     Args:
         json_data: The loaded JSON data containing strategies and code blocks
         output_dir: Directory where Python files will be written
-        root_data: Root directory for data patterns (default: /home/dparm/synth_strategy/data)
+        root_data: Root directory for data patterns (default: ../data)
     """
     # Create output directory if it doesn't exist
     output_path = Path(output_dir)
@@ -140,8 +140,8 @@ if __name__ == "__main__":
     parser.add_argument('json_file', type=str, help='Path to the JSON file containing strategies')
     parser.add_argument('--output-dir', '-o', type=str, default='data/test',
                         help='Output directory for strategy files (default: ./strategy_function_library)')
-    parser.add_argument('--root-data', '-r', type=str, default='/home/dparm/synth_strategy/data',
-                        help='Root data directory path (default: /home/dparm/synth_strategy/data)')
+    parser.add_argument('--root-data', '-r', type=str, default='../data',
+                        help='Root data directory path (default: ../data)')
     
     args = parser.parse_args()
     

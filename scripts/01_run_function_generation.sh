@@ -1,15 +1,19 @@
 #!/bin/bash
 
 # =================================================================
-# Test Script for Steerable Retrosynthesis Code Generation
+# Step 1: Strategy Function Generation (SynthStrategy)
 # =================================================================
-# This script runs a small test case to verify that the main
-# Python script is working correctly.
+# Runs the LLM-based strategy extraction and code generation step
+# over a batch of synthesis routes. Edit the configuration below to
+# point at your own route file and to scale up N_SAMPLES for a full
+# run; the defaults here are a small batch suitable for a quick
+# end-to-end check of the pipeline.
 #
 # Configuration:
-# - Input: First 5 routes from the training set.
-# - Output: A JSON file in the specified test directory.
-# - Model: A fast model suitable for testing.
+# - Input: first N_SAMPLES routes from INPUT_FILE.
+# - Output: a JSON file in OUTPUT_DIR (see scripts/readme.md Step 1).
+# - Model: MODEL_NAME (defaults to a fast model; use a stronger model
+#   for production runs).
 # =================================================================
 
 # --- Configuration ---
@@ -38,7 +42,7 @@ MAX_CONCURRENT=5 # Lower concurrency for a small test to avoid rate limits.
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-echo "--- Starting Test Run ---"
+echo "--- Starting Function Generation Run ---"
 
 # Create the output directory if it doesn't exist.
 # The -p flag ensures no error is thrown if the directory already exists.
@@ -71,6 +75,6 @@ python "$MAIN_SCRIPT" \
     --reaction-path "$REACTION_PATH" \
     --ring-path "$RING_PATH"
 
-echo "--- Test Run Complete ---"
+echo "--- Function Generation Run Complete ---"
 echo "Results have been saved in: ${OUTPUT_DIR}"
 echo "You can check the output file named something like: train_t_${MODEL_NAME//\//_}_results.json"
