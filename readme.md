@@ -79,4 +79,4 @@ python scripts/download_uspto_data.py
 ```
 
 Downloads ~2.5GB of pre-annotated USPTO routes to `data/uspto_st/` (or grab it manually from
-https://figshare.com/account/articles/30146374).
+[https://doi.org/10.6084/m9.figshare.30146374](https://doi.org/10.6084/m9.figshare.30146374)).
