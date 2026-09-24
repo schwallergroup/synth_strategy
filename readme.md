@@ -58,6 +58,12 @@ Add `--config config.yaml` to any command to set defaults instead of repeating f
 
 ## Scripts
 
+Building multi-step routes from single-step USPTO reactions (within-patent linking on exact,
+stereo-aware canonical SMILES of atom-mapped reactants; PaRoutes-style cleaning):
+
+- `scripts/00_build_routes.py` — e.g. `python scripts/00_build_routes.py --input US_patents_1976-Sep2016_1product_reactions_*.csv --output-dir routes/`,
+  or `--patents US07022650B2 ...` to rebuild the routes of specific patents. See the script docstring for the full procedure.
+
 Generating the function library from scratch — each script's output feeds the next:
 
 - `scripts/01_run_function_generation.sh` — an LLM generates candidate strategy functions from a
